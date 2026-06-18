@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Acquisition data / outputs (never commit experiment data) ---
+sessions/
+*.tif
+*.tiff
+*.h5
+*.hdf5
+*.raw
+*.npy
+*.csv
+
+# Phase 0 scratch outputs
+acqApp/scratch/*_out.*
+scratch/*_out.*
+cam_grab_out.*
+
+# --- Logs / config local overrides ---
+*.log
+*_local.json
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

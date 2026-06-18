@@ -1,0 +1,16 @@
+# acqApp dependencies — recreate the env on the rig machine with:
+#   python -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# NOTE: two of these also need vendor RUNTIME DRIVERS installed separately
+# (they are NOT pip-installable):
+#   - nidaqmx  -> needs the NI-DAQmx runtime (same install NI MAX uses)
+#   - pylablib -> needs Hamamatsu DCAM-API runtime (ships with the camera driver)
+
+PyQt6
+pyqtgraph
+numpy
+tifffile
+h5py
+nidaqmx
+pylablib
