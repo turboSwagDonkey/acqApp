@@ -14,7 +14,7 @@ any app code is written. **These get deleted once Phase 0 is validated.**
 | Script | Purpose |
 |--------|---------|
 | `scratch/cam_grab.py` | Grab N frames off the Orca, measure achieved FPS + MB/s |
-| `scratch/encoder_read.py` | Live angular position/velocity off Dev3/ctr0 |
+| `scratch/encoder_read.py` | Live position/speed read as analog voltage off Dev3/ai2 |
 
 ### Running Phase 0 (on the rig machine, with hardware)
 
@@ -25,8 +25,8 @@ python -m venv .venv
 # camera throughput test
 .venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save
 
-# encoder live read (adjust --ppr and --wheel-dia to your hardware)
-.venv\Scripts\python scratch\encoder_read.py --ppr 1024 --wheel-dia 150
+# encoder live read (analog voltage on Dev3/ai2; pass --volts-per-rev to scale)
+.venv\Scripts\python scratch\encoder_read.py --chan Dev3/ai2 --rate 50
 ```
 
 Vendor runtime drivers must be installed (see `requirements.txt`):
