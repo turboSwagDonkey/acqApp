@@ -1,121 +1,204 @@
 r"""
 Phase 0 hardware de-risk: rotary wheel encoder on NI PCIe-6363 (Dev3).
 
-Goal of this throwaway script:
-  1. Prove the quadrature encoder reads through nidaqmx on a counter input.
-  2. Print live angular position / revolutions / linear distance as you spin
-    the wheel by hand, so we can confirm wiring, PPR, and decoding direction
-    before any of it goes into the real app.
+Reads the encoder as an analog voltage from ai2 (single-ended), matching
+the MATLAB script exactly. Polls in a tight loop, timestamps every sample,
+shows a live plot of position and speed, and saves to a .csv on exit.
 
-This is software-timed (on-demand polling) on purpose -- it mirrors the v1
-SoftwareClock plan. The v2 upgrade to a buffered, hardware-clocked counter
-task reuses this exact channel setup plus cfg_samp_clk_timing.
-
-This is NOT app code. It lives in scratch/ and gets deleted after Phase 0.
-
-Requires:
-  - nidaqmx (pip, installed)
-  - NI-DAQmx runtime driver installed (the one NI MAX uses).
-
-Wiring note (X-series default terminals for ctr0):
-  - Encoder A  -> PFI8   (counter 0 source)
-  - Encoder B  -> PFI10  (counter 0 aux/up-down)
-  - Encoder Z  -> PFI9   (only if --use-z)
-  These are routable; if your wiring differs we pass --chan and adjust.
+Wiring: encoder signal -> Dev3/ai2 (single-ended / referenced to AIGND)
 
 Run:
   ..\..\.venv\Scripts\python.exe encoder_read.py
-  ..\..\.venv\Scripts\python.exe encoder_read.py --ppr 1024 --wheel-dia 150
+  ..\..\.venv\Scripts\python.exe encoder_read.py --chan Dev3/ai2 --rate 50
+  ..\..\.venv\Scripts\python.exe encoder_read.py --volts-per-rev 5.0
 """
 
 import argparse
-import math
+import csv
+import threading
 import time
+from collections import deque
+from datetime import datetime
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 
-def main():
-    ap = argparse.ArgumentParser(description="PCIe-6363 quadrature encoder live read")
-    ap.add_argument("--chan", type=str, default="Dev3/ctr0",
-                    help="counter input channel (default Dev3/ctr0)")
-    ap.add_argument("--ppr", type=int, default=1024,
-                    help="encoder pulses per revolution (PRE-decoding count)")
-    ap.add_argument("--decoding", type=str, default="X4",
-                    choices=["X1", "X2", "X4"],
-                    help="quadrature decoding (X4 = 4x resolution, default)")
-    ap.add_argument("--wheel-dia", type=float, default=None,
-                    help="wheel diameter in mm; if given, prints linear distance")
-    ap.add_argument("--use-z", action="store_true",
-                    help="enable the Z/index channel for per-rev zeroing")
-    ap.add_argument("--rate", type=float, default=20.0,
-                    help="console refresh rate in Hz (polling cadence)")
-    args = ap.parse_args()
+# ---------------------------------------------------------------------------
+# DAQ reader -- runs in a background thread
+# ---------------------------------------------------------------------------
 
+def daq_thread(chan, period, volts_per_rev, stop_event,
+               time_buf, voltage_buf, rev_buf, speed_buf,
+               time_data, abs_time_data, encoder_data):
+    """Poll the analog input and push results into shared deques."""
     try:
         import nidaqmx
-        from nidaqmx.constants import EncoderType, AngleUnits, EncoderZIndexPhase
+        from nidaqmx.constants import TerminalConfiguration
     except Exception as e:
         raise SystemExit(
             f"Could not import nidaqmx: {e}\n"
             "Install the NI-DAQmx runtime driver (the one NI MAX uses)."
         )
 
-    decode_map = {
-        "X1": EncoderType.X_1,
-        "X2": EncoderType.X_2,
-        "X4": EncoderType.X_4,
-    }
-
-    print(f"Opening encoder task on {args.chan}")
-    print(f"  PPR={args.ppr}  decoding={args.decoding}  "
-          f"({'Z enabled' if args.use_z else 'no Z'})")
-
     with nidaqmx.Task() as task:
-        # pulses_per_rev is the encoder's native count; DAQmx applies the
-        # decoding multiplier internally and reports angle in the chosen units.
-        chan = task.ci_channels.add_ci_ang_encoder_chan(
-            args.chan,
-            decoding_type=decode_map[args.decoding],
-            zidx_enable=args.use_z,
-            zidx_val=0.0,
-            zidx_phase=EncoderZIndexPhase.AHIGH_BHIGH,
-            units=AngleUnits.RADIANS,
-            pulses_per_rev=args.ppr,
-            initial_angle=0.0,
+        task.ai_channels.add_ai_voltage_chan(
+            chan,
+            terminal_config=TerminalConfiguration.RSE,
+            min_val=-10.0,
+            max_val=10.0,
         )
 
-        task.start()
-        print("\nSpin the wheel. Ctrl+C to stop.\n")
+        trial_start = time.perf_counter()
+        last_t = trial_start
+        last_v = None
 
-        radius_mm = (args.wheel_dia / 2.0) if args.wheel_dia else None
-        period = 1.0 / args.rate
-        last_angle = 0.0
-        last_t = time.perf_counter()
+        while not stop_event.is_set():
+            voltage: float = task.read()  # type: ignore[assignment]  # stubs over-widen AI voltage return
+            now = time.perf_counter()
+            elapsed = now - trial_start
+            abs_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        try:
-            while True:
-                angle = task.read()            # radians, cumulative
-                now = time.perf_counter()
-                dt = now - last_t
+            dt = now - last_t
+            if last_v is not None and dt > 0 and volts_per_rev is not None:
+                speed_rev_s = (voltage - last_v) / dt / volts_per_rev
+            else:
+                speed_rev_s = 0.0
 
-                revs = angle / (2.0 * math.pi)
-                ang_vel = (angle - last_angle) / dt if dt > 0 else 0.0  # rad/s
+            revs = (voltage / volts_per_rev) if volts_per_rev is not None else voltage
 
-                line = (f"\rangle={angle:9.3f} rad | "
-                        f"revs={revs:8.3f} | "
-                        f"omega={ang_vel:8.3f} rad/s")
-                if radius_mm is not None:
-                    distance_mm = angle * radius_mm
-                    speed_mm_s = ang_vel * radius_mm
-                    line += (f" | dist={distance_mm/1000.0:8.3f} m"
-                             f" | speed={speed_mm_s/1000.0:7.3f} m/s")
+            # Rolling plot buffers
+            time_buf.append(elapsed)
+            voltage_buf.append(voltage)
+            rev_buf.append(revs)
+            speed_buf.append(speed_rev_s)
 
-                print(line + "   ", end="", flush=True)
+            # Full-session save buffers
+            time_data.append(elapsed)
+            abs_time_data.append(abs_now)
+            encoder_data.append(voltage)
 
-                last_angle = angle
-                last_t = now
-                time.sleep(period)
-        except KeyboardInterrupt:
-            print("\n\nStopped.")
+            last_t = now
+            last_v = voltage
+            time.sleep(period)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(description="PCIe-6363 analog encoder live read")
+    ap.add_argument("--chan", type=str, default="Dev3/ai2",
+                    help="analog input channel (default Dev3/ai2)")
+    ap.add_argument("--rate", type=float, default=50.0,
+                    help="polling rate in Hz (default 50)")
+    ap.add_argument("--window", type=float, default=10.0,
+                    help="live plot time window in seconds (default 10)")
+    ap.add_argument("--volts-per-rev", type=float, default=None,
+                    help="voltage span for one full revolution; enables rev/speed axes")
+    ap.add_argument("--no-save", action="store_true",
+                    help="skip saving .csv on exit")
+    args = ap.parse_args()
+
+    period = 1.0 / args.rate
+    maxlen = int(args.window * args.rate * 2)  # keep 2x the window in the deque
+
+    # Shared buffers (deque is thread-safe for append + read from two threads)
+    time_buf    = deque(maxlen=maxlen)
+    voltage_buf = deque(maxlen=maxlen)
+    rev_buf     = deque(maxlen=maxlen)
+    speed_buf   = deque(maxlen=maxlen)
+
+    # Full-session storage (grows unbounded, saved on exit)
+    time_data     = []
+    abs_time_data = []
+    encoder_data  = []
+
+    stop_event = threading.Event()
+
+    reader = threading.Thread(
+        target=daq_thread,
+        args=(args.chan, period, args.volts_per_rev, stop_event,
+              time_buf, voltage_buf, rev_buf, speed_buf,
+              time_data, abs_time_data, encoder_data),
+        daemon=True,
+    )
+
+    print(f"Opening encoder on {args.chan}  rate={args.rate} Hz  window={args.window} s")
+    if args.volts_per_rev:
+        print(f"  volts-per-rev={args.volts_per_rev} -> position in revolutions, speed in rev/s")
+    else:
+        print("  No --volts-per-rev given -> position axis shows raw voltage")
+    print("Close the plot window to stop.\n")
+
+    reader.start()
+
+    # --- Build the figure ---
+    fig, (ax_pos, ax_spd) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    fig.suptitle("Encoder — live", fontsize=13)
+
+    pos_label = "Position (rev)" if args.volts_per_rev else "Voltage (V)"
+    ax_pos.set_ylabel(pos_label)
+    ax_pos.grid(True, alpha=0.3)
+
+    ax_spd.set_ylabel("Speed (rev/s)" if args.volts_per_rev else "dV/dt (V/s)")
+    ax_spd.set_xlabel("Time (s)")
+    ax_spd.grid(True, alpha=0.3)
+
+    (line_pos,) = ax_pos.plot([], [], color="royalblue", linewidth=1.2)
+    (line_spd,) = ax_spd.plot([], [], color="tomato",    linewidth=1.2)
+
+    title_tpl = "t={t:.1f}s   pos={pos:.3f}   speed={spd:.3f}"
+
+    def update(_):
+        if len(time_buf) < 2:
+            return line_pos, line_spd
+
+        t   = list(time_buf)
+        pos = list(rev_buf)
+        spd = list(speed_buf)
+
+        # Trim to rolling window
+        t_end = t[-1]
+        t_start = t_end - args.window
+        idx = next((i for i, v in enumerate(t) if v >= t_start), 0)
+        t, pos, spd = t[idx:], pos[idx:], spd[idx:]
+
+        line_pos.set_data(t, pos)
+        line_spd.set_data(t, spd)
+
+        ax_pos.set_xlim(t[0], t[-1] + 0.1)
+        ax_pos.relim(); ax_pos.autoscale_view(scalex=False)
+        ax_spd.relim(); ax_spd.autoscale_view(scalex=False)
+
+        fig.suptitle(title_tpl.format(t=t[-1], pos=pos[-1], spd=spd[-1]), fontsize=13)
+        return line_pos, line_spd
+
+    ani = animation.FuncAnimation(  # noqa: F841  # must stay referenced to prevent GC
+        fig, update,
+        interval=max(50, int(1000 / args.rate)),  # ms between frames
+        blit=False,
+        cache_frame_data=False,
+    )
+
+    plt.tight_layout()
+    plt.show()  # blocks until window is closed
+
+    # --- Shutdown ---
+    stop_event.set()
+    reader.join(timeout=2.0)
+    print(f"\nStopped. Captured {len(time_data)} samples.")
+
+    if not args.no_save and time_data:
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        out_path = Path(__file__).parent / f"encoder_{ts}.csv"
+        with open(out_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time_s", "absolute_time", "voltage_V"])
+            writer.writerows(zip(time_data, abs_time_data, encoder_data))
+        print(f"Data saved to:\n  {out_path}")
 
 
 if __name__ == "__main__":
