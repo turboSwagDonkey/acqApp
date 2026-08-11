@@ -2,10 +2,10 @@
 
 Continuation notes for `acqApp`. Covers three threads of work done this session:
 a hard camera crash, the wheel encoder outputting speed/distance, and the camera
-frame-rate label. Companion to [CAMERA_TRANSFER.md](acqApp/CAMERA_TRANSFER.md),
-[WHEEL_TRANSFER.md](acqApp/WHEEL_TRANSFER.md),
-[PUPIL_CAMERA_TRANSFER.md](acqApp/PUPIL_CAMERA_TRANSFER.md),
-[STAGE_TRANSFER.md](acqApp/STAGE_TRANSFER.md).
+frame-rate label. Companion to [CAMERA_TRANSFER.md](CAMERA_TRANSFER.md),
+[WHEEL_TRANSFER.md](WHEEL_TRANSFER.md),
+[PUPIL_CAMERA_TRANSFER.md](PUPIL_CAMERA_TRANSFER.md),
+[STAGE_TRANSFER.md](STAGE_TRANSFER.md).
 
 All work was verified in **mock/headless** unless noted. Real-hardware paths are
 flagged. Env rule still in force: installs go ONLY into `acqApp/.venv`.
@@ -21,22 +21,22 @@ flagged. Env rule still in force: installs go ONLY into `acqApp/.venv`.
 
 1. **Python exception escaping a `QThread.run()` → PyQt6 `qFatal()`/abort.**
    Any unwrapped DCAM call in the worker took the whole process down.
-   Fix: [acq/worker.py](acqApp/acq/worker.py) — `PullWorker.run()` is now a guard
+   Fix: [acq/worker.py](../acq/worker.py) — `PullWorker.run()` is now a guard
    that calls `self._run()` in try/except, prints the traceback, and emits a new
    `error = pyqtSignal(str)`. **Every worker's loop was renamed `run` → `_run`**
    (camera, encoder, pupil, stage). Don't override `run()` in subclasses again.
-   [main.py](acqApp/main.py) `_start_session` connects each worker's `error` to
+   [main.py](../main.py) `_start_session` connects each worker's `error` to
    `_on_worker_error` (status bar).
 
 2. **Native DCAM crash from a double-open** (no Python traceback → not catchable).
    Startup probed the camera by open→read-info→**close**, then the worker
    **re-opened** it; re-opening a just-closed DCAM device segfaults.
-   Fix: [main.py](acqApp/main.py) pre-init now opens the camera **once** and keeps
+   Fix: [main.py](../main.py) pre-init now opens the camera **once** and keeps
    the handle (`_cam_handle`); the worker **reuses** it via
    `OrcaFireWorker(0, cfg, cam=self._cam_handle)` (never re-opens). Handle closed
    in `closeEvent`. Also removes the ~7 s re-open per Start.
 
-3. **`faulthandler.enable()`** added at the very top of [main.py](acqApp/main.py)
+3. **`faulthandler.enable()`** added at the very top of [main.py](../main.py)
    so any *future* native crash dumps a C+Python stack instead of vanishing.
 
 **Status:** user confirmed **"worked ok"** on real hardware.
@@ -54,7 +54,7 @@ conversion was the problem.
 
 **What was built:**
 - Derivation moved **into the worker** so it runs per-sample at the full 50 Hz
-  (not the decimated GUI): [wheel/acquisition.py](acqApp/wheel/acquisition.py)
+  (not the decimated GUI): [wheel/acquisition.py](../wheel/acquisition.py)
   `_EncoderBase._derive()` — sawtooth unwrap → speed = d(position)/dt, distance =
   running total. Shared by `EncoderWorker` (real) and `MockEncoderWorker`.
   - `get_latest()` now returns **`(voltage, speed, distance, elapsed)`** (4-tuple;
@@ -64,16 +64,16 @@ conversion was the problem.
     0.05` rev/s stops noise creep while stationary (a per-sample threshold is
     rate-dependent — do NOT go back to that).
   - `set_scaling(volts_per_rev, wheel_dia_mm)` lets V/rev + diameter change live;
-    [main.py](acqApp/main.py) `_on_wheel_settings` pushes edits to a running worker.
-- **Recording writes three streams**: [main.py](acqApp/main.py) `_record_wheel` →
+    [main.py](../main.py) `_on_wheel_settings` pushes edits to a running worker.
+- **Recording writes three streams**: [main.py](../main.py) `_record_wheel` →
   `wheel_voltage`, `wheel_speed`, `wheel_distance` (raw voltage is lossless ground
   truth; speed/distance derived). Metadata adds `wheel_volts_per_rev`,
   `wheel_dia_mm`, `wheel_speed_units`, `wheel_distance_units`.
 - **UI:** Signals plot relabels to speed (mm/s or rev/s); wheel settings tab shows
-  live `speed … / distance …` readout ([wheel/settings.py](acqApp/wheel/settings.py)
-  `set_readout`; [main.py](acqApp/main.py) `_wheel_show`).
+  live `speed … / distance …` readout ([wheel/settings.py](../wheel/settings.py)
+  `set_readout`; [main.py](../main.py) `_wheel_show`).
 - Units: **mm/s + mm** when wheel diameter set, else **rev/s + rev**.
-- Toy updated for the 4-tuple: [wheel/_toy.py](acqApp/wheel/_toy.py).
+- Toy updated for the 4-tuple: [wheel/_toy.py](../wheel/_toy.py).
 
 ### Update 2026-08-06 — derivation reworked from a real capture (analysis-only, not yet on rig)
 
@@ -101,13 +101,13 @@ aliased through the wrap-correction, flipping a real −0.54 rev into +0.46 rev
   speed so aliasing is impossible). If they ever really mean kHz that's a
   hardware-buffered rearchitecture — flag it.
 
-**Fix in [wheel/acquisition.py](acqApp/wheel/acquisition.py) `_EncoderBase._derive`:**
+**Fix in [wheel/acquisition.py](../wheel/acquisition.py) `_EncoderBase._derive`:**
 accumulate a wrap-corrected **net signed position** `_pos`; distance = `_pos·circ`
 (net — zero-mean noise cancels, no deadband needed); speed = d/dt of an EMA
 **low-pass** of position (`_TAU_S = 0.15 s`), with the 0.05 rev/s floor only zeroing
 the *display*. Glitch guard (>0.5 rev/sample) unchanged. `_dist` accumulator removed.
 Defaults changed: `rate 50→120`, `volts_per_rev 5.0→4.912` (measured), in both
-[settings.py](acqApp/wheel/settings.py) and the workers.
+[settings.py](../wheel/settings.py) and the workers.
 
 **Validated (real `_derive`, capture decimated to ~120 Hz):** net **−0.106 rev /
 −0.050 m** (≈ ground truth), stationary speed rms **0.025 rev/s** (was 0.46). Same
@@ -118,7 +118,7 @@ The `np.unwrap` look-ahead attempt still **sawtoothed** on real hardware: the
 encoder reset is **smeared over 2–3 samples** (confirmed in a real toy capture:
 `0.02 → 3.21 → 4.60 V`), so each sub-step is under unwrap's half-turn threshold and
 the reset reads as +1 rev of motion, cancelling the turn. Final `_derive` (in
-[wheel/acquisition.py](acqApp/wheel/acquisition.py)) instead:
+[wheel/acquisition.py](../wheel/acquisition.py)) instead:
 - integrates per-sample `frac = v/vpr` with wrap-correction into a cleaned absolute
   `_pos`; any step implying **> `_MAX_REV_S` (10 rev/s)** is a reset/dead-zone
   artifact → dropped and **coasted** at the current velocity `_vel` (wheel keeps
@@ -136,10 +136,10 @@ the reset reads as +1 rev of motion, cancelling the turn. Final `_derive` (in
 flat when stopped, 0.000 m drift over 60 s stationary (synthetic), slow 0.1 rev/s
 within ~5%. Old delayed-`np.unwrap` / `_dist_rev`-frame-diff path is gone.
 
-**Ported to the main app** ([main.py](acqApp/main.py)): the wheel plot now shows
+**Ported to the main app** ([main.py](../main.py)): the wheel plot now shows
 **Distance** (title "Wheel distance"), with the **live current speed as a number in
 the plot title** and in the settings-panel readout (`speed … / net …`). Toy
-([wheel/_toy.py](acqApp/wheel/_toy.py)) plots Distance too and its mock is now a
+([wheel/_toy.py](../wheel/_toy.py)) plots Distance too and its mock is now a
 realistic descending sawtooth. NOTE: the toy's Record-CSV saves at the **GUI rate
 (~51 Hz)**, not the worker's 120 Hz.
 
@@ -155,10 +155,10 @@ _(original section 2 notes below; the derivation details above supersede the pat
 
 ## 3. Diagnostic tools (new, standalone, NI + numpy only, ASCII output)
 
-- [wheel/capture_raw.py](acqApp/wheel/capture_raw.py) — hardware-clocked **1 kHz**
+- [wheel/capture_raw.py](../wheel/capture_raw.py) — hardware-clocked **1 kHz**
   raw-voltage capture while spinning; live min/max, saves `wheel_raw.csv`, prints
   a summary. `python wheel\capture_raw.py --seconds 30`.
-- [wheel/analyze_raw.py](acqApp/wheel/analyze_raw.py) — unwraps the sawtooth,
+- [wheel/analyze_raw.py](../wheel/analyze_raw.py) — unwraps the sawtooth,
   reports measured **volts_per_rev** (peak-to-peak), **net rotation**, and **path
   (deadband)** at full rate and decimated to 50 Hz (the app's rate).
   `python wheel\analyze_raw.py wheel_raw.csv --dia 150`. Validated on a synthetic
@@ -174,13 +174,13 @@ single-turn sawtooth.
 The label was a **hardcoded default** (`DEFAULT_LINK = USB`), not link detection.
 Rig is **CoaXPress-only**.
 
-- [voltage_cam/presets.py](acqApp/voltage_cam/presets.py) — `DEFAULT_LINK = CXP`;
+- [voltage_cam/presets.py](../voltage_cam/presets.py) — `DEFAULT_LINK = CXP`;
   measurement note updated (old 15.8 fps / 316 MB/s reading was USB-enumerated and
   doesn't apply to CXP-only).
-- [voltage_cam/settings.py](acqApp/voltage_cam/settings.py) — panel now shows the
+- [voltage_cam/settings.py](../voltage_cam/settings.py) — panel now shows the
   camera's **measured** rate once running (`set_measured_rate`, driven by the
   worker's `timing_update`); reverts to the datasheet estimate on stop.
-- [main.py](acqApp/main.py) `_start_session` connects `timing_update` →
+- [main.py](../main.py) `_start_session` connects `timing_update` →
   `set_measured_rate`; `_stop_session` clears it.
 
 **OPEN — watch the measured fps at full frame:** ~**115 fps** = CoaXPress live;
@@ -202,13 +202,13 @@ measured label now tells you which one is live.
 | Untested on hardware | wheel derivation end-to-end, camera full-frame fps (is it really CXP?) |
 
 ## Files touched this session
-- [acq/worker.py](acqApp/acq/worker.py) — crash guard + `error` signal, `_run` contract
-- [voltage_cam/acquisition.py](acqApp/voltage_cam/acquisition.py) — `run`→`_run`
-- [pupil_cam/acquisition.py](acqApp/pupil_cam/acquisition.py) — `run`→`_run`
-- [stage/acquisition.py](acqApp/stage/acquisition.py) — `run`→`_run`, dropped dup `error`
-- [wheel/acquisition.py](acqApp/wheel/acquisition.py) — `_EncoderBase`, derivation, guards, `set_scaling`
-- [wheel/settings.py](acqApp/wheel/settings.py) — live readout, field docs
-- [wheel/_toy.py](acqApp/wheel/_toy.py) — 4-tuple
-- [wheel/capture_raw.py](acqApp/wheel/capture_raw.py), [wheel/analyze_raw.py](acqApp/wheel/analyze_raw.py) — NEW
-- [voltage_cam/presets.py](acqApp/voltage_cam/presets.py), [voltage_cam/settings.py](acqApp/voltage_cam/settings.py) — link default + measured rate
-- [main.py](acqApp/main.py) — faulthandler, cam handle reuse, worker error/timing/drops wiring, wheel derive/record/readout
+- [acq/worker.py](../acq/worker.py) — crash guard + `error` signal, `_run` contract
+- [voltage_cam/acquisition.py](../voltage_cam/acquisition.py) — `run`→`_run`
+- [pupil_cam/acquisition.py](../pupil_cam/acquisition.py) — `run`→`_run`
+- [stage/acquisition.py](../stage/acquisition.py) — `run`→`_run`, dropped dup `error`
+- [wheel/acquisition.py](../wheel/acquisition.py) — `_EncoderBase`, derivation, guards, `set_scaling`
+- [wheel/settings.py](../wheel/settings.py) — live readout, field docs
+- [wheel/_toy.py](../wheel/_toy.py) — 4-tuple
+- [wheel/capture_raw.py](../wheel/capture_raw.py), [wheel/analyze_raw.py](../wheel/analyze_raw.py) — NEW
+- [voltage_cam/presets.py](../voltage_cam/presets.py), [voltage_cam/settings.py](../voltage_cam/settings.py) — link default + measured rate
+- [main.py](../main.py) — faulthandler, cam handle reuse, worker error/timing/drops wiring, wheel derive/record/readout

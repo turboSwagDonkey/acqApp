@@ -40,22 +40,20 @@ These are invariants, not preferences. Breaking one has cost real time before.
 - **Every runnable entry point calls `enable_safe_console()`** before its first
   print. `tests/test_console_safety.py` enforces this.
 
-## 3. ⚠ Backup status — READ THIS FIRST
+## 3. Backup status
 
-`acqApp/` is a git repo (`turboSwagDonkey/acqApp`, private), but:
+`acqApp/` is a git repo — `turboSwagDonkey/acqApp` (private), branch `master`.
+The laptop writes and pushes; the rig pulls, runs, fixes and pushes back.
 
-```
-last commit   f9378b6   2026-06-29     — six weeks ago
-uncommitted   56 paths  (36 modified/deleted, 20 untracked)
-```
+**Caught up 2026-08-11.** Before that, the last commit was 2026-06-29: six
+weeks and 68 files — `modules.py`, `config.py`, `console.py`, `saving.py`,
+`probe.py`, the whole `stage/` package and the whole `tests/` suite — existed
+only on this disk, and a 950-line refactor of `MainWindow` had already been
+done on top of that. Don't let it drift like that again.
 
-**Essentially the entire current app is uncommitted and unpushed**, including
-`modules.py`, `config.py`, `console.py`, `saving.py`, `probe.py`, the whole
-`stage/` package and the whole `tests/` suite. A disk failure or a bad
-restructure loses all of it. The `.gitignore` is already correct (`sessions/`,
-`*.h5`, `*.csv`, `.venv/` excluded), so this is one commit away from safe.
-
-**Do this before the next refactor.** Checklist item **B1** below.
+**Commit before restructuring, and push before leaving the machine.** The
+`.gitignore` already excludes `sessions/`, `*.h5`, `*.csv`, `*_local.json` and
+`.venv/`, so committing does not risk pushing experiment data.
 
 ## 4. Stages
 
@@ -181,21 +179,28 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ### Backup / process
 
-- [ ] **B1 Commit and push the six weeks of uncommitted work.** ⬜ See §3.
-- [ ] **B2 Consolidate the handoff docs.** ⬜ Seven markdown files now overlap:
-      `README.md` (description), this file (plan), `HANDOFF.md` (decisions —
-      its Status table is now superseded by §4 here), `SESSION_HANDOFF.md` (one
-      past session, historical), and four `*_TRANSFER.md` device docs (useful,
-      keep). Proposal: fold `SESSION_HANDOFF.md` into `HANDOFF.md`, strip
-      `HANDOFF.md`'s status table, and point everything here.
+- [x] **B1 Commit and push the six weeks of uncommitted work.** ✅ 2026-08-11,
+      `79209fb`, 68 files, +10324/−1500. No experiment data or local config
+      entered the repo (verified against `.gitignore` before staging).
+- [ ] **B2 Consolidate the handoff docs.** 🟡 Done: the six handoff/transfer
+      docs moved to [docs/](docs/) with an index, their 83 cross-links repaired
+      (every one used an `acqApp/` prefix that resolved to nothing from inside
+      `acqApp/`), and `HANDOFF.md`'s stale Status table flagged as superseded
+      by §4 here. Still open: `SESSION_HANDOFF.md` is a single past session and
+      would be better folded into `HANDOFF.md` than kept as a peer.
 
 ## 6. Next actions
 
-1. **B1 — commit + push.** Nothing else should start first. §3.
-2. **#2 — the silent overwrite.** Small, self-contained, and it is the last
-   remaining way the app can destroy data the operator already collected.
-3. **#4 — panel settings persistence.** Directly affects data correctness: the
-   wheel scaling constants reset to defaults every launch.
+1. **#2 — the silent overwrite.** Small, self-contained, and the last remaining
+   way the app can destroy data the operator already collected. Add the
+   existence check to `saving.writable_error()` and a test alongside
+   `tests/test_session_recording.py`.
+2. **#4 — panel settings persistence.** Directly affects data correctness: the
+   wheel scaling constants reset to defaults every launch, and they are exactly
+   the values still unmeasured on the rig.
+3. **Small-fix batch: #11, #6, #7.** One-liners and missing guards, cheap to do
+   together and each currently produces a wrong value or an unhandled
+   `AttributeError`.
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
@@ -210,12 +215,15 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
-### 2026-08-11 — workflow + test suite relocation
-- Adopted this file as the cross-session plan; added `CLAUDE.md` at the repo
-  parent so a fresh session picks it up without being told.
+### 2026-08-11 — workflow, test suite relocation, repo caught up
+- Adopted this file as the cross-session plan; added `CLAUDE.md` (in the repo,
+  plus a pointer at the parent) so a fresh session picks it up unprompted.
 - Moved the four test scripts from scratchpad into `tests/` with real user-state
   isolation (C2) and a README of the conventions.
-- Discovered the repo is six weeks behind (§3) — now the top next action.
+- **B1 done:** `79209fb` committed and pushed 68 files / +10324 lines — six
+  weeks of work that existed only on this disk (§3).
+- **B2 mostly done:** handoff/transfer docs → [docs/](docs/) with an index;
+  83 cross-links repaired; `HANDOFF.md`'s stale status table flagged.
 
 ### 2026-08-10 — audit + first fixes
 - Full read of ~10k lines → the 21 items in §5.

@@ -1,8 +1,8 @@
 # Wheel Encoder Module — Transfer Document
 
 Handoff for a session focused on the **running-wheel encoder** in `acqApp`.
-Companion to [CAMERA_TRANSFER.md](acqApp/CAMERA_TRANSFER.md) and
-[PUPIL_CAMERA_TRANSFER.md](acqApp/PUPIL_CAMERA_TRANSFER.md).
+Companion to [CAMERA_TRANSFER.md](CAMERA_TRANSFER.md) and
+[PUPIL_CAMERA_TRANSFER.md](PUPIL_CAMERA_TRANSFER.md).
 
 ---
 
@@ -42,12 +42,12 @@ Real hardware needs **NI-DAQmx + `nidaqmx`** and the 6363 present as `Dev3`
 
 | File | Role |
 |------|------|
-| [wheel/acquisition.py](acqApp/wheel/acquisition.py) | `EncoderWorker` (real NI ai) + `MockEncoderWorker`. The poll thread. |
-| [wheel/settings.py](acqApp/wheel/settings.py) | `EncoderSettings` + `SettingsPanel` — channel, sample rate, and (unused) scaling fields. |
-| [wheel/_toy.py](acqApp/wheel/_toy.py) | Standalone GUI: voltage + numerically-differentiated speed, CSV record. |
-| [wheel/recording.py](acqApp/wheel/recording.py) | `CSVWriter` — **toy only** (main app records via the shared pipeline). |
-| [acq/worker.py](acqApp/acq/worker.py) | `PullWorker` base both workers subclass. |
-| [main.py](acqApp/main.py) | Builds the worker in `_start_session` (real vs mock by the Emulate toggle), records `/wheel`, plots it in `_pull_frames`. |
+| [wheel/acquisition.py](../wheel/acquisition.py) | `EncoderWorker` (real NI ai) + `MockEncoderWorker`. The poll thread. |
+| [wheel/settings.py](../wheel/settings.py) | `EncoderSettings` + `SettingsPanel` — channel, sample rate, and (unused) scaling fields. |
+| [wheel/_toy.py](../wheel/_toy.py) | Standalone GUI: voltage + numerically-differentiated speed, CSV record. |
+| [wheel/recording.py](../wheel/recording.py) | `CSVWriter` — **toy only** (main app records via the shared pipeline). |
+| [acq/worker.py](../acq/worker.py) | `PullWorker` base both workers subclass. |
+| [main.py](../main.py) | Builds the worker in `_start_session` (real vs mock by the Emulate toggle), records `/wheel`, plots it in `_pull_frames`. |
 
 ---
 

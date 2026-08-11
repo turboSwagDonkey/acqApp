@@ -2,7 +2,7 @@
 
 Handoff for a session focused on the **pupil-tracking camera** (Basler, via
 `pypylon`) in `acqApp`. Everything you need to pick up the pupil-cam work in
-isolation. Companion to [CAMERA_TRANSFER.md](acqApp/CAMERA_TRANSFER.md) (the
+isolation. Companion to [CAMERA_TRANSFER.md](CAMERA_TRANSFER.md) (the
 voltage/ORCA camera).
 
 ---
@@ -57,16 +57,16 @@ smoke tests use `QT_QPA_PLATFORM=offscreen`,
 
 | File | Role |
 |------|------|
-| [pupil_cam/acquisition.py](acqApp/pupil_cam/acquisition.py) | `open_camera()` + `PupilCameraWorker` (real Basler) + `MockPupilCameraWorker`. The capture thread. |
-| [pupil_cam/tracking.py](acqApp/pupil_cam/tracking.py) | `detect(...)`, `PupilTracker`, `find_circular_edge(...)`. **The pupil algorithm — an IMAQ Find Circular Edge port.** |
-| [pupil_cam/_test_tracking.py](acqApp/pupil_cam/_test_tracking.py) | Ground-truth validation of the tracker on synthetic eyes. No hardware. |
-| [pupil_cam/control.py](acqApp/pupil_cam/control.py) | `LedController` / `MockLedController` — eye-tracking LED on NI `Dev3/port0/line1`. |
-| [pupil_cam/settings.py](acqApp/pupil_cam/settings.py) | `PupilSettings` + `SettingsPanel` — exposure/fps, tracking params (threshold, min/max radius), LED toggle. |
-| [pupil_cam/_toy.py](acqApp/pupil_cam/_toy.py) | Standalone bring-up GUI. Opens the Basler, drives the worker, overlays the pupil circle, records. |
-| [pupil_cam/recording.py](acqApp/pupil_cam/recording.py) | `FrameWriter` (frames → HDF5) + `TrackingLog` (per-frame detection → CSV). **Toy only.** |
-| [acq/worker.py](acqApp/acq/worker.py) | `PullWorker` base: `get_latest`/`set_sink`/`stop` scaffolding both workers share. |
-| [acq/recorder.py](acqApp/acq/recorder.py), [acq/ring_buffer.py](acqApp/acq/ring_buffer.py), [acq/writer.py](acqApp/acq/writer.py), [acq/clock.py](acqApp/acq/clock.py) | Main-app shared-clock recording pipeline. |
-| [main.py](acqApp/main.py) | Full app: pupil wiring in `_start_session` (mock worker), `_start_recording` (frame sink), `_pull_frames` (detect + overlay + radius), `_on_pupil_exposure`, `_on_pupil_led`. |
+| [pupil_cam/acquisition.py](../pupil_cam/acquisition.py) | `open_camera()` + `PupilCameraWorker` (real Basler) + `MockPupilCameraWorker`. The capture thread. |
+| [pupil_cam/tracking.py](../pupil_cam/tracking.py) | `detect(...)`, `PupilTracker`, `find_circular_edge(...)`. **The pupil algorithm — an IMAQ Find Circular Edge port.** |
+| [pupil_cam/_test_tracking.py](../pupil_cam/_test_tracking.py) | Ground-truth validation of the tracker on synthetic eyes. No hardware. |
+| [pupil_cam/control.py](../pupil_cam/control.py) | `LedController` / `MockLedController` — eye-tracking LED on NI `Dev3/port0/line1`. |
+| [pupil_cam/settings.py](../pupil_cam/settings.py) | `PupilSettings` + `SettingsPanel` — exposure/fps, tracking params (threshold, min/max radius), LED toggle. |
+| [pupil_cam/_toy.py](../pupil_cam/_toy.py) | Standalone bring-up GUI. Opens the Basler, drives the worker, overlays the pupil circle, records. |
+| [pupil_cam/recording.py](../pupil_cam/recording.py) | `FrameWriter` (frames → HDF5) + `TrackingLog` (per-frame detection → CSV). **Toy only.** |
+| [acq/worker.py](../acq/worker.py) | `PullWorker` base: `get_latest`/`set_sink`/`stop` scaffolding both workers share. |
+| [acq/recorder.py](../acq/recorder.py), [acq/ring_buffer.py](../acq/ring_buffer.py), [acq/writer.py](../acq/writer.py), [acq/clock.py](../acq/clock.py) | Main-app shared-clock recording pipeline. |
+| [main.py](../main.py) | Full app: pupil wiring in `_start_session` (mock worker), `_start_recording` (frame sink), `_pull_frames` (detect + overlay + radius), `_on_pupil_exposure`, `_on_pupil_led`. |
 
 ---
 

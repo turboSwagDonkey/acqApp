@@ -1,8 +1,13 @@
 # HANDOFF — context for continuing acqApp
 
-Read this first if you're a fresh Claude session (web or Claude Code on the rig)
-or returning after a break. It captures decisions and state that aren't obvious
-from the code alone. Last updated: 2026-07-27.
+> **Superseded as a starting point.** Read [../PLAN.md](../PLAN.md) first — it
+> carries the current plan, checklist and next actions. This file is kept for
+> the *decisions and their reasons*, which remain valid. The **Status** table
+> and **THE immediate next step** below are from 2026-07-27 and are now stale;
+> PLAN.md §4 and §6 replace them.
+
+It captures decisions and state that aren't obvious from the code alone.
+Last updated: 2026-07-27.
 
 ## Update 2026-07-27 — main is wired up
 

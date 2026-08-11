@@ -45,17 +45,17 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 
 | File | Role |
 |------|------|
-| [voltage_cam/acquisition.py](acqApp/voltage_cam/acquisition.py) | `OrcaFireWorker` (real, DCAM) + `MockCameraWorker`. The capture thread. **Most camera logic lives here.** |
-| [voltage_cam/presets.py](acqApp/voltage_cam/presets.py) | `ResolutionPreset`, `AcqConfig`, the datasheet-derived `PRESETS`, binning/trigger options. |
-| [voltage_cam/settings.py](acqApp/voltage_cam/settings.py) | `SettingsPanel` — resolution/binning/exposure/trigger UI; `get_config()` → `AcqConfig`. |
-| [voltage_cam/_toy.py](acqApp/voltage_cam/_toy.py) | Standalone bring-up GUI. Opens the camera, drives the worker, previews, records. |
-| [voltage_cam/recording.py](acqApp/voltage_cam/recording.py) | `RecordingManager` — the **toy's** simple fixed-N HDF5 writer (separate from the main app's pipeline). |
-| [acq/worker.py](acqApp/acq/worker.py) | `PullWorker` base class: `get_latest`/`set_sink`/`stop` scaffolding all workers share. |
-| [acq/recorder.py](acqApp/acq/recorder.py) | `Recorder` — main-app writer thread draining the ring buffer (stamps the shared clock). |
-| [acq/ring_buffer.py](acqApp/acq/ring_buffer.py) | Bounded ring buffer (count + **byte** cap; sheds image frames, never scalar events). |
-| [acq/writer.py](acqApp/acq/writer.py) | `HDF5Writer` — main-app HDF5 sink (block-grown datasets, NaN-tail crash-safety). |
-| [acq/clock.py](acqApp/acq/clock.py) | `SessionClock` (software `perf_counter`); the shared timebase. |
-| [main.py](acqApp/main.py) | Full app: builds workers per session, wires sinks, records. Camera wiring in `_start_session`/`_start_recording`/`_pull_frames`. |
+| [voltage_cam/acquisition.py](../voltage_cam/acquisition.py) | `OrcaFireWorker` (real, DCAM) + `MockCameraWorker`. The capture thread. **Most camera logic lives here.** |
+| [voltage_cam/presets.py](../voltage_cam/presets.py) | `ResolutionPreset`, `AcqConfig`, the datasheet-derived `PRESETS`, binning/trigger options. |
+| [voltage_cam/settings.py](../voltage_cam/settings.py) | `SettingsPanel` — resolution/binning/exposure/trigger UI; `get_config()` → `AcqConfig`. |
+| [voltage_cam/_toy.py](../voltage_cam/_toy.py) | Standalone bring-up GUI. Opens the camera, drives the worker, previews, records. |
+| [voltage_cam/recording.py](../voltage_cam/recording.py) | `RecordingManager` — the **toy's** simple fixed-N HDF5 writer (separate from the main app's pipeline). |
+| [acq/worker.py](../acq/worker.py) | `PullWorker` base class: `get_latest`/`set_sink`/`stop` scaffolding all workers share. |
+| [acq/recorder.py](../acq/recorder.py) | `Recorder` — main-app writer thread draining the ring buffer (stamps the shared clock). |
+| [acq/ring_buffer.py](../acq/ring_buffer.py) | Bounded ring buffer (count + **byte** cap; sheds image frames, never scalar events). |
+| [acq/writer.py](../acq/writer.py) | `HDF5Writer` — main-app HDF5 sink (block-grown datasets, NaN-tail crash-safety). |
+| [acq/clock.py](../acq/clock.py) | `SessionClock` (software `perf_counter`); the shared timebase. |
+| [main.py](../main.py) | Full app: builds workers per session, wires sinks, records. Camera wiring in `_start_session`/`_start_recording`/`_pull_frames`. |
 
 ---
 
@@ -80,7 +80,7 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 stable id (`"4432x512"`) with a display label carrying the framerate. Frame rate
 is set almost entirely by **row count**; labels show the **USB3.1 Gen1 16-bit**
 rate (this app captures 16-bit). CoaXPress ≈ 7× higher. See the table in
-[presets.py](acqApp/voltage_cam/presets.py):
+[presets.py](../voltage_cam/presets.py):
 
 ```
  Y     CoaXPress   USB 16-bit   USB 8-bit
