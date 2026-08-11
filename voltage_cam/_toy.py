@@ -6,15 +6,28 @@ Voltage-cam toy — live image + ΔF/F trace + acquisition settings.
 """
 
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[1]))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[2]))
+
+# Diagnostic prints in the device modules use characters a non-UTF-8 console
+# cannot encode; unguarded, that raises inside the acquisition thread and
+# looks like a device failure. See acqApp/console.py.
+from acqApp.console import enable_safe_console
+enable_safe_console()
 
 # ── DCAM pre-init via pylablib (before Qt to avoid DLL path conflicts) ────────
+# Opening the ORCA is slow (~7 s), so open it ONCE here and reuse the handle for
+# every Start/Stop — otherwise each Start would re-pay that cost.
 _mock = "--mock" in sys.argv
+_cam = None
 if not _mock:
     try:
+        import time as _time
         from pylablib.devices import DCAM as _D
         if _D.get_cameras_number():
-            print("[OK] ORCA-Fire detected via DCAM")
+            print("[OK] ORCA-Fire detected via DCAM — opening (one-time, ~7 s)…")
+            _t0 = _time.perf_counter()
+            _cam = _D.DCAMCamera(idx=0)
+            print(f"[voltage_cam] camera opened in {_time.perf_counter() - _t0:.1f}s")
         else:
             print("No DCAM cameras found — mock")
             _mock = True
@@ -23,23 +36,27 @@ if not _mock:
         _mock = True
 # ─────────────────────────────────────────────────────────────────────────────
 
+import os
+os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
+
 from collections import deque
 
 import numpy as np
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QVBoxLayout, QWidget,
 )
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder="row-major")
 
-from voltage_cam.acquisition import OrcaFireWorker, MockCameraWorker
-from voltage_cam.recording   import RecordingManager
-from voltage_cam.settings    import SettingsPanel
+from acqApp.voltage_cam.acquisition import OrcaFireWorker, MockCameraWorker
+from acqApp.voltage_cam.recording   import RecordingManager
+from acqApp.voltage_cam.settings    import SettingsPanel
 
-HISTORY  = 400
-DS       = 4   # display downsample stride
+HISTORY      = 400
+DS           = 4    # display downsample stride
+LEVELS_EVERY = 15   # recompute contrast levels every N display ticks
 
 
 class ToyWindow(QMainWindow):
@@ -54,6 +71,10 @@ class ToyWindow(QMainWindow):
         self._x_buf  = deque(maxlen=HISTORY)
         self._df_buf = deque(maxlen=HISTORY)
         self._n      = 0
+        self._levels: tuple[float, float] | None = None
+        self._lvl_ctr = 0
+        self._achievable = 0.0      # camera-reported max fps for this config
+        self._rec_done = False      # set from the capture thread, cleared in _pull
 
         self._build()
         self._timer = QTimer(self)
@@ -82,11 +103,13 @@ class ToyWindow(QMainWindow):
         img_row.addWidget(gv)
         img_row_w = QWidget(); img_row_w.setLayout(img_row)
 
-        self._lbl_fps  = QLabel("FPS: —")
-        self._lbl_size = QLabel("Frame: —")
+        self._lbl_fps   = QLabel("FPS: —")
+        self._lbl_size  = QLabel("Frame: —")
+        self._lbl_limit = QLabel("Max: —")
         info_row = QHBoxLayout()
         info_row.addWidget(self._lbl_fps)
         info_row.addWidget(self._lbl_size)
+        info_row.addWidget(self._lbl_limit)
         info_w = QWidget(); info_w.setLayout(info_row)
 
         self._btn = QPushButton("Start")
@@ -138,11 +161,19 @@ class ToyWindow(QMainWindow):
             self._lbl_size.setText(
                 f"Frame: {cfg.frame_shape[1]}×{cfg.frame_shape[0]}"
             )
+            self._levels = None
+            self._lvl_ctr = 0
             if _mock:
                 self._worker = MockCameraWorker(cfg)
             else:
-                self._worker = OrcaFireWorker(0, cfg)
+                self._worker = OrcaFireWorker(config=cfg, cam=_cam)
             self._worker.fps_update.connect(self._on_fps)
+            if hasattr(self._worker, "timing_update"):
+                self._worker.timing_update.connect(self._on_timing)
+            if hasattr(self._worker, "drops_update"):
+                self._worker.drops_update.connect(self._on_drops)
+            if self._rec.is_recording:      # recording survives a Stop/Start
+                self._worker.set_sink(self._on_recorded)
             self._worker.start()
             self._timer.start()
             self._btn.setText("Stop")
@@ -154,9 +185,27 @@ class ToyWindow(QMainWindow):
             self._settings.set_running(False)
             self._btn.setText("Start")
             self._lbl_fps.setText("FPS: —")
+            # Clear the camera-reported figures — they describe the run that
+            # just ended, and a stale "max fps" reads as if it still applies.
+            self._achievable = 0.0
+            self._lbl_limit.setText("Max: —")
 
     def _on_fps(self, n: int, fps: float):
-        self._lbl_fps.setText(f"FPS: {fps:.1f}   frames: {n}")
+        txt = f"FPS: {fps:.1f}   frames: {n}"
+        if self._achievable:
+            txt += f"   (max {self._achievable:.1f})"
+        self._lbl_fps.setText(txt)
+
+    def _on_timing(self, fps: float, exposure_limited: bool):
+        """The camera's own answer for the running config — the number to beat."""
+        self._achievable = fps
+        note = " ⚠ exposure-limited" if exposure_limited else ""
+        self._lbl_limit.setText(f"Max: {fps:.1f} fps{note}")
+
+    def _on_drops(self, skipped: int, buffer_size: int):
+        """Camera-side frame loss: we are not draining its buffer fast enough."""
+        self._lbl_limit.setText(
+            f"⚠ DROPPED {skipped} frames (buffer {buffer_size})")
 
     def _on_exposure_changed(self, us: float):
         if self._worker is not None:
@@ -167,15 +216,24 @@ class ToyWindow(QMainWindow):
     def _pull(self):
         if not self._worker:
             return
+        # Recording finishes on the capture thread; finalise it here so the
+        # widget work stays on the GUI thread.
+        if self._rec_done:
+            self._rec_done = False
+            self._btn_rec.setChecked(False)
         f = self._worker.get_latest()
         if f is None:
             return
 
         self._n += 1
-        small = f[::DS, ::DS].astype("float32")
-        lo, hi = np.percentile(small, [1, 99])
-        self._img.setLevels([lo, hi])
-        self._img.setImage(small, autoLevels=False)
+        small = f[::DS, ::DS]                        # strided uint16 view (no copy)
+        # Contrast levels (the costly percentile) refresh a couple of times a
+        # second, not every frame.
+        if self._levels is None or self._lvl_ctr % LEVELS_EVERY == 0:
+            lo, hi = np.percentile(small, [1, 99])
+            self._levels = (float(lo), float(hi))
+        self._lvl_ctr += 1
+        self._img.setImage(small, autoLevels=False, levels=self._levels)
 
         mean = float(small.mean())
         df = (mean - self._f0) / self._f0 * 100 if self._f0 else 0.0
@@ -183,34 +241,54 @@ class ToyWindow(QMainWindow):
         self._df_buf.append(df)
         self._curve.setData(list(self._x_buf), list(self._df_buf))
 
-        if self._rec.is_recording:
-            done = self._rec.write(f)
-            if done:
-                self._rec.stop()
-                self._btn_rec.setChecked(False)
-
     def _set_f0(self):
         if self._img.image is not None:
             self._f0 = float(self._img.image.mean())
 
     # ── Recording ─────────────────────────────────────────────────────────────
 
+    def _on_recorded(self, frame):
+        """Worker sink — runs on the CAPTURE thread, so it only enqueues."""
+        if self._rec.write(frame):
+            self._rec_done = True
+
     def _toggle_rec(self, on: bool):
         if on:
             from pathlib import Path
             self._rec.start(Path("toy_output"), "vcam", n_frames=300)
+            self._rec_done = False
+            # Record from the worker sink (every frame), NOT from the ~30 Hz
+            # display pull, which would sample only 1 frame in N.
+            if self._worker is not None:
+                self._worker.set_sink(self._on_recorded)
             self._btn_rec.setText("Stop rec")
         else:
+            if self._worker is not None:
+                self._worker.set_sink(None)
+            dropped = self._rec.dropped      # read before stop() releases the buffer
             n = self._rec.stop()
             self._btn_rec.setText("Record")
-            print(f"Saved {n} frames")
+            print(f"Saved {n} frames"
+                  + (f" ({dropped} dropped — disk too slow)" if dropped else ""))
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def closeEvent(self, e):
         self._timer.stop()
         if self._worker:
+            self._worker.set_sink(None)      # stop feeding a closing recorder
             self._worker.stop()
+        # Close the recording first: the writer thread is a daemon and the HDF5
+        # file is only valid once stop() drains and closes it, so quitting
+        # mid-recording would otherwise abandon an open, truncated file.
+        if self._rec.is_recording:
+            n = self._rec.stop()
+            print(f"Saved {n} frames (closed on exit)")
+        if _cam is not None:                 # close the shared handle on exit
+            try:
+                _cam.close()
+            except Exception:
+                pass
         e.accept()
 
 
@@ -219,4 +297,4 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     w = ToyWindow()
     w.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

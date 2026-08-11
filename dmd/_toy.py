@@ -1,16 +1,22 @@
-"""
+r"""
 DMD toy — load a pattern, display it, watch frame counter.
 
   ..\..\.venv\Scripts\python.exe dmd\_toy.py
 """
 
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[1]))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[2]))
+
+# Diagnostic prints in the device modules use characters a non-UTF-8 console
+# cannot encode; unguarded, that raises inside the acquisition thread and
+# looks like a device failure. See acqApp/console.py.
+from acqApp.console import enable_safe_console
+enable_safe_console()
 
 from pathlib import Path
 import numpy as np
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QLabel,
     QMainWindow, QPushButton, QSpinBox, QDoubleSpinBox,
     QVBoxLayout, QWidget,
@@ -18,7 +24,7 @@ from PyQt5.QtWidgets import (
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder="row-major")
 
-from dmd.control import MockDmdController, DmdSettings
+from acqApp.dmd.control import MockDmdController, DmdSettings
 
 
 class ToyWindow(QMainWindow):
@@ -74,4 +80,4 @@ class ToyWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv); app.setStyle("Fusion")
     w = ToyWindow(); w.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

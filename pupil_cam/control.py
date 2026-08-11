@@ -9,7 +9,9 @@ from __future__ import annotations
 
 
 class LedController:
-    def __init__(self, chan: str = "Dev3/port0/line0"):
+    # NOTE: line1, distinct from the puffer's line0 — two DAQ tasks cannot
+    # own the same physical digital line.
+    def __init__(self, chan: str = "Dev3/port0/line1"):
         from nidaqmx import Task
         self._task = Task()
         self._task.do_channels.add_do_chan(chan)
@@ -41,7 +43,7 @@ class LedController:
 
 
 class MockLedController:
-    def __init__(self, chan: str = "Dev3/port0/line0"):
+    def __init__(self, chan: str = "Dev3/port0/line1"):
         self._state = False
 
     @property

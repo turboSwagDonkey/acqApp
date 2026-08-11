@@ -2,16 +2,21 @@
 #   python -m venv .venv
 #   .venv\Scripts\python -m pip install -r requirements.txt
 #
-# NOTE: two of these also need vendor RUNTIME DRIVERS installed separately
+# NOTE: three of these also need vendor RUNTIME DRIVERS installed separately
 # (they are NOT pip-installable):
 #   - nidaqmx  -> needs the NI-DAQmx runtime (same install NI MAX uses)
 #   - pylablib -> needs Hamamatsu DCAM-API runtime (ships with the camera driver)
+#   - pypylon  -> needs the Basler pylon runtime (ships with pylon Viewer)
 
 PyQt6
 pyqtgraph
 numpy
+scipy          # pupil_cam: connected components for the tracker's coarse seed
+               # (optional — tracking.py falls back to a plain centroid)
+pypylon        # pupil_cam: Basler USB3 camera (needs the pylon runtime too)
 tifffile
 h5py
 nidaqmx
 pylablib
+pyserial
 matplotlib

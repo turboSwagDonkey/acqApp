@@ -2,10 +2,29 @@
 Hamamatsu ORCA-Fire acquisition presets and configuration.
 Sensor: 4432 × 2368 pixels.
 
-All subarray positions/sizes are multiples of 4 as required by DCAM-API.
-Square center crops are included for ROI-based imaging.
+Resolution presets follow the ORCA-Fire datasheet (Standard scan, Area Readout
+mode). Readout is row-by-row at full width (X = 4432), so the frame rate is set
+almost entirely by the number of ROWS (Y): fewer rows → proportionally higher
+fps. Datasheet max readout rates (fps):
+
+    Y (rows)   CoaXPress   USB3.1 Gen1 16-bit   USB3.1 Gen1 8-bit
+      2368        115            15.7                 31.5
+      2304        118            16.2                 32.4
+      2048        132            18.2                 36.5
+      1024        264            36.4                 72.8
+       512        524            72.3                144
+       256       1020           143                 286
+       128       1980           279                 558
+         8      15200          2360                5260
+         4      19500          3960                7200
+
+Labels show the **USB3.1 Gen1 16-bit** rate (this app captures 16-bit); on
+CoaXPress the rates are ~7× higher. Actual fps = min(readout max, 1/exposure),
+and vertical binning multiplies the rate further. All ROI sizes/positions are
+multiples of 4 as required by DCAM-API.
 """
 from __future__ import annotations
+import math
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -33,25 +52,99 @@ class ResolutionPreset:
                 and self.hsize == SENSOR_W and self.vsize == SENSOR_H)
 
 
-def _centered(label: str, w: int, h: int) -> ResolutionPreset:
-    """Center a w×h ROI on the sensor. w and h must be multiples of 4."""
-    hpos = ((SENSOR_W - w) // 2 // 4) * 4
-    vpos = ((SENSOR_H - h) // 2 // 4) * 4
-    return ResolutionPreset(label, w, h, hpos, vpos)
+def _band(label: str, rows: int) -> ResolutionPreset:
+    """Full-width (X=4432) band of `rows` rows, centred vertically on the sensor
+    (vpos snapped to a multiple of 4)."""
+    vpos = ((SENSOR_H - rows) // 2 // 4) * 4
+    return ResolutionPreset(label, SENSOR_W, rows, 0, vpos)
 
 
-PRESETS: Dict[str, ResolutionPreset] = {
-    "Full Frame": ResolutionPreset(
-        "Full Frame (4432×2368)", SENSOR_W, SENSOR_H, 0, 0,
-    ),
-    "4096×2048":  _centered("4096×2048 (center wide)",   4096, 2048),
-    "2048×2048":  _centered("2048×2048 (center square)", 2048, 2048),
-    "1024×1024":  _centered("1024×1024 (center square)", 1024, 1024),
-    "512×512":    _centered("512×512 (center square)",   512,  512),
-}
+# (rows, USB3.1 Gen1 16-bit fps, CoaXPress fps) straight from the datasheet,
+# slowest → fastest.
+#
+# WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both a USB3 and a CoaXPress
+# interface. This rig is cabled over **CoaXPress** (Active Silicon FireBird
+# 4xCXP6-2PE8 grabber), so DEFAULT_LINK below is CXP and full frame should run
+# ~8.7 ms → 115 fps. (An earlier 2026-07-29 note measured 63.30 ms → 15.8 fps →
+# 316 MB/s, which is USB3 bandwidth — that was with USB enumerated; it does NOT
+# apply to a CoaXPress-only setup.) Nothing in software chooses the link; it is
+# whichever interface DCAM enumerates. This constant only picks which datasheet
+# column the pre-Start label shows.
+#
+# Treat these as ESTIMATES for UI/buffer sizing only. At run time the worker asks
+# the camera itself via get_frame_timings(), which is authoritative — and the
+# settings panel now shows that measured rate once a capture starts.
+_ROWS_FPS_BOTH: List[tuple[int, float, float]] = [
+    (2368, 15.7,  115.0),
+    (2304, 16.2,  118.0),
+    (2048, 18.2,  132.0),
+    (1024, 36.4,  264.0),
+    (512,  72.3,  524.0),
+    (256,  143.0, 1020.0),
+    (128,  279.0, 1980.0),
+    (8,    2360.0, 15200.0),
+    (4,    3960.0, 19500.0),
+]
+
+USB, CXP = "usb", "cxp"
+LINK_LABEL = {USB: "USB3", CXP: "CoaXPress"}
+
+# Which link the app assumes for its estimates. Only affects labels and the
+# initial buffer sizing; the measured value from the camera overrides it. This
+# rig is CoaXPress-cabled, so default to CXP.
+DEFAULT_LINK: str = CXP
+
+_ROWS_FPS: List[tuple[int, float]] = [(r, u) for r, u, _c in _ROWS_FPS_BOTH]
+_ROWS_FPS_CXP: List[tuple[int, float]] = [(r, c) for r, _u, c in _ROWS_FPS_BOTH]
+
+
+def _table(link: str) -> List[tuple[int, float]]:
+    return _ROWS_FPS_CXP if link == CXP else _ROWS_FPS
+
+
+def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
+    dims = f"{SENSOR_W}×{rows}"
+    tag = "Full Frame " + f"({dims})" if rows == SENSOR_H else dims
+    # Show both, so the label never silently lies about which link is live.
+    return f"{tag} · {fps_usb:g} USB / {fps_cxp:g} CXP fps"
+
+
+PRESETS: Dict[str, ResolutionPreset] = {}
+for _rows, _u, _c in _ROWS_FPS_BOTH:
+    _key = f"{SENSOR_W}x{_rows}"
+    _lab = _label(_rows, _u, _c)
+    if _rows == SENSOR_H:
+        PRESETS[_key] = ResolutionPreset(_lab, SENSOR_W, _rows, 0, 0)
+    else:
+        PRESETS[_key] = _band(_lab, _rows)
 
 PRESET_KEYS: List[str] = list(PRESETS.keys())
-DEFAULT_PRESET: str = "Full Frame"
+DEFAULT_PRESET: str = f"{SENSOR_W}x{SENSOR_H}"    # full frame
+
+
+def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
+    """
+    Datasheet 16-bit readout ceiling for an ROI of `rows` rows on `link`.
+
+    Readout is row-by-row, so fps ≈ const / rows over most of the range
+    (2368·15.7 ≈ 1024·36.4 ≈ 512·72.3 ≈ 37 000); below ~128 rows fixed per-frame
+    overhead dominates and the datasheet numbers fall off that line, so we
+    interpolate the table rather than extrapolate the 1/rows law.
+
+    Vertical binning reads out `rows/binning` lines, so it scales the ceiling
+    the same way a smaller ROI does.
+    """
+    eff = max(1.0, rows / max(binning, 1))
+    tbl = sorted(_table(link))                    # ascending rows
+    if eff <= tbl[0][0]:
+        return tbl[0][1]
+    if eff >= tbl[-1][0]:
+        return tbl[-1][1]
+    for (r0, f0), (r1, f1) in zip(tbl, tbl[1:]):  # log-log interpolation
+        if r0 <= eff <= r1:
+            w = (math.log(eff) - math.log(r0)) / (math.log(r1) - math.log(r0))
+            return math.exp(math.log(f0) + w * (math.log(f1) - math.log(f0)))
+    return tbl[-1][1]
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1
@@ -67,6 +160,9 @@ class AcqConfig:
     binning:      int   = DEFAULT_BINNING
     exposure_us:  float = 10_000.0      # µs; 10 ms default for voltage imaging
     trigger_mode: str   = DEFAULT_TRIGGER
+    # Physical link used for the datasheet ESTIMATE only. The worker replaces
+    # this estimate with the camera's own get_frame_timings() at start.
+    link:         str   = DEFAULT_LINK
 
     @property
     def preset(self) -> ResolutionPreset:
@@ -77,3 +173,38 @@ class AcqConfig:
         """Output shape (rows, cols) after binning."""
         rows, cols = self.preset.shape
         return (rows // self.binning, cols // self.binning)
+
+    @property
+    def frame_bytes(self) -> int:
+        """Bytes on the wire per frame (16-bit)."""
+        h, w = self.frame_shape
+        return max(int(h) * int(w) * 2, 1)
+
+    # ── Frame-rate budget ────────────────────────────────────────────────────
+    # Actual fps = min(sensor readout ceiling, 1/exposure). Both limits are
+    # surfaced so the UI can say *which* one is binding — an exposure longer
+    # than the readout period silently throws away the preset's speed.
+
+    @property
+    def readout_fps(self) -> float:
+        """Sensor/link ceiling for this ROI + binning (datasheet estimate)."""
+        return readout_fps(self.preset.vsize, self.binning, self.link)
+
+    @property
+    def exposure_fps(self) -> float:
+        """Ceiling imposed by the exposure time alone."""
+        return 1e6 / max(self.exposure_us, 1e-6)
+
+    @property
+    def expected_fps(self) -> float:
+        return min(self.readout_fps, self.exposure_fps)
+
+    @property
+    def exposure_limited(self) -> bool:
+        """True when exposure — not readout — is what caps the frame rate."""
+        return self.exposure_fps < self.readout_fps
+
+    @property
+    def max_exposure_us(self) -> float:
+        """Longest exposure that still reaches the readout ceiling."""
+        return 1e6 / max(self.readout_fps, 1e-9)

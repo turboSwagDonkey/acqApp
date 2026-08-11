@@ -21,6 +21,18 @@ class AbstractClock(ABC):
         ...
 
     @abstractmethod
+    def at(self, mono: float) -> float:
+        """Seconds since session start for a `time.perf_counter()` reading.
+
+        Devices that carry their own hardware timestamps (the camera, and later
+        the DAQ) know when a sample was really acquired, which is not when it
+        reached us. They convert that to the perf_counter domain and pass it
+        here, so their samples land on the shared timebase at their true
+        acquisition time rather than at their arrival time.
+        """
+        ...
+
+    @abstractmethod
     def stop(self) -> None: ...
 
 
@@ -34,9 +46,12 @@ class SessionClock(AbstractClock):
         self._origin = time.perf_counter()
 
     def now(self) -> float:
+        return self.at(time.perf_counter())
+
+    def at(self, mono: float) -> float:
         if self._origin is None:
             raise RuntimeError("SessionClock.start() not called")
-        return time.perf_counter() - self._origin
+        return mono - self._origin
 
     def stop(self) -> None:
         self._origin = None

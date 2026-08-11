@@ -2,7 +2,29 @@
 
 Read this first if you're a fresh Claude session (web or Claude Code on the rig)
 or returning after a break. It captures decisions and state that aren't obvious
-from the code alone. Last updated: 2026-06-22.
+from the code alone. Last updated: 2026-07-27.
+
+## Update 2026-07-27 — main is wired up
+
+The app grew past the original 3-device plan into a 5-subsystem suite
+(voltage_cam, pupil_cam, wheel, puffer, dmd) — see `README.md`, which is now the
+authoritative overview. Key changes since the last handoff:
+
+- **Standardized on PyQt6.** An earlier split (app on PyQt5, skeleton on PyQt6)
+  is gone. `main` forces `PYQTGRAPH_QT_LIB=PyQt6`.
+- **`main.py` is fully wired:** Start/Stop builds+runs the workers, Record
+  streams to disk. Previously the app opened to a dead static window.
+- **One shared `SessionClock`** across all devices (owned by `SyncController`,
+  shared with the `Recorder`). This is the "software timestamps" decision below,
+  now actually implemented end to end.
+- **Single-file HDF5 recording** via `acq/Recorder` + `HDF5Writer` — every frame
+  is kept (the old camera path silently dropped all but the newest frame).
+- Dead PyQt6 skeleton (`app/`, `acq/camera_worker.py`) deleted; its good infra
+  (`acq/clock|ring_buffer|recorder|writer`) is what the real app now uses.
+- Fixed a DAQ line clash: puffer stays on `port0/line0`, pupil LED moved to
+  `line1` (two tasks can't own one physical line).
+- Fixed a double camera-open: `main` only probes DCAM at import (open→info→
+  close); the worker owns the streaming handle.
 
 ## What this project is
 
@@ -48,13 +70,16 @@ workers for hardware and a JSON dataclass config. We extend that pattern.
 
 | Phase | State |
 |-------|-------|
-| 0 — hardware de-risk | encoder ✅ working (analog ai2). Camera throughput ❌ NOT yet run. |
-| 1 — skeleton (clock/recorder/dock + DMD copy) | not started |
-| 2 — camera streaming + preview + HDF5 | not started |
-| 3 — encoder streaming + plot | not started |
-| 4 — unified session start/stop + sync + metadata | not started |
-| 5 — closed-loop (DMD from encoder) | not started |
+| 0 — hardware de-risk | encoder ✅ (analog ai2). Camera throughput ❌ still NOT run on the rig. |
+| 1 — skeleton (clock/recorder) | ✅ done — `acq/` infra in use by main |
+| 2 — camera streaming + preview + HDF5 | ✅ done (mock-verified); needs rig validation |
+| 3 — encoder streaming + plot | ✅ done (mock-verified) |
+| 4 — unified session start/stop + shared clock + metadata | ✅ done (mock-verified) |
+| 5 — closed-loop (DMD/puffer from encoder) | not started (trigger bus exists) |
 | 6 — hardware sync upgrade (DaqClock, triggered Orca) | future |
+
+**Everything above is verified against the `--mock` workers only.** No real
+hardware has run this code yet — the immediate next step is unchanged.
 
 ## THE immediate next step
 

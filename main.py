@@ -1,222 +1,728 @@
 """
 In vivo acquisition suite — top-level entry point.
 
-Wires together voltage_cam, pupil_cam, wheel, puffer, and the sync
-controller.  Each subsystem lives in its own subpackage; this file only
-does orchestration.
+Wires together voltage_cam, pupil_cam, wheel, puffer, stage and dmd around ONE
+shared SessionClock: every device timestamps its data against the same origin,
+and a single Recorder streams all streams into one HDF5 session file (gap-free,
+on a common timebase).
 
-Run:
-  .venv\Scripts\python.exe main.py
-  .venv\Scripts\python.exe main.py --mock
+This file owns only what is session-wide — the clock, the sync/trigger bus, the
+recorder, the save destination, the docks and the theme. Everything specific to
+one instrument lives in a `ModuleAdapter` in `modules.py`, and this window just
+iterates over the adapters for the modules the user loaded.
+
+Run it any of these ways — the bootstrap below makes them all work:
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py          (run the file)
+  python acqApp\\main.py                                       (any interpreter)
+  python -m acqApp.main --mock                                 (as a module)
+
+Escape hatches (env vars): ACQAPP_NO_REEXEC=1 skips the venv re-exec,
+ACQAPP_NO_INSTALL=1 skips auto-installing requirements.
 """
 
 from __future__ import annotations
 import argparse
+import faulthandler
+import os
 import sys
+from pathlib import Path
+
+# Native crashes in the camera/USB drivers (a segfault or abort deep in the DCAM
+# SDK) can't be caught by Python try/except — the process just dies with no
+# traceback. faulthandler dumps the C-level + Python stack to stderr on a fatal
+# signal, so those otherwise-silent crashes become diagnosable.
+faulthandler.enable()
+
+
+# ── Environment bootstrap (must run before any third-party import) ────────────
+def _bootstrap() -> None:
+    """
+    Make `main.py` robust to how/where it was launched, WITHOUT ever touching an
+    environment other than the project's own `acqApp/.venv`:
+      1. Put the acqApp parent dir on sys.path so `import acqApp` resolves when
+         the file is run directly (not just via `-m acqApp.main`), then make the
+         console safe — both before anything is printed.
+      2. If we're not running the project venv, create it (if missing) and
+         re-exec into it — so the wrong interpreter is never used.
+      3. Install requirements.txt if a core dependency is missing — but ONLY when
+         we're inside the venv, so pip never installs into an unrelated Python.
+    """
+    here = Path(__file__).resolve().parent            # …/acqApp
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    exe = "python.exe" if os.name == "nt" else "python"
+    venv_dir = here / ".venv"
+    venv_py = venv_dir / scripts / exe
+
+    # (1) make the package importable, then harden stdout. This comes FIRST so
+    # that every print below — and every print in every device module — can use
+    # the arrows and symbols without risking UnicodeEncodeError on a non-UTF-8
+    # console (see acqApp/console.py: that exception kills device threads).
+    # console.py imports nothing but `sys`, so this is safe under any
+    # interpreter, before the venv re-exec has happened.
+    parent = str(here.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    from acqApp.console import enable_safe_console
+    enable_safe_console()
+
+    try:
+        in_venv = Path(sys.executable).resolve() == venv_py.resolve()
+    except OSError:
+        in_venv = False
+
+    # (2) get into the project venv, creating it first if it doesn't exist
+    if not in_venv and not os.environ.get("ACQAPP_NO_REEXEC"):
+        if not venv_py.exists():
+            print(f"[bootstrap] creating project venv at {venv_dir} …")
+            import subprocess
+            try:
+                subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+            except (subprocess.CalledProcessError, OSError) as e:
+                sys.exit(f"[bootstrap] could not create venv ({e}); create it "
+                         f"manually:\n    python -m venv {venv_dir}")
+        os.environ["ACQAPP_NO_REEXEC"] = "1"          # guard against re-exec loops
+        print(f"[bootstrap] launching under {venv_py}")
+        os.execv(str(venv_py), [str(venv_py), str(here / "main.py"), *sys.argv[1:]])
+
+    # (3) install dependencies if a core one is missing — venv only
+    try:
+        import PyQt6  # noqa: F401
+    except ImportError:
+        if not in_venv:
+            sys.exit("[bootstrap] dependencies are missing and we're not in the "
+                     "project venv. Remove ACQAPP_NO_REEXEC so it can re-exec "
+                     "into acqApp/.venv, or install deps into your environment "
+                     "yourself — refusing to pip-install into an unknown Python.")
+        if os.environ.get("ACQAPP_NO_INSTALL"):
+            raise
+        import subprocess
+        req = here / "requirements.txt"
+        print(f"[bootstrap] installing dependencies into the venv from {req} …")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(req)])
+
+
+_bootstrap()
+
+from datetime import datetime
 
 # ── Hardware pre-init (must precede any Qt / scipy import) ────────────────────
-_cam = _cam_info = None
-_mock = "--mock" in sys.argv
+# Open the camera ONCE here and KEEP the handle: the acquisition worker reuses it
+# instead of opening its own. Re-opening a DCAM device that was just closed is a
+# known way to crash the driver natively (segfault, no Python traceback), and a
+# fresh open also costs ~7 s. The handle lives for the whole app and is closed in
+# MainWindow.closeEvent.
+_cam_info = None
+_cam_handle = None
+_mock = "--mock" in sys.argv     # start in Emulate mode; real hardware otherwise
 if not _mock:
     try:
         from pylablib.devices import DCAM as _DCAM
         if _DCAM.get_cameras_number() > 0:
-            _cam      = _DCAM.DCAMCamera(idx=0)
-            _cam_info = _cam.get_device_info()
+            _cam_handle = _DCAM.DCAMCamera(idx=0)
+            _cam_info = _cam_handle.get_device_info()
             print(f"Voltage cam: {_cam_info}")
         else:
-            print("No DCAM camera — mock mode")
-            _mock = True
+            # No silent fallback to fake data — real is the default. Use the
+            # Emulate toggle (or --mock) to run without hardware on purpose.
+            print("No DCAM camera detected — use Emulate to run without hardware")
     except Exception as _e:
-        print(f"Camera init failed ({_e}) — mock mode")
-        _mock = True
+        print(f"Camera detect failed ({_e}) — use Emulate to run without hardware")
 # ─────────────────────────────────────────────────────────────────────────────
 
-from PyQt5.QtCore  import Qt, QTimer
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QSplitter, QTabWidget,
-    QVBoxLayout, QWidget, QStatusBar,
+# Force pyqtgraph onto PyQt6 (both bindings may be installed in the venv).
+os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
+
+from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtWidgets import (
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QGridLayout,
+    QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QStatusBar,
+    QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
 import pyqtgraph as pg
 
-from acqApp import style
+from acqApp import config, modules, style, probe
+from acqApp.saving import SaveConfig, SavePanel
 from acqApp.sync import SyncController
-
-from acqApp.voltage_cam.acquisition import CameraWorker, MockCameraWorker
-from acqApp.voltage_cam.settings    import CameraSettings, SettingsPanel as CamSettingsPanel
-from acqApp.voltage_cam.recording   import RecordingManager
-
-from acqApp.wheel.acquisition import EncoderWorker, MockEncoderWorker
-from acqApp.wheel.settings    import EncoderSettings, SettingsPanel as WheelSettingsPanel
-from acqApp.wheel.recording   import CSVWriter
-
-from acqApp.pupil_cam.acquisition import MockPupilCameraWorker
-from acqApp.puffer.control        import MockPufferController, SettingsPanel as PufferPanel
+from acqApp.acq.clock import SessionClock
+from acqApp.acq.recorder import Recorder
+from acqApp.acq.ring_buffer import RingBuffer
+from acqApp.acq.writer import HDF5Writer
 
 pg.setConfigOptions(imageAxisOrder="row-major")
 
+RING_FRAMES  = 512          # recording ring-buffer item cap (scalar streams)
+RING_BYTES   = 512 << 20    # …and a 512 MB payload cap so full frames can't OOM
+
+
+def _sample_nbytes(item) -> int:
+    """Payload bytes of a Recorder ring item (stream, ts, data); 0 for scalars."""
+    return getattr(item[2], "nbytes", 0)
+
+
+class ModuleSelectDialog(QDialog):
+    """Startup popup: a checkbox per subsystem, pre-checked from last use."""
+
+    def __init__(self, enabled: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select modules to load")
+        self.setMinimumWidth(300)
+
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel("Load these instruments this session:"))
+
+        self._boxes: dict[str, QCheckBox] = {}
+        for key, label in config.MODULES.items():
+            cb = QCheckBox(label)
+            cb.setChecked(key in enabled)
+            cb.toggled.connect(self._update_ok)
+            self._boxes[key] = cb
+            root.addWidget(cb)
+
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        root.addWidget(self._buttons)
+        self._update_ok()
+
+    def _update_ok(self) -> None:
+        # Require at least one module to enable OK.
+        ok = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setEnabled(any(cb.isChecked() for cb in self._boxes.values()))
+
+    def selected(self) -> list[str]:
+        return [k for k, cb in self._boxes.items() if cb.isChecked()]
+
+
+class ConnectionMonitor(QDialog):
+    """Modeless panel showing whether each loaded device is detected.
+
+    Uses probe.py's enumeration-only checks, so Refresh is safe to hit at any
+    time — including mid-session — without disturbing a running worker."""
+
+    _DOT = {"ok": "#2e7d32", "missing": "#c62828", "error": "#e0860a", "stub": "#8a8a8a"}
+    _WORD = {"ok": "connected", "missing": "not found", "error": "error", "stub": "stub"}
+
+    def __init__(self, module_keys: list[str], probe_kwargs=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Device connections")
+        self.setMinimumWidth(420)
+        self._modules = module_keys
+        # A callable, not a dict: Refresh then picks up a port edited in the
+        # Stage tab after this window was opened.
+        self._probe_kwargs = probe_kwargs or (lambda: {})
+        self._rows: dict[str, tuple[QLabel, QLabel]] = {}
+
+        root = QVBoxLayout(self)
+        grid = QGridLayout()
+        grid.setColumnStretch(2, 1)
+        grid.setHorizontalSpacing(12)
+        for r, key in enumerate(module_keys):
+            name = QLabel(config.MODULES.get(key, key))
+            name.setStyleSheet(f"color:{style.HEX.get(key, '#ccc')}; font-weight:bold;")
+            status = QLabel("…")
+            detail = QLabel("")
+            detail.setStyleSheet("color:#9aa0a6;")
+            detail.setWordWrap(True)
+            grid.addWidget(name,   r, 0)
+            grid.addWidget(status, r, 1)
+            grid.addWidget(detail, r, 2)
+            self._rows[key] = (status, detail)
+        root.addLayout(grid)
+
+        buttons = QHBoxLayout()
+        self._btn_refresh = QPushButton("Refresh")
+        self._btn_refresh.clicked.connect(self.refresh)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        buttons.addStretch()
+        buttons.addWidget(self._btn_refresh)
+        buttons.addWidget(btn_close)
+        root.addLayout(buttons)
+
+        self.refresh()
+
+    def refresh(self) -> None:
+        results = probe.probe_all(self._modules, **self._probe_kwargs())
+        for key, (status, detail) in self._rows.items():
+            res = results[key]
+            status.setText(f"● {self._WORD.get(res.status, res.status)}")
+            status.setStyleSheet(f"color:{self._DOT.get(res.status, '#ccc')}; "
+                                 "font-weight:bold;")
+            detail.setText(res.detail)
+
 
 class MainWindow(QMainWindow):
+    """Session-wide shell: clock, triggers, recorder, save target, docks, theme.
 
-    def __init__(self, cam=None, cam_info=None, mock=False):
+    Per-instrument behaviour is NOT here — each loaded subsystem is a
+    `modules.ModuleAdapter` that owns its own panel, worker, display tick,
+    recording sink and metadata. This window only iterates over them, which is
+    why adding an instrument is a new adapter class rather than a new branch in
+    four different methods.
+    """
+
+    def __init__(self, cam_info=None, mock=False, enabled: set[str] | None = None,
+                 cam_handle=None):
         super().__init__()
-        self._cam  = cam
-        self._mock = mock
+        # Emulate mode = simulated signals for dev/testing; OFF by default so the
+        # app talks to real hardware. Togglable at runtime (only between sessions).
+        self._emulate = mock
+        self._enabled = enabled if enabled is not None else set(config.MODULES)
+        self._cam_info = cam_info
+        # Camera handle opened once at startup and reused by every session's
+        # worker (see the pre-init note). None in emulate/no-camera runs.
+        self._cam_handle = cam_handle
 
-        # ── Subsystem workers (created on demand in start_all) ──────────────
-        self._cam_worker:   CameraWorker | MockCameraWorker | None = None
-        self._wheel_worker: EncoderWorker | MockEncoderWorker | None = None
-        self._pupil_worker: MockPupilCameraWorker | None = None
-        self._puffer       = MockPufferController()
-
-        # ── Data managers ───────────────────────────────────────────────────
-        self._cam_rec   = RecordingManager()
-        self._wheel_rec = CSVWriter()
-
-        # ── Sync controller ─────────────────────────────────────────────────
-        self._sync = SyncController(tick_ms=100)
+        # ── The single session-wide clock, shared by sync + recorder + devices ──
+        self._clock = SessionClock()
+        self._sync  = SyncController(self._clock, tick_ms=100)
         self._sync.tick.connect(self._on_tick)
         self._sync.trigger_fired.connect(self._on_trigger)
 
+        self._recorder: Recorder | None = None
+        self._save_panel: SavePanel | None = None
+        self._devices_dialog: ConnectionMonitor | None = None
+        self._pg_views: list = []      # pyqtgraph views to recolour on theme change
+
+        # One adapter per loaded instrument, in config.MODULES display order.
+        self._modules = modules.build_adapters(self, self._enabled)
         self._build_ui()
-        if cam_info:
-            self.setWindowTitle(
-                f"Acquisition suite  —  {cam_info.serial_number}"
-            )
+        # Controllers come AFTER the UI: they are configured from their own
+        # panels (the puffer's DO line and default duration, for one), so those
+        # panels have to exist before the device is opened.
+        self._build_controllers()
+        self._apply_title()
+
         self._disp_timer = QTimer(self)
         self._disp_timer.setInterval(33)   # ~30 Hz display
-        self._disp_timer.timeout.connect(self._pull_frames)
+        self._disp_timer.timeout.connect(self._display_tick)
 
-    # ── UI ──────────────────────────────────────────────────────────────────
+    # ── Services the module adapters use ──────────────────────────────────────
+
+    @property
+    def sync(self) -> SyncController:
+        return self._sync
+
+    @property
+    def cam_handle(self):
+        """The pre-opened DCAM handle, so no worker ever re-opens the device."""
+        return self._cam_handle
+
+    def status(self, message: str) -> None:
+        self.statusBar().showMessage(message)
+
+    def register_pg_view(self, view) -> None:
+        """Track a pyqtgraph view so the theme toggle can recolour it."""
+        self._pg_views.append(view)
+
+    def set_expected_rate(self, mbps: float) -> None:
+        """Feed the acquisition data rate to the Save tab's capacity estimate."""
+        if self._save_panel is not None:
+            self._save_panel.set_expected_rate(mbps)
+
+    def add_dock(self, title: str, widget: QWidget, area: "Qt.DockWidgetArea",
+                 accent: str = "sync") -> QDockWidget:
+        return self._make_dock(title, widget, area, accent)
+
+    def on_worker_error(self, msg: str) -> None:
+        # A device thread raised. Without this the exception would escape
+        # QThread.run() and PyQt6 would abort the whole process.
+        sender = self.sender()
+        name = type(sender).__name__ if sender is not None else "device"
+        self.status(f"{name}: {msg}")
+        print(f"[worker error] {name}: {msg}")
+
+    # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Acquisition suite")
         self.resize(1600, 900)
-        self.setStyleSheet(style.APP_QSS)
+        # (the app-wide stylesheet is applied once on the QApplication in main())
+        # Let docks be tabbed together and nested, so the user can drag panels
+        # into any arrangement.
+        self.setDockNestingEnabled(True)
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(4, 4, 4, 4)
+        self._build_central()
+        self._build_settings_dock()
+        self._build_plots_dock()
+        for m in self._modules:          # extra docks (e.g. the pupil video box)
+            m.build_views()
 
-        splitter = QSplitter(Qt.Horizontal)
+        # Initial widths ≈ the classic 280 / … / 420 proportions; the user can
+        # drag from here and the layout is remembered across runs.
+        self.resizeDocks([self._settings_dock, self._plots_dock], [280, 420],
+                         Qt.Orientation.Horizontal)
 
-        # Left: settings tabs
-        settings_tabs = QTabWidget()
-        settings_tabs.setFixedWidth(280)
-        self._cam_settings_panel = CamSettingsPanel()
-        self._cam_settings_panel.exposure_changed.connect(self._on_exposure)
-        self._cam_settings_panel.binning_changed.connect(self._on_binning)
-        settings_tabs.addTab(self._cam_settings_panel, "Voltage cam")
+        self._build_status_bar()
+        self._build_sidebar()
 
-        self._wheel_settings_panel = WheelSettingsPanel()
-        settings_tabs.addTab(self._wheel_settings_panel, "Wheel")
+        self._restore_layout()
+        # Start collapsed regardless of any saved layout — it opens on click.
+        self._settings_dock.hide()
 
-        self._puffer_panel = PufferPanel()
-        self._puffer_panel.test_requested.connect(lambda: self._puffer.fire())
-        settings_tabs.addTab(self._puffer_panel, "Puffer")
+    def _build_central(self) -> None:
+        """The centre pane belongs to whichever module claims it (the primary
+        camera); a placeholder stands in when that module isn't loaded."""
+        owner = view = None
+        for m in self._modules:
+            w = m.central_widget()
+            if w is not None and view is None:
+                owner, view = m, w
+        if view is None:
+            placeholder = QLabel("Voltage camera not loaded")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet("color:#888; font-style:italic;")
+            self.setCentralWidget(placeholder)
+            return
 
-        splitter.addWidget(settings_tabs)
+        header = QLabel(owner.central_title)
+        header.setStyleSheet(
+            f"background:{style.HEX[owner.key]}; color:white; "
+            "font-weight:bold; padding:3px 8px;")
+        wrap = QWidget()
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(header)
+        lay.addWidget(view)
+        self.setCentralWidget(wrap)
 
-        # Centre: voltage cam image
-        self._img_item  = pg.ImageItem()
-        self._cam_hist  = pg.HistogramLUTWidget()
-        self._cam_hist.setImageItem(self._img_item)
-        self._cam_hist.setFixedWidth(86)
-        self._cam_gv   = pg.GraphicsView()
-        self._cam_vb   = pg.ViewBox(lockAspect=True, invertY=True)
-        self._cam_gv.setCentralItem(self._cam_vb)
-        self._cam_vb.addItem(self._img_item)
+    def _build_settings_dock(self) -> None:
+        tabs = QTabWidget()
+        tabs.setMovable(True)                      # tabs reorderable by drag
 
-        cam_w = QWidget()
-        cam_h = __import__("PyQt5.QtWidgets", fromlist=["QHBoxLayout"]).QHBoxLayout(cam_w)
-        cam_h.setContentsMargins(0, 0, 0, 0)
-        cam_h.addWidget(self._cam_hist)
-        cam_h.addWidget(self._cam_gv)
-        splitter.addWidget(cam_w)
+        def add_tab(panel: QWidget, label: str, key: str) -> None:
+            """Add a settings tab wearing its subsystem accent (tab + group box)."""
+            idx = tabs.addTab(panel, label)
+            tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
+            panel.setStyleSheet(style.accent_panel(key))
 
-        # Right: signal plots
-        plot_tabs = QTabWidget()
-        self._pw_df = pg.PlotWidget(title="ΔF/F")
-        self._pw_df.setLabel("left", "ΔF/F", units="%")
-        self._pw_df.setLabel("bottom", "Frame")
-        self._pw_df.showGrid(x=True, y=True, alpha=0.3)
-        self._curve_df = self._pw_df.plot(pen=pg.mkPen(style.HEX["voltage_cam"], width=1.5))
-        plot_tabs.addTab(self._pw_df, "ΔF/F")
+        # Save destination is session-wide (not tied to a module), and it is the
+        # first thing to get right before recording — so it leads the tabs.
+        self._save_panel = SavePanel(config.load_dataclass(SaveConfig, "saving"))
+        self._save_panel.settings_changed.connect(self._save_save_settings)
+        add_tab(self._save_panel, "Save", "saving")
 
-        self._pw_wheel = pg.PlotWidget(title="Wheel velocity")
-        self._pw_wheel.setLabel("left", "Voltage", units="V")
-        self._pw_wheel.setLabel("bottom", "Sample")
-        self._pw_wheel.showGrid(x=True, y=True, alpha=0.3)
-        self._curve_wheel = self._pw_wheel.plot(pen=pg.mkPen(style.HEX["wheel"], width=1.5))
-        plot_tabs.addTab(self._pw_wheel, "Wheel")
+        for m in self._modules:
+            panel = m.build_panel()
+            if panel is not None:
+                add_tab(panel, m.tab_label, m.key)
 
-        self._pw_pupil = pg.PlotWidget(title="Pupil radius")
-        self._pw_pupil.setLabel("left", "Radius", units="px")
-        self._pw_pupil.setLabel("bottom", "Frame")
-        self._pw_pupil.showGrid(x=True, y=True, alpha=0.3)
-        self._curve_pupil = self._pw_pupil.plot(pen=pg.mkPen(style.HEX["pupil_cam"], width=1.5))
-        plot_tabs.addTab(self._pw_pupil, "Pupil")
+        # Wrap in a scroll area so the dock can be dragged narrower than the
+        # widest panel (content scrolls instead of pinning a minimum width).
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(tabs)
+        scroll.setMinimumWidth(80)
+        self._settings_dock = self._make_dock("Settings", scroll,
+                                              Qt.DockWidgetArea.LeftDockWidgetArea)
 
-        splitter.addWidget(plot_tabs)
-        splitter.setSizes([280, 900, 420])
-        splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter)
+    def _build_plots_dock(self) -> None:
+        tabs = QTabWidget()
+        tabs.setMovable(True)
+        for m in self._modules:
+            pw = m.build_plot()
+            if pw is None:
+                continue
+            idx = tabs.addTab(pw, m.plot_label)
+            tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[m.key]))
+            self.register_pg_view(pw)
+        self._plots_dock = self._make_dock("Signals", tabs,
+                                           Qt.DockWidgetArea.RightDockWidgetArea)
+
+    def _build_status_bar(self) -> None:
+        # Emulate: simulated signals for testing (off = real hardware).
+        self._btn_emulate = QPushButton("Emulate")
+        self._btn_emulate.setCheckable(True)
+        self._btn_emulate.setChecked(self._emulate)
+        self._btn_emulate.setStyleSheet(style.toggle_btn("wheel"))
+        self._btn_emulate.setToolTip("Use simulated signals instead of hardware")
+        self._btn_emulate.toggled.connect(self._on_emulate_toggled)
+
+        # Live view: run all hardware + preview WITHOUT saving.
+        self._btn_run = QPushButton("Live view")
+        self._btn_run.setCheckable(True)
+        self._btn_run.setStyleSheet(style.toggle_btn("sync"))
+        self._btn_run.setToolTip("Show live signals from all devices (not saved)")
+        self._btn_run.toggled.connect(self._on_run_toggled)
+
+        # Record: live view + save to HDF5 (auto-starts live view if needed).
+        self._btn_rec = QPushButton("Record")
+        self._btn_rec.setCheckable(True)
+        self._btn_rec.setStyleSheet(style.toggle_btn("puffer"))
+        self._btn_rec.setToolTip("Live view and save every stream to disk")
+        self._btn_rec.toggled.connect(self._on_record_toggled)
 
         sb = QStatusBar()
         self.setStatusBar(sb)
+        sb.addPermanentWidget(self._btn_emulate)
+        sb.addPermanentWidget(self._btn_run)
+        sb.addPermanentWidget(self._btn_rec)
         sb.showMessage("Ready")
 
-    # ── Sync callbacks ──────────────────────────────────────────────────────
+    def _build_sidebar(self) -> None:
+        """Left side-bar: a 'Settings' tab that pops the settings dock up, plus
+        the theme toggle and the device monitor. The dock is collapsed by
+        default; clicking the tab toggles it open/shut."""
+        self._sidebar = QToolBar("Sidebar")
+        self._sidebar.setObjectName("sidebar")
+        self._sidebar.setMovable(False)
+        self._sidebar.setOrientation(Qt.Orientation.Vertical)
+        self._sidebar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
+
+        # Own checkable action ↔ dock visibility (kept in sync both ways, so the
+        # dock's close button also un-checks the tab).
+        self._settings_action = QAction("⚙ Settings", self)
+        self._settings_action.setCheckable(True)
+        self._settings_action.toggled.connect(self._settings_dock.setVisible)
+        self._settings_dock.visibilityChanged.connect(self._settings_action.setChecked)
+        self._sidebar.addAction(self._settings_action)
+
+        # Dark/light theme toggle (persisted to config; default dark).
+        self._theme_action = QAction("☾ Theme", self)
+        self._theme_action.setCheckable(True)
+        self._theme_action.setChecked(config.get_theme() == "dark")
+        self._theme_action.setToolTip("Toggle dark / light theme")
+        self._theme_action.toggled.connect(self._on_theme_toggled)
+        self._sidebar.addAction(self._theme_action)
+
+        # Device connection monitor (probe-based; safe to open any time).
+        self._devices_action = QAction("🔌 Devices", self)
+        self._devices_action.setToolTip("Check which devices are detected")
+        self._devices_action.triggered.connect(self._show_devices)
+        self._sidebar.addAction(self._devices_action)
+
+    def _make_dock(self, title: str, widget: QWidget,
+                   area: "Qt.DockWidgetArea", accent: str = "sync") -> QDockWidget:
+        dock = QDockWidget(title, self)
+        dock.setObjectName(f"dock_{title}")
+        dock.setWidget(widget)
+        dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        dock.setStyleSheet(style.dock_accent(accent))
+        self.addDockWidget(area, dock)
+        return dock
+
+    # ── Dock layout persistence ─────────────────────────────────────────────────
+
+    def _restore_layout(self) -> None:
+        state = QSettings("acqApp", "acqApp").value("dockState")
+        if state is not None:
+            self.restoreState(state)
+
+    def _save_layout(self) -> None:
+        QSettings("acqApp", "acqApp").setValue("dockState", self.saveState())
+
+    # ── Theme ───────────────────────────────────────────────────────────────────
+
+    def _on_theme_toggled(self, dark: bool) -> None:
+        theme = "dark" if dark else "light"
+        config.set_theme(theme)
+        style.apply_theme(QApplication.instance(), theme)
+        # Recolour existing pyqtgraph views (setConfigOption only affects new
+        # ones). Axis label colours don't repaint live but are correct next run.
+        bg = style.plot_colors(theme)[0]
+        for v in self._pg_views:
+            try:
+                v.setBackground(bg)
+            except Exception:
+                pass
+
+    # ── Device connection monitor ────────────────────────────────────────────────
+
+    def _probe_kwargs(self) -> dict:
+        """Per-module arguments for probe.probe_all (e.g. the stage's port)."""
+        kwargs: dict = {}
+        for m in self._modules:
+            kwargs.update(m.probe_kwargs())
+        return kwargs
+
+    def _show_devices(self) -> None:
+        if self._devices_dialog is None:
+            # Probe in load-order, only the modules this session loaded.
+            self._devices_dialog = ConnectionMonitor(
+                [m.key for m in self._modules], self._probe_kwargs, parent=self)
+        else:
+            self._devices_dialog.refresh()
+        self._devices_dialog.show()
+        self._devices_dialog.raise_()
+        self._devices_dialog.activateWindow()
+
+    # ── Session start / stop ──────────────────────────────────────────────────
+
+    def _on_run_toggled(self, on: bool) -> None:
+        if on:
+            self._start_session()
+        else:
+            self._stop_session()
+
+    def _start_session(self) -> None:
+        # Build this session's workers first, but don't start them: the shared
+        # clock must reach t=0 BEFORE any device pushes a timestamped sample.
+        for m in self._modules:
+            m.build_session(self._emulate)
+
+        self._sync.start_all()
+        for m in self._modules:
+            m.start()
+
+        self._disp_timer.start()
+        self._btn_run.setText("Stop")
+        self._btn_emulate.setEnabled(False)   # can't switch real/mock mid-session
+
+    def _stop_session(self) -> None:
+        # Ensure recording is closed before tearing down the clock/workers.
+        if self._btn_rec.isChecked():
+            self._btn_rec.setChecked(False)   # triggers _on_record_toggled(False)
+
+        self._disp_timer.stop()
+        for m in self._modules:
+            m.stop()
+        self._sync.stop_all()
+
+        self._btn_run.setText("Live view")
+        self._btn_emulate.setEnabled(True)
+        self.status("Stopped")
+
+    def _on_emulate_toggled(self, on: bool) -> None:
+        # Only togglable between sessions (the button is disabled while running).
+        self._emulate = on
+        self._build_controllers()               # swap puffer/LED/DMD real↔mock
+        self._apply_title()
+        self.status("Emulate ON — simulated signals" if on
+                    else "Emulate OFF — real hardware")
+
+    def _build_controllers(self) -> None:
+        """(Re)create the persistent output controllers (puffer, LED, DMD) for
+        the current emulate mode. Real by default; mock when emulating. Real
+        controllers that can't reach their hardware fall back to a mock so the UI
+        stays usable — the Devices monitor is the source of truth for presence."""
+        for m in self._modules:
+            m.close_controller()
+        for m in self._modules:
+            m.build_controller(self._emulate)
+
+    def _apply_title(self) -> None:
+        title = "Acquisition suite"
+        if self._cam_info is not None:
+            title += f"  —  {getattr(self._cam_info, 'serial_number', self._cam_info)}"
+        if self._emulate:
+            title += "  [emulated]"
+        self.setWindowTitle(title)
+
+    # ── Recording ──────────────────────────────────────────────────────────────
+
+    def _on_record_toggled(self, on: bool) -> None:
+        if on:
+            # Record implies live view — start the session if it isn't running.
+            if not self._sync.running:
+                self._btn_run.setChecked(True)   # → _start_session()
+            if not self._sync.running:            # start failed → abort record
+                self._btn_rec.setChecked(False)
+                return
+            self._start_recording()
+        else:
+            self._stop_recording()
+
+    def _start_recording(self) -> None:
+        if self._save_panel is None:
+            return
+        # Destination comes from the Save tab. Fail *before* any data is taken
+        # rather than after it has nowhere to go.
+        err = self._save_panel.writable_error()
+        if err is not None:
+            self.status(f"Cannot record — {err}")
+            self._btn_rec.setChecked(False)
+            return
+
+        now = datetime.now()
+        path = self._save_panel.resolve(now)
+        sc = self._save_panel.settings
+        metadata = {
+            "created":  now.strftime("%Y%m%d_%H%M%S"),
+            "emulated": self._emulate,
+            "modules":  ",".join(sorted(self._enabled)),
+            "subject":  sc.subject,
+            "session":  sc.session,
+        }
+        for m in self._modules:
+            metadata.update(m.metadata())
+
+        self._recorder = Recorder(
+            self._clock, HDF5Writer(),
+            RingBuffer(RING_FRAMES, maxbytes=RING_BYTES, sizeof=_sample_nbytes))
+        self._recorder.start(path, metadata)
+
+        # Attach per-device sinks. The Recorder stamps each sample on the shared
+        # clock, so all streams in the file share one time origin.
+        for m in self._modules:
+            m.attach_sink(self._recorder)
+
+        self._btn_rec.setText("Stop rec")
+        self.status(f"Recording → {path}")
+
+    def _stop_recording(self) -> None:
+        for m in self._modules:
+            m.detach_sink()
+        if self._recorder is not None:
+            drops = self._recorder.drop_count
+            # Write what the run actually did, not just how it was configured:
+            # a file that shed samples should say so itself rather than only in
+            # a status message that scrolls away.
+            final = {"recorder_dropped_samples": drops}
+            for m in self._modules:
+                final.update(m.final_metadata())
+            self._recorder.update_metadata(final)
+
+            remaining = self._recorder.stop()
+            self._recorder = None
+            msg = f"Recording stopped (dropped {drops} samples while running"
+            msg += f", {remaining} un-drained)" if remaining else ")"
+            self.status(msg)
+        self._btn_rec.setText("Record")
+
+    # ── Sync callbacks ──────────────────────────────────────────────────────────
 
     def _on_tick(self, elapsed: float) -> None:
-        self.statusBar().showMessage(f"t = {elapsed:.1f} s")
+        msg = f"t = {elapsed:.1f} s"
+        if self._recorder is not None:
+            msg += f"   REC   drops: {self._recorder.drop_count}"
+        self.status(msg)
 
     def _on_trigger(self, name: str, duration: float) -> None:
-        if name == "puffer":
-            self._puffer.fire(duration)
+        for m in self._modules:
+            m.on_trigger(name, duration)
 
-    # ── Frame pull ──────────────────────────────────────────────────────────
+    # ── Display tick (preview only; recording is fed straight from the workers) ──
 
-    def _pull_frames(self) -> None:
-        if self._cam_worker:
-            f = self._cam_worker.get_latest()
-            if f is not None:
-                ds   = 4
-                disp = f[::ds, ::ds].astype("float32")
-                lo, hi = disp.min(), disp.max()
-                self._img_item.setLevels([lo, hi])
-                self._img_item.setImage(disp, autoLevels=False)
+    def _display_tick(self) -> None:
+        for m in self._modules:
+            m.update_display()
 
-        if self._wheel_worker:
-            s = self._wheel_worker.get_latest()
-            if s is not None:
-                v, t = s
-                # TODO: accumulate into a deque and plot rolling window
+    # ── Save configuration ──────────────────────────────────────────────────────
 
-    # ── Camera settings handlers ────────────────────────────────────────────
+    def _save_save_settings(self, *_args) -> None:
+        if self._save_panel is not None:
+            config.save_settings("saving", self._save_panel.as_dict())
 
-    def _on_exposure(self, val: float) -> None:
-        if self._cam and not self._mock:
-            try:
-                self._cam.set_exposure(val)
-            except Exception:
-                pass
-
-    def _on_binning(self, val: int) -> None:
-        # Requires stop/restart — handled by start_all / stop_all cycle
-        pass
-
-    # ── Cleanup ─────────────────────────────────────────────────────────────
+    # ── Cleanup ─────────────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
-        self._sync.stop_all()
-        self._disp_timer.stop()
-        if self._cam and not self._mock:
+        self._save_layout()
+        if self._sync.running:
+            self._stop_session()
+        for m in self._modules:
+            m.close_controller()
+        if self._cam_handle is not None:
             try:
-                self._cam.close()
+                self._cam_handle.close()
             except Exception:
                 pass
+            self._cam_handle = None
         event.accept()
 
 
@@ -224,23 +730,24 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mock",     action="store_true")
-    ap.add_argument("--exposure", type=float, default=0.010)
-    args = ap.parse_args()
-
-    if _cam and not _mock:
-        try:
-            _cam.set_exposure(args.exposure)
-        except Exception:
-            pass
+    ap.add_argument("--mock", action="store_true",
+                    help="start in Emulate mode (simulated signals, no hardware)")
+    ap.parse_args()
 
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    app.setStyleSheet(style.APP_QSS)
+    style.apply_theme(app, config.get_theme())     # dark by default
 
-    win = MainWindow(cam=_cam, cam_info=_cam_info, mock=_mock or args.mock)
+    # Startup module picker, pre-checked from the last-used selection.
+    dlg = ModuleSelectDialog(config.load_enabled_modules())
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return
+    enabled = dlg.selected()
+    config.save_enabled_modules(enabled)
+
+    win = MainWindow(cam_info=_cam_info, mock=_mock, enabled=set(enabled),
+                     cam_handle=_cam_handle)
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

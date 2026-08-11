@@ -787,4 +787,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # Make the console unable to raise on this script's own output before it
+    # prints anything (see acqApp/console.py -- a UnicodeEncodeError from a
+    # diagnostic print is otherwise indistinguishable from a device failure).
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+    from acqApp.console import enable_safe_console
+    enable_safe_console()
+
     main()

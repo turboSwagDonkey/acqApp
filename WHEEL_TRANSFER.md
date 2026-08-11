@@ -1,0 +1,135 @@
+# Wheel Encoder Module — Transfer Document
+
+Handoff for a session focused on the **running-wheel encoder** in `acqApp`.
+Companion to [CAMERA_TRANSFER.md](acqApp/CAMERA_TRANSFER.md) and
+[PUPIL_CAMERA_TRANSFER.md](acqApp/PUPIL_CAMERA_TRANSFER.md).
+
+---
+
+## 1. What the wheel module is
+
+Measures the mouse's **locomotion** on a running wheel, read as an **analog
+voltage** on the NI DAQ (`Dev3/ai2`). It's the simplest module — a single scalar
+stream, no image, no device SDK (just `nidaqmx`). Two contexts:
+
+- **Standalone toy** — `wheel/_toy.py`: voltage + speed traces, CSV record.
+  Where wheel work should happen first.
+- **Main app** — `main.py`: recorded as the `/wheel` scalar stream on the shared
+  clock; shown as the "Wheel velocity" trace in the Signals dock.
+
+The rig NI board is a **PCIe-6363 ("Dev3")**, shared with the puffer (`port0/
+line0`) and the eye-tracking LED (`port0/line1`); the wheel uses analog-in `ai2`.
+
+---
+
+## 2. How to run
+
+Project venv Python, real display:
+
+```powershell
+# from C:\Users\User\Desktop\python
+acqApp\.venv\Scripts\python.exe acqApp\wheel\_toy.py           # real NI DAQ
+acqApp\.venv\Scripts\python.exe acqApp\wheel\_toy.py --mock    # synthetic sine
+```
+
+Real hardware needs **NI-DAQmx + `nidaqmx`** and the 6363 present as `Dev3`
+(check with the app's 🔌 Devices monitor — it currently reports
+`Dev3 PCIe-6363` connected). `--mock` needs neither.
+
+---
+
+## 3. Relevant files
+
+| File | Role |
+|------|------|
+| [wheel/acquisition.py](acqApp/wheel/acquisition.py) | `EncoderWorker` (real NI ai) + `MockEncoderWorker`. The poll thread. |
+| [wheel/settings.py](acqApp/wheel/settings.py) | `EncoderSettings` + `SettingsPanel` — channel, sample rate, and (unused) scaling fields. |
+| [wheel/_toy.py](acqApp/wheel/_toy.py) | Standalone GUI: voltage + numerically-differentiated speed, CSV record. |
+| [wheel/recording.py](acqApp/wheel/recording.py) | `CSVWriter` — **toy only** (main app records via the shared pipeline). |
+| [acq/worker.py](acqApp/acq/worker.py) | `PullWorker` base both workers subclass. |
+| [main.py](acqApp/main.py) | Builds the worker in `_start_session` (real vs mock by the Emulate toggle), records `/wheel`, plots it in `_pull_frames`. |
+
+---
+
+## 4. Architecture
+
+### Worker (`EncoderWorker` / `MockEncoderWorker`)
+- Subclass `PullWorker` (a `QThread`). `run()` opens an NI `Task`, adds an
+  analog-voltage channel (`Dev3/ai2`, **RSE**, ±10 V), then loops at the
+  configured rate: `task.read()` → one sample → `self._publish((voltage,
+  elapsed), record=voltage)`.
+- `_publish` updates the newest-sample snapshot **and** feeds the recording sink
+  the raw **voltage**. GUI pulls `get_latest()` → `(voltage, elapsed_s)`.
+- `fps_update = pyqtSignal(float)` reports samples/s.
+- **Software-timed**: it's a Python loop with `time.sleep` to pace to `rate` Hz
+  (default 50 Hz), one `task.read()` per iteration — *not* a hardware-clocked
+  acquisition. Fine for behaviour at ≤ a few hundred Hz; see §6.
+- Recording timestamps come from the **shared SessionClock** (stamped in the
+  sink at acquisition time), so wheel samples align with the camera/pupil/etc.
+- **Mock**: a 0.2 Hz sine over ±2.5 V at 50 Hz — no hardware.
+
+### Settings (`EncoderSettings` / `SettingsPanel`)
+- Fields: `channel`, `rate` (Hz), `volts_per_rev`, `wheel_dia_mm`.
+- **`channel` and `rate` are applied** (passed into `EncoderWorker`).
+- **`volts_per_rev` and `wheel_dia_mm` are NOT used anywhere yet** — the panel
+  collects them but nothing converts voltage to real units (see §6.1).
+
+### Recording
+- **Toy**: `CSVWriter` → `toy_output/wheel.csv` (`elapsed_s, voltage`).
+- **Main app**: worker sink → shared `Recorder` → `/wheel/values` (float64
+  voltage) + `/wheel/timestamps` on the session clock.
+
+---
+
+## 5. Current state
+
+**Verified (mock/headless):** worker on `PullWorker`, `/wheel` records on the
+shared clock, plots live, Emulate toggle picks real vs mock.
+
+**Real hardware:** the 6363 is present and the app's monitor sees it, but a real
+`ai2` read has **not been verified through this code** — the toy is the place to
+confirm the wheel actually produces the expected voltage swing.
+
+---
+
+## 6. Open questions / next steps
+
+1. **Record real units, not raw volts (the big one).** `volts_per_rev` and
+   `wheel_dia_mm` exist in settings but are dead. Decide the physical meaning of
+   the `ai2` voltage first (see #3), then convert in the worker/sink to a
+   meaningful stream — angular velocity (rev/s), or linear speed
+   (`mm/s = rev/s · π · wheel_dia_mm`) / cumulative distance. Consider recording
+   both raw voltage *and* the derived unit so nothing is lost. This is the
+   roadmap's "encoder scaling to real units" item.
+2. **What is the sensor / what does the voltage mean?** This reads an *analog*
+   voltage, so it isn't a quadrature encoder on counter inputs — likely an
+   analog velocity/tacho output or a potentiometer angle. The main-app plot is
+   labelled "Wheel velocity" but the recorded value is voltage, and the toy
+   derives speed by differentiating voltage — clarify whether the voltage is
+   **velocity** (use directly) or **position/angle** (differentiate) and make
+   the code + labels consistent.
+3. **Hardware-clocked acquisition.** Replace the software-timed `task.read()`
+   loop with `task.timing.cfg_samp_clk_timing(rate, ...)` + buffered reads for
+   jitter-free timing and higher rates without Python-loop overhead. Ties into
+   the rig-clock roadmap (a `DaqClock` on the same 6363).
+4. **Direction / range.** RSE ±10 V is configured; confirm the wheel signal is
+   bipolar (bidirectional running) or unipolar, and set `min_val`/`max_val`
+   to the real range for best ADC resolution.
+5. **Settings persistence.** The wheel panel isn't wired to
+   `config.load_settings`/`save_settings` yet — only `voltage_cam` is (it's the
+   template). Wire channel/rate/scaling so they stick across runs.
+6. **Plot semantics.** Once units are decided, relabel the Signals-dock trace
+   accordingly (velocity vs voltage) and set sensible axis units.
+
+---
+
+## 7. Handy facts
+
+- Channel `Dev3/ai2`, **RSE**, ±10 V, **50 Hz** default (software-timed).
+- `get_latest()` → `(voltage, elapsed_s)`; the recording sink gets **voltage**
+  only. Recorded as `/wheel/values` (float64).
+- Mock: 0.2 Hz sine, ±2.5 V, 50 Hz — no hardware, matches the real API.
+- The NI board is shared: wheel `ai2`, puffer `port0/line0`, LED `port0/line1` —
+  different subsystems, no line conflict.
+- Emulate toggle (status bar) selects `MockEncoderWorker` vs `EncoderWorker` at
+  session start.

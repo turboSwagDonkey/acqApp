@@ -5,8 +5,8 @@ Wheel encoder — settings dataclass + Qt settings panel.
 from __future__ import annotations
 from dataclasses import dataclass
 
-from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFormLayout,
     QGroupBox, QLabel, QSpinBox, QWidget,
 )
@@ -15,9 +15,12 @@ from PyQt5.QtWidgets import (
 @dataclass
 class EncoderSettings:
     channel:       str   = "Dev3/ai2"
-    rate:          float = 50.0    # Hz
-    volts_per_rev: float | None = None   # None → show raw voltage
-    wheel_dia_mm:  float | None = None   # None → no linear distance
+    rate:          float = 120.0   # Hz — 120 keeps real spins < 0.5 rev/sample (no aliasing)
+    # The ai2 voltage encodes wheel POSITION (angle). These scale it to motion:
+    #   revolutions = voltage / volts_per_rev  →  speed = d(rev)/dt (low-pass filtered)
+    #   distance = net (signed) revolutions;  linear: mm = rev · π · wheel_dia_mm
+    volts_per_rev: float = 4.912   # measured V/rev from the rig capture; None → raw voltage
+    wheel_dia_mm:  float = 150.0   # None → report speed/distance in rev, not mm
 
 
 class SettingsPanel(QWidget):
@@ -64,9 +67,21 @@ class SettingsPanel(QWidget):
             w.editingFinished.connect(self._emit) if hasattr(w, "editingFinished") \
                 else w.currentTextChanged.connect(self._emit)
 
+        # Live derived readout (speed + cumulative distance), driven from the GUI.
+        self._lbl_readout = QLabel("speed —   distance —")
+        f = self._lbl_readout.font()
+        f.setPointSize(f.pointSize() + 1)
+        f.setBold(True)
+        self._lbl_readout.setFont(f)
+        lay.addRow("Live:", self._lbl_readout)
+
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
+
+    def set_readout(self, text: str) -> None:
+        """Show the live speed/distance line (formatted by the caller)."""
+        self._lbl_readout.setText(text)
 
     def _emit(self) -> None:
         self.settings_changed.emit(self.settings)

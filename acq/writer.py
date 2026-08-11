@@ -1,16 +1,24 @@
 """
 Writer ABC + HDF5Writer.
 
-A Writer receives (timestamp, data) tuples and persists them. Swap
+A Writer receives (stream, timestamp, data) tuples and persists them. Swap
 implementations without touching acquisition code.
 
-HDF5 layout:
-  /camera/timestamps   float64 1-D, seconds since session start
-  /camera/frames       uint16  (N, H, W)
-  /encoder/timestamps  float64 1-D
-  /encoder/voltage     float64 1-D
+All timestamps come from the single session-wide SessionClock, so every
+stream in the file shares one time origin (seconds since session start).
 
-Datasets are created with chunking + gzip so partial writes are valid on crash.
+HDF5 layout (one group per stream, created lazily on first write):
+  /<stream>/timestamps   float64 (N,)         seconds since session start
+  /<stream>/frames       <dtype> (N, H, W)    image streams (camera, pupil)
+  /<stream>/values       float64 (N,)         scalar streams (encoder, puffer)
+
+Throughput / crash-safety: datasets are grown a *block* at a time (not one row
+per sample) to amortise the resize cost at high frame/sample rates. Each sample
+is still written immediately, so its data is durable as soon as HDF5 flushes the
+chunk. The `timestamps` dataset is created with a NaN fill value, so if the
+process is killed mid-block the pre-allocated tail rows are identifiable (their
+timestamp is NaN) and every written row is recoverable. On a clean close each
+dataset is trimmed to its exact length, so normally-closed files have no NaNs.
 """
 from __future__ import annotations
 
@@ -27,87 +35,130 @@ class Writer(ABC):
     def open(self, path: Path, metadata: dict[str, Any]) -> None: ...
 
     @abstractmethod
-    def write_frame(self, timestamp: float, frame: np.ndarray) -> None: ...
+    def write(self, stream: str, timestamp: float, data: Any) -> None:
+        """Persist one sample. `data` is an ndarray (image) or a scalar."""
+        ...
 
-    @abstractmethod
-    def write_encoder(self, timestamp: float, voltage: float) -> None: ...
+    def update_metadata(self, metadata: dict[str, Any]) -> None:
+        """Add or overwrite file metadata after open().
+
+        Some facts about a recording are only known once it is over — which
+        timebase the camera actually gave us, how many samples were shed. They
+        belong in the file rather than in a status-bar message that scrolls
+        away. Optional: a Writer that cannot do this may ignore it.
+        """
 
     @abstractmethod
     def close(self) -> None: ...
 
 
 class HDF5Writer(Writer):
-    """Streams camera frames and encoder samples into a single HDF5 file."""
+    """Streams any number of named image/scalar channels into one HDF5 file.
 
-    _CHUNK_FRAMES = 16          # frames per HDF5 chunk
-    _CHUNK_ENCODER = 1024       # encoder samples per HDF5 chunk
+    Image streams are written UNCOMPRESSED by default. The voltage camera
+    sustains ~330 MB/s at full frame (21 MB × 15.7 fps, which is USB3.1 Gen1
+    saturation); single-threaded gzip manages roughly a third of that on noisy
+    16-bit sensor data, so compressing here stalls the writer thread, backs the
+    ring buffer up and drops frames. An NVMe SSD absorbs 330 MB/s comfortably.
 
-    def __init__(self) -> None:
+    Pass `compression="gzip"` (or an `hdf5plugin` codec, once installed) only
+    for slow streams or when disk space matters more than keeping up.
+    """
+
+    _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
+    _IMG_CHUNK_BYTES = 8 << 20  # aim for ~8 MB image chunks
+    _MIN_GROW_BYTES = 64 << 20  # grow datasets in >=64 MB steps
+
+    def __init__(self, compression: str | None = None,
+                 compression_opts: Any = None) -> None:
         self._file = None
-        self._cam_ts = None
-        self._cam_frames = None
-        self._enc_ts = None
-        self._enc_volt = None
-        self._frame_idx = 0
-        self._enc_idx = 0
+        self._streams: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._compression = compression
+        self._compression_opts = compression_opts
 
     def open(self, path: Path, metadata: dict[str, Any]) -> None:
         import h5py
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = h5py.File(path, "w")
         self._file.attrs.update({k: str(v) for k, v in metadata.items()})
-        self._frame_idx = 0
-        self._enc_idx = 0
-        # Datasets created lazily on first write so we know frame shape.
+        self._streams = {}
 
-    def _init_camera_datasets(self, frame: np.ndarray) -> None:
-        import h5py
-        g = self._file.require_group("camera")
-        H, W = frame.shape[-2], frame.shape[-1]
-        self._cam_ts = g.create_dataset(
-            "timestamps", shape=(0,), maxshape=(None,),
-            dtype="float64", chunks=(self._CHUNK_FRAMES,))
-        self._cam_frames = g.create_dataset(
-            "frames", shape=(0, H, W), maxshape=(None, H, W),
-            dtype=frame.dtype,
-            chunks=(self._CHUNK_FRAMES, H, W),
-            compression="gzip", compression_opts=1)
-
-    def _init_encoder_datasets(self) -> None:
-        g = self._file.require_group("encoder")
-        self._enc_ts = g.create_dataset(
-            "timestamps", shape=(0,), maxshape=(None,),
-            dtype="float64", chunks=(self._CHUNK_ENCODER,))
-        self._enc_volt = g.create_dataset(
-            "voltage", shape=(0,), maxshape=(None,),
-            dtype="float64", chunks=(self._CHUNK_ENCODER,))
-
-    def write_frame(self, timestamp: float, frame: np.ndarray) -> None:
+    def update_metadata(self, metadata: dict[str, Any]) -> None:
         with self._lock:
-            if self._cam_frames is None:
-                self._init_camera_datasets(frame)
-            n = self._frame_idx + 1
-            self._cam_ts.resize((n,))
-            self._cam_frames.resize((n, frame.shape[-2], frame.shape[-1]))
-            self._cam_ts[self._frame_idx] = timestamp
-            self._cam_frames[self._frame_idx] = frame
-            self._frame_idx = n
+            if self._file is not None:
+                self._file.attrs.update({k: str(v) for k, v in metadata.items()})
 
-    def write_encoder(self, timestamp: float, voltage: float) -> None:
+    def write(self, stream: str, timestamp: float, data: Any) -> None:
         with self._lock:
-            if self._enc_volt is None:
-                self._init_encoder_datasets()
-            n = self._enc_idx + 1
-            self._enc_ts.resize((n,))
-            self._enc_volt.resize((n,))
-            self._enc_ts[self._enc_idx] = timestamp
-            self._enc_volt[self._enc_idx] = voltage
-            self._enc_idx = n
+            if self._file is None:
+                return
+            is_image = isinstance(data, np.ndarray) and data.ndim >= 2
+            st = self._streams.get(stream)
+            if st is None:
+                st = self._create_stream(stream, data, is_image)
+
+            i = st["idx"]
+            if i >= st["cap"]:                       # grow capacity by one block
+                cap = st["cap"] + st["block"]
+                st["ts"].resize((cap,))
+                st["data"].resize((cap,) + st["shape"])
+                st["cap"] = cap
+
+            st["ts"][i] = timestamp
+            if st["image"]:
+                st["data"][i] = data
+            else:
+                st["data"][i] = float(data)
+            st["idx"] = i + 1
+
+    def _create_stream(self, stream: str, data: Any, is_image: bool) -> dict[str, Any]:
+        g = self._file.require_group(stream)
+        ts = g.create_dataset(
+            "timestamps", shape=(0,), maxshape=(None,),
+            dtype="float64", chunks=(self._CHUNK_SCALAR,), fillvalue=np.nan)
+        if is_image:
+            shape = tuple(data.shape)
+            frame_bytes = data.dtype.itemsize * int(np.prod(shape))
+            chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // max(frame_bytes, 1)))
+            chunk_bytes = chunk_frames * frame_bytes
+            # Samples arrive one frame at a time, so a multi-frame chunk is
+            # touched repeatedly before it is complete. Size the per-dataset
+            # chunk cache to hold a few whole chunks, otherwise every write
+            # evicts and re-reads (and, if compressed, re-deflates) the chunk.
+            dset = g.create_dataset(
+                "frames", shape=(0,) + shape, maxshape=(None,) + shape,
+                dtype=data.dtype, chunks=(chunk_frames,) + shape,
+                compression=self._compression,
+                compression_opts=self._compression_opts,
+                rdcc_nbytes=max(4 * chunk_bytes, 8 << 20),
+                rdcc_nslots=4093)
+            # Growth block is independent of the chunk size: resizing is a
+            # metadata operation on the whole dataset, so doing it every 16
+            # frames costs hundreds of resizes/s at the fast presets.
+            grow = max(chunk_frames,
+                       (self._MIN_GROW_BYTES // max(frame_bytes, 1)) or 1)
+            grow = (grow // chunk_frames) * chunk_frames or chunk_frames
+            st = {"image": True, "shape": shape, "ts": ts, "data": dset,
+                  "idx": 0, "cap": 0, "block": grow}
+        else:
+            dset = g.create_dataset(
+                "values", shape=(0,), maxshape=(None,),
+                dtype="float64", chunks=(self._CHUNK_SCALAR,))
+            st = {"image": False, "shape": (), "ts": ts, "data": dset,
+                  "idx": 0, "cap": 0, "block": self._CHUNK_SCALAR}
+        self._streams[stream] = st
+        return st
 
     def close(self) -> None:
         with self._lock:
             if self._file is not None:
+                # Trim each dataset to exactly what was written (drops the
+                # pre-allocated tail so a cleanly closed file has no NaN rows).
+                for st in self._streams.values():
+                    n = st["idx"]
+                    st["ts"].resize((n,))
+                    st["data"].resize((n,) + st["shape"])
                 self._file.flush()
                 self._file.close()
                 self._file = None

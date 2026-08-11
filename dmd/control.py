@@ -15,13 +15,15 @@ TODO: replace the SDK stub with the actual vendor library.
 from __future__ import annotations
 import time
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
-from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtWidgets import (
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QPushButton, QSpinBox, QWidget, QLabel, QFileDialog,
 )
 from acqApp import style
@@ -30,10 +32,10 @@ from acqApp import style
 @dataclass
 class DmdSettings:
     pattern_path:  Path | None = None   # .png / .bmp to upload
-    frame_rate:    float       = 30.0   # Hz
-    exposure_us:   int         = 1000   # µs per frame
+    on_time_ms:    float       = 100.0  # illumination on-time per pattern (ms)
+    static_hold:   bool        = False  # True = project one image, held (one exposure)
     trigger_mode:  str         = "Internal"   # Internal | External | Software
-    n_repeats:     int         = 0      # 0 = loop forever
+    n_repeats:     int         = 0      # 0 = loop forever (ignored when static_hold)
 
 
 class DmdController(QObject):
@@ -49,7 +51,17 @@ class DmdController(QObject):
         super().__init__(parent)
         self._s      = settings or DmdSettings()
         self._handle = None
+        self._sink: Callable[[int], None] | None = None
         self._open()
+
+    def set_sink(self, sink: Callable[[int], None] | None) -> None:
+        """Attach (or clear) a per-frame recording sink; receives pattern index."""
+        self._sink = sink
+
+    def apply_settings(self, settings: DmdSettings) -> None:
+        """Adopt the panel's current settings. Called just before display(), so
+        a timing change made after the pattern was loaded still takes effect."""
+        self._s = settings
 
     def _open(self) -> None:
         # TODO: initialise vendor SDK and store handle
@@ -84,7 +96,10 @@ class DmdController(QObject):
     def software_trigger(self) -> None:
         """Advance one frame when trigger_mode == 'Software'."""
         # TODO: vendor SDK trigger call
-        pass
+        sink = self._sink
+        if sink is not None:
+            sink(0)
+        self.frame_displayed.emit(0)
 
 
 class MockDmdController(QObject):
@@ -99,6 +114,23 @@ class MockDmdController(QObject):
         self._pattern: np.ndarray | None = None
         self._running = False
         self._thread:  threading.Thread | None = None
+        self._sink: Callable[[int], None] | None = None
+
+    def set_sink(self, sink: Callable[[int], None] | None) -> None:
+        """Attach (or clear) a per-frame recording sink; receives pattern index."""
+        self._sink = sink
+
+    def apply_settings(self, settings: DmdSettings) -> None:
+        """Adopt the panel's current settings (see DmdController.apply_settings)."""
+        self._s = settings
+
+    def _frame(self, idx: int) -> None:
+        """Report one displayed frame: record it (thread-direct, no GUI hop) and
+        emit the Qt signal for any GUI listener."""
+        sink = self._sink
+        if sink is not None:
+            sink(idx)
+        self.frame_displayed.emit(idx)
 
     def load_pattern(self, path: Path | None = None) -> None:
         p = path or self._s.pattern_path
@@ -122,18 +154,25 @@ class MockDmdController(QObject):
             return
         self._running = True
         self.pattern_started.emit()
-        period = 1.0 / self._s.frame_rate
+        # Static hold: project one image and leave it up endlessly until stop()
+        # — no cadence, no cycling thread. On-time doesn't apply.
+        if self._s.static_hold:
+            self._frame(0)
+            print("[DMD mock] static hold — one image held until Stop")
+            return
+
+        on_time = max(0.001, self._s.on_time_ms / 1000.0)
 
         def _loop():
             idx = 0
             while self._running:
-                self.frame_displayed.emit(idx)
+                self._frame(idx)
                 idx += 1
-                time.sleep(period)
+                time.sleep(on_time)
 
         self._thread = threading.Thread(target=_loop, daemon=True)
         self._thread.start()
-        print("[DMD mock] display started")
+        print(f"[DMD mock] display started ({self._s.on_time_ms:.0f} ms on-time)")
 
     def stop(self) -> None:
         self._running = False
@@ -158,6 +197,7 @@ class SettingsPanel(QWidget):
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or DmdSettings()
+        self._pattern_path: Path | None = self._s.pattern_path
         self._build()
 
     def _build(self) -> None:
@@ -172,17 +212,27 @@ class SettingsPanel(QWidget):
         lay.addRow("Pattern:", self._lbl_pattern)
         lay.addRow(btn_browse)
 
-        self._spn_fps = QDoubleSpinBox()
-        self._spn_fps.setRange(1.0, 500.0)
-        self._spn_fps.setSuffix(" Hz")
-        self._spn_fps.setValue(self._s.frame_rate)
-        lay.addRow("Frame rate:", self._spn_fps)
+        # Live preview of the selected pattern image.
+        self._preview = QLabel("No preview")
+        self._preview.setMinimumSize(200, 350)
+        self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview.setStyleSheet(
+            "background:#111; color:#777; border:1px solid #333;")
+        lay.addRow(self._preview)
 
-        self._spn_exp = QSpinBox()
-        self._spn_exp.setRange(100, 100_000)
-        self._spn_exp.setSuffix(" µs")
-        self._spn_exp.setValue(self._s.exposure_us)
-        lay.addRow("Exposure:", self._spn_exp)
+        # Illumination on-time: how long each pattern is projected.
+        self._spn_on = QDoubleSpinBox()
+        self._spn_on.setRange(1.0, 600_000.0)      # 1 ms … 10 min
+        self._spn_on.setDecimals(1)
+        self._spn_on.setSuffix(" ms")
+        self._spn_on.setValue(self._s.on_time_ms)
+        lay.addRow("Illumination on-time:", self._spn_on)
+
+        # Static hold: one consistent exposure of a single image (no cycling).
+        self._chk_static = QCheckBox("Single static exposure (hold one image)")
+        self._chk_static.setChecked(self._s.static_hold)
+        self._chk_static.toggled.connect(self._on_static_toggled)
+        lay.addRow(self._chk_static)
 
         self._cmb_trig = QComboBox()
         self._cmb_trig.addItems(["Internal", "External", "Software"])
@@ -196,11 +246,11 @@ class SettingsPanel(QWidget):
         lay.addRow("Repeats:", self._spn_rep)
 
         btn_row_w = QWidget()
-        from PyQt5.QtWidgets import QHBoxLayout
+        from PyQt6.QtWidgets import QHBoxLayout
         btn_row = QHBoxLayout(btn_row_w)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_display = QPushButton("Display")
-        btn_display.setStyleSheet(style.solid_btn("sync"))
+        btn_display.setStyleSheet(style.solid_btn("dmd"))
         btn_display.clicked.connect(self.display_requested)
         btn_stop = QPushButton("Stop")
         btn_stop.clicked.connect(self.stop_requested)
@@ -212,20 +262,41 @@ class SettingsPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
 
+        self._on_static_toggled(self._chk_static.isChecked())
+
+    def _on_static_toggled(self, on: bool) -> None:
+        # A single held image has no cadence: on-time and repeat count are both
+        # meaningless — the pattern just stays up until Stop.
+        self._spn_on.setEnabled(not on)
+        self._spn_rep.setEnabled(not on)
+
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Select pattern", "", "Images (*.png *.bmp *.tif)"
         )
         if path:
             p = Path(path)
+            self._pattern_path = p
             self._lbl_pattern.setText(p.name)
+            self._update_preview(p)
             self.load_requested.emit(p)
+
+    def _update_preview(self, path: Path) -> None:
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self._preview.setText("(cannot preview)")
+            return
+        self._preview.setPixmap(pix.scaled(
+            self._preview.width(), self._preview.height(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
 
     @property
     def settings(self) -> DmdSettings:
         return DmdSettings(
-            frame_rate=self._spn_fps.value(),
-            exposure_us=self._spn_exp.value(),
+            pattern_path=self._pattern_path,
+            on_time_ms=self._spn_on.value(),
+            static_hold=self._chk_static.isChecked(),
             trigger_mode=self._cmb_trig.currentText(),
             n_repeats=self._spn_rep.value(),
         )

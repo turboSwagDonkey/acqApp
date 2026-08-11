@@ -1,21 +1,30 @@
-"""
+r"""
 Puffer toy — fire button + event log.
 
   ..\..\.venv\Scripts\python.exe puffer\_toy.py
 """
 
 import sys, time
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[1]))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[2]))
 
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import (
+# Diagnostic prints in the device modules use characters a non-UTF-8 console
+# cannot encode; unguarded, that raises inside the acquisition thread and
+# looks like a device failure. See acqApp/console.py.
+from acqApp.console import enable_safe_console
+enable_safe_console()
+
+import os
+os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
+
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QListWidget,
     QMainWindow, QPushButton, QVBoxLayout, QWidget, QDoubleSpinBox,
 )
 import pyqtgraph as pg
 
-from puffer.control   import MockPufferController
-from puffer.recording import EventLog
+from acqApp.puffer.control   import MockPufferController
+from acqApp.puffer.recording import EventLog
 
 
 class ToyWindow(QMainWindow):
@@ -76,4 +85,4 @@ class ToyWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv); app.setStyle("Fusion")
     w = ToyWindow(); w.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

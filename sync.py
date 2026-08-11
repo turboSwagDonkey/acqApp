@@ -1,30 +1,31 @@
 """
 Master synchronisation controller.
 
-Owns a wall-clock QTimer, lets subsystems register start/stop callables,
-and can schedule named trigger events (e.g. fire the puffer at t+5 s).
+Owns the single session-wide SessionClock, drives a QTimer for periodic ticks,
+and schedules named trigger events (e.g. fire the puffer at t+5 s). Every
+device timestamps its data against this same clock (via the Recorder), so all
+streams share one time origin.
 
 Usage
 -----
-    sync = SyncController()
-    sync.register("voltage_cam", cam_acq.start, cam_acq.stop)
-    sync.register("wheel",       enc_acq.start, enc_acq.stop)
-    sync.register("puffer",      None,          None)          # trigger-only
+    clock = SessionClock()
+    sync  = SyncController(clock)
 
-    sync.all_started.connect(on_run_begin)
     sync.tick.connect(lambda t: status_bar.showMessage(f"{t:.1f} s"))
     sync.trigger_fired.connect(puffer.fire)
 
     sync.schedule_trigger("puffer", delay_s=5.0, duration_s=0.2)
-    sync.start_all()
+    sync.start_all()      # starts the clock (t=0) and the tick timer
+    ...
+    sync.stop_all()       # stops the tick timer and the clock
 """
 
 from __future__ import annotations
-import time
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass
 
-from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+
+from acqApp.acq.clock import AbstractClock, SessionClock
 
 
 @dataclass
@@ -35,39 +36,35 @@ class _TriggerSpec:
     fired:      bool = False
 
 
-@dataclass
-class _Device:
-    name:     str
-    start_fn: Callable | None
-    stop_fn:  Callable | None
-
-
 class SyncController(QObject):
-    """Central timing and trigger bus for all acquisition devices."""
+    """Central timing and trigger bus for all acquisition devices.
 
-    all_started    = pyqtSignal()           # emitted once all devices have started
-    all_stopped    = pyqtSignal()           # emitted once all devices have stopped
+    Owns the shared SessionClock and a periodic tick; schedules named triggers
+    (e.g. fire the puffer at t+5 s). Device workers are started/stopped by the
+    owner (MainWindow) around start_all()/stop_all(), which bracket the clock.
+    """
+
     tick           = pyqtSignal(float)      # elapsed seconds, fires every tick_ms
-    trigger_fired  = pyqtSignal(str, float) # (trigger_name, elapsed_s)
+    trigger_fired  = pyqtSignal(str, float) # (trigger_name, duration_s)
 
-    def __init__(self, tick_ms: int = 100, parent=None):
+    def __init__(self, clock: AbstractClock | None = None,
+                 tick_ms: int = 100, parent=None):
         super().__init__(parent)
-        self._devices:  list[_Device]       = []
-        self._triggers: list[_TriggerSpec]  = []
-        self._running   = False
-        self._t0:       float               = 0.0
+        self._clock: AbstractClock = clock or SessionClock()
+        self._triggers: list[_TriggerSpec] = []
+        self._running  = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(tick_ms)
         self._timer.timeout.connect(self._on_tick)
 
-    # ── Registration ───────────────────────────────────────────────────────────
+    # ── The shared clock ────────────────────────────────────────────────────────
 
-    def register(self, name: str,
-                 start_fn: Callable | None,
-                 stop_fn:  Callable | None) -> None:
-        """Register a device's start/stop callables with the controller."""
-        self._devices.append(_Device(name, start_fn, stop_fn))
+    @property
+    def clock(self) -> AbstractClock:
+        return self._clock
+
+    # ── Triggers ────────────────────────────────────────────────────────────────
 
     def schedule_trigger(self, name: str,
                          delay_s: float,
@@ -82,41 +79,34 @@ class SyncController(QObject):
     def clear_triggers(self) -> None:
         self._triggers.clear()
 
-    # ── Control ────────────────────────────────────────────────────────────────
+    # ── Control ─────────────────────────────────────────────────────────────────
 
     def start_all(self) -> None:
         if self._running:
             return
         for t in self._triggers:
             t.fired = False
-        self._t0 = time.perf_counter()
-        for dev in self._devices:
-            if dev.start_fn is not None:
-                dev.start_fn()
+        self._clock.start()                 # ← single time origin for the session
         self._running = True
         self._timer.start()
-        self.all_started.emit()
 
     def stop_all(self) -> None:
         if not self._running:
             return
         self._timer.stop()
         self._running = False
-        for dev in self._devices:
-            if dev.stop_fn is not None:
-                dev.stop_fn()
-        self.all_stopped.emit()
+        self._clock.stop()
 
-    # ── Properties ─────────────────────────────────────────────────────────────
+    # ── Properties ──────────────────────────────────────────────────────────────
 
     @property
     def running(self) -> bool:
         return self._running
 
     def elapsed(self) -> float:
-        return time.perf_counter() - self._t0 if self._running else 0.0
+        return self._clock.now() if self._running else 0.0
 
-    # ── Internal ───────────────────────────────────────────────────────────────
+    # ── Internal ────────────────────────────────────────────────────────────────
 
     def _on_tick(self) -> None:
         t = self.elapsed()
