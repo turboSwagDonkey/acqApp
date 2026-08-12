@@ -31,8 +31,12 @@ HERE = Path(__file__).resolve().parent
 # are about to fail for a reason that has nothing to do with what they test.
 TESTS = [
     ("console",   "test_console_safety.py"),
+    ("fits",      "test_pupil_fits.py"),
+    ("readout",   "test_readout_fps.py"),
+    ("encoder",   "test_encoder_derive.py"),
     ("save-paths", "test_save_paths.py"),
     ("stage-state", "test_stage_state.py"),
+    ("pupil-thread", "test_pupil_tracking_thread.py"),
     ("losses",    "test_recording_losses.py"),
     ("camera-ts", "test_camera_timestamps.py"),
     ("subsets",   "test_module_subsets.py"),

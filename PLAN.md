@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 77 %** (17 of 22 closed, 3 partial) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 91 %** (20 of 22 closed; #5 partial, #13 open) |
 
 ---
 
@@ -143,11 +143,16 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ### Performance
 
-- [ ] **#12 Pupil tracking runs on the GUI thread** (30 Hz display timer).
-      `coarse_seed`'s `distance_transform_edt` is ~100-200 ms on a degenerate
-      mask; a genuinely lost pupil re-seeds repeatedly → visible stutter that
-      also stalls the camera preview pull in the same tick. Belongs on the
-      pupil worker thread (it already has one). ⬜
+- [x] **#12 Pupil tracking moved off the GUI thread.** ✅
+      `pupil_cam/track_worker.py`: the tracker gets its own thread, is the sole
+      consumer of the camera worker's frames, and republishes each frame *with*
+      the fit made from it — so the overlay can no longer drift a frame away
+      from the image under it, which pulling the two separately would allow.
+      Panel edits are queued and applied between frames, never written into the
+      tracker from the GUI thread. Measured: 20 display-side reads in 0.03 ms
+      while a 150 ms/frame tracker was running; the same tracker called inline
+      (what the display tick used to do) costs 150 ms *per tick*. Guarded by
+      `tests/test_pupil_tracking_thread.py` (17 checks, with that control).
 - [ ] **#13 The encoder is software-timed** — single-sample `task.read()` in a
       Python loop paced by `time.sleep`. The PCIe-6363 has a timing engine;
       `cfg_samp_clk_timing(rate)` + continuous block reads gives exact hardware
@@ -163,13 +168,15 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ### Structure and hygiene
 
-- [ ] **#16 Tests.** 🟡 `tests/` is now 116 checks in ~17 s: session+HDF5,
-      module subsets, camera timing, console safety, save paths, stage state.
-      `SaveConfig.stem/resolve` sanitisation is covered. Still missing the
-      other cheap pure-function tests: `fit_circle_taubin` / `fit_ellipse` /
-      `fit_circle_robust`, `presets.readout_fps` interpolation, `RingBuffer`
-      eviction, `_EncoderBase._derive` reset-rejection. `toy_output/wheel.csv`
-      is a real capture to use as the encoder fixture.
+- [x] **#16 Tests.** ✅ `tests/` is now **272 checks in ~27 s** across 12 files.
+      The pure-function gap is closed: `test_pupil_fits` (the three fits, each
+      against a control that fails the property it was chosen for),
+      `test_readout_fps` (table, log-log interpolation, clamps, binning) and
+      `test_encoder_derive` (a synthetic wheel past two controls that both lose
+      all 9 revolutions). `RingBuffer` eviction was covered by #14's test.
+      A real `toy_output/wheel.csv` capture is still the better encoder fixture
+      once the rig confirms whether the voltage wraps — the synthetic trace
+      assumes it does.
 - [x] **#17 `MainWindow` was ~950 lines of six-way repetition.** ✅
       Now `modules.py`: one `ModuleAdapter` per subsystem owning its panel,
       plot, worker, display tick, sink and metadata. `main.py` 1256 → ~740
@@ -188,9 +195,11 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       run on hardware (almost nothing), settings persistence, the Save tab and
       auto-numbering, the four loss counters, native attribute types. The
       roadmap now points at PLAN.md instead of drifting from it.
-- [ ] **#20 Dead code.** 🟡 `--exposure` and `_on_binning` are gone with the
-      `main.py` rewrite. Remaining: unused `evals` in `fit_ellipse`, and
-      `acqapp_phase1_2.tar.gz` is a checked-in build artifact. ⬜
+- [x] **#20 Dead code.** ✅ `--exposure` and `_on_binning` went with the
+      `main.py` rewrite; the unused `evals` in `fit_ellipse` is now `_`, and
+      `acqapp_phase1_2.tar.gz` (a June snapshot, `.pyc` files and all) is out of
+      the tree — `*.tar.gz` / `*.zip` are gitignored so the next one doesn't
+      land. It is still in history if it is ever wanted.
 
 ### Found in passing (not in the original 20)
 
@@ -222,22 +231,21 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ## 6. Next actions
 
-1. **#12 — pupil tracking on the GUI thread.** The last performance item and
-   the biggest: `coarse_seed`'s `distance_transform_edt` is 100–200 ms on a
-   degenerate mask, and a genuinely lost pupil re-seeds every tick — which
-   stalls the camera preview pull in the same 30 Hz timer. It belongs on the
-   pupil worker thread, which already exists.
-2. **#5 — the DMD stub.** `dmd/control.py:61-97` is still `print(...)` where
+1. **#5 — the DMD stub.** `dmd/control.py:61-97` is still `print(...)` where
    the device calls belong, and with Emulate off the UI gives no sign that
    Display did nothing. `alp4lib` is in the venv. Either wire the ALP path or
-   make the panel say plainly that it is a stub — the current state is the
-   one thing on this list that actively misleads the operator mid-experiment.
-   (The README now says so; the app itself still doesn't.)
-3. **#16 — the remaining unit tests.** `fit_circle_taubin` / `fit_ellipse` /
-   `fit_circle_robust`, `presets.readout_fps` interpolation,
-   `_EncoderBase._derive` reset-rejection. `toy_output/wheel.csv` is a real
-   capture to use as the encoder fixture. Cheap, and the pupil fits are about
-   to be moved threads (#12) with nothing currently pinning their behaviour.
+   make the panel say plainly that it is a stub — the last item on this list
+   that actively misleads the operator mid-experiment. (The README now says so;
+   the app itself still doesn't.)
+2. **#13 — the encoder is software-timed.** The last performance item: a
+   single-sample `task.read()` in a Python loop paced by `time.sleep`, when the
+   PCIe-6363 has a timing engine. `cfg_samp_clk_timing(rate)` + continuous block
+   reads gives exact hardware sample times, and since speed is a slope over
+   `dt`, it is the change that most improves wheel-speed accuracy. Writable off
+   the rig against the mock; only confirmable on it.
+3. **B2 — fold `SESSION_HANDOFF.md` into `HANDOFF.md`.** The last of the doc
+   consolidation: it is a single past session kept as a peer of the standing
+   handoff. Small, and it removes the last "which of these do I read?".
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
@@ -252,6 +260,26 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (e) — #12 tracking gets a thread, #16 the pure-function tests, #20
+- **#12**: `pupil_cam/track_worker.py`. The tracker now owns a thread, is the
+  only consumer of the camera worker's frames, and publishes each frame
+  *together with* its fit — which also fixes something nobody had noticed: read
+  separately, the overlay and the image under it could be a frame apart. Panel
+  edits are queued and applied between frames. 20 display-side reads in 0.03 ms
+  against a 150 ms/frame tracker; inline, that was 150 ms of frozen GUI *per
+  tick*, and the voltage camera's preview shares that tick.
+- **#16 closed**: `test_pupil_fits` (28), `test_readout_fps` (18),
+  `test_encoder_derive` (14), `test_pupil_tracking_thread` (17). Suite
+  195 → **272 checks / 27.1 s / 12 files**, all passing.
+- Writing the encoder test made the reset rule concrete: the plain half-turn
+  unwrap doesn't *mis*-count a smeared reset, it misses it entirely — both
+  controls lose all 9 revolutions of a 6 s run and report ~0.
+- **#20 closed**: unused `evals` in `fit_ellipse`; `acqapp_phase1_2.tar.gz` (a
+  June snapshot with `.pyc` files) out of the tree, `*.tar.gz`/`*.zip` ignored.
+- Left alone deliberately: `_toy.py` still tracks on its GUI timer. It is one
+  device on one timer with nothing else to stall, and it is the harness used to
+  bring the camera up on the rig — worth keeping as the simple path.
 
 ### 2026-08-12 (d) — #18, #19: the file and the README stop lying
 - **#18**: `writer.attr_value()` — attributes keep their own type, `str()` only

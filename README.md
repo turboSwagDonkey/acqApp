@@ -183,6 +183,12 @@ way back out. A value that was never set reads as an empty string.
 - one package per subsystem, each with `acquisition.py` (a `QThread` worker with
   a mock twin), `settings.py`/`control.py` (a Qt panel), `recording.py`, and a
   `_toy.py` standalone harness for bringing that device up in isolation.
+- `pupil_cam/track_worker.py` — pupil **tracking** gets a thread of its own, on
+  top of the camera's. Tracking is unbounded work (a degenerate mask costs
+  100–200 ms in `coarse_seed`, and a lost pupil re-seeds every frame), so in the
+  display tick it froze the whole window, voltage-camera preview included. It is
+  the sole consumer of the pupil camera's frames and republishes each frame
+  *with* the fit made from it, so the outline always matches the image under it.
 - `modules.py` — one `ModuleAdapter` per subsystem, holding everything that is
   specific to that instrument: its settings tab, its plot, its worker, its
   ~30 Hz display tick, its recording sink, and the metadata it writes into the
@@ -206,12 +212,13 @@ way back out. A value that was never set reads as an empty string.
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
 ```
 
-Runs in Emulate mode against fakes — no rig hardware, no windows, ~22 s. Covers
+Runs in Emulate mode against fakes — no rig hardware, no windows, ~27 s. Covers
 the session/recording path end to end (including the written HDF5), every
 module-subset combination, camera frame timing, settings surviving a restart,
-save-path collisions, stage state, the ways a sample can be lost, and the
-console-encoding guard. See [tests/README.md](tests/README.md) for what each one
-defends and the two conventions to follow when adding one.
+save-path collisions, stage state, the ways a sample can be lost, the pupil fits
+and tracking thread, the encoder's position→distance derivation, the readout-rate
+table, and the console-encoding guard. See [tests/README.md](tests/README.md) for
+what each one defends and the two conventions to follow when adding one.
 
 ## Roadmap
 
@@ -220,9 +227,9 @@ actions. In short:
 
 - ✅ Unified session Start/Stop, shared software clock, single-file HDF5 recording
 - ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
+- ✅ Pupil tracking moved off the GUI thread
 - Encoder scaling measured on the rig (`volts_per_rev`, wheel diameter)
 - Camera throughput measured on the rig — the number that sizes the ring buffer
 - DMD: replace the stub with the real ALP path (`alp4lib`)
-- Pupil tracking moved off the GUI thread
 - Closed-loop: trigger DMD / puffer from encoder state
 - Hardware sync upgrade: `DaqClock` on the PCIe-6363, hardware-triggered ORCA

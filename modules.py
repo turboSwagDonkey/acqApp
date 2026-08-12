@@ -55,7 +55,7 @@ from acqApp.pupil_cam.acquisition import MockPupilCameraWorker, PupilCameraWorke
 from acqApp.pupil_cam.settings    import (PupilSettings,
                                           SettingsPanel as PupilSettingsPanel)
 from acqApp.pupil_cam.control     import MockLedController, LedController
-from acqApp.pupil_cam.tracking    import PupilTracker
+from acqApp.pupil_cam.track_worker import PupilTrackWorker, track_params
 
 from acqApp.puffer.control import (MockPufferController, PufferController,
                                    PufferSettings, SettingsPanel as PufferPanel)
@@ -387,9 +387,10 @@ class PupilCamModule(ModuleAdapter):
         self._overlay = None
         self._curve = None
         self._y: list[float] = []
-        # Stateful tracker: each frame's annulus is seeded from the previous fit,
-        # so it is both cheaper and steadier than re-detecting every frame.
-        self._tracker = PupilTracker()
+        # Tracking runs on its own thread (see pupil_cam/track_worker.py): it is
+        # the only consumer of the camera worker's frames and hands the GUI each
+        # frame together with the fit made from it.
+        self._track: PupilTrackWorker | None = None
         self._theta = np.linspace(0, 2 * np.pi, 48)
 
     # ── construction ──
@@ -398,9 +399,14 @@ class PupilCamModule(ModuleAdapter):
             config.load_dataclass(PupilSettings, self.key))
         self.panel.exposure_changed.connect(self._on_exposure)
         self.panel.led_toggled.connect(self._on_led)
-        self.panel.settings_changed.connect(
-            lambda s: config.save_settings(self.key, asdict(s)))
+        self.panel.settings_changed.connect(self._on_settings)
         return self.panel
+
+    def _on_settings(self, s) -> None:
+        config.save_settings(self.key, asdict(s))
+        if self._track is not None:
+            # Queued, not written: the tracker belongs to its own thread.
+            self._track.configure(**track_params(s))
 
     def build_plot(self) -> QWidget:
         pw, self._curve = _plot("Pupil radius", "Radius", "px", "Frame", self.key)
@@ -447,27 +453,42 @@ class PupilCamModule(ModuleAdapter):
     def build_session(self, emulate: bool) -> None:
         s = self.panel.settings
         if emulate:
-            self._adopt(MockPupilCameraWorker(fps=s.fps))
+            cam = self._adopt(MockPupilCameraWorker(fps=s.fps))
         else:
             # cam=None → the worker opens/closes its own Basler on its thread.
-            self._adopt(PupilCameraWorker(exposure_us=s.exposure_us, fps=s.fps))
-        self._tracker.reset()          # don't carry a lock across sessions
+            cam = self._adopt(PupilCameraWorker(exposure_us=s.exposure_us,
+                                                fps=s.fps))
+        # A fresh tracker per session, so no annulus lock is carried across one.
+        self._track = PupilTrackWorker(cam.get_latest, history=PLOT_HISTORY)
+        self._track.error.connect(self.win.on_worker_error)
+        self._track.configure(**track_params(s))
         self._y.clear()
+
+    def start(self) -> None:
+        super().start()                 # camera first; the tracker idles until
+        if self._track is not None:     # there is something to track
+            self._track.start()
+
+    def stop(self) -> None:
+        if self._track is not None:     # stop the consumer before the producer
+            self._track.stop()
+            self._track = None
+        super().stop()
 
     # ── display ──
     def update_display(self) -> None:
-        frame = self.worker.get_latest() if self.worker is not None else None
-        if frame is None:
+        if self._track is None:
             return
-        thr, min_r, max_r = self.panel.track_params
-        self._tracker.configure(threshold=thr, min_r=min_r, max_r=max_r,
-                                **self.panel.track_kwargs)
-        res = self._tracker.process(frame)
+        radii = self._track.take_radii()
+        if radii:
+            self._y.extend(radii)
+            del self._y[:-PLOT_HISTORY]
+            self._curve.setData(self._y)
 
-        self._y.append(res.radius if res.radius is not None else float("nan"))
-        del self._y[:-PLOT_HISTORY]
-        self._curve.setData(self._y)
-
+        pair = self._track.get_latest()
+        if pair is None:
+            return
+        frame, res = pair               # the fit belongs to THIS frame
         # No `levels=` here: the LUT bar owns the levels, so forcing them every
         # frame would undo any contrast the user drags.
         self._img.setImage(frame, autoLevels=False)

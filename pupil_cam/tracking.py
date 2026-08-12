@@ -431,7 +431,7 @@ def fit_ellipse(x: np.ndarray, y: np.ndarray):
     M = S1 + S2 @ T
     M = np.array([M[2] / 2.0, -M[1], M[0] / 2.0])
     try:
-        evals, evecs = np.linalg.eig(M)
+        _, evecs = np.linalg.eig(M)     # only the eigenvectors matter here
     except np.linalg.LinAlgError:
         return None
 
@@ -785,8 +785,10 @@ class PupilTracker:
     workflow: the operator seeds the annulus once, then it follows the pupil).
     After `max_lost` consecutive failures it falls back to `coarse_seed`.
 
-    Thread note: not thread-safe — call it from one thread (the GUI display
-    tick), which is how both _toy.py and main.py use it.
+    Thread note: not thread-safe — call `process()`/`configure()` from one
+    thread. In the app that is the tracking thread (`track_worker.py`), which
+    owns a tracker and queues the panel's edits into it between frames; _toy.py,
+    being one device on one timer, drives it from the GUI thread directly.
     """
 
     def __init__(self, threshold: int = 60, min_r: int = 10, max_r: int = 80,

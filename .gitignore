@@ -21,6 +21,13 @@ acqApp/scratch/*_out.*
 scratch/*_out.*
 cam_grab_out.*
 
+# --- Build / transfer artifacts ---
+# The repo is how code moves between the laptop and the rig now; a tarball of a
+# snapshot only ever goes stale (acqapp_phase1_2.tar.gz was six weeks out of
+# date and still in the tree).
+*.tar.gz
+*.zip
+
 # --- Logs / config local overrides ---
 *.log
 *_local.json

@@ -154,11 +154,14 @@ image in the toy) or by excluding the lid sectors with `exclude_deg`.
 - Fields: `exposure_us`, `fps`, `threshold`, `min_r`, `max_r`, plus the annulus
   controls `n_rays`, `polarity`, `min_strength`, `fit`.
 - Signals: `exposure_changed(float)` (hot-applied), `led_toggled(bool)`.
-- `track_params` → `(threshold, min_r, max_r)` tuple and `track_kwargs` → dict of
-  the annulus options. Both read cheaply every display tick (avoids rebuilding
-  the dataclass at 30 Hz). Feed them straight into
-  `PupilTracker.configure(**...)`, which re-seeds only when a change invalidates
-  the current lock (`threshold`, `min_r`, `max_r`, `polarity`, `fit`).
+- `settings_changed(PupilSettings)` — every parameter edit. `track_params(s)` in
+  `track_worker.py` picks out the tracker's share of it; the app queues that onto
+  the tracking thread, which applies it between frames via
+  `PupilTracker.configure(**...)` (that re-seeds only when a change invalidates
+  the current lock: `threshold`, `min_r`, `max_r`, `polarity`, `fit`).
+- `track_params` → `(threshold, min_r, max_r)` and `track_kwargs` → dict of the
+  annulus options are the per-tick reads `_toy.py` still uses, where tracking
+  runs on the GUI timer. **The app does not**: see `pupil_cam/track_worker.py`.
 
 ### Recording (two separate paths)
 - **Toy**: `FrameWriter` streams frames to `toy_output/pupil_frames.h5`;
