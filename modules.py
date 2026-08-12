@@ -49,22 +49,24 @@ from acqApp.voltage_cam.settings     import SettingsPanel as CamSettingsPanel
 from acqApp.voltage_cam.presets      import AcqConfig, PRESET_KEYS, DEFAULT_PRESET
 
 from acqApp.wheel.acquisition import EncoderWorker, MockEncoderWorker
-from acqApp.wheel.settings    import SettingsPanel as WheelSettingsPanel
+from acqApp.wheel.settings    import EncoderSettings, SettingsPanel as WheelSettingsPanel
 
 from acqApp.pupil_cam.acquisition import MockPupilCameraWorker, PupilCameraWorker
-from acqApp.pupil_cam.settings    import SettingsPanel as PupilSettingsPanel
+from acqApp.pupil_cam.settings    import (PupilSettings,
+                                          SettingsPanel as PupilSettingsPanel)
 from acqApp.pupil_cam.control     import MockLedController, LedController
 from acqApp.pupil_cam.tracking    import PupilTracker
 
 from acqApp.puffer.control import (MockPufferController, PufferController,
-                                   SettingsPanel as PufferPanel)
+                                   PufferSettings, SettingsPanel as PufferPanel)
 
 from acqApp.stage.acquisition import StagePollWorker
 from acqApp.stage.control     import StageController, MockStageController
 from acqApp.stage.settings    import (SettingsPanel as StageSettingsPanel,
                                       load_settings as load_stage_settings)
 
-from acqApp.dmd.control import DmdController, MockDmdController, SettingsPanel as DmdPanel
+from acqApp.dmd.control import (DmdController, MockDmdController, DmdSettings,
+                                SettingsPanel as DmdPanel)
 
 PLOT_HISTORY = 600          # samples kept in each rolling plot
 DISP_DS      = 4            # preview downsample stride
@@ -392,9 +394,12 @@ class PupilCamModule(ModuleAdapter):
 
     # ── construction ──
     def build_panel(self) -> QWidget:
-        self.panel = PupilSettingsPanel()
+        self.panel = PupilSettingsPanel(
+            config.load_dataclass(PupilSettings, self.key))
         self.panel.exposure_changed.connect(self._on_exposure)
         self.panel.led_toggled.connect(self._on_led)
+        self.panel.settings_changed.connect(
+            lambda s: config.save_settings(self.key, asdict(s)))
         return self.panel
 
     def build_plot(self) -> QWidget:
@@ -514,7 +519,8 @@ class WheelModule(ModuleAdapter):
 
     # ── construction ──
     def build_panel(self) -> QWidget:
-        self.panel = WheelSettingsPanel()
+        self.panel = WheelSettingsPanel(
+            config.load_dataclass(EncoderSettings, self.key))
         self.panel.settings_changed.connect(self._on_settings)
         return self.panel
 
@@ -524,7 +530,13 @@ class WheelModule(ModuleAdapter):
         return self._plot_w
 
     def _on_settings(self, st) -> None:
-        """Push live V/rev and wheel-diameter changes to a running worker."""
+        """Push live V/rev and wheel-diameter changes to a running worker.
+
+        These two are the scaling constants for every wheel number in the
+        session file, and both are still unmeasured on this rig — so they are
+        also the values most likely to be silently wrong if they reset.
+        """
+        config.save_settings(self.key, asdict(st))
         if self.worker is not None:
             self.worker.set_scaling(st.volts_per_rev, st.wheel_dia_mm)
 
@@ -625,7 +637,7 @@ class PufferModule(ModuleAdapter):
     tab_label = "Puffer"
 
     def build_panel(self) -> QWidget:
-        self.panel = PufferPanel()
+        self.panel = PufferPanel(config.load_dataclass(PufferSettings, self.key))
         self.panel.test_requested.connect(self.fire)
         self.panel.settings_changed.connect(self._on_settings)
         # Arm the shared-clock trigger bus: the puff fires at t = at_s and is
@@ -642,6 +654,7 @@ class PufferModule(ModuleAdapter):
                            else PufferController(s))
 
     def _on_settings(self, s) -> None:
+        config.save_settings(self.key, asdict(s))
         if self.controller is not None:
             self.controller.apply_settings(s)
 
@@ -673,9 +686,32 @@ class StageModule(ModuleAdapter):
     # No plot: live position is the X/Y readout in the Stage tab, and it is
     # recorded as stage_x_um / stage_y_um.
 
+    # Everything else about the stage (axis calibration, soft limits, the
+    # origin) lives in the config shared with the standalone stage_control app
+    # and must keep coming from there — StageSettings nests two StageAxis
+    # objects, which do not survive a round trip through this config's flat
+    # JSON. Only the two fields the panel itself owns are persisted here.
+    _PANEL_KEYS = ("port", "poll_hz")
+
     def build_panel(self) -> QWidget:
-        self.panel = StageSettingsPanel()
+        s = load_stage_settings()
+        saved = config.load_settings(self.key)
+        if isinstance(saved.get("port"), str) and saved["port"].strip():
+            s.port = saved["port"]
+        try:
+            hz = float(saved.get("poll_hz"))
+        except (TypeError, ValueError):
+            pass
+        else:
+            if hz > 0:
+                s.poll_hz = hz
+        self.panel = StageSettingsPanel(s)
+        self.panel.settings_changed.connect(self._save)
         return self.panel
+
+    def _save(self, s) -> None:
+        config.save_settings(self.key,
+                             {k: getattr(s, k) for k in self._PANEL_KEYS})
 
     def probe_kwargs(self) -> dict[str, Any]:
         try:
@@ -736,17 +772,30 @@ class DmdModule(ModuleAdapter):
     tab_label = "DMD"
 
     def build_panel(self) -> QWidget:
-        self.panel = DmdPanel()
+        self.panel = DmdPanel(config.load_dataclass(DmdSettings, self.key))
         # Route through this adapter, not straight to the controller: the
         # controller is rebuilt whenever Emulate is toggled, and the panel binds
         # its signals only once.
         self.panel.load_requested.connect(self.load)
         self.panel.display_requested.connect(self.display)
         self.panel.stop_requested.connect(self.stop_display)
+        self.panel.settings_changed.connect(self._save)
         return self.panel
+
+    def _save(self, s) -> None:
+        d = asdict(s)
+        d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
+        config.save_settings(self.key, d)
 
     def build_controller(self, emulate: bool) -> None:
         self.controller = MockDmdController() if emulate else DmdController()
+        # A pattern the panel is showing — restored from the config, or loaded
+        # before Emulate was toggled — has to be uploaded to this controller
+        # too, or Display projects whatever the fresh controller defaults to
+        # while the panel names a file.
+        path = self.panel.settings.pattern_path if self.panel is not None else None
+        if path is not None and path.exists():
+            self.controller.load_pattern(path)
 
     def load(self, path) -> None:
         if self.controller is not None:

@@ -32,6 +32,10 @@ class PupilSettings:
 class SettingsPanel(QWidget):
     exposure_changed = pyqtSignal(float)   # hot-applied to the worker while running
     led_toggled      = pyqtSignal(bool)    # eye-tracking illumination on/off
+    # Any parameter edit. The LED is deliberately NOT one of these: it is
+    # runtime state, and restoring it at launch would turn the illumination on
+    # in an empty rig.
+    settings_changed = pyqtSignal(object)  # emits PupilSettings
 
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
@@ -129,6 +133,15 @@ class SettingsPanel(QWidget):
         ll.addWidget(self._chk_led)
         root.addWidget(led)
         root.addStretch()
+
+        for w in (self._spn_exp, self._spn_fps, self._spn_thr, self._spn_min,
+                  self._spn_max, self._spn_rays, self._spn_str):
+            w.valueChanged.connect(self._emit)
+        for c in (self._cmb_pol, self._cmb_fit):
+            c.currentTextChanged.connect(self._emit)
+
+    def _emit(self, *_a) -> None:
+        self.settings_changed.emit(self.settings)
 
     @property
     def track_params(self) -> tuple[int, int, int]:

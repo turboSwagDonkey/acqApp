@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 50 %** (11 of 22 closed, 3 partial) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 55 %** (12 of 22 closed, 3 partial) |
 
 ---
 
@@ -92,11 +92,16 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       Panel now emits `settings_changed`; `PufferController.apply_settings()`
       re-opens the DO task on a channel change under a lock; `fire()` takes the
       panel duration. Recorded as `puffer_channel` / `puffer_duration_s`.
-- [ ] **#4 Only 2 of 7 panels persist their settings.** ⬜
-      Wheel, pupil, puffer, stage-port and DMD are built bare. Every launch
-      resets V/rev and wheel diameter to defaults — and per the handoff notes
-      the real wheel diameter still has to be measured, so that is exactly the
-      value most likely to be silently wrong in a session file.
+- [x] **#4 All 7 panels persist their settings.** ✅
+      Wheel, pupil, puffer, stage and DMD now load from `acqapp_local.json` and
+      save on every edit. The wheel's V/rev and diameter used to reset each
+      launch and were then written into the session file as though measured.
+      Deliberate exclusions: the eye-tracking LED (runtime state — restoring it
+      would switch the illumination on in an empty rig) and the stage's axis
+      calibration (belongs to the shared `stage_control/config.json`; only
+      `port`/`poll_hz` are the panel's own). Guarded by
+      `tests/test_settings_persistence.py`, which edits all seven panels,
+      closes the window and reads them back from a second one.
 - [ ] **#5 The DMD is a print-only stub presented as real hardware.** 🟡
       `apply_settings()` added; the device calls in `dmd/control.py:61-97` are
       still `print(...)`. With Emulate off, Display does nothing and the UI
@@ -199,25 +204,27 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ## 6. Next actions
 
-1. **#4 — panel settings persistence.** The last open data-correctness item on
-   this list. Wheel, pupil, puffer, stage-port and DMD are built bare, so V/rev
-   and wheel diameter reset to defaults every launch — exactly the values still
-   unmeasured on the rig, and they are written into every session file.
-2. **#10 — the dropped-sample blind spot.** `_stop_recording` clears the sinks
+1. **#10 — the dropped-sample blind spot.** `_stop_recording` clears the sinks
    but worker lambdas already captured `rec`, so a sample arriving mid-callback
    is dropped *and not counted*. The file's `recorder_dropped_samples` is
    therefore an undercount, which makes it untrustworthy exactly when it
    matters.
-3. **#8 + #14 — the acquisition-loop pair.** `wait_for_frame` failing hot-spins
+2. **#8 + #14 — the acquisition-loop pair.** `wait_for_frame` failing hot-spins
    with no message; the ring buffer's count cap can evict the zero-byte event
    samples the byte cap exists to protect. Both are cheap and both bite first
    under the load the rig will actually put on this.
+3. **#18 + #19 — the file and the README.** Metadata is stringified, so
+   `wheel_volts_per_rev` lands as `"4.912"` and analysis has to parse it; the
+   README still describes the pupil cam as GigE-mock and the stage as never
+   sending a motion command. Both are small and both mislead whoever reads the
+   data next.
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
   `.venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save`
   → the achieved MB/s sizes the ring buffer (#14) and confirms the SSD keeps up.
-- Encoder `volts_per_rev` and wheel diameter — still unmeasured; gates #4's value.
+- Encoder `volts_per_rev` and wheel diameter — still unmeasured. The panel now
+  keeps whatever is typed in, so measure once and it stays measured.
 - Whether the analog encoder voltage wraps (continuous-turn sensor).
 - Real-hardware validation of *everything* in phases 2–4: no rig hardware has
   ever run this code.
@@ -226,7 +233,21 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
-### 2026-08-12 — the data-destruction item, plus the small-fix batch
+### 2026-08-12 (b) — #4, panel settings persistence
+- All five bare panels now load and save through `config`. Two panels had no
+  change signal to hang it on: the pupil panel got one, and the DMD's was
+  declared but never emitted. The stage's port/poll-rate widgets were silent
+  too, so nothing downstream ever heard about a port change.
+- Wheel spinboxes moved from `editingFinished` to `valueChanged`: the spin
+  arrows don't count as "editing finished", so a V/rev nudged with the arrows
+  never reached the running worker either.
+- DMD: a restored pattern is shown (and reported *missing* if the file has
+  gone), and gets uploaded to the controller on build — which also fixes the
+  pattern being silently lost when Emulate is toggled.
+- `test_settings_persistence` (47 checks) does a real restart: edit all seven
+  panels, close, rebuild, read back. Suite 163 checks / 19.1 s.
+
+### 2026-08-12 (a) — the data-destruction item, plus the small-fix batch
 - **#2 closed.** Recordings can no longer overwrite each other: `resolve(
   unique=True)` picks the next free `_001` name and `HDF5Writer` opens with
   mode `"x"` so the truncating path no longer exists. Two layers on purpose —

@@ -506,6 +506,12 @@ class SettingsPanel(QWidget):
         self._spn_rate.setValue(self._s.poll_hz)
         lay.addRow("Poll rate:", self._spn_rate)
 
+        # Port and poll rate are the two settings that live in the panel rather
+        # than in the calibration file; without this they were never announced,
+        # so nothing could persist them and the port reverted every launch.
+        self._cmb_port.currentTextChanged.connect(self._emit_settings)
+        self._spn_rate.valueChanged.connect(self._emit_settings)
+
         self._lbl_x = QLabel("—")
         self._lbl_y = QLabel("—")
         lay.addRow(f"{self._s.x.name} (µm):", self._lbl_x)
@@ -802,6 +808,9 @@ class SettingsPanel(QWidget):
         self._lbl_x.setText(f"{x_um:8.1f}")
         self._lbl_y.setText(f"{y_um:8.1f}")
         self._map.set_position(x_um, y_um)
+
+    def _emit_settings(self, *_a) -> None:
+        self.settings_changed.emit(self.settings)
 
     @property
     def settings(self) -> StageSettings:

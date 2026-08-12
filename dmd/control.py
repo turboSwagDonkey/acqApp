@@ -197,7 +197,9 @@ class SettingsPanel(QWidget):
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or DmdSettings()
-        self._pattern_path: Path | None = self._s.pattern_path
+        # Coerce: a path restored from JSON arrives as a str.
+        self._pattern_path: Path | None = (
+            Path(self._s.pattern_path) if self._s.pattern_path else None)
         self._build()
 
     def _build(self) -> None:
@@ -263,6 +265,15 @@ class SettingsPanel(QWidget):
         root.addRow(grp)
 
         self._on_static_toggled(self._chk_static.isChecked())
+        self._show_pattern(self._pattern_path)
+
+        for w in (self._spn_on, self._spn_rep):
+            w.valueChanged.connect(self._emit)
+        self._chk_static.toggled.connect(self._emit)
+        self._cmb_trig.currentTextChanged.connect(self._emit)
+
+    def _emit(self, *_a) -> None:
+        self.settings_changed.emit(self.settings)
 
     def _on_static_toggled(self, on: bool) -> None:
         # A single held image has no cadence: on-time and repeat count are both
@@ -276,10 +287,30 @@ class SettingsPanel(QWidget):
         )
         if path:
             p = Path(path)
-            self._pattern_path = p
+            self._show_pattern(p)
+            self.load_requested.emit(p)
+            self._emit()
+
+    def _show_pattern(self, p: Path | None) -> None:
+        """Adopt `p` as the selected pattern and reflect it in the panel.
+
+        Also runs at build time for a pattern restored from the config. A file
+        that has since been moved or deleted is reported as missing rather than
+        left looking loaded — the DMD would otherwise sit dark with the panel
+        naming a pattern.
+        """
+        self._pattern_path = p
+        if p is None:
+            self._lbl_pattern.setText("No pattern loaded")
+            self._preview.setPixmap(QPixmap())
+            self._preview.setText("No preview")
+        elif p.exists():
             self._lbl_pattern.setText(p.name)
             self._update_preview(p)
-            self.load_requested.emit(p)
+        else:
+            self._lbl_pattern.setText(f"{p.name} — missing")
+            self._preview.setPixmap(QPixmap())
+            self._preview.setText("(file not found)")
 
     def _update_preview(self, path: Path) -> None:
         pix = QPixmap(str(path))

@@ -63,9 +63,12 @@ class SettingsPanel(QWidget):
         self._spn_dia.setValue(self._s.wheel_dia_mm or 0.0)
         lay.addRow("Wheel dia:", self._spn_dia)
 
-        for w in (self._edt_chan, self._spn_rate, self._spn_vpr, self._spn_dia):
-            w.editingFinished.connect(self._emit) if hasattr(w, "editingFinished") \
-                else w.currentTextChanged.connect(self._emit)
+        # valueChanged, not editingFinished: the spin arrows don't count as
+        # "editing finished", so a V/rev nudged with the arrows and then left
+        # alone never reached the worker — or the saved settings.
+        for w in (self._spn_rate, self._spn_vpr, self._spn_dia):
+            w.valueChanged.connect(self._emit)
+        self._edt_chan.currentTextChanged.connect(self._emit)
 
         # Live derived readout (speed + cumulative distance), driven from the GUI.
         self._lbl_readout = QLabel("speed —   distance —")
@@ -83,7 +86,7 @@ class SettingsPanel(QWidget):
         """Show the live speed/distance line (formatted by the caller)."""
         self._lbl_readout.setText(text)
 
-    def _emit(self) -> None:
+    def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)
 
     @property

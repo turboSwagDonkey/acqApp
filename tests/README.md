@@ -7,11 +7,11 @@ acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py session  # one test
 ```
 
 Everything runs in **Emulate mode against fakes** — no rig hardware, no windows
-on screen, ~17 s for the set. Each test is also runnable on its own.
+on screen, ~19 s for the set. Each test is also runnable on its own.
 
 Plain scripts, not pytest: pytest is not in `requirements.txt` and the rig
 machine installs only what's there. `run_all.py` gives each test its own process
-(three of them build a `QApplication`, and tearing one down and rebuilding it in
+(most of them build a `QApplication`, and tearing one down and rebuilding it in
 a single process is not reliable) and prints a summary.
 
 ## What each one defends
@@ -23,6 +23,7 @@ a single process is not reliable) and prints a summary.
 | `test_stage_state` | Motion commands on a disconnected stage must raise `StageControllerError`, not `AttributeError`. Also that `save_axis_updates()` survives a missing or corrupt calibration file — the callers mutate the live axes first and `establish_frame()` has already driven both hard limits, so a raise there loses a just-measured origin. Redirects `config_path()` at a temp file and asserts the operator's real calibration was untouched. |
 | `test_camera_timestamps` | The camera reads frames in batches. Stamping them on arrival gave every frame in a batch the same time, quantising the recorded timebase to the read cadence instead of the frame rate. Drives the real worker against a fake batching camera and checks intervals track the frame rate, and that a dropped frame shows up in `voltage_cam_index`. |
 | `test_module_subsets` | Any combination of instruments can be loaded, so each `ModuleAdapter` has to cope with its neighbours being absent — including the voltage camera, which owns the central view. Builds a window per subset, runs a session, toggles Emulate. |
+| `test_settings_persistence` | A real restart: edit all seven panels, close the window, build a second one and read them back. Only the camera and Save tabs used to persist, so the wheel's V/rev and diameter — the constants that scale every wheel number in a session file — reset to defaults every launch and were recorded as though measured. Also asserts the stage section stays `port`/`poll_hz` only, and that the LED is *not* restored on. |
 | `test_session_recording` | The broad net: full session → record → stop → verify the HDF5. Every expected stream present, timestamps monotonic and trimmed, metadata written (including the close-time attributes), and the puffer panel's channel/duration actually reaching the hardware. |
 
 ## Two things to know before adding a test

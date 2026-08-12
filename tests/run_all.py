@@ -35,6 +35,7 @@ TESTS = [
     ("stage-state", "test_stage_state.py"),
     ("camera-ts", "test_camera_timestamps.py"),
     ("subsets",   "test_module_subsets.py"),
+    ("settings",  "test_settings_persistence.py"),
     ("session",   "test_session_recording.py"),
 ]
 
