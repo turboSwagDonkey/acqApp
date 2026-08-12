@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 100 %** (22 of 22 closed). Next is phase 5, closed-loop. |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 100 %** (22 of 22 closed). Next is phase 5, closed-loop. A separate architecture review (§5b) has 5 open items, none urgent. |
 
 ---
 
@@ -64,7 +64,7 @@ done on top of that. Don't let it drift like that again.
 | 2 | Camera streaming + preview + HDF5 | ✅ mock-verified |
 | 3 | Encoder streaming + plot | ✅ mock-verified |
 | 4 | Unified session start/stop, shared clock, metadata | ✅ mock-verified |
-| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 335 checks |
+| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 342 checks |
 | **5** | **Closed-loop: trigger DMD/puffer from encoder state** | **next** — trigger bus exists, and the DMD is now a real output to close onto |
 | 6 | Hardware sync: `DaqClock` on the PCIe-6363, triggered ORCA | future |
 
@@ -255,6 +255,70 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       by §4 here. Still open: `SESSION_HANDOFF.md` is a single past session and
       would be better folded into `HANDOFF.md` than kept as a peer.
 
+## 5b. Architecture review — SOLID (2026-08-12)
+
+A separate pass from the §5 audit: that one was about wrong data, this one is
+about the shape of the code. Numbered `A*` so it can't be confused with the
+audit items. **None of these are breaking anything today** — they are listed
+because two of them are how a future wrong-data bug gets in.
+
+### What is strong — do not "improve" these
+
+- **Open/Closed is real, not aspirational.** Adding an instrument is a
+  `ModuleAdapter` subclass plus a registry line. Verified: the only module
+  names in all 833 lines of `main.py` are two colour lookups for button
+  styling. Nothing in the window knows what a pupil camera is. This is #17
+  having actually worked, and it is worth defending in review.
+- **Dependency inversion in `acq/`.** `Recorder` depends on `Writer` and
+  `AbstractClock`, never on h5py or `perf_counter` — which is what keeps
+  `DaqClock` (phase 6) a drop-in. Vendor SDKs are imported *inside* methods,
+  not at module scope, which is what made C3's driver blocking possible at all.
+- **The per-instrument adapter owning panel+plot+worker+sink+metadata is a
+  deliberate trade**, not an SRP failure to be fixed. It is SRP by *instrument*
+  instead of by *concern*, and it is what killed the six-way repetition in the
+  old `MainWindow`. Splitting it back up would undo #17.
+
+### Open
+
+- [ ] **A1 The mock/real device pairs have no declared interface.** ⬜
+      **The one worth doing.** Nine `getattr`/`hasattr` probes stand in for a
+      type: `modules.py:363,371,375,451,666,668,907,919` and `:200`. Some are
+      honest (the LED controller really has no `set_sink`); `modules.py:451` is
+      pure hedging, since `MockPupilCameraWorker.set_exposure` exists and is
+      documented as "kept for API parity". The cost is not tidiness — it is
+      that `getattr(c, "device_name", "none")` writes a *plausible wrong value*
+      into the session file when a mock drifts from its real twin, which is the
+      exact failure class §5 spent twenty items removing. Near-miss on
+      2026-08-12: adding `device_name`/`resolution`/`on_pixels` to
+      `DmdController` meant remembering all three on `MockDmdController`, with
+      nothing to catch the omission.
+      **Fix:** `typing.Protocol` for `DeviceWorker` (`get_latest`, `set_sink`,
+      `stop`, `timestamp_source`) and `OutputController` (`apply_settings`,
+      `close`, optional `set_sink`); annotate `ModuleAdapter.worker` /
+      `.controller`; read metadata attributes directly. Structural typing, so
+      no existing class changes and nothing happens at runtime — it just turns
+      a silent default into a type error. ~1 hour.
+- [ ] **A2 A new module needs three registrations, not the two documented.**
+      `modules.ADAPTERS`, `config.MODULES` **and** a `style.HEX` colour. The
+      third is undocumented and only shows up as a `KeyError` at build time.
+      Either default the colour or say so in the `modules.py` docstring. ⬜
+- [ ] **A3 Mock/real selection is hard-wired inside each adapter.** Every
+      `build_session`/`build_controller` imports both concrete classes and
+      picks with `if emulate:`, so a test cannot inject a device — it has to
+      monkeypatch `sys.modules`. That is precisely why `block_real_devices()`
+      exists rather than a one-line fake injection (C3). Defensible for six
+      known instruments; revisit if a seventh needs a third variant. ⬜
+- [ ] **A4 The adapter's "narrow surface" onto the window is a docstring
+      promise.** Adapters get the whole `win` object; the seven-method contract
+      in `modules.py`'s header is enforced by nothing. A `Protocol` here too
+      would make it real, and pairs naturally with A1. ⬜
+- [ ] **A5 `main.py` (833) and `modules.py` (939) are large.** `main.py` still
+      carries window chrome, docks, theme, session start/stop and recording
+      wiring; `modules.py` is six cohesive adapters in one file. Most
+      `settings.py` files hold a dataclass *and* a QWidget. Low priority and
+      partly the A-side of the trade named above — but if `modules.py` grows
+      again, split it per instrument rather than per layer. ⬜
+
 ## 6. Next actions
 
 1. **Project through the full app, on the rig.** The DMD is verified as a
@@ -296,6 +360,27 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-12 (h) — UI: settings move out of the dock into a pop-up window
+- `SettingsDialog` (modeless, in `main.py`) replaces the left settings dock. Same
+  tabs, same accents, same `SavePanel`-leads-the-tabs order; what changes is that
+  it is a top-level window, so it can sit beside the app or on a second screen
+  while a session runs instead of competing with the camera pane for width.
+- Built at startup, never destroyed: the panels inside are live objects the
+  controllers are configured from, and `_build_controllers()` runs after the UI.
+  Closing hides. Size/position persist under `QSettings` key `settingsGeometry`,
+  next to the dock layout's `dockState`.
+- The ⚙ sidebar action stays checkable and stays in sync both ways — the
+  window's `finished` (title-bar ✕ *and* Esc) un-checks it, so the next click
+  re-opens rather than doing nothing. `MainWindow.closeEvent` closes it, or a
+  parentless-feeling top-level window would outlive the app.
+- Guarded by 7 new checks in `test_settings_persistence` (top-level window, not a
+  dock, starts hidden, one tab per module + Save, the ⚙ tab opens it, closing
+  hides it and un-checks the tab). All the persistence edits below them now run
+  against a window that is never shown — which is the point: it is built at
+  startup because `_build_controllers()` is configured from those panels.
+  Suite 335 → **342 checks / 14 files / 30.1 s**. Not eyeballed on a real
+  screen — no interactive display this session.
+
 ### 2026-08-12 (g) — #5: the DMD projects, on real hardware
 - The DMD turned out to be plugged into this machine, and `dmdGUI_project/` next
   door is a proven ALP driver for it. New `dmd/alp.py` ports its pipeline: API
@@ -319,6 +404,11 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   suite was opening the real DMD — and on the rig would open a DO task on the
   puffer's line. `_harness.block_real_devices()` now blocks the vendor drivers
   for every test that isolates user state.
+- Added **§5b**, a SOLID pass over the architecture, prompted by a question
+  rather than a bug. The finding that matters is A1: the mock/real device pairs
+  have no declared interface, so nine `getattr`/`hasattr` probes stand in for
+  one — and this session came within a forgotten property of writing
+  `dmd_device = "none"` into a session file that had really projected.
 - `test_dmd` (41 checks) against a fake ALP + the geometry as pure functions.
   Suite **335 checks / 14 files / 29.9 s**. Audit remediation is now complete.
 
