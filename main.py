@@ -133,8 +133,8 @@ if not _mock:
 # Force pyqtgraph onto PyQt6 (both bindings may be installed in the venv).
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 
-from PyQt6.QtCore import Qt, QTimer, QSettings
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtCore import Qt, QTimer, QSettings, QSize
+from PyQt6.QtGui import QAction, QColor, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QGridLayout,
     QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QStatusBar,
@@ -194,6 +194,94 @@ class ModuleSelectDialog(QDialog):
 
     def selected(self) -> list[str]:
         return [k for k, cb in self._boxes.items() if cb.isChecked()]
+
+
+class SettingsDialog(QDialog):
+    """Modeless settings window: the Save tab plus one tab per subsystem.
+
+    A separate window rather than a dock inside the main window. The panels are
+    read and edited *while* watching the live view, and a floating window can sit
+    beside the app (or on a second screen) without taking width from the camera
+    pane. It is built once and hidden on close — the panels inside are live
+    objects wired to the running controllers, so it must not be destroyed.
+    """
+
+    _GEOM_KEY = "settingsGeometry"
+    # First-run floor, in px. The window opens at least this big even if every
+    # panel is small; see `default_size()` for what grows it beyond this.
+    _MIN_DEFAULT = (900, 820)
+    _PAD = 16          # slack round the measured panel, for the frame/scrollbar
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        # A real window (minimise/maximise buttons), not a fixed dialog frame.
+        self.setWindowFlag(Qt.WindowType.Window, True)
+
+        self.tabs = QTabWidget()
+        self.tabs.setMovable(True)                  # tabs reorderable by drag
+
+        # Scroll area so the window can be dragged narrower than the widest
+        # panel (content scrolls instead of pinning a minimum width).
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.tabs)
+        scroll.setMinimumWidth(80)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(scroll)
+
+        # Sizing waits for the first show: the panels are added after __init__,
+        # and the size is measured from them.
+        self._saved_geom = QSettings("acqApp", "acqApp").value(self._GEOM_KEY)
+        self._sized = False
+
+    def default_size(self) -> QSize:
+        """Big enough to show the largest panel whole, clamped to the screen.
+
+        Measured rather than hard-coded, so a panel that grows a row doesn't
+        silently start opening behind a scrollbar. The floor keeps the small
+        panels from opening in a cramped window; the clamp matters because the
+        rig's display is not this laptop's — a fixed size that is comfortable
+        here can open taller than the screen there, which on Windows puts the
+        bottom of the window out of reach.
+
+        `QScrollArea` reports a small hint of its own (that is the point of it),
+        so this asks the tab widget inside instead."""
+        hint = self.tabs.sizeHint()
+        w = max(self._MIN_DEFAULT[0], hint.width()  + 2 * self._PAD)
+        h = max(self._MIN_DEFAULT[1], hint.height() + 2 * self._PAD)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = min(w, int(avail.width()  * 0.9))
+            h = min(h, int(avail.height() * 0.9))
+        return QSize(w, h)
+
+    def showEvent(self, event) -> None:
+        # First show only: afterwards the operator's own size wins.
+        if not self._sized:
+            self._sized = True
+            if self._saved_geom is not None:
+                self.restoreGeometry(self._saved_geom)
+            else:
+                self.resize(self.default_size())
+        super().showEvent(event)
+
+    def add_panel(self, panel: QWidget, label: str, key: str) -> None:
+        """Add a settings tab wearing its subsystem accent (tab + group box)."""
+        idx = self.tabs.addTab(panel, label)
+        self.tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
+        panel.setStyleSheet(style.accent_panel(key))
+
+    def save_geometry(self) -> None:
+        QSettings("acqApp", "acqApp").setValue(self._GEOM_KEY, self.saveGeometry())
+
+    def closeEvent(self, event) -> None:
+        # Remember where the operator put it, then hide (never delete).
+        self.save_geometry()
+        super().closeEvent(event)
 
 
 class ConnectionMonitor(QDialog):
@@ -285,6 +373,7 @@ class MainWindow(QMainWindow):
         self._recorder: Recorder | None = None
         self._rec_path: Path | None = None      # file the last recording went to
         self._save_panel: SavePanel | None = None
+        self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         self._devices_dialog: ConnectionMonitor | None = None
         self._pg_views: list = []      # pyqtgraph views to recolour on theme change
 
@@ -314,6 +403,28 @@ class MainWindow(QMainWindow):
 
     def status(self, message: str) -> None:
         self.statusBar().showMessage(message)
+
+    def module_keys(self) -> list[str]:
+        """The module keys loaded this session, in display order.
+
+        Which modules exist, not the modules themselves — the closed loop uses
+        it to offer only outputs that are actually loaded, since a rule aimed
+        at an absent one would fire onto the bus with nothing listening and
+        look armed and working.
+        """
+        return [m.key for m in self._modules]
+
+    def signal_sources(self) -> list:
+        """Live scalar signals a closed-loop rule can watch (`SignalSource`s).
+
+        Contributed by the loaded modules, so the loop depends on *a signal*
+        rather than on the wheel: making pupil radius triggerable is one method
+        on that adapter and no change here.
+        """
+        out: list = []
+        for m in self._modules:
+            out.extend(m.signal_sources())
+        return out
 
     def register_pg_view(self, view) -> None:
         """Track a pyqtgraph view so the theme toggle can recolour it."""
@@ -346,22 +457,19 @@ class MainWindow(QMainWindow):
         self.setDockNestingEnabled(True)
 
         self._build_central()
-        self._build_settings_dock()
+        self._build_settings_dialog()
         self._build_plots_dock()
         for m in self._modules:          # extra docks (e.g. the pupil video box)
             m.build_views()
 
-        # Initial widths ≈ the classic 280 / … / 420 proportions; the user can
+        # Initial width ≈ the classic 420 for the signals column; the user can
         # drag from here and the layout is remembered across runs.
-        self.resizeDocks([self._settings_dock, self._plots_dock], [280, 420],
-                         Qt.Orientation.Horizontal)
+        self.resizeDocks([self._plots_dock], [420], Qt.Orientation.Horizontal)
 
         self._build_status_bar()
         self._build_sidebar()
 
         self._restore_layout()
-        # Start collapsed regardless of any saved layout — it opens on click.
-        self._settings_dock.hide()
 
     def _build_central(self) -> None:
         """The centre pane belongs to whichever module claims it (the primary
@@ -390,35 +498,24 @@ class MainWindow(QMainWindow):
         lay.addWidget(view)
         self.setCentralWidget(wrap)
 
-    def _build_settings_dock(self) -> None:
-        tabs = QTabWidget()
-        tabs.setMovable(True)                      # tabs reorderable by drag
+    def _build_settings_dialog(self) -> None:
+        """Build the settings window (hidden until the sidebar tab is clicked).
 
-        def add_tab(panel: QWidget, label: str, key: str) -> None:
-            """Add a settings tab wearing its subsystem accent (tab + group box)."""
-            idx = tabs.addTab(panel, label)
-            tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
-            panel.setStyleSheet(style.accent_panel(key))
+        Built at startup rather than on first click: the module controllers are
+        configured from these panels, so they have to exist before
+        `_build_controllers()` opens any device."""
+        self._settings_dialog = SettingsDialog(self)
 
         # Save destination is session-wide (not tied to a module), and it is the
         # first thing to get right before recording — so it leads the tabs.
         self._save_panel = SavePanel(config.load_dataclass(SaveConfig, "saving"))
         self._save_panel.settings_changed.connect(self._save_save_settings)
-        add_tab(self._save_panel, "Save", "saving")
+        self._settings_dialog.add_panel(self._save_panel, "Save", "saving")
 
         for m in self._modules:
             panel = m.build_panel()
             if panel is not None:
-                add_tab(panel, m.tab_label, m.key)
-
-        # Wrap in a scroll area so the dock can be dragged narrower than the
-        # widest panel (content scrolls instead of pinning a minimum width).
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(tabs)
-        scroll.setMinimumWidth(80)
-        self._settings_dock = self._make_dock("Settings", scroll,
-                                              Qt.DockWidgetArea.LeftDockWidgetArea)
+                self._settings_dialog.add_panel(panel, m.tab_label, m.key)
 
     def _build_plots_dock(self) -> None:
         tabs = QTabWidget()
@@ -464,9 +561,9 @@ class MainWindow(QMainWindow):
         sb.showMessage("Ready")
 
     def _build_sidebar(self) -> None:
-        """Left side-bar: a 'Settings' tab that pops the settings dock up, plus
-        the theme toggle and the device monitor. The dock is collapsed by
-        default; clicking the tab toggles it open/shut."""
+        """Left side-bar: a 'Settings' tab that pops the settings *window* up,
+        plus the theme toggle and the device monitor. The window starts hidden;
+        clicking the tab toggles it open/shut."""
         self._sidebar = QToolBar("Sidebar")
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMovable(False)
@@ -474,12 +571,15 @@ class MainWindow(QMainWindow):
         self._sidebar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
 
-        # Own checkable action ↔ dock visibility (kept in sync both ways, so the
-        # dock's close button also un-checks the tab).
+        # Checkable action ↔ window visibility, kept in sync both ways: closing
+        # the window (title-bar ✕ or Esc, both of which reach `finished`) also
+        # un-checks the tab, so the next click re-opens instead of doing nothing.
         self._settings_action = QAction("⚙ Settings", self)
         self._settings_action.setCheckable(True)
-        self._settings_action.toggled.connect(self._settings_dock.setVisible)
-        self._settings_dock.visibilityChanged.connect(self._settings_action.setChecked)
+        self._settings_action.setToolTip("Open the settings window")
+        self._settings_action.toggled.connect(self._on_settings_toggled)
+        self._settings_dialog.finished.connect(
+            lambda _result: self._settings_action.setChecked(False))
         self._sidebar.addAction(self._settings_action)
 
         # Dark/light theme toggle (persisted to config; default dark).
@@ -508,6 +608,18 @@ class MainWindow(QMainWindow):
         dock.setStyleSheet(style.dock_accent(accent))
         self.addDockWidget(area, dock)
         return dock
+
+    # ── Settings window ─────────────────────────────────────────────────────────
+
+    def _on_settings_toggled(self, on: bool) -> None:
+        if on:
+            self._settings_dialog.show()
+            # Re-open in front: it may have been left behind the main window.
+            self._settings_dialog.raise_()
+            self._settings_dialog.activateWindow()
+        else:
+            self._settings_dialog.save_geometry()
+            self._settings_dialog.hide()
 
     # ── Dock layout persistence ─────────────────────────────────────────────────
 
@@ -742,6 +854,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_layout()
+        # A top-level settings window would outlive the main window and keep the
+        # app alive with no way back to it.
+        self._settings_dialog.save_geometry()
+        self._settings_dialog.close()
         if self._sync.running:
             self._stop_session()
         for m in self._modules:

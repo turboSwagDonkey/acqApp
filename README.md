@@ -12,6 +12,9 @@ runs and records six subsystems against a single shared session clock:
 | XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
 | DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
 
+…plus a seventh tab, **Closed loop** (`closed_loop.py`), which owns no device: it
+watches one subsystem's live signal and fires another's output (see below).
+
 > **What has actually run.** Every subsystem has a real driver path and a mock
 > twin, and the whole suite is verified against the mocks (`tests/`). Two have
 > been run against the real hardware: the wheel encoder, and the **DMD** —
@@ -20,17 +23,19 @@ runs and records six subsystems against a single shared session clock:
 > run on the rig; treat their rates, timings and device quirks as unconfirmed
 > until they have.
 
-Panels are **dockable** — drag any settings/plot/video panel to re-dock, float,
-or tab it with another; drag the tabs to reorder. The layout is remembered
-across runs. The voltage camera has the central image; the **pupil camera has
-its own dockable video box** (live frame + detected-pupil outline), alongside
-its radius trace in the Signals panel.
+Panels are **dockable** — drag any plot or video panel to re-dock, float, or tab
+it with another; drag the tabs to reorder. The layout is remembered across runs.
+The voltage camera has the central image; the **pupil camera has its own dockable
+video box** (live frame + detected-pupil outline), alongside its radius trace in
+the Signals panel.
 
-The **settings** for every loaded subsystem live in one tabbed dock that is
-**collapsed by default** — click the **⚙ Settings** tab on the left edge to pop
-it open, click again (or close the dock) to tuck it away, keeping the workspace
-clear for the images and plots. Each subsystem's tab (and its group boxes, plot,
-and dock accent) is coloured by that subsystem. The pupil camera's tab exposes
+The **settings** for every loaded subsystem live in one tabbed **pop-up window**
+— click the **⚙ Settings** tab on the left edge to open it, click again (or close
+the window) to tuck it away, keeping the main workspace entirely for the images
+and plots. Being a separate window, it can be left open beside the app or on a
+second screen while a session runs, and its size and position are remembered.
+Each subsystem's tab (and its group boxes and plot accent) is coloured by that
+subsystem. The pupil camera's tab exposes
 camera exposure/frame-rate, the pupil-tracking parameters (threshold, min/max
 radius, search lines, edge polarity, minimum edge strength, circle-or-ellipse
 fit), and the eye-tracking LED toggle.
@@ -166,6 +171,8 @@ emits a tick per on-time, because it genuinely does produce them.)
 
 **Where the pattern lands** is the alignment to the optics, so it is recorded
 too — `dmd_scale_pct`, `dmd_rotation_deg`, `dmd_offset_x/y`, `dmd_invert`,
+`dmd_all_on` (an all-mirrors-on frame ignores the pattern and the geometry, so
+without it the recorded placement would describe one that was never used),
 `dmd_fit`, and `dmd_on_pixels` (how many mirrors the frame switches on; **0** is
 a dark panel, which is what a bad scale or offset produces and is otherwise
 indistinguishable from a projection that worked). `dmd_device` names the ALP or
@@ -178,6 +185,45 @@ panel's defaults so both put a pattern in the same place. **Only one process can
 hold the ALP over USB**, so that app and acqApp cannot be connected at once
 (like the stage's serial port). If it is open, acqApp falls back to the mock and
 the DMD tab says `nothing will be projected` rather than silently doing nothing.
+
+### Closed loop
+
+A seventh tab, **Closed loop**, owns no device. It watches one live scalar and
+fires one output when a condition on it holds — the behavioural counterpart to
+the scheduled triggers, which fire at a *time* on the session clock rather than
+at a *state* of the animal.
+
+The rule is: *when `<signal>` goes `above`/`below` `<threshold>` and holds for
+`<hold>`, fire the `<puffer|DMD>` for `<duration>`* — plus a minimum gap between
+fires, an optional "one event per bout" mode, and a session-wide fire ceiling.
+Each gate is there because a bare threshold on a real signal fires hundreds of
+times a second; `tests/test_closed_loop.py` carries an ungated control that does
+exactly that.
+
+The wheel offers **two** speeds and they are not interchangeable. `wheel_speed`
+is the recorded one — a least-squares slope centred ~1 s in the past, so it
+matches the trace in the file but a rule on it acts about a second after the
+animal starts running. `wheel_speed_live` is the EMA velocity behind it: noisier,
+but current. The file records which was used (`loop_source`).
+
+Evaluation runs on its own thread at 200 Hz, *watching* the wheel through a
+non-consuming snapshot rather than pulling from it — the display tick is already
+the consumer, and a second one would take samples away from the plot. The
+decision is made on that thread but the actuation is not: a fire is handed to the
+ordinary trigger bus, so a rule-driven puff takes the identical path to a
+scheduled one.
+
+**Arming is never persisted**, for the same reason the eye-tracking LED isn't:
+restoring an armed rule would mean the app firing the puffer at the next launch,
+in an empty rig, before anyone had looked at the threshold. Disarmed, the rule
+still evaluates and the tab still shows whether the condition is met, so a
+threshold can be set against a live animal without actuating anything.
+
+Every fire is recorded to `/closed_loop` — the value that crossed, stamped at the
+instant of the sample that caused it — alongside `loop_armed`, `loop_source`,
+`loop_threshold`, `loop_target` and the rest of the rule, and `loop_fires` when
+the file closes. `loop_armed` is what tells a rule that was never armed from one
+that was armed and never met its condition; both leave `/closed_loop` empty.
 
 Each device worker pushes into a bounded ring buffer; a single writer thread
 drains it to disk (acquisition threads never touch disk I/O). The buffer is
@@ -270,7 +316,8 @@ actions. In short:
 - ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
 - ✅ Pupil tracking moved off the GUI thread; encoder on the DAQ's sample clock
 - ✅ DMD projecting for real (ALP-4.2), verified on the hardware
+- ✅ Closed loop: trigger the DMD / puffer from live wheel speed (mock-verified)
 - Encoder scaling measured on the rig (`volts_per_rev`, wheel diameter)
 - Camera throughput measured on the rig — the number that sizes the ring buffer
-- Closed-loop: trigger DMD / puffer from encoder state
+- Closed loop tried on the rig, with the threshold set against a real animal
 - Hardware sync upgrade: `DaqClock` on the PCIe-6363, hardware-triggered ORCA

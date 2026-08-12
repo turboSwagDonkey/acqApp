@@ -1,8 +1,8 @@
 # Stage Transfer — XY stage subsystem in acqApp
 
 Continuation notes for the **XY stage** device in `acqApp`. Companion to
-[SESSION_HANDOFF.md](SESSION_HANDOFF.md) and the other device transfers
-(camera, wheel, pupil). Read this before touching stage code or moving the stage.
+[HANDOFF.md](HANDOFF.md) and the other device transfers (camera, wheel, pupil).
+Read this before touching stage code or moving the stage.
 
 The hardware is a **Thorlabs PLS-XY** stage on an **MCM6101** controller. There are
 **two** codebases for it — keep them straight:
@@ -182,7 +182,7 @@ Implementation notes:
   destroy the calibration. It also drops a **`config.json.bak`** of the previous
   contents on every write — one step of undo for a hard-won origin.
 - **`driver.establish_frame()` had never been called by either app** before this —
-  the standalone only ever *loaded* `slope`/`offset` ([app.py:544](stage_control/app.py#L544)).
+  the standalone only ever *loaded* `slope`/`offset` ([app.py:544](../../stage_control/app.py#L544)).
   So this path is new code, not a port, and is **unvalidated on hardware**.
 - `MockStageController` implements the same three methods but **deliberately never
   writes the config** — a calibration invented with no stage attached must not

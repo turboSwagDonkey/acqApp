@@ -79,6 +79,18 @@ class SyncController(QObject):
     def clear_triggers(self) -> None:
         self._triggers.clear()
 
+    def fire(self, name: str, duration_s: float = 0.0) -> None:
+        """Fire trigger `name` NOW, on the same bus as the scheduled ones.
+
+        This is the closed loop's way in (`closed_loop.py`): the rule decides
+        on its own thread, hands the decision to the GUI thread, and it arrives
+        here. Routing it through the bus rather than calling the target device
+        directly keeps every actuation in the app leaving from one place, and
+        makes a rule-driven puff indistinguishable downstream from a scheduled
+        one — including in the session file.
+        """
+        self.trigger_fired.emit(name, duration_s)
+
     # ── Control ─────────────────────────────────────────────────────────────────
 
     def start_all(self) -> None:

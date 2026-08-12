@@ -28,6 +28,8 @@ SUBSETS = [
     ["puffer", "dmd"],                  # controllers only, no workers
     ["voltage_cam", "wheel"],
     ["pupil_cam", "wheel", "stage"],
+    ["closed_loop"],                    # a rule with no signal and no output
+    ["wheel", "closed_loop"],           # a signal but nothing to fire
 ]
 
 

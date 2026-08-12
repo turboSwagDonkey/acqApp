@@ -19,6 +19,11 @@ MODULES: dict[str, str] = {
     "puffer":      "Puffer",
     "stage":       "XY stage",
     "dmd":         "DMD",
+    # Not an instrument — it owns no device. It watches a signal another module
+    # produces and fires another module's output, so it must come last: its
+    # panel asks the window what sources exist, and the adapters are built in
+    # this order.
+    "closed_loop": "Closed loop",
 }
 
 _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")

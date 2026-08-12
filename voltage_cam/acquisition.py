@@ -479,6 +479,18 @@ class MockCameraWorker(PullWorker):
         true acquisition time exactly like the real camera does."""
         return "camera"
 
+    @property
+    def skipped_frames(self) -> int:
+        """Always 0 — the mock generates frames on demand, so the camera-side
+        drop that `OrcaFireWorker.skipped_frames` counts cannot happen.
+
+        It exists so `cam_dropped_frames` can be read straight off the worker
+        rather than through a `getattr(..., 0)` default. Those are the same
+        value here and only here: the default would have kept writing 0 into
+        the file if the *real* property were ever renamed (§5b A1).
+        """
+        return 0
+
     def set_exposure(self, us: float) -> None:
         """No-op on the mock worker (kept for API parity with OrcaFireWorker)."""
         self._config.exposure_us = us

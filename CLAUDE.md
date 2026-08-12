@@ -8,9 +8,15 @@ cam, wheel, puffer, XY stage, DMD on one shared clock, one HDF5 per session).
 **Read [PLAN.md](PLAN.md) before planning any work** — its **§0 "Start here"**
 first, which carries the orientation a fresh session needs (how to run the
 suite, which hardware is actually on this machine, the sibling projects worth
-copying from, and anything left uncommitted). Then §6, the next actions. §5 and
-§5b are reference: consult the item you're working on rather than reading them
-through. There is exactly one such file — update it, don't fork it.
+copying from, and anything left uncommitted). Then §6, the next actions. §5b is
+reference: consult the item you're working on rather than reading it through.
+There is exactly one such file — update it, don't fork it.
+
+PLAN.md is kept short on purpose, because it is read in full every session.
+Finished work is archived, not deleted: the closed 2026-08-10 audit is in
+[docs/AUDIT-2026-08.md](docs/AUDIT-2026-08.md) and older session entries in
+[docs/SESSIONLOG.md](docs/SESSIONLOG.md). **Open those only to chase a specific
+item number or an old decision** — never as part of getting oriented.
 
 - [README.md](README.md) — the authoritative *description* (architecture,
   recording format). PLAN.md is the *plan*. Keep that split.

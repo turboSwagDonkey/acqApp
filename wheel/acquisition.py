@@ -82,11 +82,18 @@ class _EncoderBase(PullWorker):
     # "software": spaced by a Python sleep loop, so speed carries the
     # scheduler's jitter.
     timestamp_source: str = "software"
+    # Declared on the class beside timestamp_source, not only assigned in
+    # __init__: the two are read together out of the finished session file
+    # (`wheel_timestamp_source` / `wheel_rate_actual_hz`) and are the pair that
+    # says whether the recorded speed is a measurement or a scheduler artefact.
+    # Being class attributes is also what lets `devices.ClockedWorker` be
+    # checked without constructing a worker (tests/test_device_contracts.py).
+    actual_rate: float = 0.0            # the rate the device settled on, Hz
 
     def __init__(self, volts_per_rev: float | None = 5.0,
                  wheel_dia_mm: float | None = 150.0):
         super().__init__()
-        self.actual_rate = 0.0          # the rate the device settled on, Hz
+        self.actual_rate = 0.0
         self._scale_lock = threading.Lock()
         self._vpr = volts_per_rev
         self._dia = wheel_dia_mm
@@ -97,6 +104,8 @@ class _EncoderBase(PullWorker):
         self._buf: deque[tuple[float, float]] = deque()   # (elapsed_s, position_rev)
         self._dist_rev = 0.0           # reported net distance, rev (gated integral)
         self._t_report: float | None = None    # last reported (delayed) sample time
+        # Newest sample, kept for watchers rather than consumers — see snapshot().
+        self._snap: tuple[float, float, float, float] | None = None
 
     def set_scaling(self, volts_per_rev: float | None,
                     wheel_dia_mm: float | None) -> None:
@@ -167,8 +176,54 @@ class _EncoderBase(PullWorker):
         self._t_report = td
         return self._SIGN * rev_s * circ, self._SIGN * self._dist_rev * circ
 
+    # ── watchers (the closed loop) ───────────────────────────────────────────
+
+    def snapshot(self) -> tuple[float, float, float, float] | None:
+        """Newest `(voltage, speed, live_speed, acquired_at)` WITHOUT consuming it.
+
+        `get_latest()` hands each sample out exactly once, and the display tick
+        is already that consumer — a second one would take samples away from
+        the plot. A watcher (the closed loop) needs to *watch* the wheel, not
+        drain it, so it reads this instead. None until the first sample.
+
+        The two speeds are not interchangeable, and which one a rule should
+        watch is an experimental choice rather than an implementation detail:
+
+          `speed`       the reported one — a least-squares slope centred
+                        `_LAG_S` in the past. It is what the plot draws and
+                        what `wheel_speed` records, and it is therefore about a
+                        second old. A rule on it acts a second after the animal
+                        starts running.
+          `live_speed`  the EMA velocity behind it (`_TAU_S` = 0.15 s), noisier
+                        but current. A rule that must act *while* the animal
+                        runs wants this one.
+
+        `acquired_at` is in the `time.perf_counter()` domain (the instant the
+        DAQ sampled the voltage), so a decision made from it can be recorded at
+        the true time of its cause — the same argument as `Recorder.put(at=)`.
+        """
+        with self._lock:
+            return self._snap
+
+    def _live_speed(self) -> float:
+        """Current EMA velocity in the reported units (mm/s, or rev/s with no
+        wheel diameter set). Carries the same sign convention and deadband as
+        `_report`, so a resting wheel reads exactly 0 on both and a threshold
+        read off one readout means the same thing on the other."""
+        with self._scale_lock:
+            vpr, dia = self._vpr, self._dia
+        if not vpr or abs(self._vel) < self._DEADBAND_REV_S:
+            return 0.0
+        circ = np.pi * dia if dia else 1.0
+        return self._SIGN * self._vel * circ
+
     def _emit_sample(self, v: float, t: float, mono: float | None = None) -> None:
         speed, dist = self._derive(v, t)
+        # Watchers get the acquisition instant, not `t`: `t` is elapsed-since-
+        # worker-start, which is not the domain Recorder.put(at=) stamps in.
+        with self._lock:
+            self._snap = (v, speed, self._live_speed(),
+                          time.perf_counter() if mono is None else mono)
         # get_latest → 4-tuple for the GUI; the sink gets the same three values
         # plus the perf_counter instant the sample was ACQUIRED. `None` there
         # means "stamp it on arrival", which is all a device without its own

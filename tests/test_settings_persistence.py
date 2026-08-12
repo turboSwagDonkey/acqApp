@@ -47,14 +47,21 @@ EDITS = [
      lambda p: p.settings.port,                 "COM9"),
     ("stage",       "poll rate", lambda p: p._spn_rate.setValue(7.0),
      lambda p: p.settings.poll_hz,              7.0),
-    ("dmd",         "on-time",   lambda p: p._spn_on.setValue(250.0),
-     lambda p: p.settings.on_time_ms,           250.0),
-    ("dmd",         "static",    lambda p: p._chk_static.setChecked(True),
-     lambda p: p.settings.static_hold,          True),
     ("dmd",         "trigger",   lambda p: p._cmb_trig.setCurrentText("Software"),
      lambda p: p.settings.trigger_mode,         "Software"),
-    ("dmd",         "repeats",   lambda p: p._spn_rep.setValue(7),
-     lambda p: p.settings.n_repeats,            7),
+    # The geometry is the registration to the optics — the DMD settings that
+    # most need to survive a restart, since a session recorded at the wrong
+    # scale/rotation cannot be located in the field of view afterwards.
+    # (On-time / static-hold / repeats are no longer panel controls: the panel
+    # hardcodes static_hold and the DMD innately holds one image.)
+    ("dmd",         "scale",     lambda p: p._spn_scale.setValue(132.4),
+     lambda p: p.settings.scale_pct,            132.4),
+    ("dmd",         "rotation",  lambda p: p._spn_rot.setValue(12.5),
+     lambda p: p.settings.rotation_deg,         12.5),
+    ("dmd",         "offset X",  lambda p: p._spn_dx.setValue(37.0),
+     lambda p: p.settings.offset_x,             37.0),
+    ("dmd",         "all-on",    lambda p: p._chk_all_on.setChecked(True),
+     lambda p: p.settings.all_on,               True),
 ]
 
 SAVE_EDITS = [
@@ -83,6 +90,39 @@ def main() -> int:
 
     # ── first launch: edit every panel ───────────────────────────────────────
     win = M.MainWindow(cam_info=None, mock=True, enabled=enabled, cam_handle=None)
+
+    # The panels live in a pop-up window, not a dock. Everything below edits them
+    # while it has never been shown, which is the point: the settings window is
+    # built (and wired to the controllers) at startup and only made visible on
+    # demand — a lazily-built one would leave the controllers unconfigured.
+    dlg = win._settings_dialog
+    r.check(dlg is not None and dlg.isWindow(), "settings are a top-level window")
+    r.check(not isinstance(dlg, M.QDockWidget), "…and not a dock widget")
+    r.check(not dlg.isVisible(), "settings window starts hidden")
+    r.check(dlg.tabs.count() == len(config.MODULES) + 1,
+            f"a tab per module plus Save (got {dlg.tabs.count()})")
+    win._settings_action.setChecked(True)
+    pump(app, 0.2)
+    r.check(dlg.isVisible(), "the ⚙ Settings tab opens it")
+
+    # First-run size is measured from the panels, then clamped to the screen —
+    # checked on default_size() rather than on the shown window, whose final
+    # size the window manager has the last word on.
+    want  = dlg.default_size()
+    avail = M.QGuiApplication.primaryScreen().availableGeometry()
+    r.info(f"opens at {want.width()}x{want.height()} "
+           f"(screen {avail.width()}x{avail.height()})")
+    r.check(want.width() >= min(dlg.tabs.sizeHint().width(),
+                                int(avail.width() * 0.9)),
+            "default size covers the widest panel without scrolling")
+    r.check(want.width() <= avail.width() and want.height() <= avail.height(),
+            "…and still fits on the screen it opens on")
+    dlg.close()                       # the title-bar ✕ / Esc path
+    pump(app, 0.2)
+    r.check(not dlg.isVisible(), "closing the window hides it")
+    r.check(not win._settings_action.isChecked(),
+            "…and un-checks ⚙ Settings, so the next click re-opens it")
+
     panels = {m.key: m.panel for m in win._modules}
     for key, label, setter, reader, expected in EDITS:
         setter(panels[key])

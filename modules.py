@@ -40,10 +40,15 @@ from typing import Any, Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QWidget
 
 from acqApp import config, style
+from acqApp.closed_loop import (ClosedLoopWorker, LoopSettings, SignalSource,
+                                SettingsPanel as LoopPanel)
+from acqApp.devices import (CameraWorker, ClockedWorker, DeviceWorker,
+                            ExposureControl, OutputController,
+                            ProjectorController, RecordingOutput)
 
 from acqApp.voltage_cam.acquisition import OrcaFireWorker, MockCameraWorker
 from acqApp.voltage_cam.settings     import SettingsPanel as CamSettingsPanel
@@ -128,8 +133,12 @@ class ModuleAdapter:
     def __init__(self, win) -> None:
         self.win = win
         self.panel: QWidget | None = None
-        self.worker = None
-        self.controller = None
+        # Declared, not duck-typed — see devices.py. Subclasses narrow these to
+        # the protocol they actually need (`TimestampedWorker`,
+        # `ProjectorController`) so metadata can be read straight off the
+        # object instead of through a getattr default that invents a value.
+        self.worker: DeviceWorker | None = None
+        self.controller: OutputController | None = None
 
     # ── construction (once, at startup) ───────────────────────────────────────
     def build_panel(self) -> QWidget | None:
@@ -197,7 +206,10 @@ class ModuleAdapter:
     def detach_sink(self) -> None:
         if self.worker is not None:
             self.worker.set_sink(None)
-        if self.controller is not None and hasattr(self.controller, "set_sink"):
+        # An honest question, now with a name: the eye-tracking LED is an
+        # output controller but deliberately not a RecordingOutput, because its
+        # on/off state is illumination rather than an experimental event.
+        if isinstance(self.controller, RecordingOutput):
             self.controller.set_sink(None)
 
     def metadata(self) -> dict[str, Any]:
@@ -212,7 +224,17 @@ class ModuleAdapter:
 
     # ── misc ──────────────────────────────────────────────────────────────────
     def on_trigger(self, name: str, duration: float) -> None:
-        """A scheduled trigger fired on the shared clock."""
+        """A trigger fired on the shared bus — scheduled, or from the closed
+        loop. Modules that are outputs act on the ones addressed to them."""
+
+    def signal_sources(self) -> list[SignalSource]:
+        """Live scalars this module offers for a closed-loop rule to watch.
+
+        Empty for most modules. Declaring one here is the whole cost of making
+        a new quantity triggerable: `closed_loop.py` depends on the descriptor,
+        never on the instrument behind it.
+        """
+        return []
 
     def probe_kwargs(self) -> dict[str, Any]:
         """Extra arguments for probe.probe_all (e.g. the stage's serial port)."""
@@ -226,6 +248,8 @@ class VoltageCamModule(ModuleAdapter):
     tab_label = "Voltage cam (primary)"
     plot_label = "ΔF/F"
     central_title = "Voltage camera — primary"
+
+    worker: CameraWorker | None          # narrows ModuleAdapter.worker
 
     def __init__(self, win) -> None:
         super().__init__(win)
@@ -360,19 +384,25 @@ class VoltageCamModule(ModuleAdapter):
                 # Placeholder: no frame has arrived yet to settle it. Overwritten
                 # by final_metadata(), and left here so the attribute still
                 # exists if the app dies mid-recording.
-                "cam_timestamp_source": getattr(self.worker, "timestamp_source",
-                                                "unknown")}
+                "cam_timestamp_source": self._timestamp_source()}
+
+    def _timestamp_source(self) -> str:
+        """Read straight off the worker — both twins declare it
+        (`TimestampedWorker`). "unknown" is reserved for *no worker at all*,
+        which is a different fact from a worker that failed to say."""
+        return "unknown" if self.worker is None else self.worker.timestamp_source
 
     def final_metadata(self) -> dict[str, Any]:
+        if self.worker is None:
+            return {"cam_timestamp_source": "unknown"}
         return {
             # Whether voltage_cam/timestamps are the camera's own per-frame
             # stamps ("camera") or the times we read them ("arrival") — the
             # difference decides how much the frame timing can be trusted.
-            "cam_timestamp_source": getattr(self.worker, "timestamp_source",
-                                            "unknown"),
+            "cam_timestamp_source": self.worker.timestamp_source,
             # Frames the CAMERA discarded because we read too slowly. These are
             # gone from the file; the gap is visible in voltage_cam_index.
-            "cam_dropped_frames": getattr(self.worker, "skipped_frames", 0),
+            "cam_dropped_frames": self.worker.skipped_frames,
         }
 
 
@@ -446,9 +476,11 @@ class PupilCamModule(ModuleAdapter):
             self.controller.set(on)
 
     def _on_exposure(self, us: float) -> None:
-        # Hot-apply only if the running worker supports it (the real Basler does;
-        # the mock has a fixed synthetic exposure).
-        if self.worker is not None and hasattr(self.worker, "set_exposure"):
+        # Both pupil workers declare set_exposure (`ExposureControl`) — the
+        # mock's is documented as "kept for API parity" — so the old
+        # hasattr() here was hedging against a case that does not exist. If a
+        # future worker genuinely lacks it, this says so by name.
+        if isinstance(self.worker, ExposureControl):
             self.worker.set_exposure(us)
 
     # ── session ──
@@ -532,6 +564,8 @@ class WheelModule(ModuleAdapter):
     key = "wheel"
     tab_label = "Wheel"
     plot_label = "Wheel"
+
+    worker: ClockedWorker | None         # narrows ModuleAdapter.worker
 
     def __init__(self, win) -> None:
         super().__init__(win)
@@ -620,6 +654,41 @@ class WheelModule(ModuleAdapter):
             self._plot_w.setTitle(
                 f"Wheel distance   —   speed {speed:+.{prec}f} {units}")
 
+    # ── closed loop ──
+    def signal_sources(self) -> list[SignalSource]:
+        """Both wheel speeds, because they are not interchangeable.
+
+        `wheel_speed` is the recorded one — a least-squares slope centred a
+        second in the past (`_EncoderBase._report`), so a rule on it acts a
+        second after the animal starts running, and agrees exactly with the
+        trace in the file. `wheel_speed_live` is the EMA velocity behind it:
+        noisier, but current. Which one a paradigm wants is a scientific
+        choice, so both are offered and the session file records which was
+        used.
+
+        The reads are non-consuming (`snapshot()`), so watching the wheel never
+        takes a sample away from the plot.
+        """
+        u = self._speed_units()
+        return [
+            SignalSource("wheel_speed_live", "Wheel speed (live)", u,
+                         self._read_live),
+            SignalSource("wheel_speed", "Wheel speed (recorded, ~1 s lag)", u,
+                         self._read_reported),
+        ]
+
+    def _speed_units(self) -> str:
+        s = self.panel.settings if self.panel is not None else EncoderSettings()
+        return "mm/s" if (s.volts_per_rev and s.wheel_dia_mm) else "rev/s"
+
+    def _read_live(self) -> tuple[float, float] | None:
+        snap = self.worker.snapshot() if self.worker is not None else None
+        return None if snap is None else (snap[2], snap[3])
+
+    def _read_reported(self) -> tuple[float, float] | None:
+        snap = self.worker.snapshot() if self.worker is not None else None
+        return None if snap is None else (snap[1], snap[3])
+
     # ── recording ──
     def attach_sink(self, rec) -> None:
         if self.worker is None:
@@ -661,11 +730,16 @@ class WheelModule(ModuleAdapter):
     def final_metadata(self) -> dict[str, Any]:
         # Which timebase the samples actually carry is only known once the
         # worker has configured the board — and it decides whether the recorded
-        # speed is a hardware measurement or a scheduler artefact.
+        # speed is a hardware measurement or a scheduler artefact. Read off the
+        # worker rather than defaulted: "software" and "unknown" mean different
+        # things, and a rate of 0.0 would be indistinguishable from a measured
+        # stall.
+        if self.worker is None:
+            return {"wheel_timestamp_source": "unknown",
+                    "wheel_rate_actual_hz":   0.0}
         return {
-            "wheel_timestamp_source": getattr(self.worker, "timestamp_source",
-                                              "unknown"),
-            "wheel_rate_actual_hz":   getattr(self.worker, "actual_rate", 0.0),
+            "wheel_timestamp_source": self.worker.timestamp_source,
+            "wheel_rate_actual_hz":   self.worker.actual_rate,
         }
 
 
@@ -810,6 +884,8 @@ class DmdModule(ModuleAdapter):
     key = "dmd"
     tab_label = "DMD"
 
+    controller: ProjectorController | None   # narrows ModuleAdapter.controller
+
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
         # Route through this adapter, not straight to the controller: the
@@ -885,6 +961,21 @@ class DmdModule(ModuleAdapter):
         if self.controller is not None:
             self.controller.stop()
 
+    def on_trigger(self, name: str, duration: float) -> None:
+        """Project on a trigger — the closed loop's other output.
+
+        The DMD has no pulse of its own: the panel holds one image until Stop,
+        and the ALP free-runs its sequence once started. So a *timed* stimulus
+        is display-now plus a single-shot stop, which is what `duration` buys.
+        `duration <= 0` leaves the pattern up until Stop is pressed, which is
+        what a trigger with no duration asks for.
+        """
+        if name != self.key:
+            return
+        self.display()
+        if duration > 0:
+            QTimer.singleShot(int(duration * 1000), self.stop_display)
+
     def attach_sink(self, rec) -> None:
         if self.controller is not None:
             # DMD frames are logged straight from its thread (no GUI-thread hop),
@@ -894,6 +985,11 @@ class DmdModule(ModuleAdapter):
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
         c = self.controller
+        # Both twins declare device_name/resolution/on_pixels
+        # (`ProjectorController`), so these are read, not guessed. The old
+        # `getattr(c, "device_name", "none")` would file a session that really
+        # projected as one that never did, the moment the two drifted — which
+        # is the whole of §5b A1.
         w, h = c.resolution if c is not None else (0, 0)
         return {
             "dmd_on_time_ms":  s.on_time_ms,
@@ -904,7 +1000,7 @@ class DmdModule(ModuleAdapter):
             # stimulus cannot be located in the field of view afterwards, and
             # without the device name there is no way to tell a session that
             # projected from one that ran against the mock.
-            "dmd_device":      getattr(c, "device_name", "none"),
+            "dmd_device":      c.device_name if c is not None else "none",
             "dmd_width":       w,
             "dmd_height":      h,
             "dmd_pattern":     s.pattern_path.name if s.pattern_path else "",
@@ -913,15 +1009,183 @@ class DmdModule(ModuleAdapter):
             "dmd_offset_x":    s.offset_x,
             "dmd_offset_y":    s.offset_y,
             "dmd_invert":      s.invert,
+            # An all-on frame ignores the pattern and the geometry above, so
+            # without this the recorded scale/rotation would describe a
+            # placement that was never used.
+            "dmd_all_on":      s.all_on,
             "dmd_fit":         s.fit,
             # 0 mirrors on is a dark panel — a Display that "worked" and
             # projected nothing looks identical in every other field here.
-            "dmd_on_pixels":   getattr(c, "on_pixels", 0),
+            "dmd_on_pixels":   c.on_pixels if c is not None else 0,
+        }
+
+
+# ── closed loop ───────────────────────────────────────────────────────────────
+
+class ClosedLoopModule(ModuleAdapter):
+    """Phase 5: fire an output from what another instrument is measuring.
+
+    Not an instrument — it owns no device. It is a `ModuleAdapter` because it
+    needs exactly what one provides: a settings tab, a per-session worker, a
+    recording sink and metadata. It is **last** in `config.MODULES` so that
+    every source-providing adapter exists before its panel asks what is on
+    offer.
+
+    It reaches its neighbours only through the two service methods on the
+    window (`signal_sources`, `module_keys`) and the shared trigger bus — never
+    into another adapter. That is what keeps the wheel ignorant of the loop and
+    the loop ignorant of the puffer.
+    """
+    key = "closed_loop"
+    tab_label = "Closed loop"
+
+    def __init__(self, win) -> None:
+        super().__init__(win)
+        self._sources: dict[str, SignalSource] = {}
+        self._reported_fires = 0        # last count announced on the status bar
+
+    # ── construction ──
+    def build_panel(self) -> QWidget:
+        self.panel = LoopPanel(config.load_dataclass(LoopSettings, self.key))
+        self._refresh_offers()
+        self.panel.settings_changed.connect(self._on_settings)
+        self.panel.armed_changed.connect(self._on_armed)
+        return self.panel
+
+    def _refresh_offers(self) -> None:
+        """Re-read what the loaded modules offer. Done at build and again per
+        session, because the wheel's units follow its V/rev and diameter."""
+        self._sources = {s.key: s for s in self.win.signal_sources()}
+        self.panel.set_sources(list(self._sources.values()))
+        self.panel.set_targets(self.win.module_keys())
+
+    def _on_settings(self, s) -> None:
+        config.save_settings(self.key, asdict(s))
+        if self.worker is not None:
+            self.worker.configure(s)
+
+    def _on_armed(self, on: bool) -> None:
+        if self.worker is not None:
+            self.worker.set_armed(on)
+        if not on:
+            self.win.status("closed loop disarmed")
+        elif self.worker is None:
+            self.win.status("closed loop ARMED — it runs when a session starts")
+        else:
+            s = self.panel.settings
+            self.win.status(f"closed loop ARMED — {s.source} {s.comparison} "
+                            f"{s.threshold:g} fires the {s.target}")
+
+    # ── session ──
+    def build_session(self, emulate: bool) -> None:
+        self._refresh_offers()
+        s = self.panel.settings
+        src = self._sources.get(s.source)
+        if src is None:
+            # The module that produces this signal isn't loaded this session.
+            # Say so: an armed rule that can never fire looks identical to one
+            # whose condition simply hasn't been met.
+            self.win.status("closed loop: no signal source loaded — rule idle")
+            return
+        self._reported_fires = 0
+        worker = self._adopt(ClosedLoopWorker(src, s))
+        worker.set_armed(self.panel.armed)
+        worker.fired.connect(self._on_fired)
+
+    def stop(self) -> None:
+        super().stop()
+        self.panel.clear_readout()
+
+    def _on_fired(self, target: str, duration: float, value: float) -> None:
+        """The rule fired. **This runs on the loop's thread, not the GUI's.**
+
+        A `ModuleAdapter` is a plain object, not a QObject, so Qt gives this
+        connection no thread affinity to queue across and calls it directly on
+        the emitting thread. So it must do exactly one thing: emit. Touching a
+        widget or the status bar from here would be a cross-thread GUI call.
+
+        `sync.fire()` emits `trigger_fired`, whose receiver *is* a QObject on
+        the GUI thread (`MainWindow._on_trigger`), so Qt queues it properly and
+        the actuation lands back on the GUI thread with every other one — and a
+        rule-driven puff takes the identical path to a scheduled one, including
+        into the session file. The status line is left to `update_display()`,
+        which is already on the right thread.
+        """
+        self.win.sync.fire(target, duration)
+
+    # ── display ──
+    def update_display(self) -> None:
+        latest = self.worker.get_latest() if self.worker is not None else None
+        if latest is None:
+            return
+        self.panel.set_readout(*latest)
+        # Reporting the fire here rather than in _on_fired is what keeps that
+        # callback free of GUI calls — see the note there.
+        n = latest[2]
+        if n != self._reported_fires:
+            self._reported_fires = n
+            s = self.panel.settings
+            self.win.status(f"closed loop → {s.target}  "
+                            f"({latest[0]:+.3g}, {n} this session)")
+
+    # ── recording ──
+    def attach_sink(self, rec) -> None:
+        if self.worker is None:
+            return
+
+        def sink(event: tuple[float | None, float]) -> None:
+            """One entry per fire: the value that caused it, stamped at the
+            instant of the sample it was measured from — so the decision lines
+            up in the file with its own cause rather than with the GUI hop
+            after it."""
+            value, at = event
+            rec.put("closed_loop", float(value or 0.0), at=at)
+
+        self.worker.set_sink(sink)
+
+    def metadata(self) -> dict[str, Any]:
+        s = self.panel.settings
+        src = self._sources.get(s.source)
+        return {
+            # A rule that was never armed and one that was armed but never met
+            # its condition both leave /closed_loop empty. This is what tells
+            # them apart afterwards.
+            "loop_armed":        self.panel.armed,
+            "loop_source":       s.source,
+            "loop_source_units": src.units if src is not None else "",
+            "loop_comparison":   s.comparison,
+            "loop_threshold":    s.threshold,
+            "loop_hold_s":       s.hold_s,
+            "loop_refractory_s": s.refractory_s,
+            "loop_retrigger":    s.retrigger,
+            "loop_target":       s.target,
+            "loop_duration_s":   s.duration_s,
+            "loop_max_fires":    s.max_fires,
+        }
+
+    def final_metadata(self) -> dict[str, Any]:
+        # 0 is the honest answer for "no worker": build_session refuses to make
+        # one when the rule's signal source isn't loaded, and a rule that never
+        # ran fired nothing. `loop_armed` above is what distinguishes that from
+        # a rule that ran and never met its condition.
+        if self.worker is None:
+            return {"loop_fires": 0, "loop_fires_session": 0}
+        return {
+            # Fires that are IN this file — always equal to len(/closed_loop),
+            # so an attribute and the stream beside it cannot disagree.
+            "loop_fires":         self.worker.recorded_fires,
+            # Fires over the whole session. Larger when the rule was armed
+            # during Live view and fired before Record was pressed — those
+            # actuated the hardware but are in no file, which is worth knowing
+            # rather than silently dropping.
+            "loop_fires_session": self.worker.n_fires,
         }
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
 # Keys must match config.MODULES; the window builds adapters in MODULES order.
+# A new module needs a line here, one in config.MODULES, AND an accent colour
+# in style.HEX — the third is easy to forget and shows up as a KeyError.
 
 ADAPTERS: dict[str, Callable[[Any], ModuleAdapter]] = {
     "voltage_cam": VoltageCamModule,
@@ -930,6 +1194,7 @@ ADAPTERS: dict[str, Callable[[Any], ModuleAdapter]] = {
     "puffer":      PufferModule,
     "stage":       StageModule,
     "dmd":         DmdModule,
+    "closed_loop": ClosedLoopModule,
 }
 
 

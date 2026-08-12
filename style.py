@@ -17,6 +17,7 @@ HEX = {
     "puffer":      "#dd4444",   # red
     "stage":       "#1aa3b8",   # teal
     "dmd":         "#d6459b",   # magenta
+    "closed_loop": "#9ecf2a",   # chartreuse (rule: signal in, actuation out)
     "sync":        "#8844cc",   # purple  (session-wide controls)
     "saving":      "#c9a227",   # gold    (where recordings are written)
 }

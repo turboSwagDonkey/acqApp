@@ -3,15 +3,7 @@ XY stage — travel map.
 
 A read-only picture of where the stage is inside its own travel: the hard travel
 rectangle, the soft-limit rectangle inside it, the origin, the session home, and
-the current position. The µm readout alone doesn't answer "how close am I to the
-end?", which is the question you have right before a move goes wrong.
-
-Display only — nothing here commands motion. (The standalone Tkinter app has a
-drag-to-move map; that is deliberately NOT ported, so a stray click on the
-settings tab can never move the stage.)
-
-Coordinates are µm relative to the origin, and Y is drawn screen-up when the
-config says `invert_y`, so the picture matches how the stage looks on the rig.
+the current position. Display only — nothing here commands motion.
 """
 from __future__ import annotations
 
@@ -31,15 +23,20 @@ _STALE       = QColor("#c0392b")
 class StageMap(QWidget):
     """Travel map. Feed it `set_axes()` once and `set_position()` per poll."""
 
-    _MARGIN = 26            # px of padding around the travel box (room for labels)
+    # Minimal margins to maximize map square size (edge labels removed)
+    _MARGIN_LEFT   = 10     # Tight inset
+    _MARGIN_RIGHT  = 85     # Room for vertical legend on the right
+    _MARGIN_TOP    = 10     # Tight inset above box
+    _MARGIN_BOTTOM = 10     # Tight inset below box
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._x = None                  # StageAxis
+        self._x = None
         self._y = None
         self._pos: tuple[float, float] | None = None
         self._invert_y = True
-        self.setMinimumSize(200, 200)
+        
+        self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip("Stage position within its travel. Display only — "
                         "clicking here does not move the stage.")
@@ -59,12 +56,16 @@ class StageMap(QWidget):
 
     # ── geometry ────────────────────────────────────────────────────────────
     def _box(self) -> QRectF:
-        m = self._MARGIN
-        return QRectF(m, m, max(1.0, self.width() - 2 * m),
-                      max(1.0, self.height() - 2 * m))
+        """Enforces a 1:1 square canvas maximized within available widget area."""
+        avail_w = max(1.0, self.width() - self._MARGIN_LEFT - self._MARGIN_RIGHT)
+        avail_h = max(1.0, self.height() - self._MARGIN_TOP - self._MARGIN_BOTTOM)
+        side = min(avail_w, avail_h)  # Strict square aspect ratio
+
+        box_x = self._MARGIN_LEFT + (avail_w - side) / 2.0
+        box_y = self._MARGIN_TOP + (avail_h - side) / 2.0
+        return QRectF(box_x, box_y, side, side)
 
     def _to_px(self, x_um: float, y_um: float, xr, yr) -> QPointF:
-        """µm → widget pixels, honouring the screen-up Y convention."""
         box = self._box()
         (x0, x1), (y0, y1) = xr, yr
         fx = (x_um - x0) / (x1 - x0) if x1 > x0 else 0.5
@@ -94,19 +95,18 @@ class StageMap(QWidget):
             self._center_text(p, "No travel limits — calibrate")
             return
 
-        # Pad the drawn range slightly so the travel edge isn't flush to the box.
         def pad(lim):
             span = lim[1] - lim[0]
             return (lim[0] - span * 0.04, lim[1] + span * 0.04)
         xr, yr = pad(xt), pad(yt)
 
-        # Hard travel.
+        # Hard travel
         travel = self._rect_for(xr, yr, xt, yt)
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
         p.setBrush(QBrush(_TRAVEL_FILL))
         p.drawRect(travel)
 
-        # Soft limits (dashed) — only where they differ visibly from travel.
+        # Soft limits (dashed)
         xs, ys = self._x.soft_limits_um(), self._y.soft_limits_um()
         soft = self._rect_for(xr, yr, xs, ys)
         pen = QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine)
@@ -114,12 +114,9 @@ class StageMap(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(soft)
 
-        # Current position, UNDER the outline markers: sitting exactly on 0,0 or
-        # on home is the common case, and a filled dot drawn last would hide the
-        # very marker you're trying to line up with.
+        # Current position & guide lines
         if self._pos is not None:
             c = self._to_px(self._pos[0], self._pos[1], xr, yr)
-            # Guide lines out to the edges make "how close to the end" easy to read.
             p.setPen(QPen(_CURRENT.lighter(130), 0.8, Qt.PenStyle.DotLine))
             p.drawLine(QPointF(travel.left(), c.y()), QPointF(travel.right(), c.y()))
             p.drawLine(QPointF(c.x(), travel.top()), QPointF(c.x(), travel.bottom()))
@@ -127,14 +124,14 @@ class StageMap(QWidget):
             p.setBrush(QBrush(_CURRENT))
             p.drawEllipse(c, 5, 5)
 
-        # Session home (outline, so the dot shows through when they coincide).
+        # Session home
         hx, hy = self._x.home_um(), self._y.home_um()
         if hx is not None and hy is not None:
-            self._diamond(p, self._to_px(hx, hy, xr, yr), _HOME, 8)
+            self._diamond(p, self._to_px(hx, hy, xr, yr), _HOME, 7)
 
-        # Origin (0,0) — only if it is actually calibrated.
+        # Origin (0,0)
         if self._x.origin_set and self._y.origin_set:
-            self._cross(p, self._to_px(0.0, 0.0, xr, yr), _ORIGIN, 10)
+            self._cross(p, self._to_px(0.0, 0.0, xr, yr), _ORIGIN, 9)
         else:
             p.setPen(QPen(_STALE))
             p.setFont(self._small())
@@ -142,7 +139,7 @@ class StageMap(QWidget):
                        int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter),
                        "0,0 not set")
 
-        self._labels(p, travel, xt, yt)
+        self._legend(p, travel)
 
     # ── drawing helpers ─────────────────────────────────────────────────────
     def _small(self) -> QFont:
@@ -155,7 +152,7 @@ class StageMap(QWidget):
         p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), text)
 
     def _cross(self, p: QPainter, c: QPointF, color: QColor, r: int) -> None:
-        p.setPen(QPen(color, 2.0))
+        p.setPen(QPen(color, 1.8))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()))
         p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r))
@@ -166,22 +163,46 @@ class StageMap(QWidget):
         p.drawPolygon(QPointF(c.x(), c.y() - r), QPointF(c.x() + r, c.y()),
                       QPointF(c.x(), c.y() + r), QPointF(c.x() - r, c.y()))
 
-    def _labels(self, p: QPainter, travel: QRectF, xt, yt) -> None:
+    def _legend(self, p: QPainter, travel: QRectF) -> None:
         p.setFont(self._small())
-        p.setPen(QPen(_TRAVEL_EDGE.darker(120)))
-        mm = lambda um: f"{um / 1000.0:+.1f}"          # noqa: E731 — µm → mm
-        # X ends, under the box.
-        p.drawText(QRectF(travel.left() - 30, travel.bottom() + 2, 60, 14),
-                   int(Qt.AlignmentFlag.AlignCenter), mm(xt[0]))
-        p.drawText(QRectF(travel.right() - 30, travel.bottom() + 2, 60, 14),
-                   int(Qt.AlignmentFlag.AlignCenter), mm(xt[1]))
-        # Y ends, left of the box (top/bottom depends on the Y convention).
-        top_val, bot_val = (yt[1], yt[0]) if self._invert_y else (yt[0], yt[1])
-        p.drawText(QRectF(0, travel.top() - 6, travel.left() - 3, 14),
-                   int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-                   mm(top_val))
-        p.drawText(QRectF(0, travel.bottom() - 6, travel.left() - 3, 14),
-                   int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-                   mm(bot_val))
-        p.drawText(QRectF(travel.left(), travel.bottom() + 13, travel.width(), 14),
-                   int(Qt.AlignmentFlag.AlignCenter), "mm from 0,0")
+        lx = travel.right() + 10
+        
+        spacing = 20
+        total_h = 4 * spacing
+        ly = travel.top() + max(0.0, (travel.height() - total_h) / 2.0) + 6
+
+        # 1. Position dot
+        p.setPen(QPen(_CURRENT.darker(130), 1.2))
+        p.setBrush(QBrush(_CURRENT))
+        p.drawEllipse(QPointF(lx + 4, ly), 4, 4)
+        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
+        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   "Position")
+
+        # 2. Origin cross
+        ly += spacing
+        self._cross(p, QPointF(lx + 4, ly), _ORIGIN, 4)
+        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
+        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   "0,0 (Origin)")
+
+        # 3. Session Home diamond
+        ly += spacing
+        self._diamond(p, QPointF(lx + 4, ly), _HOME, 4)
+        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
+        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   "Home")
+
+        # 4. Soft limits dashed rect
+        ly += spacing
+        pen = QPen(_SOFT_EDGE, 1.2, Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(QRectF(lx + 1, ly - 4, 6, 6))
+        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
+        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   "Soft limits")

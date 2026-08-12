@@ -1,0 +1,204 @@
+"""
+The mock/real device pairs honour a declared interface (§5b A1).
+
+Every instrument ships as a pair, and `modules.py` is written against whichever
+one Emulate built. That contract used to be nine `getattr`/`hasattr` probes, and
+the cost was not tidiness:
+
+    "dmd_device": getattr(c, "device_name", "none")
+
+files a session that really projected as one that never did, the moment a mock
+drifts from its real twin. It came within a forgotten property of happening.
+
+`devices.py` now writes the contract down — but this project ships **no type
+checker** (the rig installs `requirements.txt` and nothing else), so a Protocol
+that is never asserted catches exactly nothing. That is what this file is for.
+
+Two layers:
+  1. **Conformance** — every twin, real and mock, satisfies the protocol its
+     adapter reads it through. Checked on the classes, never by constructing a
+     real driver.
+  2. **Parity** — the two halves of each pair expose the same public API, with
+     an explicit allowlist for the differences that are deliberate. This is the
+     one that catches a property added to the real class and forgotten on the
+     mock, which is the actual failure mode.
+
+Each layer carries a control: a deliberately incomplete stand-in that must FAIL
+the same check, so neither can pass by being vacuous.
+
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_device_contracts.py
+"""
+from __future__ import annotations
+
+import sys
+
+from _harness import Report, block_real_devices
+
+block_real_devices()
+
+from acqApp.devices import (            # noqa: E402
+    CameraWorker, ClockedWorker, DeviceWorker, ExposureControl,
+    OutputController, ProjectorController, RecordingOutput,
+)
+
+
+def has_all(cls, proto) -> list[str]:
+    """Members of `proto` that `cls` does not provide.
+
+    Checked against the CLASS, not an instance: constructing an `OrcaFireWorker`
+    or a `DmdController` opens hardware, which a test must never do. Properties,
+    plain methods and class attributes all answer to `hasattr` here.
+    """
+    wanted = [m for m in getattr(proto, "__protocol_attrs__", None)
+              or _members(proto)]
+    return sorted(m for m in wanted if not hasattr(cls, m))
+
+
+def _members(proto) -> set[str]:
+    """Protocol members, walking the protocol's own bases (not object's)."""
+    out: set[str] = set()
+    for klass in proto.__mro__:
+        if klass.__name__ in ("Protocol", "Generic", "object"):
+            continue
+        out |= {n for n in vars(klass) if not n.startswith("_")}
+        out |= {n for n in getattr(klass, "__annotations__", {})
+                if not n.startswith("_")}
+    return out
+
+
+def public(cls, base) -> set[str]:
+    """What `cls` adds to `base`, publicly."""
+    return ({n for n in dir(cls) if not n.startswith("_")}
+            - {n for n in dir(base) if not n.startswith("_")})
+
+
+def main() -> int:
+    r = Report("contracts")
+
+    from PyQt6.QtCore import QObject
+    from acqApp.acq.worker import PullWorker
+    from acqApp.voltage_cam.acquisition import OrcaFireWorker, MockCameraWorker
+    from acqApp.wheel.acquisition import EncoderWorker, MockEncoderWorker
+    from acqApp.pupil_cam.acquisition import (PupilCameraWorker,
+                                              MockPupilCameraWorker)
+    from acqApp.pupil_cam.control import LedController, MockLedController
+    from acqApp.puffer.control import PufferController, MockPufferController
+    from acqApp.dmd.control import DmdController, MockDmdController
+    from acqApp.stage.acquisition import StagePollWorker
+    from acqApp.closed_loop import ClosedLoopWorker
+
+    # ── 1. conformance ───────────────────────────────────────────────────────
+    # Each entry is what `modules.py` actually reads that object through.
+    CONFORM = [
+        (OrcaFireWorker,          CameraWorker),
+        (MockCameraWorker,        CameraWorker),
+        (EncoderWorker,           ClockedWorker),
+        (MockEncoderWorker,       ClockedWorker),
+        (PupilCameraWorker,       ExposureControl),
+        (MockPupilCameraWorker,   ExposureControl),
+        (PupilCameraWorker,       DeviceWorker),
+        (MockPupilCameraWorker,   DeviceWorker),
+        (StagePollWorker,         DeviceWorker),
+        (ClosedLoopWorker,        DeviceWorker),
+        (PufferController,        RecordingOutput),
+        (MockPufferController,    RecordingOutput),
+        (DmdController,           ProjectorController),
+        (MockDmdController,       ProjectorController),
+    ]
+    for cls, proto in CONFORM:
+        missing = has_all(cls, proto)
+        r.check(not missing,
+                f"{cls.__name__} satisfies {proto.__name__}"
+                + (f" — MISSING {missing}" if missing else ""))
+
+    # The LED is an output that is deliberately NOT a RecordingOutput: its
+    # on/off state is illumination, not an experimental event. `detach_sink`
+    # asks exactly this question, so assert the answer rather than assume it.
+    for cls in (LedController, MockLedController):
+        r.check(bool(has_all(cls, RecordingOutput)),
+                f"{cls.__name__} is deliberately NOT a RecordingOutput "
+                f"(no set_sink to detach)")
+        r.check(bool(has_all(cls, OutputController)),
+                f"…nor an OutputController (it has no apply_settings)")
+
+    # CONTROL: a stand-in missing one member must fail, or `has_all` is vacuous
+    # and every check above passes for free.
+    class AlmostAProjector:
+        def apply_settings(self, s): ...
+        def close(self): ...
+        def set_sink(self, s): ...
+        device_name = "fake"
+        resolution = (1, 1)
+        # on_pixels deliberately absent — this is the exact omission A1 names
+
+    missing = has_all(AlmostAProjector, ProjectorController)
+    r.check(missing == ["on_pixels"],
+            f"control: a projector missing only on_pixels is caught "
+            f"(got {missing})")
+
+    # ── 2. parity ────────────────────────────────────────────────────────────
+    # Differences that are deliberate. Anything else is drift and fails.
+    PAIRS = [
+        (OrcaFireWorker, MockCameraWorker, PullWorker,
+         # Qt signals and a query that only means something against a device.
+         {"drops_update", "timing_update", "achievable_fps"}, set()),
+        (EncoderWorker, MockEncoderWorker, PullWorker,
+         set(), {"RATE"}),                      # mock's synthetic sample rate
+        (PupilCameraWorker, MockPupilCameraWorker, PullWorker,
+         set(), {"W", "H"}),                    # mock's synthetic frame size
+        (LedController, MockLedController, object, set(), set()),
+        (PufferController, MockPufferController, QObject, set(), set()),
+        (DmdController, MockDmdController, QObject, set(), set()),
+    ]
+    for real, mock, base, ok_real, ok_mock in PAIRS:
+        real_only = public(real, base) - public(mock, base) - ok_real
+        mock_only = public(mock, base) - public(real, base) - ok_mock
+        r.check(not real_only and not mock_only,
+                f"{real.__name__} / {mock.__name__} expose the same API"
+                + (f" — real-only {sorted(real_only)}" if real_only else "")
+                + (f" — mock-only {sorted(mock_only)}" if mock_only else ""))
+
+    # CONTROL: the drift this test exists to catch. `skipped_frames` was on
+    # OrcaFireWorker only until A1, and `cam_dropped_frames` read it through a
+    # getattr default — so a real lossy run and a mock both filed 0.
+    class MockCameraWithoutSkipped(MockCameraWorker):
+        skipped_frames = property(lambda self: (_ for _ in ()).throw(
+            AttributeError("skipped_frames")))
+    drifted = public(OrcaFireWorker, PullWorker) - (
+        public(MockCameraWorker, PullWorker) | {"drops_update", "timing_update",
+                                                "achievable_fps"})
+    r.check(not drifted, f"control target: skipped_frames is now on both "
+                         f"(residual drift {sorted(drifted)})")
+    r.check("skipped_frames" in public(MockCameraWorker, PullWorker),
+            "the mock camera declares skipped_frames, so cam_dropped_frames "
+            "is read rather than defaulted")
+
+    # ── 3. the probes are actually gone from modules.py ──────────────────────
+    # Comments are stripped first: the code that replaced these probes explains
+    # itself by naming them, and a search over raw text would read that prose as
+    # the thing it warns about. (It did, on the first run of this test.)
+    import io
+    import tokenize
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1] / "modules.py"
+    raw = src.read_text(encoding="utf-8")
+    text = tokenize.untokenize(
+        tok for tok in tokenize.generate_tokens(io.StringIO(raw).readline)
+        if tok.type != tokenize.COMMENT)
+    r.check("device_name" in text and len(text) > len(raw) / 2,
+            "control: the comment-stripped source is still real code")
+    for needle, why in (
+        ('getattr(c, "device_name"', "the DMD device name"),
+        ('getattr(c, "on_pixels"', "the DMD's on-pixel count"),
+        ('getattr(self.worker, "timestamp_source"', "a worker's timebase"),
+        ('getattr(self.worker, "skipped_frames"', "camera-side frame drops"),
+        ('hasattr(self.worker, "set_exposure")', "pupil exposure"),
+    ):
+        r.check(needle not in text,
+                f"modules.py no longer guesses {why} with a default")
+
+    return r.finish()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

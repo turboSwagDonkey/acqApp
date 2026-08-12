@@ -7,7 +7,63 @@
 > PLAN.md §4 and §6 replace them.
 
 It captures decisions and state that aren't obvious from the code alone.
-Last updated: 2026-07-27.
+Last updated: 2026-08-12.
+
+## Update 2026-08 — camera crash, the wheel derivation, the camera link
+
+Folded in from `SESSION_HANDOFF.md`, which used to sit beside this file as a
+peer (PLAN.md item B2). Its session narrative and its list of touched files are
+gone — most of that wiring has since moved into `modules.py` — but three things
+in it are expensive to reconstruct and are kept here.
+
+**The camera crash on Start, and why the process vanished with no traceback.**
+Two independent causes, both fixed and both now load-bearing rules:
+
+1. A Python exception escaping a `QThread.run()` makes PyQt6 call
+   `qFatal()`/abort — the whole process dies, no traceback. Any unwrapped DCAM
+   call in a worker did it. `PullWorker.run()` is now a guard that calls
+   `self._run()` and emits `error`; **every worker's loop is `_run`, never
+   `run`**. This is PLAN.md §2's invariant, and it started here.
+2. A native DCAM crash from a **double-open**: startup probed the camera
+   open→info→**close** and the worker then re-opened it. Re-opening a
+   just-closed DCAM device segfaults below Python, so nothing can catch it.
+   `main.py` now opens once and keeps the handle, which also removed ~7 s per
+   Start. `faulthandler.enable()` was added so a future native crash at least
+   dumps a stack.
+
+Confirmed working **on the real camera** — one of the few things here that has
+been.
+
+**The wheel's reset is smeared across 2–3 samples.** This is the single most
+valuable measurement in the old file, because every naive derivation fails on
+it. A real capture caught the reset as `0.02 → 3.21 → 4.60 V`: each sub-step is
+below a half-turn, so a plain `np.unwrap` cannot see the wrap and reads the
+reset as **+1 rev of real motion**, cancelling the turn — cumulative distance
+then sawtooths back to zero once per revolution, invisibly. That is why
+`_derive` rejects any step implying more than `_MAX_REV_S` and *coasts* through
+the sensor's blind spot instead of unwrapping. Against the real capture
+(`toy_output/wheel.csv`, 7 resets) the final version leaks **0** resets.
+
+Two earlier derivations that also failed, so they don't get retried:
+differentiating the *raw* voltage (per-sample ADC noise of ±0.045 V ≈ 0.46 rev/s
+of phantom speed — a velocity deadband cannot tell that from motion), and
+rectified distance (`+= |Δ|`), which accumulated that noise. Speed is now an LSQ
+slope over a ±0.25 s window and distance is the deadband-gated integral of it.
+
+**Camera link — still open, and the reason the label exists.** The frame-rate
+label used to be a hardcoded `DEFAULT_LINK = USB`; this rig is CoaXPress-only,
+so it read the wrong column of the readout table (audit #11). The panel now
+shows the camera's *measured* rate once running. **Watch that number at full
+frame:** ~115 fps means CoaXPress is live; ~15.8 fps means it is still
+bandwidth-capped like USB3, which would be a DCAM/grabber enumeration problem
+*below* this app — the camera's USB interface also enumerating, or the FireBird
+grabber not being the enumerated path. The app cannot choose the link; the
+measured label is only how you tell which one you got.
+
+The two diagnostic tools from that session are still in the tree and still the
+way to answer a wheel question: `wheel/capture_raw.py` (hardware-clocked 1 kHz
+raw capture) and `wheel/analyze_raw.py` (measures V/rev peak-to-peak, net
+rotation, path).
 
 ## Update 2026-07-27 — main is wired up
 
@@ -67,6 +123,12 @@ workers for hardware and a JSON dataclass config. We extend that pattern.
   ±10 V), matching the lab's existing MATLAB script. NOTE: this is the analog
   approach, NOT a quadrature counter on ctr0 (an earlier draft assumed ctr0 —
   that was wrong for this rig). Scale to revolutions with `--volts-per-rev`.
+- **Encoder signal, measured on the rig** (1 kHz capture, 0 glitches): a clean
+  **single-turn 0–5 V sawtooth**, range 0.10–5.02 V, span **4.91 V**, so
+  `volts_per_rev = 4.912` — that is a measurement, not a default. Sample noise
+  is **±0.045 V**, which is large enough to dominate any per-sample derivative
+  (see the 2026-08 update above). The voltage **does wrap**: it is a
+  continuous-turn sensor and the capture contains real resets.
 - **Camera:** Orca Fire via `pylablib.devices.DCAM`. Needs Hamamatsu DCAM-API
   runtime installed (not pip-installable). NI-DAQmx runtime likewise needed for
   the encoder.
@@ -107,7 +169,10 @@ the Phase 2 storage design. Until we have it, Phase 1 skeleton work can proceed
 
 ## Open items to confirm
 
-- Encoder `--volts-per-rev` value (what voltage span = one wheel revolution?) and
-  wheel diameter, so position/speed read in real units. Currently unset.
-- Whether the analog encoder voltage wraps (continuous-turn sensor) — affects how
-  we unwrap cumulative position in the real app.
+- ~~Encoder `--volts-per-rev`~~ — **answered: 4.912 V/rev**, measured from a rig
+  capture (see Hardware facts). The **wheel diameter** is still unmeasured, and
+  until it is set the app reports rev/s and rev rather than mm/s and mm.
+- ~~Whether the analog encoder voltage wraps~~ — **answered: yes.** It is a
+  continuous-turn sensor; a real capture (`toy_output/wheel.csv`) contains 7
+  resets, and they are smeared across 2–3 samples, which is what the reset
+  rejection in `_derive` exists for.

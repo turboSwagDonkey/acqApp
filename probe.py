@@ -81,7 +81,32 @@ def _stage(port: str = DEFAULT_STAGE_PORT) -> ProbeResult:
 
 
 def _dmd() -> ProbeResult:
-    return ProbeResult("stub", "no vendor SDK wired yet")
+    """The ALP *API*, not the device.
+
+    Opening the ALP is the only way to know a DMD is really there, and opening
+    it takes the USB from whoever holds it — a running session, or the
+    standalone dmdGUI_project app. This monitor promises never to disturb a
+    device, so it reports what can be checked without connecting. The DMD tab
+    is where "is a real one attached" is answered, because that is the code
+    that actually opened it.
+    """
+    try:
+        import ALP4  # noqa: F401     (import only — the DLL loads on construction)
+    except Exception as e:
+        return ProbeResult("error", f"ALP4lib unavailable ({e})")
+    try:
+        from acqApp.dmd import alp
+        lib_dir, source = alp.resolve_lib_dir()
+    except Exception as e:                       # pragma: no cover — import guard
+        return ProbeResult("error", f"ALP API lookup failed ({e})")
+    return ProbeResult("ok", f"ALP4 API via {source} "
+                             f"({lib_dir or 'registry'}); not opened — "
+                             f"one process at a time")
+
+
+def _closed_loop() -> ProbeResult:
+    """No device of its own: it watches one module and fires another."""
+    return ProbeResult("stub", "software rule — no device of its own")
 
 
 def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
@@ -98,6 +123,8 @@ def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
             return _stage(stage_port)
         if module == "dmd":
             return _dmd()
+        if module == "closed_loop":
+            return _closed_loop()
         return ProbeResult("error", "unknown module")
     except Exception as e:                       # belt-and-braces
         return ProbeResult("error", str(e))

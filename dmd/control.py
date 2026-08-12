@@ -4,12 +4,6 @@ DMD (Digital Micromirror Device) controller + settings panel.
 DmdController      : the real Vialux ALP-4.2 (1024x768 on this rig), via dmd/alp.py.
 MockDmdController  : renders patterns locally, no hardware needed.
 SettingsPanel      : QWidget for pattern, geometry, timing and trigger settings.
-
-The geometry (scale / rotation / offset) is here rather than fixed at
-"fit and centre" because it is how the projected pattern is aligned to the
-optics — the standalone `dmdGUI_project` app is where that alignment is
-normally found, and its saved scale/rotation are used as this panel's defaults
-so acqApp starts from the same place instead of a different one.
 """
 
 from __future__ import annotations
@@ -20,11 +14,13 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QObject, Qt, pyqtSignal, QRect, QSize
+from PyQt6.QtGui import (
+    QImage, QPixmap, QShortcut, QKeySequence, QPainter, QPen, QColor
+)
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-    QPushButton, QSpinBox, QWidget, QLabel, QFileDialog,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
+    QPushButton, QWidget, QLabel, QFileDialog, QHBoxLayout, QVBoxLayout,
 )
 from acqApp import style
 from acqApp.dmd import alp
@@ -32,9 +28,6 @@ from acqApp.dmd import alp
 # Fallback panel size before (or without) a device: this rig's ALP is XGA.
 DEFAULT_W, DEFAULT_H = 1024, 768
 
-# Logged into /dmd at the boundaries of a projection. The device runs its own
-# sequence clock once started, so those two instants are what we actually
-# observe — see MockDmdController for the difference.
 FRAME_START = 0
 FRAME_STOP = -1
 
@@ -43,52 +36,44 @@ FRAME_STOP = -1
 class DmdSettings:
     pattern_path:  Path | None = None   # .png / .bmp to upload
     on_time_ms:    float       = 100.0  # illumination on-time per pattern (ms)
-    static_hold:   bool        = False  # True = project one image, held (one exposure)
+    # The panel no longer exposes the timing controls and hardcodes this True:
+    # the DMD holds one image until Stop. `on_time_ms` / `n_repeats` below are
+    # only read on the cycling path, which is now reachable from code (and the
+    # tests) but not from the UI — kept because the ALP timing rules it encodes
+    # were expensive to establish, not because anything drives it today.
+    static_hold:   bool        = True   # True = project one image, held
     trigger_mode:  str         = "Internal"   # Internal | External | Software
-    n_repeats:     int         = 0      # 0 = loop forever (ignored when static_hold)
+    n_repeats:     int         = 0      # 0 = loop forever
     # ── geometry: how the pattern lands on the panel ──
     scale_pct:     float       = 100.0  # per cent of the source image's size
-    rotation_deg:  float       = 0.0    # clockwise-positive, like the standalone GUI
+    rotation_deg:  float       = 0.0    # clockwise-positive
     offset_x:      float       = 0.0    # device px from the panel centre
     offset_y:      float       = 0.0
     invert:        bool        = False  # swap on/off mirrors
-    fit:           bool        = False  # scale to fit and centre (overrides the above)
-    lib_dir:       str         = ""     # ALP API location; "" = look it up (alp.py)
+    all_on:        bool        = False  # turn all mirrors on
+    fit:           bool        = False  # scale to fit and centre
+    lib_dir:       str         = ""     # ALP API location
 
 
 class DmdController(QObject):
-    """The real ALP-4.2 device.
-
-    Opening raises if the ALP is already held by another process — the
-    standalone `dmdGUI_project` app, most often — and the caller
-    (`modules.DmdModule`) turns that into a mock controller plus a panel that
-    says so. Silently doing nothing is what this class used to do, and it is
-    the failure the operator cannot see from behind the rig.
-
-    The device runs its own sequence clock once started, so what reaches the
-    `/dmd` stream is the two instants we actually command: FRAME_START when
-    Display is pressed and FRAME_STOP when it stops. On-time and repeats are in
-    the metadata, so a cycling sequence is reconstructable between them.
-    """
+    """The real ALP-4.2 device."""
     pattern_started = pyqtSignal()
     pattern_stopped = pyqtSignal()
-    frame_displayed = pyqtSignal(int)   # pattern index
+    frame_displayed = pyqtSignal(int)
 
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or DmdSettings()
         self._sink: Callable[[int], None] | None = None
-        self._pattern: np.ndarray | None = None     # the built frame, ready to send
+        self._pattern: np.ndarray | None = None
         self._running = False
         lib_dir, source = alp.resolve_lib_dir(self._s.lib_dir)
         self._dev = alp.AlpDevice(lib_dir)
-        self._dev.open()                # raises → the caller falls back to mock
-        print(f"[DMD] ALP {self._dev.width}x{self._dev.height} "
-              f"(API from {source})")
-        if self._s.pattern_path:
+        self._dev.open()
+        print(f"[DMD] ALP {self._dev.width}x{self._dev.height} (API from {source})")
+        if self._s.pattern_path or self._s.all_on:
             self.load_pattern(self._s.pattern_path)
 
-    # ── description, for the panel and the session file ──
     @property
     def device_name(self) -> str:
         return f"ALP-4.2 {self._dev.width}x{self._dev.height}"
@@ -99,12 +84,9 @@ class DmdController(QObject):
 
     @property
     def on_pixels(self) -> int:
-        """Mirrors the current pattern would switch on. 0 means a dark panel —
-        the one thing you cannot tell from a Display button that worked."""
         return 0 if self._pattern is None else int((self._pattern > 0).sum())
 
     def set_sink(self, sink: Callable[[int], None] | None) -> None:
-        """Attach (or clear) a per-frame recording sink; receives pattern index."""
         self._sink = sink
 
     def _frame(self, idx: int) -> None:
@@ -114,26 +96,29 @@ class DmdController(QObject):
         self.frame_displayed.emit(idx)
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        """Adopt the panel's current settings. Called just before display(), so
-        a timing or geometry change made after the pattern was loaded still
-        takes effect — the frame is rebuilt from the source image."""
         geometry_changed = (
             (settings.scale_pct, settings.rotation_deg, settings.offset_x,
-             settings.offset_y, settings.invert, settings.fit)
+             settings.offset_y, settings.invert, settings.fit, settings.all_on)
             != (self._s.scale_pct, self._s.rotation_deg, self._s.offset_x,
-                self._s.offset_y, self._s.invert, self._s.fit))
+                self._s.offset_y, self._s.invert, self._s.fit, self._s.all_on))
         self._s = settings
-        if geometry_changed and settings.pattern_path:
+        if geometry_changed and (settings.pattern_path or settings.all_on):
             self.load_pattern(settings.pattern_path)
 
     def load_pattern(self, path: Path | None = None) -> None:
-        """Render a pattern image into the frame this device will project."""
+        w, h = self.resolution
+
+        if self._s.all_on:
+            self._pattern = np.full((h, w), 255, dtype=np.uint8)
+            print(f"[DMD] all mirrors ON -> {w}x{h}, {self.on_pixels} mirrors on")
+            return
+
         p = Path(path or self._s.pattern_path or "")
         if not p.is_file():
             print(f"[DMD] load_pattern: no such file ({p})")
             self._pattern = None
             return
-        w, h = self.resolution
+
         self._pattern = alp.build_frame(
             p, w, h, scale_pct=self._s.scale_pct,
             rotation_deg=self._s.rotation_deg, offset_x=self._s.offset_x,
@@ -141,7 +126,6 @@ class DmdController(QObject):
         print(f"[DMD] {p.name} -> {w}x{h}, {self.on_pixels} mirrors on")
 
     def display(self) -> None:
-        """Project the loaded pattern."""
         if self._pattern is None:
             print("[DMD] display: no pattern loaded — nothing to project")
             return
@@ -151,9 +135,6 @@ class DmdController(QObject):
             print("[DMD] display: the frame is entirely dark — check scale, "
                   "offset and invert")
 
-        # Static hold leaves the timing at the device default and loops a
-        # one-picture sequence: with ALP_BIN_UNINTERRUPTED that is a steady
-        # image, not a flicker. Otherwise the on-time is the picture time.
         if self._s.static_hold:
             illum, loop, repeats = None, True, 0
         else:
@@ -179,41 +160,23 @@ class DmdController(QObject):
         print(f"[DMD] projecting — {how}, {self.on_pixels} mirrors on")
 
     def stop(self) -> None:
-        """Stop display."""
         if not self._running:
             return
         self._dev.halt()
         self._running = False
         self._frame(FRAME_STOP)
         self.pattern_stopped.emit()
-        print("[DMD] display stopped")
 
     def close(self) -> None:
         self.stop()
         self._dev.close()
 
     def software_trigger(self) -> None:
-        """Advance one frame when trigger_mode == 'Software'.
-
-        Not wired to the ALP's trigger input yet: with a one-picture sequence
-        there is nothing to advance to. Left as the event hook so the log still
-        records that a trigger was issued.
-        """
         self._frame(FRAME_START)
 
 
 class MockDmdController(QObject):
-    """Renders patterns in memory and logs events — no hardware.
-
-    Runs the same frame builder as the real device at the same panel size, so
-    "what would be projected" is answerable with nothing plugged in, and a
-    geometry mistake shows up in Emulate mode rather than on the rig.
-
-    It logs FRAME_START / FRAME_STOP like the real controller **and** a tick per
-    on-time in between. Those ticks are honest here — this class really does
-    emit them — but the ALP free-runs its own sequence once started, so the real
-    stream carries only the two boundaries.
-    """
+    """Renders patterns in memory and logs events — no hardware."""
     pattern_started = pyqtSignal()
     pattern_stopped = pyqtSignal()
     frame_displayed = pyqtSignal(int)
@@ -237,25 +200,27 @@ class MockDmdController(QObject):
         return 0 if self._pattern is None else int((self._pattern > 0).sum())
 
     def set_sink(self, sink: Callable[[int], None] | None) -> None:
-        """Attach (or clear) a per-frame recording sink; receives pattern index."""
         self._sink = sink
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        """Adopt the panel's current settings (see DmdController.apply_settings)."""
-        reload = (settings.pattern_path and settings != self._s)
+        reload = ((settings.pattern_path or settings.all_on) and settings != self._s)
         self._s = settings
         if reload:
             self.load_pattern(settings.pattern_path)
 
     def _frame(self, idx: int) -> None:
-        """Report one displayed frame: record it (thread-direct, no GUI hop) and
-        emit the Qt signal for any GUI listener."""
         sink = self._sink
         if sink is not None:
             sink(idx)
         self.frame_displayed.emit(idx)
 
     def load_pattern(self, path: Path | None = None) -> None:
+        if self._s.all_on:
+            self._pattern = np.full((DEFAULT_H, DEFAULT_W), 255, dtype=np.uint8)
+            print(f"[DMD mock] all mirrors ON -> {DEFAULT_W}x{DEFAULT_H}, "
+                  f"{self.on_pixels} mirrors on")
+            return
+
         p = Path(path or self._s.pattern_path or "")
         if p.is_file():
             try:
@@ -264,17 +229,15 @@ class MockDmdController(QObject):
                     rotation_deg=self._s.rotation_deg,
                     offset_x=self._s.offset_x, offset_y=self._s.offset_y,
                     invert=self._s.invert, fit=self._s.fit)
-                print(f"[DMD mock] {p.name} -> {DEFAULT_W}x{DEFAULT_H}, "
-                      f"{self.on_pixels} mirrors on")
                 return
-            except Exception as e:                    # noqa: BLE001
+            except Exception as e:
                 print(f"[DMD mock] could not render {p.name}: {e}")
-        # Fallback: checkerboard, at the panel size the real device would use.
+
+        # Fallback checkerboard
         tile = np.kron([[0, 255] * 8, [255, 0] * 8] * 8,
                        np.ones((4, 4), dtype=np.uint8)).astype(np.uint8)
         reps = (DEFAULT_H // tile.shape[0] + 1, DEFAULT_W // tile.shape[1] + 1)
         self._pattern = np.tile(tile, reps)[:DEFAULT_H, :DEFAULT_W]
-        print("[DMD mock] using fallback checkerboard pattern")
 
     def display(self) -> None:
         if self._running:
@@ -282,10 +245,7 @@ class MockDmdController(QObject):
         self._running = True
         self.pattern_started.emit()
         self._frame(FRAME_START)
-        # Static hold: project one image and leave it up endlessly until stop()
-        # — no cadence, no cycling thread. On-time doesn't apply.
         if self._s.static_hold:
-            print("[DMD mock] static hold — one image held until Stop")
             return
 
         on_time = max(0.001, self._s.on_time_ms / 1000.0)
@@ -300,7 +260,6 @@ class MockDmdController(QObject):
 
         self._thread = threading.Thread(target=_loop, daemon=True)
         self._thread.start()
-        print(f"[DMD mock] display started ({self._s.on_time_ms:.0f} ms on-time)")
 
     def stop(self) -> None:
         was_running = self._running
@@ -311,7 +270,6 @@ class MockDmdController(QObject):
         if was_running:
             self._frame(FRAME_STOP)
         self.pattern_stopped.emit()
-        print("[DMD mock] display stopped")
 
     def close(self) -> None:
         self.stop()
@@ -329,122 +287,155 @@ class SettingsPanel(QWidget):
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or DmdSettings()
-        # Coerce: a path restored from JSON arrives as a str.
+        self._res: tuple[int, int] = (DEFAULT_W, DEFAULT_H)
         self._pattern_path: Path | None = (
             Path(self._s.pattern_path) if self._s.pattern_path else None)
+        self._shortcuts: list[QShortcut] = []
         self._build()
+        self._init_shortcuts()
 
-    def set_device(self, name: str, resolution: tuple[int, int],
-                   real: bool) -> None:
-        """Say which DMD (if any) is attached.
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_preview()
 
-        The panel used to look identical whether or not there was hardware
-        behind it, and with none, Display did nothing and said nothing — the
-        one failure an operator cannot see from behind the rig.
-        """
+    def set_device(self, name: str, resolution: tuple[int, int], real: bool) -> None:
+        self._res = resolution
         w, h = resolution
-        self._lbl_dev.setText(f"{name} · {w}x{h}"
-                              + ("" if real else " · nothing will be projected"))
+        res_str = f"{w}x{h}"
+        dev_label = name if res_str in name else f"{name} · {res_str}"
+        dev_label += "" if real else " · nothing will be projected"
+        
+        self._lbl_dev.setText(dev_label)
         self._lbl_dev.setStyleSheet(
             f"color:{style.HEX['dmd'] if real else '#c86'};")
+        self._update_preview()
 
     def _build(self) -> None:
         grp = QGroupBox("DMD settings")
         lay = QFormLayout(grp)
-        lay.setSpacing(4)
+        lay.setSpacing(6)
 
         self._lbl_dev = QLabel("no device yet")
         self._lbl_dev.setWordWrap(True)
         lay.addRow("Device:", self._lbl_dev)
 
+        # ── Inline Pattern + Browse Row ──────────────────────────────────────
+        pat_w = QWidget()
+        pat_lay = QHBoxLayout(pat_w)
+        pat_lay.setContentsMargins(0, 0, 0, 0)
+        pat_lay.setSpacing(6)
+
         self._lbl_pattern = QLabel("No pattern loaded")
         self._lbl_pattern.setWordWrap(True)
-        btn_browse = QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse)
-        lay.addRow("Pattern:", self._lbl_pattern)
-        lay.addRow(btn_browse)
+        self._btn_browse = QPushButton("Browse…")
+        self._btn_browse.setFixedWidth(90)
+        self._btn_browse.clicked.connect(self._browse)
 
-        # Live preview of the selected pattern image.
+        pat_lay.addWidget(self._lbl_pattern, 1)
+        pat_lay.addWidget(self._btn_browse)
+        lay.addRow("Pattern:", pat_w)
+
+        # ── All ON toggle ────────────────────────────────────────────────────
+        self._chk_all_on = QCheckBox("All ON (turn all mirrors on)")
+        self._chk_all_on.setChecked(self._s.all_on)
+        self._chk_all_on.toggled.connect(self._on_all_on_toggled)
+        lay.addRow(self._chk_all_on)
+
+        # ── Live preview box ─────────────────────────────────────────────────
         self._preview = QLabel("No preview")
-        self._preview.setMinimumSize(200, 350)
+        self._preview.setMinimumSize(200, 180)
+        self._preview.setMaximumHeight(240)
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setStyleSheet(
-            "background:#111; color:#777; border:1px solid #333;")
+            "color:#777; border:1px solid #333; border-radius:3px;")
         lay.addRow(self._preview)
 
-        # ── Geometry: where the pattern lands on the panel ───────────────────
-        # This is the alignment to the optics. Defaults come from the standalone
-        # dmdGUI_project's saved config when acqApp has none of its own, so the
-        # first projection here matches the one the optics were aligned with
-        # rather than starting from an arbitrary 100 %.
+        # ── Pattern Alignment (Geometry Card) ────────────────────────────────
+        geom_grp = QGroupBox("Pattern Alignment")
+        geom_lay = QGridLayout(geom_grp)
+        geom_lay.setSpacing(6)
+        
+        geom_lay.setColumnStretch(1, 1)
+        geom_lay.setColumnStretch(3, 1)
+
+        # Fit Checkbox
         self._chk_fit = QCheckBox("Fit to panel (ignore scale/rotation/offset)")
         self._chk_fit.setChecked(self._s.fit)
         self._chk_fit.toggled.connect(self._on_fit_toggled)
-        lay.addRow(self._chk_fit)
+        geom_lay.addWidget(self._chk_fit, 0, 0, 1, 4)
 
+        # Row 1: Scale % | Rotation °
+        geom_lay.addWidget(QLabel("Scale:"), 1, 0)
         self._spn_scale = QDoubleSpinBox()
         self._spn_scale.setRange(1.0, 1000.0)
         self._spn_scale.setDecimals(1)
+        self._spn_scale.setSingleStep(1.0)
         self._spn_scale.setSuffix(" %")
         self._spn_scale.setValue(self._s.scale_pct)
-        lay.addRow("Scale:", self._spn_scale)
+        geom_lay.addWidget(self._spn_scale, 1, 1)
 
+        geom_lay.addWidget(QLabel("Rot:"), 1, 2)
         self._spn_rot = QDoubleSpinBox()
         self._spn_rot.setRange(-360.0, 360.0)
         self._spn_rot.setDecimals(1)
+        self._spn_rot.setSingleStep(0.5)
         self._spn_rot.setSuffix(" °")
         self._spn_rot.setValue(self._s.rotation_deg)
-        self._spn_rot.setToolTip("Clockwise-positive, matching the standalone "
-                                 "DMD app's rotation dial.")
-        lay.addRow("Rotation:", self._spn_rot)
+        self._spn_rot.setToolTip("Clockwise-positive rotation.")
+        geom_lay.addWidget(self._spn_rot, 1, 3)
 
+        # Row 2: Offset X | Offset Y
+        geom_lay.addWidget(QLabel("Offset X:"), 2, 0)
         self._spn_dx = QDoubleSpinBox()
         self._spn_dx.setRange(-4000.0, 4000.0)
         self._spn_dx.setDecimals(0)
+        self._spn_dx.setSingleStep(1.0)
         self._spn_dx.setSuffix(" px")
         self._spn_dx.setValue(self._s.offset_x)
-        lay.addRow("Offset X:", self._spn_dx)
+        geom_lay.addWidget(self._spn_dx, 2, 1)
 
+        geom_lay.addWidget(QLabel("Offset Y:"), 2, 2)
         self._spn_dy = QDoubleSpinBox()
         self._spn_dy.setRange(-4000.0, 4000.0)
         self._spn_dy.setDecimals(0)
+        self._spn_dy.setSingleStep(1.0)
         self._spn_dy.setSuffix(" px")
         self._spn_dy.setValue(self._s.offset_y)
-        self._spn_dy.setToolTip("Offset of the pattern's centre from the "
-                                "panel's centre, in device pixels.")
-        lay.addRow("Offset Y:", self._spn_dy)
+        self._spn_dy.setToolTip("Offset from center in device pixels.")
+        geom_lay.addWidget(self._spn_dy, 2, 3)
 
-        self._chk_invert = QCheckBox("Invert (swap on/off mirrors)")
+        # Row 3: Invert Checkbox | Reset Button
+        self._chk_invert = QCheckBox("Invert mirrors")
         self._chk_invert.setChecked(self._s.invert)
-        lay.addRow(self._chk_invert)
+        geom_lay.addWidget(self._chk_invert, 3, 0, 1, 2)
 
-        # Illumination on-time: how long each pattern is projected.
-        self._spn_on = QDoubleSpinBox()
-        self._spn_on.setRange(1.0, 600_000.0)      # 1 ms … 10 min
-        self._spn_on.setDecimals(1)
-        self._spn_on.setSuffix(" ms")
-        self._spn_on.setValue(self._s.on_time_ms)
-        lay.addRow("Illumination on-time:", self._spn_on)
+        btn_reset_geom = QPushButton("Reset Alignment")
+        btn_reset_geom.setToolTip("Reset scale to 100%, rotation to 0°, and offsets to (0, 0)")
+        btn_reset_geom.clicked.connect(self._reset_geometry)
+        geom_lay.addWidget(btn_reset_geom, 3, 2, 1, 2)
 
-        # Static hold: one consistent exposure of a single image (no cycling).
-        self._chk_static = QCheckBox("Single static exposure (hold one image)")
-        self._chk_static.setChecked(self._s.static_hold)
-        self._chk_static.toggled.connect(self._on_static_toggled)
-        lay.addRow(self._chk_static)
+        # Row 4: Enable Keyboard Nudging Toggle
+        self._chk_nudge = QCheckBox("Enable keyboard nudging")
+        self._chk_nudge.setToolTip(
+            "Nudge alignment with keys:\n"
+            " • Arrows : Offset X/Y (1 px)\n"
+            " • + / -  : Scale (1 %)\n"
+            " • [ / ]  : Rotation (0.5 °)\n"
+            "Hold Shift for 10x larger steps."
+        )
+        self._chk_nudge.toggled.connect(self._on_nudge_toggled)
+        geom_lay.addWidget(self._chk_nudge, 4, 0, 1, 4)
 
+        lay.addRow(geom_grp)
+
+        # Trigger settings
         self._cmb_trig = QComboBox()
         self._cmb_trig.addItems(["Internal", "External", "Software"])
         self._cmb_trig.setCurrentText(self._s.trigger_mode)
         lay.addRow("Trigger:", self._cmb_trig)
 
-        self._spn_rep = QSpinBox()
-        self._spn_rep.setRange(0, 9999)
-        self._spn_rep.setSpecialValueText("∞  loop")
-        self._spn_rep.setValue(self._s.n_repeats)
-        lay.addRow("Repeats:", self._spn_rep)
-
+        # Display / Stop buttons
         btn_row_w = QWidget()
-        from PyQt6.QtWidgets import QHBoxLayout
         btn_row = QHBoxLayout(btn_row_w)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_display = QPushButton("Display")
@@ -456,35 +447,96 @@ class SettingsPanel(QWidget):
         btn_row.addWidget(btn_stop)
         lay.addRow(btn_row_w)
 
-        root = QFormLayout(self)
+        # Root layout uses QVBoxLayout with stretch at bottom to prevent empty gaps
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.addRow(grp)
+        root.addWidget(grp)
+        root.addStretch(1)
 
-        self._on_static_toggled(self._chk_static.isChecked())
-        self._on_fit_toggled(self._chk_fit.isChecked())
-        self._show_pattern(self._pattern_path)
+        self._on_all_on_toggled(self._chk_all_on.isChecked())
+        self._update_preview()
 
-        for w in (self._spn_on, self._spn_rep, self._spn_scale, self._spn_rot,
-                  self._spn_dx, self._spn_dy):
+        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.valueChanged.connect(self._emit)
-        for c in (self._chk_static, self._chk_fit, self._chk_invert):
+        for c in (self._chk_fit, self._chk_invert, self._chk_all_on):
             c.toggled.connect(self._emit)
         self._cmb_trig.currentTextChanged.connect(self._emit)
 
+    def _init_shortcuts(self) -> None:
+        """Configures keyboard shortcuts for alignment nudging."""
+        def add_sc(key_seq: str, callback: Callable[[], None]) -> None:
+            sc = QShortcut(QKeySequence(key_seq), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(callback)
+            sc.setEnabled(False)
+            self._shortcuts.append(sc)
+
+        # Offsets
+        add_sc("Left", lambda: self._nudge_spn(self._spn_dx, -1))
+        add_sc("Right", lambda: self._nudge_spn(self._spn_dx, 1))
+        add_sc("Up", lambda: self._nudge_spn(self._spn_dy, -1))
+        add_sc("Down", lambda: self._nudge_spn(self._spn_dy, 1))
+
+        add_sc("Shift+Left", lambda: self._nudge_spn(self._spn_dx, -10))
+        add_sc("Shift+Right", lambda: self._nudge_spn(self._spn_dx, 10))
+        add_sc("Shift+Up", lambda: self._nudge_spn(self._spn_dy, -10))
+        add_sc("Shift+Down", lambda: self._nudge_spn(self._spn_dy, 10))
+
+        # Scale
+        add_sc("+", lambda: self._nudge_spn(self._spn_scale, 1))
+        add_sc("=", lambda: self._nudge_spn(self._spn_scale, 1))
+        add_sc("-", lambda: self._nudge_spn(self._spn_scale, -1))
+        add_sc("Shift++", lambda: self._nudge_spn(self._spn_scale, 10))
+        add_sc("Shift+=", lambda: self._nudge_spn(self._spn_scale, 10))
+        add_sc("Shift+-", lambda: self._nudge_spn(self._spn_scale, -10))
+        add_sc("Shift+_", lambda: self._nudge_spn(self._spn_scale, -10))
+
+        # Rotation
+        add_sc("[", lambda: self._nudge_spn(self._spn_rot, -0.5))
+        add_sc("]", lambda: self._nudge_spn(self._spn_rot, 0.5))
+        add_sc("Shift+[", lambda: self._nudge_spn(self._spn_rot, -5.0))
+        add_sc("Shift+]", lambda: self._nudge_spn(self._spn_rot, 5.0))
+        add_sc("{", lambda: self._nudge_spn(self._spn_rot, -5.0))
+        add_sc("}", lambda: self._nudge_spn(self._spn_rot, 5.0))
+
+    def _on_nudge_toggled(self, enabled: bool) -> None:
+        for sc in self._shortcuts:
+            sc.setEnabled(enabled)
+
+    def _nudge_spn(self, spn: QDoubleSpinBox, delta: float) -> None:
+        if not spn.isEnabled():
+            return
+        spn.setValue(spn.value() + delta)
+
+    def _reset_geometry(self) -> None:
+        self._spn_scale.setValue(100.0)
+        self._spn_rot.setValue(0.0)
+        self._spn_dx.setValue(0.0)
+        self._spn_dy.setValue(0.0)
+        self._chk_invert.setChecked(False)
+        self._chk_fit.setChecked(False)
+
     def _emit(self, *_a) -> None:
+        self._update_preview()
         self.settings_changed.emit(self.settings)
 
+    def _on_all_on_toggled(self, on: bool) -> None:
+        self._btn_browse.setEnabled(not on)
+        self._chk_fit.setEnabled(not on)
+        self._chk_invert.setEnabled(not on)
+
+        fit_active = self._chk_fit.isChecked()
+        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
+            w.setEnabled(not on and not fit_active)
+
+        self._update_preview()
+
     def _on_fit_toggled(self, on: bool) -> None:
-        # Fit computes scale and centres the pattern, so the manual controls
-        # would be showing values that are not the ones being used.
+        if self._chk_all_on.isChecked():
+            return
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.setEnabled(not on)
-
-    def _on_static_toggled(self, on: bool) -> None:
-        # A single held image has no cadence: on-time and repeat count are both
-        # meaningless — the pattern just stays up until Stop.
-        self._spn_on.setEnabled(not on)
-        self._spn_rep.setEnabled(not on)
+        self._update_preview()
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -492,54 +544,103 @@ class SettingsPanel(QWidget):
         )
         if path:
             p = Path(path)
-            self._show_pattern(p)
+            self._pattern_path = p
             self.load_requested.emit(p)
             self._emit()
 
-    def _show_pattern(self, p: Path | None) -> None:
-        """Adopt `p` as the selected pattern and reflect it in the panel.
-
-        Also runs at build time for a pattern restored from the config. A file
-        that has since been moved or deleted is reported as missing rather than
-        left looking loaded — the DMD would otherwise sit dark with the panel
-        naming a pattern.
-        """
-        self._pattern_path = p
-        if p is None:
-            self._lbl_pattern.setText("No pattern loaded")
-            self._preview.setPixmap(QPixmap())
-            self._preview.setText("No preview")
-        elif p.exists():
-            self._lbl_pattern.setText(p.name)
-            self._update_preview(p)
-        else:
-            self._lbl_pattern.setText(f"{p.name} — missing")
-            self._preview.setPixmap(QPixmap())
-            self._preview.setText("(file not found)")
-
-    def _update_preview(self, path: Path) -> None:
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self._preview.setText("(cannot preview)")
+    def _update_preview(self) -> None:
+        """Renders the pattern array with a padded thatched magenta border around DMD bounds."""
+        pw = self._preview.width()
+        ph = self._preview.height()
+        if pw <= 1 or ph <= 1:
             return
-        self._preview.setPixmap(pix.scaled(
-            self._preview.width(), self._preview.height(),
+
+        w, h = self._res
+        p = self._pattern_path
+
+        # Determine frame buffer
+        if self._chk_all_on.isChecked():
+            self._lbl_pattern.setText("All mirrors ON (Full Illumination)")
+            frame = np.full((h, w), 255, dtype=np.uint8)
+        elif p is None:
+            self._lbl_pattern.setText("No pattern loaded")
+            frame = np.zeros((h, w), dtype=np.uint8)
+        elif not p.exists():
+            self._lbl_pattern.setText(f"{p.name} — missing")
+            frame = np.zeros((h, w), dtype=np.uint8)
+        else:
+            self._lbl_pattern.setText(p.name)
+            try:
+                s = self.settings
+                frame = alp.build_frame(
+                    p, w, h,
+                    scale_pct=s.scale_pct,
+                    rotation_deg=s.rotation_deg,
+                    offset_x=s.offset_x,
+                    offset_y=s.offset_y,
+                    invert=s.invert,
+                    fit=s.fit
+                )
+            except Exception as e:
+                self._preview.setText(f"(render error: {e})")
+                return
+
+        frame = np.ascontiguousarray(frame)
+        qimg = QImage(frame.data, w, h, w, QImage.Format.Format_Grayscale8)
+        dmd_pixmap = QPixmap.fromImage(qimg)
+
+        # 2px padding prevents painter stroke clipping on edges
+        pad = 2
+        avail_w = max(1, pw - 2 * pad)
+        avail_h = max(1, ph - 2 * pad)
+
+        target_size = QSize(w, h).scaled(avail_w, avail_h, Qt.AspectRatioMode.KeepAspectRatio)
+        scaled_dmd = dmd_pixmap.scaled(
+            target_size,
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation))
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        # Base preview canvas with transparent background so the tab gray shows through
+        canvas = QPixmap(pw, ph)
+        canvas.fill(QColor(0, 0, 0, 0))
+
+        painter = QPainter(canvas)
+
+        # Center target rect within preview area
+        x = (pw - target_size.width()) // 2
+        y = (ph - target_size.height()) // 2
+        dmd_rect = QRect(x, y, target_size.width(), target_size.height())
+
+        # 1. Draw DMD pattern frame (only this active region is opaque/black/white)
+        painter.drawPixmap(dmd_rect, scaled_dmd)
+
+        # 2. Draw thatched (dashed) magenta outline around active DMD area
+        magenta_color = QColor(style.HEX.get("dmd", "#e040fb"))
+        pen = QPen(magenta_color, 1.5, Qt.PenStyle.DashLine)
+        pen.setDashPattern([4, 4])  # 4px dash, 4px space
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(dmd_rect.adjusted(0, 0, -1, -1))
+
+        painter.end()
+
+        self._preview.setPixmap(canvas)
 
     @property
     def settings(self) -> DmdSettings:
         return DmdSettings(
             pattern_path=self._pattern_path,
-            on_time_ms=self._spn_on.value(),
-            static_hold=self._chk_static.isChecked(),
+            on_time_ms=self._s.on_time_ms,
+            static_hold=True,
             trigger_mode=self._cmb_trig.currentText(),
-            n_repeats=self._spn_rep.value(),
+            n_repeats=self._s.n_repeats,
             scale_pct=self._spn_scale.value(),
             rotation_deg=self._spn_rot.value(),
             offset_x=self._spn_dx.value(),
             offset_y=self._spn_dy.value(),
             invert=self._chk_invert.isChecked(),
+            all_on=self._chk_all_on.isChecked(),
             fit=self._chk_fit.isChecked(),
-            lib_dir=self._s.lib_dir,        # no widget: resolved, not chosen
+            lib_dir=self._s.lib_dir,
         )

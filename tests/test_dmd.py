@@ -250,16 +250,23 @@ def main() -> int:
             f"loop={dev.last('Run')[1]})")
     c.stop()
 
+    # The two checks below drive the CYCLING path, which the panel no longer
+    # offers — it hardcodes static_hold=True so the DMD innately holds one
+    # image. So they say static_hold=False explicitly rather than leaning on
+    # the dataclass default, which now follows the panel.
+
     # Repeats: a finite burst rather than a loop.
-    c.apply_settings(DmdSettings(pattern_path=pat, on_time_ms=20.0, n_repeats=3))
+    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
+                                 on_time_ms=20.0, n_repeats=3))
     c.display()
     r.check(dev.last("Run")[1] is False, "a repeat count stops looping")
     r.check(("SeqControl", 2100, 3) in dev.calls,
             f"…and is sent as ALP_SEQ_REPEAT (calls {dev.calls[-4:]})")
     c.stop()
 
-    # The ALP cannot hold a picture longer than 10 s; the panel allows 600.
-    c.apply_settings(DmdSettings(pattern_path=pat, on_time_ms=30_000.0))
+    # The ALP cannot hold a picture longer than 10 s.
+    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
+                                 on_time_ms=30_000.0))
     c.display()
     r.check(dev.last("SetTiming")[1] == alp.MAX_PICTURE_US,
             f"an on-time past the ALP's limit is clamped, not passed through "
