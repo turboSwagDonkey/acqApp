@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 68 %** (15 of 22 closed, 3 partial) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 77 %** (17 of 22 closed, 3 partial) |
 
 ---
 
@@ -175,13 +175,19 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       plot, worker, display tick, sink and metadata. `main.py` 1256 → ~740
       lines and holds no per-instrument logic. Adding a seventh instrument is
       a subclass + two registry lines.
-- [ ] **#18 Metadata is stringified** — `writer.py:84` writes `{k: str(v)}`, so
-      `wheel_volts_per_rev` lands as `"4.912"`. h5py stores numeric attrs
-      natively; analysis shouldn't have to parse. ⬜
-- [ ] **#19 README stale in two places that matter**: pupil cam described as
-      "Basler GigE (mock for now)" when it's a real USB3 acA1920 path; stage
-      described as "never sends a motion command" when the panel now jogs,
-      go-tos, homes, and runs a calibration that drives into hard limits. ⬜
+- [x] **#18 Metadata keeps its own type.** ✅ `writer.attr_value()` passes
+      ints, floats, bools, strings and arrays through to h5py and `str()`s only
+      what HDF5 can't hold; `None` becomes `""` (HDF5 has no null, and 0.0
+      would be indistinguishable from a measured zero). `emulated` used to read
+      back as `"False"` — which is truthy. Type checks in
+      `tests/test_session_recording.py`.
+- [x] **#19 README brought back in line with the code.** ✅ Six subsystems, not
+      five; pupil cam is the real USB3 acA1920 path, not "GigE (mock for now)";
+      the stage jogs/go-tos/homes and drives into hard limits to calibrate,
+      rather than "never sends a motion command". Also added: what has actually
+      run on hardware (almost nothing), settings persistence, the Save tab and
+      auto-numbering, the four loss counters, native attribute types. The
+      roadmap now points at PLAN.md instead of drifting from it.
 - [ ] **#20 Dead code.** 🟡 `--exposure` and `_on_binning` are gone with the
       `main.py` rewrite. Remaining: unused `evals` in `fit_ellipse`, and
       `acqapp_phase1_2.tar.gz` is a checked-in build artifact. ⬜
@@ -216,21 +222,22 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ## 6. Next actions
 
-1. **#18 + #19 — the file and the README.** Metadata is stringified, so
-   `wheel_volts_per_rev` lands as `"4.912"` and analysis has to parse it; the
-   README still describes the pupil cam as GigE-mock and the stage as never
-   sending a motion command. Both are small and both mislead whoever reads the
-   data next. #18 also wants the round-trip test that #4's persistence got.
-2. **#12 — pupil tracking on the GUI thread.** The last performance item and
+1. **#12 — pupil tracking on the GUI thread.** The last performance item and
    the biggest: `coarse_seed`'s `distance_transform_edt` is 100–200 ms on a
    degenerate mask, and a genuinely lost pupil re-seeds every tick — which
    stalls the camera preview pull in the same 30 Hz timer. It belongs on the
    pupil worker thread, which already exists.
-3. **#5 — the DMD stub.** `dmd/control.py:61-97` is still `print(...)` where
+2. **#5 — the DMD stub.** `dmd/control.py:61-97` is still `print(...)` where
    the device calls belong, and with Emulate off the UI gives no sign that
    Display did nothing. `alp4lib` is in the venv. Either wire the ALP path or
    make the panel say plainly that it is a stub — the current state is the
    one thing on this list that actively misleads the operator mid-experiment.
+   (The README now says so; the app itself still doesn't.)
+3. **#16 — the remaining unit tests.** `fit_circle_taubin` / `fit_ellipse` /
+   `fit_circle_robust`, `presets.readout_fps` interpolation,
+   `_EncoderBase._derive` reset-rejection. `toy_output/wheel.csv` is a real
+   capture to use as the encoder fixture. Cheap, and the pupil fits are about
+   to be moved threads (#12) with nothing currently pinning their behaviour.
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
@@ -245,6 +252,19 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (d) — #18, #19: the file and the README stop lying
+- **#18**: `writer.attr_value()` — attributes keep their own type, `str()` only
+  for what HDF5 can't hold, `None` → `""`. `emulated` had been reading back as
+  the string `"False"`, which is truthy. Type assertions added to the session
+  test (66 checks there now; suite 195 / 22.5 s).
+- **#19**: README said five subsystems, a GigE mock pupil camera and a stage
+  that "never sends a motion command" — the stage drives into hard limits to
+  calibrate. Also documented what has actually run on hardware (almost
+  nothing), settings persistence, the Save tab and auto-numbering, the four
+  loss counters and native attribute types. Roadmap now defers to this file.
+- The README's honesty about the DMD stub raises #5 in priority: the document
+  now says the DMD does nothing with Emulate off, but the app still doesn't.
 
 ### 2026-08-12 (c) — the robustness bugs: #14, #10, #8
 - **#14**: the ring buffer's count cap was dropping the oldest item outright,

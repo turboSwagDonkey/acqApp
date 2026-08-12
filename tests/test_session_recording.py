@@ -152,6 +152,26 @@ def main() -> int:
         attrs = dict(f.attrs)
         for key in CONFIG_ATTRS:
             r.check(key in attrs, f"metadata attr '{key}'")
+
+        # Attributes keep their own type. Everything used to be str()-ed, so
+        # `emulated` read back as "False" — which is truthy — and every number
+        # had to be parsed by whoever opened the file.
+        NUM   = (int, float, np.integer, np.floating)
+        BOOL  = (bool, np.bool_)
+        for key, kind, label in (
+            ("cam_exposure_us",          NUM,   "number"),
+            ("cam_binning",              NUM,   "number"),
+            ("wheel_rate_hz",            NUM,   "number"),
+            ("wheel_volts_per_rev",      NUM,   "number"),
+            ("recorder_dropped_samples", NUM,   "number"),
+            ("dmd_static_hold",          BOOL,  "bool"),
+            ("emulated",                 BOOL,  "bool"),
+            ("cam_preset",               (str,), "string"),
+        ):
+            got = attrs.get(key)
+            r.check(isinstance(got, kind),
+                    f"attr '{key}' reads back as a {label} "
+                    f"(got {type(got).__name__}: {got!r})")
         r.check(attrs.get("puffer_channel") == TEST_CHANNEL,
                 f"puffer channel recorded (got {attrs.get('puffer_channel')!r})")
         for key in FINAL_ATTRS:

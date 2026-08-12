@@ -1,16 +1,23 @@
 # acqApp
 
 Multi-instrument in-vivo acquisition suite for the ICN rig. One PyQt6 app that
-runs and records five subsystems against a single shared session clock:
+runs and records six subsystems against a single shared session clock:
 
 | Subsystem    | Package        | Device                                            |
 |--------------|----------------|---------------------------------------------------|
-| Voltage cam  | `voltage_cam/` | Hamamatsu ORCA-Fire via `pylablib` DCAM           |
-| Pupil cam    | `pupil_cam/`   | Basler GigE via `pypylon` (mock for now)          |
+| Voltage cam  | `voltage_cam/` | Hamamatsu ORCA-Fire C16240-20UP via `pylablib` DCAM (CoaXPress) |
+| Pupil cam    | `pupil_cam/`   | Basler acA1920-40umMED via `pypylon` (USB3)       |
 | Wheel        | `wheel/`       | Rotary encoder as analog voltage on NI `Dev3/ai2` |
 | Puffer       | `puffer/`      | Air-puff TTL on NI `Dev3/port0/line0`             |
-| XY stage     | `stage/`       | Thorlabs MCM6101 position monitor (serial, read-only) |
-| DMD          | `dmd/`         | pattern-stimulus output (vendor SDK stub; mock for now) |
+| XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
+| DMD          | `dmd/`         | pattern-stimulus output — **still a stub**, see below |
+
+> **What has actually run.** Every subsystem has a real driver path and a mock
+> twin, and the whole suite is verified against the mocks (`tests/`). Apart from
+> the wheel encoder, **none of it has been run against the rig hardware yet** —
+> treat rates, timings and device quirks as unconfirmed until it has. The DMD is
+> the one exception to "real driver path": `dmd/control.py` still prints where
+> the vendor calls belong, so with Emulate off, Display does nothing.
 
 Panels are **dockable** — drag any settings/plot/video panel to re-dock, float,
 or tab it with another; drag the tabs to reorder. The layout is remembered
@@ -24,17 +31,35 @@ it open, click again (or close the dock) to tuck it away, keeping the workspace
 clear for the images and plots. Each subsystem's tab (and its group boxes, plot,
 and dock accent) is coloured by that subsystem. The pupil camera's tab exposes
 camera exposure/frame-rate, the pupil-tracking parameters (threshold, min/max
-radius), and the eye-tracking LED toggle.
+radius, search lines, edge polarity, minimum edge strength, circle-or-ellipse
+fit), and the eye-tracking LED toggle.
+
+**Every panel's settings persist** to `acqapp_local.json` and come back on the
+next launch — camera preset and exposure, wheel V/rev and diameter, pupil
+tracking parameters, puffer line and duration, stage port, DMD pattern and
+timing, and the save destination. Runtime state deliberately does not persist:
+the eye-tracking LED always starts off. The stage's axis calibration is not
+kept here either — it belongs to the config shared with the standalone
+`stage_control` app.
 
 The **Puffer** tab can **schedule puffs** to fire at fixed session times
 (`Puff at t = N s`). Scheduled puffs are armed on the shared trigger bus, so they
 fire (on the next 100 ms tick past their time) and are logged on the session
 clock alongside every other stream — the basis for timed-stimulus experiments.
 
-The **XY stage** module is a read-only position logger: it polls the MCM6101 for
-X/Y position (µm) and records it — it never sends a motion command (moving the
-stage stays in the standalone `stage_control` app). Calibration/origin come from
-`stage/stage_config.json` (copied from that app).
+The **XY stage** tab both logs and moves. It polls the MCM6101 for X/Y position
+(µm) and records it to `/stage_x_um`, `/stage_y_um`, and it drives the stage:
+jog, absolute go-to, stop, a session-scoped "home" bookmark, and a calibration
+that **drives both axes into their reverse hard limits** to re-measure the
+command→encoder map. Soft limits clamp every target, and absolute go-to is
+disabled until the frame is known, so a stale origin cannot silently send the
+stage to the wrong place.
+
+Calibration, soft limits and the origin live in the config **shared with the
+standalone `stage_control` app** (`../stage_control/config.json`, falling back
+to `stage/stage_config.json`), so both programs agree on where 0,0 is. Only one
+program can hold the serial port at a time. Every write to that file leaves the
+previous contents as `.bak`.
 
 ## Running
 
@@ -79,9 +104,20 @@ code.
 ## Recording format
 
 **Start** begins live acquisition + preview. **Record** streams every sample to
-one HDF5 file per session, `sessions/<timestamp>/session_<timestamp>.h5`:
+one HDF5 file per session. The **Save** tab picks the destination drive and
+folder, names the file from a token template (`{subject}`, `{session}`,
+`{date}`, `{time}`), and shows how many minutes the free space is worth at the
+current data rate. It also shows the exact path the next recording will get:
+
+- A template that resolves to an existing file is **auto-numbered** (`_001`,
+  `_002`) rather than overwriting it, and the numbered name is what the preview
+  and the status line show.
+- The writer opens with HDF5 mode `"x"`, so even a path that reached it by some
+  other route raises instead of truncating a session.
 
 ```
+<folder>/<name>/<name>.h5          # default: one subfolder per recording
+
 /voltage_cam/frames        (N, H, W) uint16   /voltage_cam/timestamps  (N,) float64
 /voltage_cam_index/values  (N,) float64       …/timestamps             (N,) float64
 /pupil_cam/frames          (N, H, W) uint8    /pupil_cam/timestamps    (N,) float64
@@ -114,17 +150,30 @@ imaging and behavioural streams.
 
 Each device worker pushes into a bounded ring buffer; a single writer thread
 drains it to disk (acquisition threads never touch disk I/O). The buffer is
-bounded by both item count and payload **bytes**, so full-frame images can't
-balloon RAM. If the disk can't keep up it sheds the oldest **image frames**
-(redundant with the live preview) and counts drops in the status bar — sparse
-scalar/stimulus **events (puffer, DMD, wheel, stage) are never dropped**, so the
-experiment's event record stays intact. `Recorder.stop()` drains the backlog and
-reports anything it couldn't flush.
+bounded by both item count **and** payload bytes, so full-frame images can't
+balloon RAM. Under either bound it sheds the oldest **image frames** first —
+they are redundant with the live preview and plentiful — and only drops a
+sparse scalar/stimulus **event (puffer, DMD, wheel, stage) if nothing else is
+left to shed**, so the experiment's event record survives a disk stall.
+`Recorder.stop()` drains the backlog and reports anything it couldn't flush.
 
 Whatever was lost is written **into the file** when it closes, not just shown in
-the status bar: `recorder_dropped_samples` (shed by the ring buffer because the
-disk fell behind) and `cam_dropped_frames` (discarded by the camera because we
-read too slowly). A session file always says how complete it is.
+the status bar. A session file always says how complete it is:
+
+| Attribute | What it counts |
+|---|---|
+| `recorder_dropped_samples` | shed by the ring buffer — the disk fell behind |
+| `recorder_late_samples` | arrived after the file closed (a worker still mid-callback when recording stopped) |
+| `recorder_unstamped_samples` | offered before the session clock started, so there was no timebase to record them against |
+| `cam_dropped_frames` | discarded by the *camera* because we read too slowly; visible as a jump in `voltage_cam_index` |
+
+All four are written after the drain and before the close, which is the only
+moment they are both final and still writable. Zero across all four means
+nothing was lost.
+
+Metadata attributes keep their **own types** — `f.attrs["wheel_volts_per_rev"]`
+is a float, `f.attrs["emulated"]` is a bool — so nothing needs parsing on the
+way back out. A value that was never set reads as an empty string.
 
 ## Architecture
 
@@ -157,16 +206,23 @@ read too slowly). A session file always says how complete it is.
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
 ```
 
-Runs in Emulate mode against fakes — no rig hardware, no windows, ~17 s. Covers
+Runs in Emulate mode against fakes — no rig hardware, no windows, ~22 s. Covers
 the session/recording path end to end (including the written HDF5), every
-module-subset combination, camera frame timing, and the console-encoding guard.
-See [tests/README.md](tests/README.md) for what each one defends and the two
-conventions to follow when adding one.
+module-subset combination, camera frame timing, settings surviving a restart,
+save-path collisions, stage state, the ways a sample can be lost, and the
+console-encoding guard. See [tests/README.md](tests/README.md) for what each one
+defends and the two conventions to follow when adding one.
 
 ## Roadmap
 
+See [PLAN.md](PLAN.md) for the live version — stages, checklist and next
+actions. In short:
+
 - ✅ Unified session Start/Stop, shared software clock, single-file HDF5 recording
-- Encoder scaling to real units (`volts_per_rev`, wheel diameter)
-- Real Basler pupil camera + pupil-tracking algorithm (`pupil_cam/tracking.py`)
+- ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
+- Encoder scaling measured on the rig (`volts_per_rev`, wheel diameter)
+- Camera throughput measured on the rig — the number that sizes the ring buffer
+- DMD: replace the stub with the real ALP path (`alp4lib`)
+- Pupil tracking moved off the GUI thread
 - Closed-loop: trigger DMD / puffer from encoder state
 - Hardware sync upgrade: `DaqClock` on the PCIe-6363, hardware-triggered ORCA

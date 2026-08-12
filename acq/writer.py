@@ -7,6 +7,10 @@ implementations without touching acquisition code.
 All timestamps come from the single session-wide SessionClock, so every
 stream in the file shares one time origin (seconds since session start).
 
+Session metadata goes into the file's root attributes in its OWN type — ints as
+ints, floats as floats, bools as bools (see `attr_value`) — so analysis reads
+`f.attrs["wheel_volts_per_rev"] * x` instead of parsing strings.
+
 HDF5 layout (one group per stream, created lazily on first write):
   /<stream>/timestamps   float64 (N,)         seconds since session start
   /<stream>/frames       <dtype> (N, H, W)    image streams (camera, pupil)
@@ -28,6 +32,29 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+
+def attr_value(v: Any) -> Any:
+    """Coerce one metadata value into something HDF5 stores in its own type.
+
+    Everything used to go through `str()`, so `wheel_volts_per_rev` landed as
+    `"4.912"` and `emulated` as `"False"` — which is truthy. Analysis then has
+    to know which attributes to parse and how, for no gain: h5py stores ints,
+    floats, bools and strings natively.
+
+    `None` becomes `""`. HDF5 has no null, and an empty string reads as "not
+    set" without pretending to be a number (0.0 for an unset volts-per-rev
+    would be indistinguishable from a measured zero).
+    """
+    if v is None:
+        return ""
+    if isinstance(v, (bool, int, float, str, np.generic, np.ndarray)):
+        return v            # bool before int: bool IS an int, and h5py keeps it
+    return str(v)           # Path, enum, dataclass, anything else
+
+
+def _attrs(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {k: attr_value(v) for k, v in metadata.items()}
 
 
 class Writer(ABC):
@@ -89,13 +116,13 @@ class HDF5Writer(Writer):
         import h5py
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = h5py.File(path, "w" if self._overwrite else "x")
-        self._file.attrs.update({k: str(v) for k, v in metadata.items()})
+        self._file.attrs.update(_attrs(metadata))
         self._streams = {}
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
         with self._lock:
             if self._file is not None:
-                self._file.attrs.update({k: str(v) for k, v in metadata.items()})
+                self._file.attrs.update(_attrs(metadata))
 
     def write(self, stream: str, timestamp: float, data: Any) -> None:
         with self._lock:
