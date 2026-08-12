@@ -270,12 +270,23 @@ because two of them are how a future wrong-data bug gets in.
 
 ## 6. Next actions
 
-1. **Project through the full app, on the rig.** The DMD is verified as a
-   device (§5 #5) but only from a standalone script. Launch `main.py` with the
-   DMD module enabled, Emulate off: check the tab names the ALP, that Display
-   projects and Stop halts, that the geometry controls move the square where
-   they say, and that a recorded session's `/dmd` carries 0 and −1 around the
-   projection. **Close `dmdGUI_project` first** — one process owns the USB.
+1. **Project through the full app.** *Half of this closed on 2026-08-12, on
+   this machine* — everything short of emitting light now runs through the
+   **app's** path (the adapter and panel, not just the standalone script of
+   §5 #5): the real ALP opens as `ALP-4.2 1024x768` with the API resolved from
+   `dmdGUI_project/dmd_config.json`, the live controller satisfies
+   `ProjectorController`, all 16 metadata keys populate, and the geometry was
+   swept against the real 1024×768 panel — scale, offset and clockwise-positive
+   rotation each land within the half-pixel the integer paste allows.
+   **What is left needs someone in front of the hardware:** that Display
+   projects and Stop halts, and that a recorded session's `/dmd` carries 0 and
+   −1 around it. **Close `dmdGUI_project` first** — one process owns the USB.
+   Two traps found doing this half, both worth knowing before repeating it: a
+   **checkerboard cannot show a geometry error** (it is symmetric under every
+   transform being tested — use an off-centre asymmetric mark), and **`fit`
+   overrides scale, rotation and offset** by design, so a sweep with `fit` on
+   measures nothing. The panel is honest about the second: it greys those
+   spinboxes out.
 2. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
    never seen an animal, and the one number it needs cannot be guessed here:
    **what wheel speed counts as "running"** for this rig's V/rev and diameter.
@@ -292,9 +303,20 @@ because two of them are how a future wrong-data bug gets in.
    trace, switch it — this is a scientific call, not a default worth inheriting.
 
 **Needs the rig (can't be closed from the laptop):**
-- The DMD's *optical* alignment: the electrical path is proven, but nothing has
-  confirmed that a square at 132.4 % / 0° lands where it should on the sample.
-  That is what `dmdGUI_project` is for; acqApp now starts from its numbers.
+- The DMD's *optical* alignment: the electrical path is proven and the geometry
+  math is now verified against the real panel, but nothing has confirmed where
+  the projected pattern lands **on the sample**. That is what `dmdGUI_project`
+  is for.
+  **Decided 2026-08-12: acqApp stays on `fit`, deliberately.** Worth writing
+  down because it looks like a discrepancy every time someone checks —
+  `dmdGUI_project` is aligned at **132.4 %**, acqApp's saved DMD settings are
+  `scale_pct = 100.0` with `fit = True`, and with `fit` on the scale is ignored
+  entirely (`build_frame` computes its own to fill the panel). So acqApp is
+  *not* projecting at the standalone app's registration, and that is the
+  operator's call, not a bug. The 132.4 % seeding in `DmdModule._settings()`
+  still works — it only applies to a **fresh install** with no saved value, and
+  this machine has one. Revisit only if the projected field needs to be
+  registered to the optics rather than filling the panel.
 - Phase 0's camera throughput number:
   `.venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save`
   → the achieved MB/s sizes the ring buffer (#14) and confirms the SSD keeps up.
@@ -315,6 +337,21 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (l) — §6 item 1, the half that emits no light
+- Ran the **app's** path to the real ALP on this machine (§5 #5 only ever proved
+  the standalone script): opens as `ALP-4.2 1024x768`, live controller satisfies
+  `ProjectorController`, 16 metadata keys populate, geometry swept against the
+  real panel — scale, offset and clockwise-positive rotation all correct.
+  Stopped immediately before `display()`; **no light was emitted**. USB released.
+- **Asked and answered: not projecting from the laptop** — the Display/Stop and
+  `/dmd` 0/−1 checks stay §6 item 1, for someone in front of the hardware.
+- **Decided: acqApp stays on `fit`**, not `dmdGUI_project`'s 132.4 %. Recorded
+  in §6's "Needs the rig" so it stops looking like a bug — see that entry for
+  why the seeding in `_settings()` is not firing (it is fresh-install only).
+- Two things that made the first sweep lie: a checkerboard is symmetric under
+  every transform being tested, and `fit` overrides scale/rotation/offset. Both
+  now in §6 item 1 so the next person doesn't repeat them. No code changed.
 
 ### 2026-08-12 (k) — §5b A4 and A5: the window surface, and `modules/`
 - **A4.** `devices.ModuleHost` names what an adapter may ask of the window.
