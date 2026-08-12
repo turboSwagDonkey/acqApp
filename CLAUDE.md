@@ -5,10 +5,12 @@ cam, wheel, puffer, XY stage, DMD on one shared clock, one HDF5 per session).
 
 ## Start here
 
-**Read [PLAN.md](PLAN.md) before planning any work.** It is the single living
-plan: stages, the audit checklist with per-item status and file:line pointers,
-the three next actions, and the session log. There is exactly one such file —
-update it, don't fork it.
+**Read [PLAN.md](PLAN.md) before planning any work** — its **§0 "Start here"**
+first, which carries the orientation a fresh session needs (how to run the
+suite, which hardware is actually on this machine, the sibling projects worth
+copying from, and anything left uncommitted). Then §6, the next actions. §5 and
+§5b are reference: consult the item you're working on rather than reading them
+through. There is exactly one such file — update it, don't fork it.
 
 - [README.md](README.md) — the authoritative *description* (architecture,
   recording format). PLAN.md is the *plan*. Keep that split.
@@ -19,9 +21,16 @@ update it, don't fork it.
 
 - **Installs go ONLY into `acqApp/.venv`.** Never pip-install into another
   interpreter, even if the user's shell is running one.
-- **Verify in Emulate/mock mode**: `.venv\Scripts\python.exe tests\run_all.py`
-  (~17 s, no hardware, no windows). Say plainly when something is mock-verified
-  only — most of this code has never run against real hardware.
+- **Verify in Emulate/mock mode**: `acqApp\.venv\Scripts\python.exe
+  acqApp\tests\run_all.py` — 342 checks, ~30 s, no hardware, no windows. Use the
+  **absolute** interpreter path; the shell usually starts in this repo's parent,
+  where the relative one fails obscurely. Say plainly when something is
+  mock-verified only: apart from the wheel encoder and the DMD, none of this
+  code has run against real hardware.
+- **Ask before actuating anything physical.** Opening and configuring a device
+  is safe; projecting light, firing the puffer and driving the stage are not —
+  there may be an animal on the rig. Verify the whole path short of the
+  actuating call, then ask. See PLAN.md §2.
 - **An exception escaping a `QThread.run()` aborts the process** (PyQt6
   `qFatal`). Worker bodies stay inside the `PullWorker.run()` guard, and every
   runnable entry point calls `console.enable_safe_console()` before its first

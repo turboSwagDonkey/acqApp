@@ -15,6 +15,53 @@ wrong once.
 
 ---
 
+## 0. Start here (fresh session orientation)
+
+Read this section, then §6 (next actions). §5 and §5b are reference — consult
+the item you're working on, don't read them end to end.
+
+**Where the project stands.** Phases 0–4 are built and mock-verified; the
+2026-08-10 audit is fully closed (§5); phase 5 (closed-loop) is next. The test
+suite is the contract: **342 checks, 14 files, ~30 s, all passing.** Run it
+before and after anything.
+
+```
+c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
+```
+
+Use the **absolute** path to that interpreter. The shell usually starts in
+`Desktop\python` (the *parent* of this repo), where `.venv\Scripts\python.exe`
+resolves to nothing and Python reports a baffling "the module '.venv' could not
+be loaded". Python here is **3.14** — no cv2 wheels exist for it, which is why
+`pupil_cam/tracking.py` is hand-rolled numpy.
+
+**Sibling projects are proven code, not scratch work.** `../stage_control/` and
+`../dmdGUI_project/` are standalone apps for the stage and the DMD that already
+work on this hardware. acqApp deliberately *shares their config files* rather
+than duplicating their state — the stage's calibration lives in
+`stage_control/config.json`, the DMD's ALP path and optical alignment in
+`dmdGUI_project/dmd_config.json`. Before writing a device path from scratch,
+look next door: `dmd/alp.py` is a port of `dmdCommandLine.py`, and it is the
+reason #5 took one session instead of several.
+
+**Practical gotchas that have each cost real time:**
+- **PowerShell 5.1 mangles quotes** passed to native executables. Write commit
+  messages to a scratch file and use `git commit -F <file>` — a `-m` with an
+  apostrophe or an embedded quote gets re-tokenised and git sees a bogus
+  pathspec.
+- The Bash tool's working directory is not always this repo. `cd` first.
+- Tests are plain scripts, **not pytest**, and each runs in its own process.
+- When adding a test, follow the two conventions in
+  [tests/README.md](tests/README.md): isolate user state, and include a control
+  wherever the test could be vacuous.
+
+**In progress and uncommitted** (as of 2026-08-12): the operator has the
+settings tabs being moved from a dock into a separate `SettingsDialog` window
+in `main.py`, with `README.md` and `test_settings_persistence.py` updated to
+match (+7 checks, passing). If the tree is dirty when you start, that is what it
+is — **it is their work, don't commit it under your own message and don't
+revert it.** Ask before touching `main.py`'s dock/settings code.
+
 ## 1. Goal
 
 A single PyQt6 app that runs and records six rig subsystems (voltage cam, pupil
@@ -31,8 +78,19 @@ These are invariants, not preferences. Breaking one has cost real time before.
   this; never pip-install into another interpreter.
 - **Mock first.** Every change must pass `tests/run_all.py` in Emulate mode
   before it goes near the rig. Real-hardware-only claims get flagged as such.
-- **The laptop has no hardware.** Write + commit + push here; pull + run + fix
-  on the rig. Anything unverifiable off-rig goes in §6 "Needs the rig".
+- **This machine has *some* hardware — check, don't assume.** This rule used to
+  read "the laptop has no hardware", and on 2026-08-12 that was wrong: the
+  **DMD is attached to this machine** and opens from `acqApp/.venv`. The
+  camera, NI board and stage are still rig-only. So: write + commit + push
+  here, pull + run + fix on the rig, but *probe before concluding* a device is
+  absent — `dmd/alp.py`'s `AlpDevice.open()` answers in 0.14 s. Anything that
+  genuinely can't be checked here goes in §6 "Needs the rig".
+- **Ask before actuating anything physical.** Opening, configuring and
+  uploading to a device are safe and reversible; **emitting light, firing the
+  puffer, or driving the stage are not** — this is an in-vivo rig and there may
+  be an animal under the objective. The pattern that worked for the DMD: verify
+  the whole path *short of* the actuating call (open → render → upload →
+  release, which projects nothing), report that, and ask before the last step.
 - **Commit before restructuring.** See the warning in §3 — this is currently
   the single biggest risk to the project.
 - **An exception escaping a `QThread.run()` aborts the process** (PyQt6
@@ -409,6 +467,11 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   have no declared interface, so nine `getattr`/`hasattr` probes stand in for
   one — and this session came within a forgotten property of writing
   `dmd_device = "none"` into a session file that had really projected.
+- **§2 corrected:** "the laptop has no hardware" was a stale invariant and is
+  now "check, don't assume", plus a new rule to ask before anything physically
+  actuates (light, puff, stage motion) — verify the path short of that call
+  first, as was done here. Added **§0 Start here** for fresh sessions, and both
+  `CLAUDE.md` files now point at it and name `dmdGUI_project/` as proven code.
 - `test_dmd` (41 checks) against a fake ALP + the geometry as pure functions.
   Suite **335 checks / 14 files / 29.9 s**. Audit remediation is now complete.
 
@@ -541,7 +604,17 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 2. Rewrite §6 "Next actions" (3 items max, ordered).
 3. Add one dated entry to §7, newest first.
 4. Update the **Last updated** date and the **Progress** figure in the header.
-5. Note anything discovered that contradicts §2 or the README.
+5. Note anything discovered that contradicts §2 or the README. §2 is a list of
+   invariants, and an invariant that has quietly stopped being true is worse
+   than no rule — "the laptop has no hardware" was wrong for a while before
+   anyone checked.
+6. Refresh **§0** if what a fresh session needs has changed: the check count,
+   a new gotcha that cost you time, and above all anything left **uncommitted**.
+   §0 is the only part of this file written for someone who has never seen the
+   project.
 
 Do this as a *small* edit to this file, never a rewrite — the history in §7 is
 the part that's expensive to reconstruct.
+
+**Numbering:** sections are referenced from both `CLAUDE.md` files (§0, §8) and
+from inside §5. Add a "§5b"-style suffix rather than renumbering.
