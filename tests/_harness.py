@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 # Run windowless by default — a test suite should not throw six windows across
@@ -65,6 +66,38 @@ class MemorySettings:
         pass
 
 
+class _BlockedDriver(types.ModuleType):
+    """A vendor driver module that refuses to do anything.
+
+    Importing it succeeds — the app's `import nidaqmx` lines are inside methods
+    and are not what we want to break — but reaching for anything in it raises,
+    which every device path in this app already treats as "no hardware" and
+    falls back from.
+    """
+
+    def __getattr__(self, name):
+        raise RuntimeError(
+            f"{self.__name__}.{name} is blocked by the test harness "
+            f"(tests must never touch real hardware)")
+
+
+def block_real_devices(*names: str) -> None:
+    """Stand refusing stubs in front of the vendor drivers.
+
+    `test_module_subsets` toggles **Emulate off**, which rebuilds the real
+    output controllers. On a developer laptop those simply fail to find a
+    device, so this never mattered — but the DMD is now plugged into this
+    machine and the suite really was opening it, and on the rig the same toggle
+    would open a DO task on the puffer's line with an animal in front of it.
+    A test must not be able to reach hardware by accident.
+
+    Tests that deliberately drive a fake device (`test_encoder_timing`) install
+    their own module instead and do not call this.
+    """
+    for name in (names or ("ALP4", "nidaqmx", "pylablib", "pypylon")):
+        sys.modules[name] = _BlockedDriver(name)
+
+
 def isolate_user_state() -> Path:
     """Redirect every persistent store the app writes, and return the temp dir.
 
@@ -75,11 +108,15 @@ def isolate_user_state() -> Path:
       * QSettings — the dock layout, written on every window close. Substituted
         wholesale (see MemorySettings), because on Windows it is the registry
         and cannot be pointed elsewhere.
+      * the vendor drivers — see `block_real_devices`. Toggling Emulate off in
+        a test rebuilds the *real* controllers, and the DMD is now plugged into
+        this machine.
 
     Call this BEFORE importing `acqApp.main`: it binds `QSettings` at import
     time, so the substitution has to be in place first.
     """
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_test_"))
+    block_real_devices()
 
     from acqApp import config
     config._CONFIG_PATH = tmp / "acqapp_local.json"

@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 95 %** (21 of 22 closed; only #5, the DMD stub, is left) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 100 %** (22 of 22 closed). Next is phase 5, closed-loop. |
 
 ---
 
@@ -64,8 +64,8 @@ done on top of that. Don't let it drift like that again.
 | 2 | Camera streaming + preview + HDF5 | ✅ mock-verified |
 | 3 | Encoder streaming + plot | ✅ mock-verified |
 | 4 | Unified session start/stop, shared clock, metadata | ✅ mock-verified |
-| **4.5** | **Audit remediation + test net** (§5) | **in progress — where the work is now** |
-| 5 | Closed-loop: trigger DMD/puffer from encoder state | not started (trigger bus exists) |
+| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 335 checks |
+| **5** | **Closed-loop: trigger DMD/puffer from encoder state** | **next** — trigger bus exists, and the DMD is now a real output to close onto |
 | 6 | Hardware sync: `DaqClock` on the PCIe-6363, triggered ORCA | future |
 
 ## 5. Checklist — audit remediation
@@ -102,10 +102,20 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       `port`/`poll_hz` are the panel's own). Guarded by
       `tests/test_settings_persistence.py`, which edits all seven panels,
       closes the window and reads them back from a second one.
-- [ ] **#5 The DMD is a print-only stub presented as real hardware.** 🟡
-      `apply_settings()` added; the device calls in `dmd/control.py:61-97` are
-      still `print(...)`. With Emulate off, Display does nothing and the UI
-      gives no sign. `alp4lib` is in the venv, so the ALP path is reachable.
+- [x] **#5 The DMD projects.** ✅ New `dmd/alp.py` holds the Vialux knowledge
+      (API lookup, `build_frame`, the open/project/halt/close lifecycle);
+      `DmdController` drives a real **ALP-4.2, 1024×768**. Geometry —
+      scale/rotation/offset/invert/fit — is in the panel and in the session
+      file, because it *is* the alignment to the optics: without it a recorded
+      stimulus can't be located in the field of view afterwards. Defaults are
+      seeded from the standalone `dmdGUI_project`'s saved alignment so both
+      apps put a pattern in the same place. A busy ALP (that app holding the
+      USB) falls back to the mock and the tab says **"nothing will be
+      projected"** — the half of this item that was about the UI lying.
+      **Verified on the hardware 2026-08-12**: opened in 0.14 s, 70 752 mirrors
+      on at the saved 132.4 % scale, uploaded in 2 ms, projected and held, then
+      halted and released; `/dmd` logged 0 and −1 twenty-three seconds apart.
+      Guarded by `tests/test_dmd.py` (41 checks, against a fake ALP).
 
 ### Bugs and robustness
 
@@ -217,6 +227,14 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       the acquisition thread, `PullWorker` reports it as a *device failure*,
       and the camera just never starts — blaming the hardware.
       Fixed by `console.enable_safe_console()` at all 14 entry points.
+- [x] **C3 Tests could reach real hardware.** ✅ `test_module_subsets` toggles
+      Emulate *off*, which rebuilds the real output controllers. On a laptop
+      with nothing attached that was invisible; with the DMD plugged in, the
+      suite really was opening it, and on the rig the same toggle opens a DO
+      task on the **puffer's line** with an animal in front of it.
+      `_harness.block_real_devices()` now stands refusing stubs in front of
+      `ALP4`, `nidaqmx`, `pylablib` and `pypylon` for every test that isolates
+      user state; tests that want a fake device install their own.
 - [x] **C2 Tests were writing to real user state.** ✅ They repointed
       `acqapp_local.json` and overwrote the saved dock layout on every run.
       `QSettings` cannot be redirected on Windows (`setPath` is IniFormat-only;
@@ -239,22 +257,25 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ## 6. Next actions
 
-1. **#5 — the DMD stub.** `dmd/control.py:61-97` is still `print(...)` where
-   the device calls belong, and with Emulate off the UI gives no sign that
-   Display did nothing. `alp4lib` is in the venv. Either wire the ALP path or
-   make the panel say plainly that it is a stub — the last item on this list
-   that actively misleads the operator mid-experiment. (The README now says so;
-   the app itself still doesn't.)
-2. **B2 — fold `SESSION_HANDOFF.md` into `HANDOFF.md`.** The last of the doc
+1. **Project through the full app, on the rig.** The DMD is verified as a
+   device (§5 #5) but only from a standalone script. Launch `main.py` with the
+   DMD module enabled, Emulate off: check the tab names the ALP, that Display
+   projects and Stop halts, that the geometry controls move the square where
+   they say, and that a recorded session's `/dmd` carries 0 and −1 around the
+   projection. **Close `dmdGUI_project` first** — one process owns the USB.
+2. **Phase 5 — closed-loop.** Trigger the DMD or the puffer from encoder state.
+   The trigger bus (`SyncController.schedule_trigger`) exists and the puffer
+   already fires from it on a timed schedule; what is missing is a condition on
+   the live wheel speed rather than on the clock. The DMD is now a real output
+   to close the loop *onto*, which is what made this next.
+3. **B2 — fold `SESSION_HANDOFF.md` into `HANDOFF.md`.** The last of the doc
    consolidation: it is a single past session kept as a peer of the standing
    handoff. Small, and it removes the last "which of these do I read?".
-3. **Phase 5 — closed-loop**, once the rig has confirmed #13 and the DMD is
-   real: trigger the DMD or the puffer from encoder state. The trigger bus
-   (`SyncController.schedule_trigger`) already exists and the puffer already
-   fires from it on a timed schedule; what is missing is a condition on the
-   live wheel speed rather than on the clock.
 
 **Needs the rig (can't be closed from the laptop):**
+- The DMD's *optical* alignment: the electrical path is proven, but nothing has
+  confirmed that a square at 132.4 % / 0° lands where it should on the sample.
+  That is what `dmdGUI_project` is for; acqApp now starts from its numbers.
 - Phase 0's camera throughput number:
   `.venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save`
   → the achieved MB/s sizes the ring buffer (#14) and confirms the SSD keeps up.
@@ -274,6 +295,32 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (g) — #5: the DMD projects, on real hardware
+- The DMD turned out to be plugged into this machine, and `dmdGUI_project/` next
+  door is a proven ALP driver for it. New `dmd/alp.py` ports its pipeline: API
+  lookup, `build_frame`, and the SeqAlloc → SeqPut → BIN_UNINTERRUPTED →
+  SetTiming → Run lifecycle. `DmdController` is no longer a stub.
+- Geometry (scale/rotation/offset/invert/fit) is now in the panel and in the
+  session file. That is not a nicety: it *is* the registration to the optics,
+  and the operator's alignment lives in the standalone app — so its saved
+  scale/rotation seed acqApp's defaults, the same way the stage shares
+  `stage_control/config.json`. Without it acqApp would project somewhere else
+  while looking correctly configured.
+- The other half of #5 was the UI lying. A busy ALP (the standalone app holds
+  the USB — only one process can) now falls back to the mock *and the tab says
+  "nothing will be projected"*. `dmd_on_pixels` in the file catches the other
+  invisible failure: a frame with every mirror off looks like a projection that
+  worked.
+- **Verified on the hardware:** opened in 0.14 s, 70 752 mirrors on at the saved
+  132.4 %, uploaded in 2 ms, projected and held while the operator looked at it,
+  halted and released. `/dmd` logged 0 and −1, 23.0 s apart.
+- **C3, found doing this:** `test_module_subsets` toggles Emulate off, so the
+  suite was opening the real DMD — and on the rig would open a DO task on the
+  puffer's line. `_harness.block_real_devices()` now blocks the vendor drivers
+  for every test that isolates user state.
+- `test_dmd` (41 checks) against a fake ALP + the geometry as pure functions.
+  Suite **335 checks / 14 files / 29.9 s**. Audit remediation is now complete.
 
 ### 2026-08-12 (f) — #13: the encoder comes off the board's clock
 - `cfg_samp_clk_timing` + continuous block reads replace the single-sample

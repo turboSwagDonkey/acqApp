@@ -10,14 +10,15 @@ runs and records six subsystems against a single shared session clock:
 | Wheel        | `wheel/`       | Rotary encoder as analog voltage on NI `Dev3/ai2` |
 | Puffer       | `puffer/`      | Air-puff TTL on NI `Dev3/port0/line0`             |
 | XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
-| DMD          | `dmd/`         | pattern-stimulus output — **still a stub**, see below |
+| DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
 
 > **What has actually run.** Every subsystem has a real driver path and a mock
-> twin, and the whole suite is verified against the mocks (`tests/`). Apart from
-> the wheel encoder, **none of it has been run against the rig hardware yet** —
-> treat rates, timings and device quirks as unconfirmed until it has. The DMD is
-> the one exception to "real driver path": `dmd/control.py` still prints where
-> the vendor calls belong, so with Emulate off, Display does nothing.
+> twin, and the whole suite is verified against the mocks (`tests/`). Two have
+> been run against the real hardware: the wheel encoder, and the **DMD** —
+> opened, a pattern rendered and uploaded, projected and held, then halted and
+> released, on 2026-08-12. The camera, puffer and stage paths have **not** been
+> run on the rig; treat their rates, timings and device quirks as unconfirmed
+> until they have.
 
 Panels are **dockable** — drag any settings/plot/video panel to re-dock, float,
 or tab it with another; drag the tabs to reorder. The layout is remembered
@@ -153,10 +154,30 @@ run actually got (`hardware`, or `software` if the board refused the timing
 configuration and acquisition fell back to pacing), and `wheel_rate_actual_hz`
 records the rate the divider settled on rather than the one requested.
 
-The **DMD** is a stimulus *output*, not an input: its settings tab loads a pattern
-and starts/stops display. While a session is recording, each displayed pattern
-index is logged on the shared clock (`/dmd`) so the stimulus aligns with the
-imaging and behavioural streams.
+The **DMD** is a stimulus *output*, not an input: its settings tab loads a
+pattern image, places it on the 1024×768 panel, and starts/stops projection.
+While a session is recording, the projection's boundaries are logged on the
+shared clock (`/dmd`) so the stimulus aligns with the imaging and behavioural
+streams: **0** when Display starts it, **−1** when it stops. Those are the two
+instants the app actually commands — once started, the ALP runs its own sequence
+clock, so a cycling pattern is reconstructed from `dmd_on_time_ms` and
+`dmd_repeats` between them rather than logged frame by frame. (The mock also
+emits a tick per on-time, because it genuinely does produce them.)
+
+**Where the pattern lands** is the alignment to the optics, so it is recorded
+too — `dmd_scale_pct`, `dmd_rotation_deg`, `dmd_offset_x/y`, `dmd_invert`,
+`dmd_fit`, and `dmd_on_pixels` (how many mirrors the frame switches on; **0** is
+a dark panel, which is what a bad scale or offset produces and is otherwise
+indistinguishable from a projection that worked). `dmd_device` names the ALP or
+says `mock`, so a session that projected can be told from one that didn't.
+
+Rotation is clockwise-positive and the offset is measured from the panel's
+centre — the same conventions as the standalone **`dmdGUI_project`** app, which
+is where the optics are normally aligned; its saved scale/rotation seed this
+panel's defaults so both put a pattern in the same place. **Only one process can
+hold the ALP over USB**, so that app and acqApp cannot be connected at once
+(like the stage's serial port). If it is open, acqApp falls back to the mock and
+the DMD tab says `nothing will be projected` rather than silently doing nothing.
 
 Each device worker pushes into a bounded ring buffer; a single writer thread
 drains it to disk (acquisition threads never touch disk I/O). The buffer is
@@ -197,6 +218,11 @@ way back out. A value that was never set reads as an empty string.
 - one package per subsystem, each with `acquisition.py` (a `QThread` worker with
   a mock twin), `settings.py`/`control.py` (a Qt panel), `recording.py`, and a
   `_toy.py` standalone harness for bringing that device up in isolation.
+- `dmd/alp.py` — the whole of the Vialux hardware knowledge, Qt-free: where the
+  vendor API lives, `build_frame` (image → the binary panel frame, which is
+  where a mispositioned stimulus would come from, so it is unit-tested), and the
+  open/project/halt/close lifecycle. `dmd/control.py` holds only the panel and
+  the app-facing controller.
 - `pupil_cam/track_worker.py` — pupil **tracking** gets a thread of its own, on
   top of the camera's. Tracking is unbounded work (a degenerate mask costs
   100–200 ms in `coarse_seed`, and a lost pupil re-seeds every frame), so in the
@@ -242,9 +268,9 @@ actions. In short:
 
 - ✅ Unified session Start/Stop, shared software clock, single-file HDF5 recording
 - ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
-- ✅ Pupil tracking moved off the GUI thread
+- ✅ Pupil tracking moved off the GUI thread; encoder on the DAQ's sample clock
+- ✅ DMD projecting for real (ALP-4.2), verified on the hardware
 - Encoder scaling measured on the rig (`volts_per_rev`, wheel diameter)
 - Camera throughput measured on the rig — the number that sizes the ring buffer
-- DMD: replace the stub with the real ALP path (`alp4lib`)
 - Closed-loop: trigger DMD / puffer from encoder state
 - Hardware sync upgrade: `DaqClock` on the PCIe-6363, hardware-triggered ORCA

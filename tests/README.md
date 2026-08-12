@@ -7,7 +7,8 @@ acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py session  # one test
 ```
 
 Everything runs in **Emulate mode against fakes** — no rig hardware, no windows
-on screen, ~30 s for the set. Each test is also runnable on its own.
+on screen, no reaching for real hardware, ~30 s for the set. Each test is also
+runnable on its own.
 
 Plain scripts, not pytest: pytest is not in `requirements.txt` and the rig
 machine installs only what's there. `run_all.py` gives each test its own process
@@ -22,6 +23,7 @@ a single process is not reliable) and prints a summary.
 | `test_pupil_fits` | The three fits at the bottom of the pupil pipeline, as pure functions. A fit that is 3 px out still draws a plausible circle on the preview and only shows up as noise in an analysis months later. Checks each on geometry it must reproduce exactly, then on the property it was *chosen* for, each with a control that fails that property: Taubin vs a Kåsa fit on a noisy 45° arc, robust vs plain on an eyelash-contaminated ring, and that the ellipse's angle belongs to its semi-major axis. No Qt, <1 s. |
 | `test_readout_fps` | The datasheet rate behind every pre-Start label and the initial buffer sizing: a table lookup with log-log interpolation, two clamps and a binning divisor. #11 was this going unnoticed — the panel dropped `link`, the estimate switched columns, and a USB3 rig was told 115 fps instead of 15.7. |
 | `test_encoder_derive` | The encoder channel carries single-turn *position*, so every revolution contains a step that isn't motion — and the reset smears across a few samples, each sub-step too small for a half-turn unwrap to catch. Without the speed-based rejection, distance sawtooths back once per turn and a long run under-reports by every revolution in it, invisibly. Runs a synthetic wheel at a known rate past two controls (a raw integrator and a plain unwrap) that both lose all 9 revolutions. |
+| `test_dmd` | The DMD used to `print("stub")` and emit `pattern_started`, so a session could record a stimulus stream, write DMD settings into the file, and project nothing — with the panel looking exactly as it does when it works. Drives the real `DmdController` against a fake ALP that records every vendor call, checking the sequence, the frame buffer handed to `SeqPut`, the on-time clamp at the ALP's 10 s limit, and that the mock and real controllers bracket a projection identically in `/dmd`. The other half is `alp.build_frame` geometry, pinning the conventions inherited from `dmdGUI_project` — the >127 threshold, clockwise-positive rotation (checked with an off-centre mark, which is the only way that error shows), and an offset from the panel centre. |
 | `test_encoder_timing` | Speed is a slope, so scheduler jitter in the old `time.sleep`-paced read loop went straight into the wheel speed. The samples now come off the board's sample clock — which creates the camera's batching problem in a new place, so the worker anchors the first block and spaces the rest by the board's rate. Drives the real worker against a fake NI board that delivers correctly clocked samples at irregular times; the control is the arrival times of those same samples (±90 ms of jitter that no longer reaches the file). Also checks the no-timing-engine fallback still acquires *and* reports itself as software-timed. |
 | `test_pupil_tracking_thread` | Tracking is unbounded work (a degenerate mask costs ~100–200 ms in `coarse_seed`) and used to run in the 30 Hz display tick, freezing the window — including the voltage camera's preview, which shares that tick. Checks the pupil is still found, that the result is published with the frame it was fitted from, that a panel edit crosses the thread boundary, and that display-side reads stay fast while a deliberately slow tracker grinds — with a control paying the old inline cost. |
 | `test_save_paths` | The filename template is free text, so `{subject}` alone resolves every recording of the day to one path — and the writer used to open it with mode `"w"`. Checks token substitution/sanitisation, that `resolve(unique=True)` never returns an occupied path, and that `HDF5Writer.open()` raises rather than truncating an existing session file. No Qt, <1 s. |
@@ -34,7 +36,17 @@ a single process is not reliable) and prints a summary.
 
 ## Two things to know before adding a test
 
-**Isolate user state.** The GUI tests drive the *real* `MainWindow`, which
+**Isolate user state — including the hardware.** `isolate_user_state()` also
+stands refusing stubs in front of the vendor drivers (`block_real_devices`).
+`test_module_subsets` toggles **Emulate off**, which rebuilds the *real* output
+controllers; on a laptop with nothing attached that never mattered, but the DMD
+is now plugged into this machine and the suite really was opening it, and on the
+rig that same toggle would open a DO task on the puffer's line with an animal in
+front of it. A test must not be able to reach hardware by accident. Tests that
+deliberately drive a fake device install their own module instead
+(`test_encoder_timing`, `test_dmd`).
+
+The GUI tests drive the *real* `MainWindow`, which
 persists things as a side effect of ordinary use: the Save tab rewrites
 `acqapp_local.json` on every field edit, and closing the window writes the dock
 layout to `QSettings`. Any test that builds a window must call
@@ -59,3 +71,9 @@ These test logic against fakes. They cannot tell you that DCAM populates
 config says, or that the stage's serial framing matches the firmware. Those need
 the rig — see the `_toy.py` harness in each package for bringing one device up
 on its own.
+
+The DMD is the exception so far: `test_dmd` covers the call sequence and the
+geometry, and the same path has additionally been run against the real ALP-4.2
+(open → render → upload → project → halt → release, 2026-08-12). What is still
+unverified there is optical, not electrical: that the projected square lands
+where the settings say it does on the sample.

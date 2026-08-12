@@ -7,6 +7,9 @@
 #   - nidaqmx  -> needs the NI-DAQmx runtime (same install NI MAX uses)
 #   - pylablib -> needs Hamamatsu DCAM-API runtime (ships with the camera driver)
 #   - pypylon  -> needs the Basler pylon runtime (ships with pylon Viewer)
+#   - alp4lib  -> needs the Vialux "ALP-4.2 high-speed API" folder. acqApp finds
+#                 it via the registry, ACQAPP_ALP_DIR, or the standalone
+#                 dmdGUI_project's dmd_config.json — see dmd/alp.py.
 
 PyQt6
 pyqtgraph
@@ -14,6 +17,8 @@ numpy
 scipy          # pupil_cam: connected components for the tracker's coarse seed
                # (optional — tracking.py falls back to a plain centroid)
 pypylon        # pupil_cam: Basler USB3 camera (needs the pylon runtime too)
+alp4lib        # dmd: Vialux ALP-4.2 (needs the vendor API folder too)
+pillow         # dmd: loading pattern images for the projected frame
 tifffile
 h5py
 nidaqmx

@@ -2,6 +2,12 @@ r"""
 DMD toy — load a pattern, display it, watch frame counter.
 
   ..\..\.venv\Scripts\python.exe dmd\_toy.py
+
+Mock only, deliberately: for real bring-up and for aligning the projection to
+the optics, use the standalone **dmdGUI_project** app next to this repo. It has
+the live canvas, the D-pad and the flash-update loop, and acqApp reads its
+saved alignment as its own defaults (see dmd/alp.py). This toy stays as the
+no-hardware way to exercise the panel and the frame log.
 """
 
 import sys

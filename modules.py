@@ -35,6 +35,7 @@ Lifecycle, in call order
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -65,6 +66,7 @@ from acqApp.stage.control     import StageController, MockStageController
 from acqApp.stage.settings    import (SettingsPanel as StageSettingsPanel,
                                       load_settings as load_stage_settings)
 
+from acqApp.dmd import alp
 from acqApp.dmd.control import (DmdController, MockDmdController, DmdSettings,
                                 SettingsPanel as DmdPanel)
 
@@ -809,7 +811,7 @@ class DmdModule(ModuleAdapter):
     tab_label = "DMD"
 
     def build_panel(self) -> QWidget:
-        self.panel = DmdPanel(config.load_dataclass(DmdSettings, self.key))
+        self.panel = DmdPanel(self._settings())
         # Route through this adapter, not straight to the controller: the
         # controller is rebuilt whenever Emulate is toggled, and the panel binds
         # its signals only once.
@@ -819,20 +821,55 @@ class DmdModule(ModuleAdapter):
         self.panel.settings_changed.connect(self._save)
         return self.panel
 
+    def _settings(self) -> DmdSettings:
+        """Saved settings, defaulting to the standalone DMD app's alignment.
+
+        Scale and rotation are how the projected pattern is registered to the
+        optics, and that alignment is found in `dmdGUI_project`. Starting a
+        fresh acqApp install at 100 % / 0° would project something in the wrong
+        place while looking correctly configured, so its saved values seed ours
+        — the same arrangement the stage has with `stage_control/config.json`.
+        """
+        s = config.load_dataclass(DmdSettings, self.key)
+        saved = config.load_settings(self.key)
+        shared = alp.sibling_config()
+        if "scale_pct" not in saved and "defaultScale" in shared:
+            s.scale_pct = float(shared["defaultScale"])
+        if "rotation_deg" not in saved and "defaultRot" in shared:
+            s.rotation_deg = float(shared["defaultRot"])
+        return s
+
     def _save(self, s) -> None:
         d = asdict(s)
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
         config.save_settings(self.key, d)
 
     def build_controller(self, emulate: bool) -> None:
-        self.controller = MockDmdController() if emulate else DmdController()
+        s = self.panel.settings if self.panel is not None else DmdSettings()
+        real = False
+        if emulate:
+            self.controller = MockDmdController(s)
+        else:
+            try:
+                self.controller = DmdController(s)
+                real = True
+            except Exception as e:      # noqa: BLE001 — any ALP/driver failure
+                # Most often the ALP is still held by the standalone
+                # dmdGUI_project app: only one process can own it.
+                print(f"[main] DMD unavailable ({type(e).__name__}: {e}) — "
+                      f"using mock. If the standalone DMD app is open, close "
+                      f"it and toggle Emulate off again.")
+                self.controller = MockDmdController(s)
+        if self.panel is not None:
+            self.panel.set_device(self.controller.device_name,
+                                  self.controller.resolution, real)
         # A pattern the panel is showing — restored from the config, or loaded
         # before Emulate was toggled — has to be uploaded to this controller
         # too, or Display projects whatever the fresh controller defaults to
         # while the panel names a file.
-        path = self.panel.settings.pattern_path if self.panel is not None else None
-        if path is not None and path.exists():
-            self.controller.load_pattern(path)
+        path = s.pattern_path
+        if path is not None and Path(path).is_file():
+            self.controller.load_pattern(Path(path))
 
     def load(self, path) -> None:
         if self.controller is not None:
@@ -856,9 +893,31 @@ class DmdModule(ModuleAdapter):
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
-        return {"dmd_on_time_ms":  s.on_time_ms,
-                "dmd_static_hold": s.static_hold,
-                "dmd_trigger":     s.trigger_mode}
+        c = self.controller
+        w, h = c.resolution if c is not None else (0, 0)
+        return {
+            "dmd_on_time_ms":  s.on_time_ms,
+            "dmd_static_hold": s.static_hold,
+            "dmd_trigger":     s.trigger_mode,
+            "dmd_repeats":     s.n_repeats,
+            # What was projected, and where. Without the geometry a recorded
+            # stimulus cannot be located in the field of view afterwards, and
+            # without the device name there is no way to tell a session that
+            # projected from one that ran against the mock.
+            "dmd_device":      getattr(c, "device_name", "none"),
+            "dmd_width":       w,
+            "dmd_height":      h,
+            "dmd_pattern":     s.pattern_path.name if s.pattern_path else "",
+            "dmd_scale_pct":   s.scale_pct,
+            "dmd_rotation_deg": s.rotation_deg,
+            "dmd_offset_x":    s.offset_x,
+            "dmd_offset_y":    s.offset_y,
+            "dmd_invert":      s.invert,
+            "dmd_fit":         s.fit,
+            # 0 mirrors on is a dark panel — a Display that "worked" and
+            # projected nothing looks identical in every other field here.
+            "dmd_on_pixels":   getattr(c, "on_pixels", 0),
+        }
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
