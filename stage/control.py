@@ -59,11 +59,15 @@ class StageController:
 
     # ── motion (physically moves the stage) ─────────────────────────────────
     def move_to_um(self, which: str, target_um: float) -> None:
+        if self._dev is None:
+            raise StageControllerError("not connected")
         ax = self._axis(which)
         counts = ax.clamp_counts(ax.um_to_counts(target_um))
         self._dev.move_to_readout(ax.index, counts)
 
     def jog_um(self, which: str, delta_um: float) -> None:
+        if self._dev is None:
+            raise StageControllerError("not connected")
         ax = self._axis(which)
         cur = self._dev.get_status(ax.index).position
         target = ax.clamp_counts(int(round(cur + ax.sign * delta_um * ax.counts_per_um)))

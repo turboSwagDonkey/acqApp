@@ -111,12 +111,35 @@ class SaveConfig:
         out = re.sub(r"_{2,}", "_", out).strip("_ ")     # tidy empty tokens
         return sanitize(out, when.strftime("session_%Y%m%d_%H%M%S"))
 
-    def resolve(self, when: datetime | None = None) -> Path:
-        """Full path of the .h5 file for a recording starting now."""
-        stem = self.stem(when)
-        base = self.resolved_folder()
+    def _path_for(self, base: Path, stem: str) -> Path:
         return (base / stem / f"{stem}.h5") if self.subfolder \
             else (base / f"{stem}.h5")
+
+    def resolve(self, when: datetime | None = None, *,
+                unique: bool = False) -> Path:
+        """Full path of the .h5 file for a recording starting now.
+
+        With `unique=True` the returned path does not exist: `_001`, `_002`, …
+        are appended to the stem until the name is free. The filename template
+        is free text, so `{subject}` alone (or any template without `{time}`)
+        makes every recording of the day resolve to the same path — and the
+        writer opens for truncation. Auto-numbering rather than refusing keeps
+        the Record button working with an animal on the rig; the resolved name
+        is shown in the Save tab and in the status line.
+        """
+        stem = self.stem(when)
+        base = self.resolved_folder()
+        path = self._path_for(base, stem)
+        if not unique:
+            return path
+        for n in range(1, 1000):
+            if not path.exists():
+                return path
+            path = self._path_for(base, f"{stem}_{n:03d}")
+        # 999 collisions means the template is degenerate. Fall back to a stem
+        # that cannot collide rather than handing back an occupied path.
+        when = when or datetime.now()
+        return self._path_for(base, f"{stem}_{when.strftime('%H%M%S_%f')}")
 
 
 def default_folder() -> Path:
@@ -269,8 +292,9 @@ class SavePanel(QWidget):
     def as_dict(self) -> dict:
         return asdict(self._cfg)
 
-    def resolve(self, when: datetime | None = None) -> Path:
-        return self._cfg.resolve(when)
+    def resolve(self, when: datetime | None = None, *,
+                unique: bool = False) -> Path:
+        return self._cfg.resolve(when, unique=unique)
 
     def set_expected_rate(self, mbps: float) -> None:
         """Data rate of the current acquisition config, for the capacity estimate."""
@@ -291,7 +315,15 @@ class SavePanel(QWidget):
     # ── Readouts ─────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        self._lbl_preview.setText(str(self.resolve()))
+        # Preview the path a recording started now would actually get, so a
+        # template that collides shows its `_001` here rather than surprising
+        # the operator in the status line after the fact.
+        plain = self.resolve()
+        unique = self.resolve(unique=True)
+        self._lbl_preview.setText(str(unique))
+        self._lbl_preview.setToolTip(
+            f"{plain.name} exists — the next recording is auto-numbered."
+            if unique != plain else "")
 
         free = free_bytes(self._cfg.folder or str(default_folder()))
         if free is None:

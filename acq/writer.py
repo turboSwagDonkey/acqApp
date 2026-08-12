@@ -70,17 +70,25 @@ class HDF5Writer(Writer):
     _MIN_GROW_BYTES = 64 << 20  # grow datasets in >=64 MB steps
 
     def __init__(self, compression: str | None = None,
-                 compression_opts: Any = None) -> None:
+                 compression_opts: Any = None, overwrite: bool = False) -> None:
         self._file = None
         self._streams: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._compression = compression
         self._compression_opts = compression_opts
+        self._overwrite = overwrite
 
     def open(self, path: Path, metadata: dict[str, Any]) -> None:
+        """Create the session file. Raises FileExistsError if `path` is taken.
+
+        Mode "x", not "w": an existing session file is hours of animal time and
+        there is no undo. Callers pick a free name (`SaveConfig.resolve(
+        unique=True)`); this is the backstop for any that don't. Pass
+        `overwrite=True` to the constructor for the rare deliberate clobber.
+        """
         import h5py
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = h5py.File(path, "w")
+        self._file = h5py.File(path, "w" if self._overwrite else "x")
         self._file.attrs.update({k: str(v) for k, v in metadata.items()})
         self._streams = {}
 

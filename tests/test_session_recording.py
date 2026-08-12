@@ -89,9 +89,14 @@ def main() -> int:
     puffer.puff_fired.connect(lambda _t, d: fired.append(d))
 
     # ── Record ───────────────────────────────────────────────────────────────
-    path = win._save_panel.resolve()
     win._btn_rec.setChecked(True)
     r.check(win._recorder is not None, "recorder created")
+    # Ask the window where it recorded rather than re-resolving: the template
+    # is second-granular, so a resolve() on either side of a second boundary
+    # names a different file.
+    path = win._rec_path
+    if not r.check(path is not None, "window reported the recording path"):
+        return r.finish()
 
     mod["puffer"].fire()                    # a "Test puff": no explicit duration
     r.check(fired == [TEST_DURATION],

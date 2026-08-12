@@ -282,6 +282,7 @@ class MainWindow(QMainWindow):
         self._sync.trigger_fired.connect(self._on_trigger)
 
         self._recorder: Recorder | None = None
+        self._rec_path: Path | None = None      # file the last recording went to
         self._save_panel: SavePanel | None = None
         self._devices_dialog: ConnectionMonitor | None = None
         self._pg_views: list = []      # pyqtgraph views to recolour on theme change
@@ -640,7 +641,10 @@ class MainWindow(QMainWindow):
             return
 
         now = datetime.now()
-        path = self._save_panel.resolve(now)
+        # unique=True: never hand the writer a path that already holds a
+        # recording. The writer refuses to truncate one anyway (mode "x"), but
+        # failing to record is also a lost session — take the next free name.
+        path = self._save_panel.resolve(now, unique=True)
         sc = self._save_panel.settings
         metadata = {
             "created":  now.strftime("%Y%m%d_%H%M%S"),
@@ -652,10 +656,21 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             metadata.update(m.metadata())
 
-        self._recorder = Recorder(
+        rec = Recorder(
             self._clock, HDF5Writer(),
             RingBuffer(RING_FRAMES, maxbytes=RING_BYTES, sizeof=_sample_nbytes))
-        self._recorder.start(path, metadata)
+        try:
+            rec.start(path, metadata)
+        except OSError as e:
+            # Opening the file happens on this thread, before the writer thread
+            # exists — a full disk, a dropped network drive or a name that got
+            # taken between resolve() and open() must un-toggle Record, not
+            # leave a half-built Recorder attached to the workers.
+            self.status(f"Cannot record → {path}: {e}")
+            self._btn_rec.setChecked(False)
+            return
+        self._recorder = rec
+        self._rec_path = path
 
         # Attach per-device sinks. The Recorder stamps each sample on the shared
         # clock, so all streams in the file share one time origin.

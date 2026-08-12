@@ -129,11 +129,16 @@ class SettingsPanel(QWidget):
         self._refresh_rate()
 
     def get_config(self) -> AcqConfig:
+        # `link` has no widget — it comes from the config the panel was built
+        # with (and, on the rig, from _check_link.py). Carry it through rather
+        # than rebuilding a default: dropping it silently reverts a USB3 rig to
+        # the CoaXPress readout table, and every fps estimate reads ~7× high.
         return AcqConfig(
             preset_key   = self._cmb_preset.currentData(),
             binning      = self._cmb_binning.currentData(),
             exposure_us  = self._spn_exposure.value(),
             trigger_mode = self._cmb_trigger.currentText(),
+            link         = self._cfg.link,
         )
 
     def set_running(self, running: bool) -> None:

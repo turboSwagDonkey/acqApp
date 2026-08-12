@@ -215,14 +215,30 @@ def save_axis_updates(updates: dict[int, dict]) -> Path:
     temp file + replace so a crash mid-write can't destroy the calibration.
 
     The previous contents are kept alongside as `<name>.bak` — a hard-won origin
-    is worth a minute's work to reproduce, so every write is one step undoable."""
+    is worth a minute's work to reproduce, so every write is one step undoable.
+
+    A missing or unreadable config must not make this raise: the callers apply
+    the updates to the live axes BEFORE calling here (and `establish_frame()`
+    has already spent minutes driving into both hard limits), so a raise here
+    leaves memory and disk disagreeing about where 0,0 is. Start from an empty
+    config instead and write the calibration out — the old contents, if there
+    were any, are in the .bak."""
     path = config_path()
-    raw = path.read_text(encoding="utf-8")
     try:
-        path.with_suffix(path.suffix + ".bak").write_text(raw, encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError:
-        pass                                    # a read-only dir must not block the save
-    cfg = json.loads(raw)
+        raw = ""                                # first run, or sibling app absent
+    if raw:
+        try:
+            path.with_suffix(path.suffix + ".bak").write_text(raw, encoding="utf-8")
+        except OSError:
+            pass                                # a read-only dir must not block the save
+    try:
+        cfg = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        cfg = {}                                # corrupt; recoverable from the .bak
+    if not isinstance(cfg, dict):
+        cfg = {}
     by_index = {a.get("index"): a for a in cfg.get("axes", [])}
     for idx, upd in updates.items():
         entry = by_index.get(idx)

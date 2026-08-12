@@ -19,6 +19,8 @@ a single process is not reliable) and prints a summary.
 | test | guards |
 |---|---|
 | `test_console_safety` | A diagnostic print containing `→` / `≤` / `⚠` raises `UnicodeEncodeError` on a non-UTF-8 console. Those prints sit inside the acquisition loops, so it surfaces as a *device failure* — the camera just doesn't start. Checks every entry point calls `enable_safe_console()`, and that the real path survives a forced cp1252 console. |
+| `test_save_paths` | The filename template is free text, so `{subject}` alone resolves every recording of the day to one path — and the writer used to open it with mode `"w"`. Checks token substitution/sanitisation, that `resolve(unique=True)` never returns an occupied path, and that `HDF5Writer.open()` raises rather than truncating an existing session file. No Qt, <1 s. |
+| `test_stage_state` | Motion commands on a disconnected stage must raise `StageControllerError`, not `AttributeError`. Also that `save_axis_updates()` survives a missing or corrupt calibration file — the callers mutate the live axes first and `establish_frame()` has already driven both hard limits, so a raise there loses a just-measured origin. Redirects `config_path()` at a temp file and asserts the operator's real calibration was untouched. |
 | `test_camera_timestamps` | The camera reads frames in batches. Stamping them on arrival gave every frame in a batch the same time, quantising the recorded timebase to the read cadence instead of the frame rate. Drives the real worker against a fake batching camera and checks intervals track the frame rate, and that a dropped frame shows up in `voltage_cam_index`. |
 | `test_module_subsets` | Any combination of instruments can be loaded, so each `ModuleAdapter` has to cope with its neighbours being absent — including the voltage camera, which owns the central view. Builds a window per subset, runs a session, toggles Emulate. |
 | `test_session_recording` | The broad net: full session → record → stop → verify the HDF5. Every expected stream present, timestamps monotonic and trimmed, metadata written (including the close-time attributes), and the puffer panel's channel/duration actually reaching the hardware. |
@@ -32,7 +34,10 @@ layout to `QSettings`. Any test that builds a window must call
 `_harness.isolate_user_state()` first, or it will silently overwrite the
 operator's save folder, subject ID and panel arrangement. `test_session_recording`
 asserts this redirection actually happened, so a regression in the harness is
-caught rather than assumed.
+caught rather than assumed. The same care applies outside `acqapp_local.json`:
+the stage calibration is shared with the standalone `stage_control/` app, so
+`test_stage_state` repoints `stage.settings.config_path()` at a temp file and
+then asserts the real one's mtime never moved.
 
 **Include a control where the test could be vacuous.** `test_camera_timestamps`
 re-runs the identical fake camera through the old arrival-stamping behaviour and

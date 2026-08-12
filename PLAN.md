@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-11 |
+| **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation ~25 %** (4 of 21 closed, 3 partial) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 50 %** (11 of 22 closed, 3 partial) |
 
 ---
 
@@ -80,12 +80,14 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       clock on the first frame; `/voltage_cam_index` exposes driver-dropped
       frames; `cam_timestamp_source` records whether it worked.
       Guarded by `tests/test_camera_timestamps.py` (with a negative control).
-- [ ] **#2 A recording can silently overwrite an existing file.** ⬜
-      `acq/writer.py:83` opens `h5py.File(path, "w")` (truncate) with no
-      existence check. Free-text filename template makes this reachable — set
-      it to `{subject}` and the second recording of the day destroys the first.
-      *Fix:* existence check in `saving.writable_error()` (the pre-flight hook
-      already exists), or auto `_001` suffix. **Highest-value open item.**
+- [x] **#2 A recording could silently overwrite an existing file.** ✅
+      Two independent defences: `SaveConfig.resolve(unique=True)` returns the
+      next free `_001`/`_002` name (auto-number rather than refuse — the Record
+      button must work with an animal on the rig), and `HDF5Writer.open()` now
+      uses mode `"x"`, so any caller that skips that raises `FileExistsError`
+      instead of truncating. `main._start_recording` handles it and un-toggles
+      Record. The Save tab previews the numbered name before you press it.
+      Guarded by `tests/test_save_paths.py` (21 checks).
 - [x] **#3 Puffer channel and Test-puff duration were ignored.** ✅
       Panel now emits `settings_changed`; `PufferController.apply_settings()`
       re-opens the DO task on a channel change under a lock; `fire()` takes the
@@ -102,21 +104,27 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ### Bugs and robustness
 
-- [ ] **#6** `stage/control.py:61-70` — `move_to_um`/`jog_um` use `self._dev`
-      with no `None` check (unlike `stop`/`read_xy_um`). A move after a
-      disconnect raises `AttributeError` instead of `StageControllerError`. ⬜
-- [ ] **#7** `stage/settings.py:220` — unguarded `path.read_text()`. A missing
-      calibration file makes `set_center_here()` raise *after* the axes were
-      mutated in memory: live state and disk then disagree. ⬜
+- [x] **#6** `stage/control.py` — `move_to_um`/`jog_um` raise
+      `StageControllerError` when disconnected, like the other methods. ✅
+      Every `self._dev` use in the file is now guarded.
+- [x] **#7** `stage/settings.py:save_axis_updates()` — a missing or corrupt
+      calibration file no longer raises. It starts from an empty config and
+      writes; the old contents (if any) stay in the `.bak`. Both callers mutate
+      the live axes *first*, and `establish_frame()` gets there only after
+      minutes of driving into both hard limits, so raising there threw the
+      measurement away. ✅ Both guarded by `tests/test_stage_state.py`, which
+      repoints `config_path()` at a temp file and asserts the operator's real
+      calibration was never written.
 - [ ] **#8** `voltage_cam/acquisition.py` — failing `wait_for_frame` hits
       `except Exception: continue` with no backoff → hot spin, no message. ⬜
 - [x] **#9** Puffer pulse thread could write to a task closed mid-sleep. ✅
       (fixed with #3: `_task_lock` + identity re-check before the trailing write)
 - [ ] **#10** `_stop_recording` clears the sinks, but worker lambdas already
       captured `rec`; a mid-callback `put()` is dropped and never counted. ⬜
-- [ ] **#11** `voltage_cam/settings.py:131` — `get_config()` omits `link`, so
-      the saved value is discarded and the frame-rate label always uses
-      `DEFAULT_LINK`. One-line fix. ⬜
+- [x] **#11** `voltage_cam/settings.py` — `get_config()` now carries `link`
+      through from the config the panel was built with. ✅ It has no widget, so
+      dropping it reverted a USB3 rig to the CoaXPress readout table and every
+      pre-Start fps estimate read ~7× high (115 vs 15.7 at full frame).
 
 ### Performance
 
@@ -138,13 +146,13 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ### Structure and hygiene
 
-- [ ] **#16 Tests.** 🟡 Integration net exists (`tests/`, 80 checks, ~17 s:
-      session+HDF5, module subsets, camera timing, console safety). Still
-      missing the cheap pure-function unit tests: `fit_circle_taubin` /
-      `fit_ellipse` / `fit_circle_robust`, `presets.readout_fps` interpolation,
-      `RingBuffer` eviction, `_EncoderBase._derive` reset-rejection,
-      `SaveConfig.stem/resolve` sanitisation. `toy_output/wheel.csv` is a real
-      capture to use as the encoder fixture.
+- [ ] **#16 Tests.** 🟡 `tests/` is now 116 checks in ~17 s: session+HDF5,
+      module subsets, camera timing, console safety, save paths, stage state.
+      `SaveConfig.stem/resolve` sanitisation is covered. Still missing the
+      other cheap pure-function tests: `fit_circle_taubin` / `fit_ellipse` /
+      `fit_circle_robust`, `presets.readout_fps` interpolation, `RingBuffer`
+      eviction, `_EncoderBase._derive` reset-rejection. `toy_output/wheel.csv`
+      is a real capture to use as the encoder fixture.
 - [x] **#17 `MainWindow` was ~950 lines of six-way repetition.** ✅
       Now `modules.py`: one `ModuleAdapter` per subsystem owning its panel,
       plot, worker, display tick, sink and metadata. `main.py` 1256 → ~740
@@ -191,16 +199,19 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ## 6. Next actions
 
-1. **#2 — the silent overwrite.** Small, self-contained, and the last remaining
-   way the app can destroy data the operator already collected. Add the
-   existence check to `saving.writable_error()` and a test alongside
-   `tests/test_session_recording.py`.
-2. **#4 — panel settings persistence.** Directly affects data correctness: the
-   wheel scaling constants reset to defaults every launch, and they are exactly
-   the values still unmeasured on the rig.
-3. **Small-fix batch: #11, #6, #7.** One-liners and missing guards, cheap to do
-   together and each currently produces a wrong value or an unhandled
-   `AttributeError`.
+1. **#4 — panel settings persistence.** The last open data-correctness item on
+   this list. Wheel, pupil, puffer, stage-port and DMD are built bare, so V/rev
+   and wheel diameter reset to defaults every launch — exactly the values still
+   unmeasured on the rig, and they are written into every session file.
+2. **#10 — the dropped-sample blind spot.** `_stop_recording` clears the sinks
+   but worker lambdas already captured `rec`, so a sample arriving mid-callback
+   is dropped *and not counted*. The file's `recorder_dropped_samples` is
+   therefore an undercount, which makes it untrustworthy exactly when it
+   matters.
+3. **#8 + #14 — the acquisition-loop pair.** `wait_for_frame` failing hot-spins
+   with no message; the ring buffer's count cap can evict the zero-byte event
+   samples the byte cap exists to protect. Both are cheap and both bite first
+   under the load the rig will actually put on this.
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
@@ -214,6 +225,21 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 — the data-destruction item, plus the small-fix batch
+- **#2 closed.** Recordings can no longer overwrite each other: `resolve(
+  unique=True)` picks the next free `_001` name and `HDF5Writer` opens with
+  mode `"x"` so the truncating path no longer exists. Two layers on purpose —
+  the app should never *fail* to record either.
+- **#11, #6, #7 closed** (camera `link` dropped on the way out of the panel;
+  stage motion while disconnected; calibration save over a missing/corrupt
+  file). Each was small; each produced a wrong number or an unhandled
+  exception on the rig rather than in the lab.
+- Two new tests, `test_save_paths` (21 checks, no Qt) and `test_stage_state`
+  (14 checks). Suite is 116 checks / 17.0 s, all passing.
+- `test_session_recording` now asks the window where it recorded
+  (`win._rec_path`) instead of re-resolving the template — the old form named a
+  different file if it ran across a second boundary.
 
 ### 2026-08-11 — workflow, test suite relocation, repo caught up
 - Adopted this file as the cross-session plan; added `CLAUDE.md` (in the repo,
