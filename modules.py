@@ -623,13 +623,19 @@ class WheelModule(ModuleAdapter):
         if self.worker is None:
             return
 
-        def sink(sample: tuple[float, float, float]) -> None:
+        def sink(sample: tuple[float, float, float, float | None]) -> None:
             """Raw voltage + derived speed + distance: three scalar streams
-            sharing the one timebase."""
-            v, speed, dist = sample
-            rec.put("wheel_voltage", v)
-            rec.put("wheel_speed", speed)
-            rec.put("wheel_distance", dist)
+            sharing the one timebase.
+
+            `at` is when the DAQ sampled the voltage, not when the block
+            carrying it reached us — hardware-timed reads arrive in batches, so
+            stamping on arrival would quantise the wheel's timebase to the read
+            cadence exactly as it did for the camera (#1).
+            """
+            v, speed, dist, at = sample
+            rec.put("wheel_voltage", v, at=at)
+            rec.put("wheel_speed", speed, at=at)
+            rec.put("wheel_distance", dist, at=at)
 
         self.worker.set_sink(sink)
 
@@ -648,6 +654,16 @@ class WheelModule(ModuleAdapter):
             # (live) voltage stream by this many seconds. _SIGN orients forward.
             "wheel_speed_lag_s":    EncoderWorker._LAG_S,
             "wheel_sign":           EncoderWorker._SIGN,
+        }
+
+    def final_metadata(self) -> dict[str, Any]:
+        # Which timebase the samples actually carry is only known once the
+        # worker has configured the board — and it decides whether the recorded
+        # speed is a hardware measurement or a scheduler artefact.
+        return {
+            "wheel_timestamp_source": getattr(self.worker, "timestamp_source",
+                                              "unknown"),
+            "wheel_rate_actual_hz":   getattr(self.worker, "actual_rate", 0.0),
         }
 
 

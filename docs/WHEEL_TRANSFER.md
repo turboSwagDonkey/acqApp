@@ -108,10 +108,12 @@ confirm the wheel actually produces the expected voltage swing.
    derives speed by differentiating voltage — clarify whether the voltage is
    **velocity** (use directly) or **position/angle** (differentiate) and make
    the code + labels consistent.
-3. **Hardware-clocked acquisition.** Replace the software-timed `task.read()`
-   loop with `task.timing.cfg_samp_clk_timing(rate, ...)` + buffered reads for
-   jitter-free timing and higher rates without Python-loop overhead. Ties into
-   the rig-clock roadmap (a `DaqClock` on the same 6363).
+3. ~~**Hardware-clocked acquisition.**~~ **Done (#13, 2026-08-12.)**
+   `EncoderWorker` now uses `cfg_samp_clk_timing` + continuous block reads,
+   anchors the first block to the session clock and spaces the rest by the
+   board's rate; `wheel_timestamp_source` records whether that worked. The
+   software-paced loop survives only as the fallback. Sections 2–5 below and §7
+   describe the *pre-#13* worker and have not been rewritten — the code wins.
 4. **Direction / range.** RSE ±10 V is configured; confirm the wheel signal is
    bipolar (bidirectional running) or unipolar, and set `min_val`/`max_val`
    to the real range for best ADC resolution.
@@ -125,7 +127,11 @@ confirm the wheel actually produces the expected voltage swing.
 
 ## 7. Handy facts
 
-- Channel `Dev3/ai2`, **RSE**, ±10 V, **50 Hz** default (software-timed).
+- Channel `Dev3/ai2`, **RSE**, ±10 V. *(As of #13 the rate is the board's own
+  sample clock, default 120 Hz, and `get_latest()` → `(voltage, speed,
+  distance, elapsed_s)` while the sink gets `(voltage, speed, distance,
+  acquired_at)` into `/wheel_voltage`, `/wheel_speed`, `/wheel_distance`. The
+  two lines below are the original wiring, kept for the history.)*
 - `get_latest()` → `(voltage, elapsed_s)`; the recording sink gets **voltage**
   only. Recorded as `/wheel/values` (float64).
 - Mock: 0.2 Hz sine, ±2.5 V, 50 Hz — no hardware, matches the real API.

@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 91 %** (20 of 22 closed; #5 partial, #13 open) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 95 %** (21 of 22 closed; only #5, the DMD stub, is left) |
 
 ---
 
@@ -153,11 +153,19 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       while a 150 ms/frame tracker was running; the same tracker called inline
       (what the display tick used to do) costs 150 ms *per tick*. Guarded by
       `tests/test_pupil_tracking_thread.py` (17 checks, with that control).
-- [ ] **#13 The encoder is software-timed** — single-sample `task.read()` in a
-      Python loop paced by `time.sleep`. The PCIe-6363 has a timing engine;
-      `cfg_samp_clk_timing(rate)` + continuous block reads gives exact hardware
-      sample times, less CPU, no jitter. Speed is derived from `dt` per sample,
-      so this is the change that most improves wheel-speed accuracy. ⬜
+- [x] **#13 The encoder is hardware-timed.** ✅ `cfg_samp_clk_timing` +
+      continuous block reads, so the sample interval is the board's 100 MHz
+      divider rather than a `time.sleep` on a thread competing with the GUI.
+      Since speed is a slope, that jitter *was* the wheel speed. Block reads
+      then reintroduce the camera's batching problem (#1), so the first block
+      anchors index 0 into the perf_counter domain and every sample after it is
+      `anchor + i/rate`; the sink carries that instant to `Recorder.put(at=)`.
+      Measured against a fake board: ±90 ms of arrival jitter, and the recorded
+      intervals exact to 0.1 ns. A board that refuses the timing configuration
+      falls back to the old paced loop rather than losing the wheel for the
+      session, and `wheel_timestamp_source` / `wheel_rate_actual_hz` say in the
+      file which timebase and rate the run actually got. Guarded by
+      `tests/test_encoder_timing.py` (19 checks, with the arrival-time control).
 - [x] **#14 Ring-buffer count cap now sheds frames first**, like the byte cap,
       and only drops a zero-byte event once nothing sized remains. ✅ It was
       discarding exactly the sparse puff/DMD events the byte cap goes out of
@@ -237,15 +245,14 @@ Status: ✅ done · 🟡 partial · ⬜ open.
    make the panel say plainly that it is a stub — the last item on this list
    that actively misleads the operator mid-experiment. (The README now says so;
    the app itself still doesn't.)
-2. **#13 — the encoder is software-timed.** The last performance item: a
-   single-sample `task.read()` in a Python loop paced by `time.sleep`, when the
-   PCIe-6363 has a timing engine. `cfg_samp_clk_timing(rate)` + continuous block
-   reads gives exact hardware sample times, and since speed is a slope over
-   `dt`, it is the change that most improves wheel-speed accuracy. Writable off
-   the rig against the mock; only confirmable on it.
-3. **B2 — fold `SESSION_HANDOFF.md` into `HANDOFF.md`.** The last of the doc
+2. **B2 — fold `SESSION_HANDOFF.md` into `HANDOFF.md`.** The last of the doc
    consolidation: it is a single past session kept as a peer of the standing
    handoff. Small, and it removes the last "which of these do I read?".
+3. **Phase 5 — closed-loop**, once the rig has confirmed #13 and the DMD is
+   real: trigger the DMD or the puffer from encoder state. The trigger bus
+   (`SyncController.schedule_trigger`) already exists and the puffer already
+   fires from it on a timed schedule; what is missing is a condition on the
+   live wheel speed rather than on the clock.
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
@@ -253,13 +260,39 @@ Status: ✅ done · 🟡 partial · ⬜ open.
   → the achieved MB/s sizes the ring buffer (#14) and confirms the SSD keeps up.
 - Encoder `volts_per_rev` and wheel diameter — still unmeasured. The panel now
   keeps whatever is typed in, so measure once and it stays measured.
-- Whether the analog encoder voltage wraps (continuous-turn sensor).
+- Whether the analog encoder voltage wraps (continuous-turn sensor). The
+  synthetic trace in `test_encoder_derive` assumes it does; if it doesn't, the
+  reset rejection is unnecessary rather than wrong.
+- **#13 on a real board:** the first session should report
+  `wheel_timestamp_source = "hardware"` and a `wheel_rate_actual_hz` at or very
+  near the requested rate. `"software"` means the 6363 refused
+  `cfg_samp_clk_timing` on that channel — the run is still valid, but the speed
+  carries scheduler jitter and the printed reason is in the console.
 - Real-hardware validation of *everything* in phases 2–4: no rig hardware has
   ever run this code.
 
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (f) — #13: the encoder comes off the board's clock
+- `cfg_samp_clk_timing` + continuous block reads replace the single-sample
+  `task.read()` loop. The old pacing put the GUI scheduler's jitter directly
+  into wheel speed, because speed is a slope over `dt`.
+- Block reads bring back #1's problem, so the fix is #1's: anchor the first
+  block into the perf_counter domain, space the rest by the board's rate, and
+  carry that instant to `Recorder.put(at=)`. Against a fake board with
+  deliberately irregular reads: ±90 ms of arrival jitter, recorded intervals
+  exact to 0.1 ns. `test_encoder_timing` (19 checks) uses those arrival times
+  as its control.
+- A board that refuses the timing config falls back to the paced loop — losing
+  the wheel for a session is worse than a jittery timebase — and the file says
+  which it got (`wheel_timestamp_source`, `wheel_rate_actual_hz`), the same
+  admission the camera makes. The session test asserts the mock reports
+  `software` rather than quietly implying a hardware clock.
+- Suite 272 → **294 checks / 13 files / 29.7 s**.
+- **Audit remediation is done except #5.** Everything left is either the DMD
+  stub, doc tidying (B2), or needs the rig.
 
 ### 2026-08-12 (e) — #12 tracking gets a thread, #16 the pure-function tests, #20
 - **#12**: `pupil_cam/track_worker.py`. The tracker now owns a thread, is the

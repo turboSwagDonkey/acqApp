@@ -34,6 +34,7 @@ TESTS = [
     ("fits",      "test_pupil_fits.py"),
     ("readout",   "test_readout_fps.py"),
     ("encoder",   "test_encoder_derive.py"),
+    ("enc-timing", "test_encoder_timing.py"),
     ("save-paths", "test_save_paths.py"),
     ("stage-state", "test_stage_state.py"),
     ("pupil-thread", "test_pupil_tracking_thread.py"),

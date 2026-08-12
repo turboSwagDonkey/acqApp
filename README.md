@@ -143,6 +143,16 @@ period). The `cam_timestamp_source` attribute records whether this worked
 A frame the driver dropped shows up as a **jump in the index**, so a gap caused
 by data loss is distinguishable from one caused by a slow period.
 
+The **wheel** is timed the same way, and for a sharper reason: speed is a slope,
+so the samples are clocked by the DAQ's own timing engine
+(`cfg_samp_clk_timing` + continuous block reads) rather than by a Python sleep
+loop competing with the GUI. Those blocks are anchored to the session clock on
+the first read and spaced by the board's rate, so the recorded intervals are the
+board's and not the reader's. `wheel_timestamp_source` says which timebase the
+run actually got (`hardware`, or `software` if the board refused the timing
+configuration and acquisition fell back to pacing), and `wheel_rate_actual_hz`
+records the rate the divider settled on rather than the one requested.
+
 The **DMD** is a stimulus *output*, not an input: its settings tab loads a pattern
 and starts/stops display. While a session is recording, each displayed pattern
 index is logged on the shared clock (`/dmd`) so the stimulus aligns with the
@@ -166,6 +176,10 @@ the status bar. A session file always says how complete it is:
 | `recorder_late_samples` | arrived after the file closed (a worker still mid-callback when recording stopped) |
 | `recorder_unstamped_samples` | offered before the session clock started, so there was no timebase to record them against |
 | `cam_dropped_frames` | discarded by the *camera* because we read too slowly; visible as a jump in `voltage_cam_index` |
+
+(The wheel has no loss counter: on the hardware clock a read that falls far
+enough behind overflows the board's buffer, which raises rather than silently
+skipping — the error reaches the status bar and the worker stops.)
 
 All four are written after the drain and before the close, which is the only
 moment they are both final and still writable. Zero across all four means
@@ -212,13 +226,14 @@ way back out. A value that was never set reads as an empty string.
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
 ```
 
-Runs in Emulate mode against fakes — no rig hardware, no windows, ~27 s. Covers
+Runs in Emulate mode against fakes — no rig hardware, no windows, ~30 s. Covers
 the session/recording path end to end (including the written HDF5), every
 module-subset combination, camera frame timing, settings surviving a restart,
 save-path collisions, stage state, the ways a sample can be lost, the pupil fits
-and tracking thread, the encoder's position→distance derivation, the readout-rate
-table, and the console-encoding guard. See [tests/README.md](tests/README.md) for
-what each one defends and the two conventions to follow when adding one.
+and tracking thread, the encoder's hardware timing and its position→distance
+derivation, the readout-rate table, and the console-encoding guard. See
+[tests/README.md](tests/README.md) for what each one defends and the two
+conventions to follow when adding one.
 
 ## Roadmap
 

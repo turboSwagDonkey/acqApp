@@ -1,8 +1,8 @@
 """
 Rotary wheel encoder — NI DAQ acquisition worker.
 
-EncoderWorker    : QThread that polls ai2 (or any analog channel) and derives
-                   motion from the POSITION voltage.
+EncoderWorker    : QThread that reads ai2 (or any analog channel) on the DAQ's
+                   own sample clock and derives motion from the POSITION voltage.
 MockEncoderWorker: synthetic sine wave, no hardware needed.
 
 The ai2 voltage encodes wheel angle (volts_per_rev volts per turn). Both workers
@@ -10,7 +10,11 @@ turn each sample into a (voltage, speed, distance) triple at the full acquisitio
 rate, so all three are recorded losslessly on the shared clock:
 
     get_latest()  -> (voltage, speed, distance, elapsed_s)   # newest, for the GUI
-    recording sink receives (voltage, speed, distance)
+    recording sink receives (voltage, speed, distance, acquired_at)
+
+`acquired_at` is a `time.perf_counter()` reading of when the DAQ sampled that
+voltage — not when the block carrying it reached us — so the Recorder can stamp
+it at its true time (see `Recorder.put`).
 
 Distance is NET (signed) cumulative rotation — forward minus backward. Motion is
 integrated per sample with wrap-correction; reset transitions that smear over
@@ -72,9 +76,17 @@ class _EncoderBase(PullWorker):
     # Below this speed (rev/s) the readout reads zero, so a resting wheel shows 0.
     _DEADBAND_REV_S = 0.05
 
+    # Which timebase the samples actually carry, recorded into the session file
+    # as `wheel_timestamp_source` — the same admission the camera makes about
+    # its own frames. "hardware": spaced by the board's sample clock.
+    # "software": spaced by a Python sleep loop, so speed carries the
+    # scheduler's jitter.
+    timestamp_source: str = "software"
+
     def __init__(self, volts_per_rev: float | None = 5.0,
                  wheel_dia_mm: float | None = 150.0):
         super().__init__()
+        self.actual_rate = 0.0          # the rate the device settled on, Hz
         self._scale_lock = threading.Lock()
         self._vpr = volts_per_rev
         self._dia = wheel_dia_mm
@@ -155,13 +167,39 @@ class _EncoderBase(PullWorker):
         self._t_report = td
         return self._SIGN * rev_s * circ, self._SIGN * self._dist_rev * circ
 
-    def _emit_sample(self, v: float, t: float) -> None:
+    def _emit_sample(self, v: float, t: float, mono: float | None = None) -> None:
         speed, dist = self._derive(v, t)
-        # get_latest → 4-tuple for the GUI; sink → 3-tuple for recording.
-        self._publish((v, speed, dist, t), record=(v, speed, dist))
+        # get_latest → 4-tuple for the GUI; the sink gets the same three values
+        # plus the perf_counter instant the sample was ACQUIRED. `None` there
+        # means "stamp it on arrival", which is all a device without its own
+        # timebase can offer.
+        self._publish((v, speed, dist, t), record=(v, speed, dist, mono))
 
 
 class EncoderWorker(_EncoderBase):
+    """Analog input clocked by the DAQ board, not by a Python sleep loop.
+
+    `cfg_samp_clk_timing` + continuous block reads. That matters more here than
+    it looks: speed is a SLOPE, so every millisecond of scheduler jitter in the
+    old single-sample `task.read()` loop went straight into the wheel speed —
+    and the loop was competing with a GUI thread that also paints two camera
+    previews. The board divides a 100 MHz timebase; its intervals are exact.
+
+    Sample TIMES are reconstructed the way the camera's are (#1): the device
+    knows the spacing but not our epoch, so the first block anchors index 0 into
+    the perf_counter domain and every sample after it is `anchor + i/rate`.
+    Intervals are then exact and the whole stream carries one constant offset —
+    the driver latency of that first read, well under one block. `timestamp_
+    source` records whether this worked, so the file says which it got.
+
+    If the board won't take the timing configuration, acquisition falls back to
+    the software-paced loop rather than losing the wheel for the session — but
+    it says so, loudly and in the session file.
+    """
+
+    _BLOCK_S = 0.05         # seconds of samples per read: 20 GUI updates/s
+    _BUFFER_S = 5.0         # DAQmx input buffer depth — a stall this long loses data
+
     def __init__(self, chan: str = "Dev3/ai2", rate: float = 120.0,
                  volts_per_rev: float | None = 4.912,
                  wheel_dia_mm: float | None = 150.0):
@@ -169,28 +207,113 @@ class EncoderWorker(_EncoderBase):
         self._chan = chan
         self._rate = rate
 
-    def _run(self) -> None:
-        from nidaqmx import Task
+    def _add_channel(self, task) -> None:
         from nidaqmx.constants import TerminalConfiguration
+        task.ai_channels.add_ai_voltage_chan(
+            self._chan,
+            terminal_config=TerminalConfiguration.RSE,
+            min_val=-10.0, max_val=10.0,
+        )
 
+    def _run(self) -> None:
         self._stop = False
+        if not self._run_hardware():
+            self._run_software()
+
+    # ── hardware-timed (the normal path) ─────────────────────────────────────
+    def _run_hardware(self) -> bool:
+        """Acquire on the board's sample clock. False if it wouldn't configure.
+
+        A fresh Task is opened for each path rather than reconfiguring a failed
+        one: a task whose timing was half-set is not a task whose behaviour is
+        worth reasoning about.
+        """
+        from nidaqmx import Task
+        from nidaqmx.constants import AcquisitionType
+
+        block = max(1, int(round(self._rate * self._BLOCK_S)))
+        with Task() as task:
+            self._add_channel(task)
+            try:
+                task.timing.cfg_samp_clk_timing(
+                    self._rate, sample_mode=AcquisitionType.CONTINUOUS,
+                    samps_per_chan=max(2 * block,
+                                       int(self._rate * self._BUFFER_S)))
+                rate = float(task.timing.samp_clk_rate)
+                task.start()
+            except Exception as e:                    # noqa: BLE001
+                print(f"[wheel] hardware timing unavailable "
+                      f"({type(e).__name__}: {e}) — falling back to a "
+                      f"software-paced loop at {self._rate:g} Hz. Wheel speed "
+                      f"will carry the scheduler's jitter.")
+                return False
+
+            self.actual_rate = rate
+            self.timestamp_source = "hardware"
+            if abs(rate - self._rate) > 1e-3 * self._rate:
+                # The divider can only hit certain rates exactly; the file
+                # records what was used, not what was asked for.
+                print(f"[wheel] board coerced {self._rate:g} Hz to {rate:.4f} Hz")
+            print(f"[wheel] hardware-timed: {rate:g} Hz, "
+                  f"{block} samples per read")
+
+            timeout = 4.0 * self._BLOCK_S + 1.0
+            anchor: float | None = None
+            i = 0                                     # global sample index
+            n_win, t_win = 0, time.perf_counter()
+
+            while not self._stop:
+                try:
+                    data = task.read(number_of_samples_per_channel=block,
+                                     timeout=timeout)
+                except Exception as e:                # noqa: BLE001
+                    # Usually -200279: the input buffer overflowed because we
+                    # didn't read in time, which at these rates means the
+                    # process was stalled for seconds. Those samples are gone —
+                    # better to fail visibly than to hand back a stream with an
+                    # invisible hole whose timestamps still look continuous.
+                    print(f"[wheel] read failed after {i} samples "
+                          f"({type(e).__name__}: {e})")
+                    raise
+                if not isinstance(data, list):        # a block of 1 comes back bare
+                    data = [data]
+                now = time.perf_counter()
+                if anchor is None:
+                    # The last sample of this first block was acquired at ~now,
+                    # so index 0 sits (len-1)/rate earlier.
+                    anchor = now - (len(data) - 1) / rate
+
+                for v in data:
+                    self._emit_sample(float(v), i / rate, anchor + i / rate)
+                    i += 1
+
+                n_win += len(data)
+                if now - t_win >= 1.0:
+                    self.fps_update.emit(n_win / (now - t_win))
+                    n_win, t_win = 0, now
+        return True
+
+    # ── software-paced (fallback only) ───────────────────────────────────────
+    def _run_software(self) -> None:
+        from nidaqmx import Task
+
+        self.timestamp_source = "software"
+        self.actual_rate = self._rate
         period = 1.0 / self._rate
         t0 = time.perf_counter()
         n = 0
 
         with Task() as task:
-            task.ai_channels.add_ai_voltage_chan(
-                self._chan,
-                terminal_config=TerminalConfiguration.RSE,
-                min_val=-10.0, max_val=10.0,
-            )
+            self._add_channel(task)
             while not self._stop:
                 voltage: float = task.read()  # type: ignore[assignment]
-                elapsed = time.perf_counter() - t0
+                now = time.perf_counter()
                 n += 1
-                self._emit_sample(voltage, elapsed)
-                if n % int(self._rate) == 0 and elapsed > 0:
-                    self.fps_update.emit(n / elapsed)
+                # Arrival IS the best estimate available on this path — there is
+                # no device timebase to anchor to.
+                self._emit_sample(float(voltage), now - t0, now)
+                if n % max(1, int(self._rate)) == 0 and now > t0:
+                    self.fps_update.emit(n / (now - t0))
                 nxt = t0 + n * period
                 slp = nxt - time.perf_counter()
                 if slp > 0:
@@ -205,6 +328,7 @@ class MockEncoderWorker(_EncoderBase):
 
     def _run(self) -> None:
         self._stop = False
+        self.actual_rate = self.RATE        # software-paced, like the fallback
         period = 1.0 / self.RATE
         vfs = self._vpr or 5.0
         rng = np.random.default_rng()
@@ -221,7 +345,7 @@ class MockEncoderWorker(_EncoderBase):
             voltage = float(((-rev) % 1.0) * vfs + rng.normal(0, 0.045))
             voltage = min(max(voltage, 0.0), vfs)
             n += 1
-            self._emit_sample(voltage, t)
+            self._emit_sample(voltage, t, t0 + t)
             if n % int(self.RATE) == 0 and t > 0:
                 self.fps_update.emit(n / t)
             nxt = t0 + n * period

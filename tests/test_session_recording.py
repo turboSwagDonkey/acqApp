@@ -31,6 +31,7 @@ CONFIG_ATTRS = ["created", "emulated", "modules", "subject", "cam_exposure_us",
 # Written when the file closes, not when it opens — they describe what the run
 # actually did rather than how it was configured.
 FINAL_ATTRS = ["cam_timestamp_source", "cam_dropped_frames",
+               "wheel_timestamp_source", "wheel_rate_actual_hz",
                "recorder_dropped_samples", "recorder_late_samples",
                "recorder_unstamped_samples"]
 
@@ -180,6 +181,11 @@ def main() -> int:
         r.check(attrs.get("cam_timestamp_source") == "camera",
                 f"cam_timestamp_source resolved "
                 f"(got {attrs.get('cam_timestamp_source')!r})")
+        # The mock encoder is paced by a sleep loop, and the file has to say so
+        # rather than implying these came off the board's sample clock.
+        r.check(attrs.get("wheel_timestamp_source") == "software",
+                f"the mock wheel admits a software timebase "
+                f"(got {attrs.get('wheel_timestamp_source')!r})")
 
         # Frame times must come from the worker's acquisition instants, not the
         # writer thread's arrival times.
