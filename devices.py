@@ -2,7 +2,7 @@
 The interfaces the module adapters program against (§5b A1).
 
 Every instrument here comes as a **pair** — a real driver and a mock twin — and
-`modules.py` is written against whichever one the Emulate toggle built. Until
+the `modules/` adapters are written against whichever one Emulate built. Until
 this file existed, that contract was nine `getattr`/`hasattr` probes standing in
 for a type, and the cost was not tidiness:
 
@@ -146,3 +146,80 @@ class ProjectorController(RecordingOutput, Protocol):
 
     @property
     def on_pixels(self) -> int: ...
+
+
+# ── the host ──────────────────────────────────────────────────────────────────
+
+@runtime_checkable
+class ModuleHost(Protocol):
+    """What an adapter is allowed to ask of the window (§5b A4).
+
+    The protocols above point *down* — what a module reads its device through.
+    This one points **up**: the surface `MainWindow` offers its adapters, and
+    the entire reason `modules/` and `main.py` stay independently readable.
+    An adapter never reaches into the window's widgets; it asks for one of
+    these nine things.
+
+    Until this existed the surface was a sentence in the package's docstring
+    naming seven members — and it had already drifted, because a docstring
+    cannot be wrong out loud. Adding `module_keys` and `signal_sources` for the
+    closed loop widened the surface by two with nothing to notice. That is the
+    mild version; the failure it grows into is an adapter reaching past the
+    listed members into `win._save_panel` or `win._modules`, at which point the
+    two files are one file and the next instrument is four edits again.
+
+    So `tests/test_device_contracts.py` checks both halves: that `MainWindow`
+    still provides all of this, and — the half a Protocol alone cannot do —
+    that every `self.win.X` in `modules/` is a member declared here. Adding a
+    service is one line in this file. Helping yourself to one is a failing test.
+
+    Deliberately typed with `Any` at the Qt boundary (`add_dock`'s widget and
+    area, the returned dock, `sync`, `cam_handle`) so this module stays
+    importable without PyQt6 — it is a contract, and a contract that drags in a
+    GUI toolkit to be read is a worse one.
+    """
+
+    # ── session-wide services ────────────────────────────────────────────────
+    @property
+    def sync(self) -> Any:
+        """The shared trigger bus (`sync.SyncController`).
+
+        Both the schedule and the closed loop fire through it, so a
+        rule-driven puff and a scheduled one are the same event downstream.
+        """
+
+    @property
+    def cam_handle(self) -> Any:
+        """The DCAM handle opened once at startup, or None.
+
+        Handed to the worker rather than re-opened: re-opening a
+        just-closed DCAM device is a known native crash.
+        """
+
+    # ── UI ───────────────────────────────────────────────────────────────────
+    def status(self, message: str) -> None: ...
+    def add_dock(self, title: str, widget: Any, area: Any,
+                 accent: str = "sync") -> Any: ...
+    def register_pg_view(self, view: Any) -> None:
+        """Track a pyqtgraph view so the theme toggle can recolour it."""
+
+    def set_expected_rate(self, mbps: float) -> None:
+        """Feed the acquisition data rate to the Save tab's capacity estimate."""
+
+    # ── cross-module queries ─────────────────────────────────────────────────
+    def on_worker_error(self, msg: str) -> None:
+        """Surface a device thread's exception instead of letting it abort the
+        process. Every adapter connects its worker's `error` signal here."""
+
+    def module_keys(self) -> list[str]:
+        """The module keys loaded this session, in display order."""
+        ...
+
+    def signal_sources(self) -> list[Any]:
+        """Every loaded module's `SignalSource`s, pooled for the closed loop.
+
+        `list[Any]` rather than `list[SignalSource]` on purpose: the descriptor
+        lives in `closed_loop.py`, which imports this module, and a contract
+        file should not import a feature back.
+        """
+        ...

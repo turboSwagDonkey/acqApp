@@ -1,8 +1,8 @@
 """
-The mock/real device pairs honour a declared interface (§5b A1).
+The declared interfaces are honoured — devices (§5b A1) and window (§5b A4).
 
-Every instrument ships as a pair, and `modules.py` is written against whichever
-one Emulate built. That contract used to be nine `getattr`/`hasattr` probes, and
+Every instrument ships as a pair, and the `modules/` adapters are written
+against whichever one Emulate built. That contract used to be nine `getattr`/`hasattr` probes, and
 the cost was not tidiness:
 
     "dmd_device": getattr(c, "device_name", "none")
@@ -14,7 +14,7 @@ drifts from its real twin. It came within a forgotten property of happening.
 checker** (the rig installs `requirements.txt` and nothing else), so a Protocol
 that is never asserted catches exactly nothing. That is what this file is for.
 
-Two layers:
+Layers:
   1. **Conformance** — every twin, real and mock, satisfies the protocol its
      adapter reads it through. Checked on the classes, never by constructing a
      real driver.
@@ -22,9 +22,15 @@ Two layers:
      an explicit allowlist for the differences that are deliberate. This is the
      one that catches a property added to the real class and forgotten on the
      mock, which is the actual failure mode.
+  3. **The probes are gone** from the `modules/` adapters.
+  4. **The window surface** (§5b A4). `ModuleHost` is the same idea pointed the
+     other way: what an adapter may ask of `MainWindow`. Both directions are
+     checked — that the window still provides all of it, and that no adapter
+     reaches past it — because a Protocol on its own cannot see the second, and
+     that is the one that quietly merges the two files back together.
 
 Each layer carries a control: a deliberately incomplete stand-in that must FAIL
-the same check, so neither can pass by being vacuous.
+the same check, so none can pass by being vacuous.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_device_contracts.py
 """
@@ -88,7 +94,7 @@ def main() -> int:
     from acqApp.closed_loop import ClosedLoopWorker
 
     # ── 1. conformance ───────────────────────────────────────────────────────
-    # Each entry is what `modules.py` actually reads that object through.
+    # Each entry is what the adapter actually reads that object through.
     CONFORM = [
         (OrcaFireWorker,          CameraWorker),
         (MockCameraWorker,        CameraWorker),
@@ -173,20 +179,34 @@ def main() -> int:
             "the mock camera declares skipped_frames, so cam_dropped_frames "
             "is read rather than defaulted")
 
-    # ── 3. the probes are actually gone from modules.py ──────────────────────
+    # ── 3. the probes are actually gone from the adapters ────────────────────
     # Comments are stripped first: the code that replaced these probes explains
     # itself by naming them, and a search over raw text would read that prose as
     # the thing it warns about. (It did, on the first run of this test.)
+    #
+    # The whole `modules/` package is scanned, not one file — A5 split it into
+    # one file per instrument, and a scan pinned to a single path would have
+    # gone quietly vacuous the moment the DMD's adapter moved out of it.
     import io
     import tokenize
     from pathlib import Path
-    src = Path(__file__).resolve().parents[1] / "modules.py"
-    raw = src.read_text(encoding="utf-8")
-    text = tokenize.untokenize(
-        tok for tok in tokenize.generate_tokens(io.StringIO(raw).readline)
-        if tok.type != tokenize.COMMENT)
-    r.check("device_name" in text and len(text) > len(raw) / 2,
-            "control: the comment-stripped source is still real code")
+
+    def strip(raw: str, *kinds: int) -> str:
+        return tokenize.untokenize(
+            tok for tok in tokenize.generate_tokens(io.StringIO(raw).readline)
+            if tok.type not in kinds)
+
+    pkg = Path(__file__).resolve().parents[1] / "modules"
+    sources = sorted(pkg.glob("*.py"))
+    raw = "\n".join(p.read_text(encoding="utf-8") for p in sources)
+    # Stripped per file: `untokenize` works from token positions, so feeding it
+    # a concatenation of files would hand it coordinates from several of them.
+    text = "\n".join(strip(p.read_text(encoding="utf-8"), tokenize.COMMENT)
+                     for p in sources)
+    r.check(len(sources) >= 8 and "device_name" in text
+            and len(text) > len(raw) / 2,
+            f"control: the comment-stripped source is still real code "
+            f"({len(sources)} files)")
     for needle, why in (
         ('getattr(c, "device_name"', "the DMD device name"),
         ('getattr(c, "on_pixels"', "the DMD's on-pixel count"),
@@ -195,7 +215,71 @@ def main() -> int:
         ('hasattr(self.worker, "set_exposure")', "pupil exposure"),
     ):
         r.check(needle not in text,
-                f"modules.py no longer guesses {why} with a default")
+                f"the adapters no longer guess {why} with a default")
+
+    # ── 4. the window surface stays narrow (A4) ──────────────────────────────
+    # The protocols above point down (module -> device); `ModuleHost` points up
+    # (module -> window), and is the reason main.py and modules/ stay
+    # independently readable. It needs BOTH halves checked, because each misses
+    # what the other catches: conformance alone allows an adapter to reach past
+    # the surface into `win._save_panel`, and the source scan alone allows the
+    # window to drop a service every adapter still calls.
+    import re
+    from acqApp.devices import ModuleHost
+
+    # Safe to import: block_real_devices() stubbed pylablib, so main.py's
+    # DCAM pre-init falls into its own "no camera" branch. No QApplication is
+    # built at import.
+    from acqApp.main import MainWindow
+
+    missing = has_all(MainWindow, ModuleHost)
+    r.check(not missing,
+            "MainWindow provides the whole ModuleHost surface"
+            + (f" — MISSING {missing}" if missing else ""))
+
+    declared = _members(ModuleHost)
+    # Docstrings go too, not just comments: the surface is now documented by
+    # naming it, and the package header says "every `self.win.X`" in prose.
+    # Section 3 keeps its strings — its needles are code *containing* string
+    # literals, and stripping those would make it pass by finding nothing.
+    used = set(re.findall(
+        r"self\.win\.(\w+)",
+        "\n".join(strip(p.read_text(encoding="utf-8"),
+                        tokenize.COMMENT, tokenize.STRING) for p in sources)))
+    extra = sorted(used - declared)
+    r.check(not extra,
+            f"every self.win.X in modules/ is declared on ModuleHost"
+            + (f" — undeclared {extra}" if extra else ""))
+
+    # CONTROL 1: the scan has to actually find the calls. A regex that matched
+    # nothing would pass the check above for free, forever.
+    r.check(len(used) >= 7 and "status" in used,
+            f"control: the scan found the adapters' calls ({len(used)} distinct)")
+
+    # CONTROL 2: and it has to reject one. This is the drift A4 exists to stop —
+    # an adapter helping itself to a private widget on the window.
+    rogue = set(re.findall(r"self\.win\.(\w+)",
+                           "self.win._save_panel.setEnabled(False)")) - declared
+    r.check(rogue == {"_save_panel"},
+            f"control: a reach past the surface is caught (got {sorted(rogue)})")
+
+    # CONTROL 3: conformance must fail on an incomplete host. `signal_sources`
+    # is the newest member and the exact shape of the drift that prompted A4 —
+    # two services added to the window with only a docstring to notice.
+    class AlmostAHost:
+        sync = None
+        cam_handle = None
+        def status(self, m): ...
+        def add_dock(self, t, w, a, accent="sync"): ...
+        def register_pg_view(self, v): ...
+        def set_expected_rate(self, mbps): ...
+        def on_worker_error(self, m): ...
+        def module_keys(self): return []
+        # signal_sources deliberately absent
+
+    r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],
+            f"control: a host missing only signal_sources is caught "
+            f"(got {has_all(AlmostAHost, ModuleHost)})")
 
     return r.finish()
 

@@ -275,10 +275,12 @@ way back out. A value that was never set reads as an empty string.
   display tick it froze the whole window, voltage-camera preview included. It is
   the sole consumer of the pupil camera's frames and republishes each frame
   *with* the fit made from it, so the outline always matches the image under it.
-- `modules.py` — one `ModuleAdapter` per subsystem, holding everything that is
-  specific to that instrument: its settings tab, its plot, its worker, its
-  ~30 Hz display tick, its recording sink, and the metadata it writes into the
-  session file. See the lifecycle table in that file's docstring.
+- `modules/` — one `ModuleAdapter` per subsystem, **one file each**, holding
+  everything specific to that instrument: its settings tab, its plot, its
+  worker, its ~30 Hz display tick, its recording sink, and the metadata it
+  writes into the session file. `modules/base.py` is the adapter itself and the
+  two widget builders they share; `modules/__init__.py` holds the registry and
+  the lifecycle table. The adapters never import each other.
 - `main.py` — session-wide shell only: the shared clock, the trigger bus, the
   recorder, the save destination, the docks and the theme. It iterates over the
   adapters and holds no per-instrument logic.
@@ -289,7 +291,7 @@ way back out. A value that was never set reads as an empty string.
   into `PullWorker.run()` and looks exactly like a device failure. Add the call
   to any new entry point.
 
-**Adding an instrument** is a new `ModuleAdapter` subclass plus one line each in
+**Adding an instrument** is a new file in `modules/` plus one line each in
 `modules.ADAPTERS` and `config.MODULES` — the window itself does not change.
 
 ## Tests

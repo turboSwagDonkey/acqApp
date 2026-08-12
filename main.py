@@ -8,7 +8,7 @@ on a common timebase).
 
 This file owns only what is session-wide — the clock, the sync/trigger bus, the
 recorder, the save destination, the docks and the theme. Everything specific to
-one instrument lives in a `ModuleAdapter` in `modules.py`, and this window just
+one instrument lives in a `ModuleAdapter` in `modules/`, and this window just
 iterates over the adapters for the modules the user loaded.
 
 Run it any of these ways — the bootstrap below makes them all work:

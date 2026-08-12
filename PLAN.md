@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done (**phase 5, closed-loop, built and mock-verified**); **audit remediation 100 %** (22 of 22 closed). Everything left in phases 0–5 needs the rig. A separate architecture review (§5b) has 3 open items, none urgent. |
+| **Progress** | Roadmap phases 0–5 done (**phase 5, closed-loop, built and mock-verified**); **audit remediation 100 %** (22 of 22 closed). Everything left in phases 0–5 needs the rig. A separate architecture review (§5b) has **1 open item** (A3), reviewed and deliberately left open. |
 
 ---
 
@@ -27,7 +27,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed, so **everything still open needs the rig** — see
-§6's "Needs the rig". The test suite is the contract: **426 checks, 16 files,
+§6's "Needs the rig". The test suite is the contract: **431 checks, 16 files,
 ~40 s, all passing.** Run it before and after anything.
 
 ```
@@ -60,16 +60,18 @@ reason #5 took one session instead of several.
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
 
-**In progress and uncommitted** (as of 2026-08-12). The tree is dirty and holds
-two things at once:
+**Committed 2026-08-12** in `69c657c` (28 files): the operator's settings-window
+work — the settings tabs moved from a dock into a `SettingsDialog` pop-up
+(`main.py`), a measured `default_size()`, a DMD panel that drops the timing
+controls in favour of `all_on` and a permanent static hold — together with
+phase 5 (`closed_loop.py` and its wiring) and §5b A1 (`devices.py`). Both
+strands are named separately in that commit message. Mock-verified only; none
+of it has run on the rig.
 
-- **The operator's**: the settings tabs moved from a dock into a `SettingsDialog`
-  pop-up window (`main.py`), a measured `default_size()`, a DMD panel that drops
-  the timing controls in favour of `all_on` and a permanent static hold.
-  **Don't commit it under your own message and don't revert it.** Ask before
-  touching `main.py`'s dock/settings code.
-- **Phase 5**: `closed_loop.py` and its wiring (see the newest session log
-  entry). Mock-verified, never run on the rig.
+**`main.py` is the operator's active file.** The settings-window work is theirs
+and ongoing: **ask before touching its dock/settings code**, and don't
+restructure it (that is why §5b A5 split `modules.py` and deliberately left
+`main.py` at 899 lines).
 
 **A warning that cost most of a session.** An editing pass aimed at "the
 settings" rewrote every file with *settings* in its name, including
@@ -142,7 +144,7 @@ done on top of that. Don't let it drift like that again.
 | 2 | Camera streaming + preview + HDF5 | ✅ mock-verified |
 | 3 | Encoder streaming + plot | ✅ mock-verified |
 | 4 | Unified session start/stop, shared clock, metadata | ✅ mock-verified |
-| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 426 checks |
+| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 431 checks |
 | **5** | Closed-loop: trigger DMD/puffer from encoder state | ✅ mock-verified — `closed_loop.py`, armed from the Closed loop tab; **never run on the rig** |
 | 6 | Hardware sync: `DaqClock` on the PCIe-6363, triggered ORCA | future |
 
@@ -227,16 +229,44 @@ because two of them are how a future wrong-data bug gets in.
       monkeypatch `sys.modules`. That is precisely why `block_real_devices()`
       exists rather than a one-line fake injection (C3). Defensible for six
       known instruments; revisit if a seventh needs a third variant. ⬜
-- [ ] **A4 The adapter's "narrow surface" onto the window is a docstring
-      promise.** Adapters get the whole `win` object; the seven-method contract
-      in `modules.py`'s header is enforced by nothing. A `Protocol` here too
-      would make it real, and pairs naturally with A1. ⬜
-- [ ] **A5 `main.py` (833) and `modules.py` (939) are large.** `main.py` still
-      carries window chrome, docks, theme, session start/stop and recording
-      wiring; `modules.py` is six cohesive adapters in one file. Most
-      `settings.py` files hold a dataclass *and* a QWidget. Low priority and
-      partly the A-side of the trade named above — but if `modules.py` grows
-      again, split it per instrument rather than per layer. ⬜
+      **Reviewed 2026-08-12 and deliberately left open.** The seventh module
+      arrived (`closed_loop`) and did *not* trigger this: it has no mock/real
+      pair at all — its device is another module's signal. So the condition
+      this item set for itself has still not been met. Leaving it.
+- [x] **A4 The adapter's "narrow surface" onto the window is a docstring
+      promise.** ✅ Adapters get the whole `win` object; the seven-method
+      contract in the header was enforced by nothing. A `Protocol` here too
+      would make it real, and pairs naturally with A1.
+      **Done 2026-08-12.** `devices.ModuleHost` — the same idea pointed up
+      instead of down. The docstring was already wrong when this was written:
+      it named seven members while the code used nine, because the closed loop
+      added `module_keys` and `signal_sources` with nothing to notice.
+      `test_device_contracts` checks **both** directions, which matters — a
+      Protocol alone only proves the window still *provides* the surface, and
+      the drift that actually costs something is an adapter reaching *past* it
+      into `win._save_panel`. So the second half scans the adapters' source and
+      fails on any `self.win.X` that `ModuleHost` doesn't declare. Widening the
+      surface is now a deliberate line in `devices.py`.
+- [x] **A5 `main.py` (899) and `modules.py` (1204) are large.** ✅ `main.py`
+      still carries window chrome, docks, theme, session start/stop and
+      recording wiring; `modules.py` was seven cohesive adapters in one file.
+      Low priority and partly the A-side of the trade named above — but if
+      `modules.py` grows again, split it per instrument rather than per layer.
+      **`modules.py` done 2026-08-12; `main.py` deliberately not.** The trigger
+      this item set fired: the closed loop took the file from 939 to 1204 lines
+      (+28 %). It is now `modules/` — `base.py` (the adapter, the two shared
+      widget builders, the plot constants), one file per instrument, and
+      `__init__.py` holding the registry and the lifecycle table. Per
+      instrument, not per layer, as instructed: a session at the rig is spent on
+      *the wheel* or *the DMD*, and the adapters were already independent of
+      each other (they import only `base`). Bodies moved verbatim — verified
+      line-by-line against the pre-split file, the only differences being
+      imports, section banners and the two lines A4 changed. Callers see
+      nothing: `modules.build_adapters`, `.ADAPTERS` and `.ModuleAdapter` are
+      where they were. **`main.py` was left alone on purpose** — it is the
+      operator's active file this week (the settings dialog work), and
+      restructuring under someone's in-progress edits is how the collateral
+      damage earlier this session happened.
 
 ## 6. Next actions
 
@@ -285,6 +315,25 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (k) — §5b A4 and A5: the window surface, and `modules/`
+- **A4.** `devices.ModuleHost` names what an adapter may ask of the window.
+  Both directions are checked, and the second is the one that earns its keep: a
+  Protocol proves the window still *provides* the surface, but the drift that
+  costs something is an adapter reaching *past* it, so the test scans the
+  adapters' source and fails on any undeclared `self.win.X`. The docstring it
+  replaced was already wrong — seven members claimed, nine used.
+- **A5.** `modules.py` (1204 lines) is now `modules/`: `base.py` plus one file
+  per instrument, registry in `__init__.py`. Bodies moved verbatim and verified
+  line-by-line against the pre-split file. Callers unchanged. `main.py` left
+  alone deliberately — it is the operator's active file.
+- Two scanners caught themselves being vacuous: the `self.win.X` search first
+  matched the docstring *describing* it (so docstrings are stripped for that
+  scan but not for §3's, whose needles are code containing string literals),
+  and the verbatim-check first "lost" 106 lines that were only `git show`
+  decoded as cp1252 against files read as UTF-8.
+- **431 checks, 16/16, 39.7 s.** §5b is now down to A3 alone, reviewed and left
+  open on its own terms. Everything in §6 needs the rig.
 
 ### 2026-08-12 (j) — §5b A1: the device pairs get a declared interface
 - New `devices.py`: eight small `Protocol`s the adapters read their workers and
