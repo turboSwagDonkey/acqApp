@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-12 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–4 done; **audit remediation 55 %** (12 of 22 closed, 3 partial) |
+| **Progress** | Roadmap phases 0–4 done; **audit remediation 68 %** (15 of 22 closed, 3 partial) |
 
 ---
 
@@ -120,12 +120,22 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       measurement away. ✅ Both guarded by `tests/test_stage_state.py`, which
       repoints `config_path()` at a temp file and asserts the operator's real
       calibration was never written.
-- [ ] **#8** `voltage_cam/acquisition.py` — failing `wait_for_frame` hits
-      `except Exception: continue` with no backoff → hot spin, no message. ⬜
+- [x] **#8** `voltage_cam/acquisition.py` — a failing `wait_for_frame` now
+      backs off and reports. ✅ Timeouts and device errors arrive as the same
+      exception, so they are told apart by *how long the call took*: a wait
+      that fails in well under its timeout is an error (pause, then retry),
+      one that uses its timeout is a trigger that hasn't fired (already paced,
+      say nothing). Measured 8 retries/s against ~5.5 M/s unpaced.
 - [x] **#9** Puffer pulse thread could write to a task closed mid-sleep. ✅
       (fixed with #3: `_task_lock` + identity re-check before the trailing write)
-- [ ] **#10** `_stop_recording` clears the sinks, but worker lambdas already
-      captured `rec`; a mid-callback `put()` is dropped and never counted. ⬜
+- [x] **#10** Samples that miss the file are now all counted. ✅ `Recorder`
+      gates `put()` behind a lock that closes before `remaining` is measured,
+      so a straggler is either in the buffer (un-drained) or counted as late —
+      never silently discarded. Pre-clock samples get their own counter too.
+      All three land in the file (`recorder_dropped_samples`,
+      `recorder_late_samples`, `recorder_unstamped_samples`) via a
+      `final_metadata` callback that `stop()` runs after the drain and before
+      the close — the counts are only final at that one moment.
 - [x] **#11** `voltage_cam/settings.py` — `get_config()` now carries `link`
       through from the config the panel was built with. ✅ It has no widget, so
       dropping it reverted a USB3 rig to the CoaXPress readout table and every
@@ -143,9 +153,11 @@ Status: ✅ done · 🟡 partial · ⬜ open.
       `cfg_samp_clk_timing(rate)` + continuous block reads gives exact hardware
       sample times, less CPU, no jitter. Speed is derived from `dt` per sample,
       so this is the change that most improves wheel-speed accuracy. ⬜
-- [ ] **#14 Ring-buffer count cap drops the oldest item regardless of type**,
-      so it can discard the zero-byte event samples the byte cap protects.
-      512 items ≈ 1 s of writer stall. ⬜
+- [x] **#14 Ring-buffer count cap now sheds frames first**, like the byte cap,
+      and only drops a zero-byte event once nothing sized remains. ✅ It was
+      discarding exactly the sparse puff/DMD events the byte cap goes out of
+      its way to protect, and at 512 items ≈ 1 s of writer stall it is the cap
+      that bites first. The test carries a control reproducing the old rule.
 - [x] **#15** `np.polyfit` in `_EncoderBase._report` benchmarked: 44 µs/call at
       120 Hz = 0.5 % of a core. ✅ **Do not "optimise" this.**
 
@@ -204,20 +216,21 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 
 ## 6. Next actions
 
-1. **#10 — the dropped-sample blind spot.** `_stop_recording` clears the sinks
-   but worker lambdas already captured `rec`, so a sample arriving mid-callback
-   is dropped *and not counted*. The file's `recorder_dropped_samples` is
-   therefore an undercount, which makes it untrustworthy exactly when it
-   matters.
-2. **#8 + #14 — the acquisition-loop pair.** `wait_for_frame` failing hot-spins
-   with no message; the ring buffer's count cap can evict the zero-byte event
-   samples the byte cap exists to protect. Both are cheap and both bite first
-   under the load the rig will actually put on this.
-3. **#18 + #19 — the file and the README.** Metadata is stringified, so
+1. **#18 + #19 — the file and the README.** Metadata is stringified, so
    `wheel_volts_per_rev` lands as `"4.912"` and analysis has to parse it; the
    README still describes the pupil cam as GigE-mock and the stage as never
    sending a motion command. Both are small and both mislead whoever reads the
-   data next.
+   data next. #18 also wants the round-trip test that #4's persistence got.
+2. **#12 — pupil tracking on the GUI thread.** The last performance item and
+   the biggest: `coarse_seed`'s `distance_transform_edt` is 100–200 ms on a
+   degenerate mask, and a genuinely lost pupil re-seeds every tick — which
+   stalls the camera preview pull in the same 30 Hz timer. It belongs on the
+   pupil worker thread, which already exists.
+3. **#5 — the DMD stub.** `dmd/control.py:61-97` is still `print(...)` where
+   the device calls belong, and with Emulate off the UI gives no sign that
+   Display did nothing. `alp4lib` is in the venv. Either wire the ALP path or
+   make the panel say plainly that it is a stub — the current state is the
+   one thing on this list that actively misleads the operator mid-experiment.
 
 **Needs the rig (can't be closed from the laptop):**
 - Phase 0's camera throughput number:
@@ -232,6 +245,25 @@ Status: ✅ done · 🟡 partial · ⬜ open.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-12 (c) — the robustness bugs: #14, #10, #8
+- **#14**: the ring buffer's count cap was dropping the oldest item outright,
+  discarding the sparse zero-byte events the byte cap protects. Both caps now
+  shed frames first. The test carries a control that reproduces the old rule.
+- **#10**: `Recorder` now counts every sample that misses the file — shed,
+  late (arrived after close), and unstamped (before the clock started) — and
+  writes all three as attributes via a `final_metadata` callback that
+  `stop()` runs between the drain and the close. Closing the put-gate before
+  measuring `remaining` removes the window where a straggler vanished.
+- **#8**: a `wait_for_frame` that fails in well under its timeout is a device
+  error (back off, report); one that uses its timeout is a trigger that hasn't
+  fired (already paced, stay quiet). Measured 8 retries/s vs ~5.5 M/s unpaced.
+- `test_recording_losses` (22 checks). Suite 187 checks / 22.1 s.
+- **Open question for the rig:** #10's counters are now honest, so the first
+  real recording will say plainly whether the writer keeps up. If
+  `recorder_dropped_samples` is nonzero at full frame rate, that is the ring
+  buffer sizing (#14's `RING_FRAMES`/`RING_BYTES`) needing the Phase 0 MB/s
+  number, not a bug.
 
 ### 2026-08-12 (b) — #4, panel settings persistence
 - All five bare panels now load and save through `config`. Two panels had no

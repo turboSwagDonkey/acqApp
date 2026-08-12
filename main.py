@@ -104,6 +104,7 @@ def _bootstrap() -> None:
 _bootstrap()
 
 from datetime import datetime
+from typing import Any
 
 # ── Hardware pre-init (must precede any Qt / scipy import) ────────────────────
 # Open the camera ONCE here and KEEP the handle: the acquisition worker reuses it
@@ -683,20 +684,33 @@ class MainWindow(QMainWindow):
     def _stop_recording(self) -> None:
         for m in self._modules:
             m.detach_sink()
-        if self._recorder is not None:
-            drops = self._recorder.drop_count
+        rec = self._recorder
+        self._recorder = None
+        if rec is not None:
             # Write what the run actually did, not just how it was configured:
             # a file that shed samples should say so itself rather than only in
-            # a status message that scrolls away.
-            final = {"recorder_dropped_samples": drops}
-            for m in self._modules:
-                final.update(m.final_metadata())
-            self._recorder.update_metadata(final)
+            # a status message that scrolls away. Built as a callback because
+            # the counts are only final after the drain, and the file has to
+            # still be open to receive them — Recorder.stop() sequences both.
+            def final() -> dict[str, Any]:
+                d: dict[str, Any] = {
+                    "recorder_dropped_samples":   rec.drop_count,
+                    "recorder_late_samples":      rec.late_count,
+                    "recorder_unstamped_samples": rec.unstamped_count,
+                }
+                for m in self._modules:
+                    d.update(m.final_metadata())
+                return d
 
-            remaining = self._recorder.stop()
-            self._recorder = None
-            msg = f"Recording stopped (dropped {drops} samples while running"
-            msg += f", {remaining} un-drained)" if remaining else ")"
+            remaining = rec.stop(final_metadata=final)
+            lost = rec.drop_count + rec.late_count + remaining
+            msg = f"Recording stopped (dropped {rec.drop_count} samples while running"
+            for n, what in ((rec.late_count, "late"), (remaining, "un-drained")):
+                if n:
+                    msg += f", {n} {what}"
+            msg += ")"
+            if lost:
+                msg += "  — see the file's recorder_* attributes"
             self.status(msg)
         self._btn_rec.setText("Record")
 

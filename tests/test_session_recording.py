@@ -31,7 +31,8 @@ CONFIG_ATTRS = ["created", "emulated", "modules", "subject", "cam_exposure_us",
 # Written when the file closes, not when it opens — they describe what the run
 # actually did rather than how it was configured.
 FINAL_ATTRS = ["cam_timestamp_source", "cam_dropped_frames",
-               "recorder_dropped_samples"]
+               "recorder_dropped_samples", "recorder_late_samples",
+               "recorder_unstamped_samples"]
 
 TEST_CHANNEL = "Dev3/port0/line2"       # not the default, so a stuck default shows
 TEST_DURATION = 0.250                   # likewise

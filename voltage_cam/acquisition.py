@@ -30,6 +30,12 @@ _TRIGGER_MODE: dict[str, str] = {
     "External edge":           "ext",
 }
 
+# How long to block waiting for the next frame, and how often to repeat the
+# complaint when none arrives. Long enough not to busy-poll a free-running
+# camera; short enough that Stop is responsive.
+_WAIT_TIMEOUT = 0.5
+_WAIT_MSG_EVERY = 5.0
+
 
 class OrcaFireWorker(PullWorker):
     """
@@ -340,6 +346,7 @@ class OrcaFireWorker(PullWorker):
             # n_acquired tracks the camera's own frame counter between ticks.
             n_acquired, win_n = 0, 0
             status_t0 = time.perf_counter()
+            wait_fails, wait_msg_t0 = 0, 0.0
 
             try:
                 while not self._stop:
@@ -353,9 +360,30 @@ class OrcaFireWorker(PullWorker):
                         except Exception:
                             pass
 
+                    t_wait = time.perf_counter()
                     try:
-                        cam.wait_for_frame(timeout=0.5)
-                    except Exception:
+                        cam.wait_for_frame(timeout=_WAIT_TIMEOUT)
+                        wait_fails = 0
+                    except Exception as e:
+                        # Two different failures arrive through one exception.
+                        # A genuine TIMEOUT is legitimate — an external trigger
+                        # that hasn't fired yet — and `timeout` has already
+                        # paced it. A call that fails IMMEDIATELY is a device
+                        # error, and retrying it with no pause spins a core
+                        # silently for as long as the session runs. Tell them
+                        # apart by how long the call took, rather than by
+                        # vendor exception types.
+                        waited = time.perf_counter() - t_wait
+                        wait_fails += 1
+                        if waited < _WAIT_TIMEOUT * 0.5:
+                            time.sleep(min(0.02 * wait_fails, _WAIT_TIMEOUT))
+                        now = time.perf_counter()
+                        if wait_fails == 1 or now - wait_msg_t0 >= _WAIT_MSG_EVERY:
+                            wait_msg_t0 = now
+                            print(f"[voltage_cam] no frame "
+                                  f"({wait_fails} consecutive, "
+                                  f"{waited * 1e3:.0f} ms): "
+                                  f"{type(e).__name__}: {e}")
                         continue
 
                     # Snapshot once: whether a recording sink is attached decides

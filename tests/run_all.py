@@ -33,6 +33,7 @@ TESTS = [
     ("console",   "test_console_safety.py"),
     ("save-paths", "test_save_paths.py"),
     ("stage-state", "test_stage_state.py"),
+    ("losses",    "test_recording_losses.py"),
     ("camera-ts", "test_camera_timestamps.py"),
     ("subsets",   "test_module_subsets.py"),
     ("settings",  "test_settings_persistence.py"),
