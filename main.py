@@ -27,10 +27,8 @@ import os
 import sys
 from pathlib import Path
 
-# Native crashes in the camera/USB drivers (a segfault or abort deep in the DCAM
-# SDK) can't be caught by Python try/except — the process just dies with no
-# traceback. faulthandler dumps the C-level + Python stack to stderr on a fatal
-# signal, so those otherwise-silent crashes become diagnosable.
+# A segfault deep in the DCAM SDK can't be caught by try/except — the process
+# just dies. faulthandler dumps the C-level + Python stack on a fatal signal.
 faulthandler.enable()
 
 
@@ -53,12 +51,10 @@ def _bootstrap() -> None:
     venv_dir = here / ".venv"
     venv_py = venv_dir / scripts / exe
 
-    # (1) make the package importable, then harden stdout. This comes FIRST so
-    # that every print below — and every print in every device module — can use
-    # the arrows and symbols without risking UnicodeEncodeError on a non-UTF-8
-    # console (see acqApp/console.py: that exception kills device threads).
-    # console.py imports nothing but `sys`, so this is safe under any
-    # interpreter, before the venv re-exec has happened.
+    # (1) make the package importable, then harden stdout — FIRST, so every
+    # print below can use arrows and symbols without risking
+    # UnicodeEncodeError, which kills device threads (see console.py). That
+    # module imports only `sys`, so this is safe pre-re-exec.
     parent = str(here.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
@@ -107,11 +103,9 @@ from datetime import datetime
 from typing import Any
 
 # ── Hardware pre-init (must precede any Qt / scipy import) ────────────────────
-# Open the camera ONCE here and KEEP the handle: the acquisition worker reuses it
-# instead of opening its own. Re-opening a DCAM device that was just closed is a
-# known way to crash the driver natively (segfault, no Python traceback), and a
-# fresh open also costs ~7 s. The handle lives for the whole app and is closed in
-# MainWindow.closeEvent.
+# Open the camera ONCE and keep the handle — the worker reuses it. Re-opening a
+# just-closed DCAM device crashes the driver natively, and a fresh open costs
+# ~7 s. Closed in MainWindow.closeEvent.
 _cam_info = None
 _cam_handle = None
 _mock = "--mock" in sys.argv     # start in Emulate mode; real hardware otherwise
@@ -123,8 +117,7 @@ if not _mock:
             _cam_info = _cam_handle.get_device_info()
             print(f"Voltage cam: {_cam_info}")
         else:
-            # No silent fallback to fake data — real is the default. Use the
-            # Emulate toggle (or --mock) to run without hardware on purpose.
+            # No silent fallback to fake data — real is the default.
             print("No DCAM camera detected — use Emulate to run without hardware")
     except Exception as _e:
         print(f"Camera detect failed ({_e}) — use Emulate to run without hardware")
@@ -175,22 +168,21 @@ class MainWindow(QMainWindow):
     def __init__(self, cam_info=None, mock=False, enabled: set[str] | None = None,
                  cam_handle=None):
         super().__init__()
-        # Emulate mode = simulated signals for dev/testing; OFF by default so the
-        # app talks to real hardware. Togglable at runtime (only between sessions).
+        # Simulated signals for dev/testing; OFF by default, and togglable only
+        # between sessions.
         self._emulate = mock
-        # Free run = devices without the session clock, so nothing can be
-        # recorded. Runtime only, never persisted: it is a diagnostic stance,
-        # and a launch that quietly came up unable to record would be worse than
-        # useless on a rig. Same reasoning as the closed loop's `armed`.
+        # Devices without the session clock, so nothing can be recorded. Never
+        # persisted: a launch that quietly came up unable to record would be
+        # worse than useless on a rig (as with the closed loop's `armed`).
         self._free_run = False
-        # Whether a session is up. Tracked rather than read off `_sync.running`,
-        # because in free run the sync controller is deliberately NOT running
-        # and every "is a session up?" test would answer no mid-session.
+        # Tracked rather than read off `_sync.running`: in free run the sync
+        # controller is deliberately not running, so that would answer no
+        # mid-session.
         self._session_on = False
         self._enabled = enabled if enabled is not None else set(config.MODULES)
         self._cam_info = cam_info
-        # Camera handle opened once at startup and reused by every session's
-        # worker (see the pre-init note). None in emulate/no-camera runs.
+        # Opened once at startup and reused by every session's worker (see the
+        # pre-init note). None in emulate/no-camera runs.
         self._cam_handle = cam_handle
 
         # ── The single session-wide clock, shared by sync + recorder + devices ──
@@ -209,9 +201,8 @@ class MainWindow(QMainWindow):
         # One adapter per loaded instrument, in config.MODULES display order.
         self._modules = modules.build_adapters(self, self._enabled)
         self._build_ui()
-        # Controllers come AFTER the UI: they are configured from their own
-        # panels (the puffer's DO line and default duration, for one), so those
-        # panels have to exist before the device is opened.
+        # After the UI: controllers are configured from their own panels, so
+        # those must exist before the device is opened.
         self._build_controllers()
         self._apply_title()
 
@@ -375,18 +366,13 @@ class MainWindow(QMainWindow):
         self._btn_run.setToolTip("Show live signals from all devices (not saved)")
         self._btn_run.toggled.connect(self._on_run_toggled)
 
-        # Free run: devices and previews, with NO session clock — which is what
-        # the per-device `_toy.py` harnesses used to provide. Their value was
-        # never the UI (the app's panels are a superset); it was that they
-        # brought one device up without the clock, recorder and session
-        # machinery, so "is it the camera or is it my session code?" could be
-        # answered on a rig with limited time. This is that, without a second
-        # copy of every panel to keep in step — and the toys had already drifted
-        # from the app they were meant to bring up.
+        # Free run: devices and previews with NO session clock — what the
+        # `_toy.py` harnesses provided, minus a second copy of every panel to
+        # keep in step. It answers "is it the camera or is it my session code?"
+        # on a rig with limited time.
         #
         # Recording is impossible here and the button says so: with no clock
-        # started, `SessionClock.at()` raises rather than inventing a timebase,
-        # and that is the correct behaviour to keep rather than work around.
+        # started, `SessionClock.at()` raises rather than invent a timebase.
         self._btn_free = QPushButton("Free run")
         self._btn_free.setCheckable(True)
         self._btn_free.setStyleSheet(style.toggle_btn("stage"))
@@ -537,14 +523,13 @@ class MainWindow(QMainWindow):
                     if on else "Ready")
 
     def _start_session(self) -> None:
-        # Build this session's workers first, but don't start them: the shared
-        # clock must reach t=0 BEFORE any device pushes a timestamped sample.
+        # Build the workers but don't start them: the shared clock must reach
+        # t=0 BEFORE any device pushes a timestamped sample.
         for m in self._modules:
             m.build_session(self._emulate)
 
-        # Free run deliberately leaves the clock unstarted. Nothing else needs
-        # it: workers stamp with `perf_counter` and only the Recorder converts,
-        # and the Recorder cannot exist here because Record is disabled.
+        # Free run deliberately leaves the clock unstarted: workers stamp with
+        # `perf_counter` and only the Recorder converts, which cannot exist here.
         if not self._free_run:
             self._sync.start_all()
         for m in self._modules:
@@ -562,13 +547,11 @@ class MainWindow(QMainWindow):
             self._btn_rec.setChecked(False)   # triggers _on_record_toggled(False)
 
         self._disp_timer.stop()
-        # Per module, because teardown touches hardware: a stage whose serial
-        # port went away mid-session, a camera that fails to release. Unguarded,
-        # one raise here skips every module after it — their worker threads keep
-        # running — and skips stop_all() below, leaving the clock and trigger bus
-        # alive with the UI saying "Stopped". Through closeEvent it also skips
-        # the DCAM handle close, and re-opening a handle that was never closed is
-        # the native crash the pre-init note at the top of this file describes.
+        # Guarded per module, because teardown touches hardware. Unguarded, one
+        # raise skips every module after it — worker threads still running — and
+        # skips stop_all(), leaving the clock and trigger bus alive with the UI
+        # saying "Stopped". Through closeEvent it also skips the DCAM handle
+        # close, which is the native crash the pre-init note describes.
         for m in self._modules:
             try:
                 m.stop()
@@ -663,10 +646,9 @@ class MainWindow(QMainWindow):
         try:
             rec.start(path, metadata)
         except OSError as e:
-            # Opening the file happens on this thread, before the writer thread
-            # exists — a full disk, a dropped network drive or a name that got
-            # taken between resolve() and open() must un-toggle Record, not
-            # leave a half-built Recorder attached to the workers.
+            # Opening happens on this thread, before the writer thread exists —
+            # a full disk or a name taken between resolve() and open() must
+            # un-toggle Record, not leave a half-built Recorder attached.
             self.status(f"Cannot record → {path}: {e}")
             self._btn_rec.setChecked(False)
             return
@@ -687,11 +669,10 @@ class MainWindow(QMainWindow):
         rec = self._recorder
         self._recorder = None
         if rec is not None:
-            # Write what the run actually did, not just how it was configured:
-            # a file that shed samples should say so itself rather than only in
-            # a status message that scrolls away. Built as a callback because
-            # the counts are only final after the drain, and the file has to
-            # still be open to receive them — Recorder.stop() sequences both.
+            # What the run actually did, not just how it was configured — a file
+            # that shed samples should say so itself. A callback because the
+            # counts are final only after the drain, while the file is still
+            # open; Recorder.stop() sequences both.
             def final() -> dict[str, Any]:
                 d: dict[str, Any] = {
                     "recorder_dropped_samples":   rec.drop_count,
