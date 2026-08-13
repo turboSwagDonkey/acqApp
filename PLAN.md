@@ -9,7 +9,7 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-12 |
+| **Last updated** | 2026-08-13 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
 | **Progress** | Roadmap phases 0–5 done (**phase 5, closed-loop, built and mock-verified**); **audit remediation 100 %** (22 of 22 closed). Everything left in phases 0–5 needs the rig. A separate architecture review (§5b) has **1 open item** (A3), reviewed and deliberately left open. |
 
@@ -337,6 +337,28 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-13 (m) — end-of-day scan: one real defect, one wrong comment
+- **A claim committed the day before was wrong.** `_on_fired`'s docstring said
+  that because `ModuleAdapter` is not a QObject, Qt calls the slot directly on
+  the emitting thread. **Measured, four experiments:** a slot that is not a
+  QObject's bound method runs on **the thread where `connect()` was called** —
+  not the emitter's, not the sender's. Every `connect()` here is on the GUI
+  thread, so these are queued and safe. Code was right; the reasoning was not.
+  Keep such callbacks to one emit anyway: the guarantee lives in the caller.
+- That also **cleared a suspect** the scan raised — `voltage_cam`'s
+  `drops_update` lambda calling `win.status()` from inside the acquisition
+  loop. Connected on the GUI thread, so it queues. Not a bug.
+- **Real defect, fixed:** `StageModule.stop()` closed the serial link
+  unguarded. `MainWindow._stop_session` stops every adapter in one unguarded
+  loop, so one raise there leaves later modules' threads running — and through
+  `closeEvent` skips the DCAM handle close, which the pre-init comment says
+  crashes the driver on next open.
+- **Left open, needs a `main.py` touch:** that unguarded loop itself
+  (`main.py:697`). Reported, not changed — `main.py` is the operator's active
+  file. One `try/except` per adapter closes it.
+- Clean otherwise: no undefined names anywhere, everything compiles, no mutable
+  default args. **431 checks, 16/16.**
 
 ### 2026-08-12 (l) — §6 item 1, the half that emits no light
 - Ran the **app's** path to the real ALP on this machine (§5 #5 only ever proved
