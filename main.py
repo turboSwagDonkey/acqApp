@@ -694,8 +694,19 @@ class MainWindow(QMainWindow):
             self._btn_rec.setChecked(False)   # triggers _on_record_toggled(False)
 
         self._disp_timer.stop()
+        # Per module, because teardown touches hardware: a stage whose serial
+        # port went away mid-session, a camera that fails to release. Unguarded,
+        # one raise here skips every module after it — their worker threads keep
+        # running — and skips stop_all() below, leaving the clock and trigger bus
+        # alive with the UI saying "Stopped". Through closeEvent it also skips
+        # the DCAM handle close, and re-opening a handle that was never closed is
+        # the native crash the pre-init note at the top of this file describes.
         for m in self._modules:
-            m.stop()
+            try:
+                m.stop()
+            except Exception as e:
+                self.status(f"{m.key}: stop failed ({type(e).__name__}: {e})")
+                print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
         self._sync.stop_all()
 
         self._btn_run.setText("Live view")
