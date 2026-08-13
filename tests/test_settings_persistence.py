@@ -109,7 +109,8 @@ def main() -> int:
     # checked on default_size() rather than on the shown window, whose final
     # size the window manager has the last word on.
     want  = dlg.default_size()
-    avail = M.QGuiApplication.primaryScreen().availableGeometry()
+    from PyQt6.QtGui import QGuiApplication
+    avail = QGuiApplication.primaryScreen().availableGeometry()
     r.info(f"opens at {want.width()}x{want.height()} "
            f"(screen {avail.width()}x{avail.height()})")
     r.check(want.width() >= min(dlg.tabs.sizeHint().width(),

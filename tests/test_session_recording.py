@@ -130,6 +130,18 @@ def main() -> int:
     import PyQt6.QtCore
     r.check(PyQt6.QtCore.QSettings is MemorySettings,
             "QSettings substitution is in place")
+    # The settings window writes its geometry through its OWN module-level
+    # QSettings, so when it moved out of main.py the substitution had to follow
+    # it. A module that imported the name before the patch keeps the real class
+    # and writes the operator's registry — which is not visible from any
+    # assertion about `main`, so assert it about every module that writes.
+    import acqApp.dialogs
+    import acqApp.main
+    for mod in (acqApp.main, acqApp.dialogs):
+        r.check(getattr(mod, "QSettings", MemorySettings) is MemorySettings,
+                f"{mod.__name__} uses the substituted QSettings")
+    r.check(acqApp.dialogs.SettingsDialog._GEOM_KEY in MemorySettings.store,
+            "settings-window geometry written to the substitute too")
 
     # ── Verify the file ──────────────────────────────────────────────────────
     r.note(f"file: {path.name}  (drops while recording: {drops})")

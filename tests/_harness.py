@@ -124,9 +124,14 @@ def isolate_user_state() -> Path:
     MemorySettings.store = {}
     import PyQt6.QtCore
     PyQt6.QtCore.QSettings = MemorySettings
-    main = sys.modules.get("acqApp.main")        # already imported? patch it too
-    if main is not None:
-        main.QSettings = MemorySettings
+    # Modules that did `from PyQt6.QtCore import QSettings` hold their own
+    # reference, so patching the source is not enough for any of them already
+    # imported. Both are listed because both write: `main` the dock layout,
+    # `dialogs` the settings window's geometry.
+    for name in ("acqApp.main", "acqApp.dialogs"):
+        mod = sys.modules.get(name)
+        if mod is not None and hasattr(mod, "QSettings"):
+            mod.QSettings = MemorySettings
     return tmp
 
 
