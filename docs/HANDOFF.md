@@ -165,7 +165,14 @@ the Phase 2 storage design. Until we have it, Phase 1 skeleton work can proceed
 - GitHub: `turboSwagDonkey/acqApp` (private).
 - Laptop has no hardware → write code, commit, push. Rig → pull, run, commit fixes,
   push. `.venv` is gitignored; recreate with `pip install -r requirements.txt`.
-- Phase 0 scripts live in `scratch/` and get DELETED once Phase 0 is validated.
+- Phase 0 scripts live in `scratch/` and get deleted as Phase 0 is validated.
+  **Three went on 2026-08-13** — `cam_app.py` (a LabVIEW-front-panel emulator),
+  `cam_live.py` (a matplotlib preview) and `encoder_read.py`, all superseded by
+  the app itself and by the per-package `_toy.py` bring-up harnesses, and
+  referenced by nothing. `cam_grab.py` **stays**: the camera throughput number
+  is the one Phase 0 item still open, and that script is how it gets measured
+  (PLAN §6). The `encoder_*.csv` captures stay too — they are the rig data the
+  4.912 V/rev measurement came from, not code.
 
 ## Open items to confirm
 
