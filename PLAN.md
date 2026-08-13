@@ -60,9 +60,14 @@ reason #5 took one session instead of several.
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
 
-**Nothing is uncommitted and nothing is unpushed.** `origin/master` is at
-`0887577` as of 2026-08-13; the 13-commit backlog that had built up over the
-size pass is gone, so the rig can pull all of it.
+**Nothing is uncommitted and nothing is unpushed.** The 13-commit backlog that
+had built up over the size pass is gone, so the rig can pull all of it.
+
+**A comment-trimming pass is half done** — see §7's 2026-08-13 (p). The
+operator's instruction is that this codebase's comments are too long, so **write
+new comments terser than the surrounding style**: state the non-obvious *why* in
+a line and stop. Seven files are done; the density table and the AST-equivalence
+check that made it safe are in that entry.
 
 **Committed 2026-08-12** in `69c657c` (28 files): the operator's settings-window
 work — the settings tabs moved from a dock into a `SettingsDialog` pop-up
@@ -353,6 +358,29 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-13 (p) — comment trim, batch 1 of an unfinished pass
+- **The operator's call: the codebase's comments are too long.** Measured before
+  starting: 15260 lines = 9014 code + **1566 comment + 2253 docstring** + 2427
+  blank, i.e. **prose is 25 % of the tree**. Densest were `modules/__init__.py`
+  (63 %), `devices.py` (45 %), `wheel/acquisition.py` (43 %).
+- **Done so far: 15260 → 15030 (−230)** across 7 files — `devices.py`,
+  `modules/__init__.py`, `modules/base.py`, `acq/recorder.py`,
+  `wheel/acquisition.py`, `voltage_cam/acquisition.py`, `main.py`. Committed in
+  four batches so any one is a single `git revert`.
+- **Every batch verified AST-identical** against its parent: parse both, strip
+  docstrings, compare `ast.dump` with positions off. That is a mechanical proof
+  no code changed — the guard this pass needed, given that a blanket edit over
+  "settings" files once gutted `stage/settings.py`. Suite 502/17 after each.
+- **Not done, and deliberately visible:** the code-simplification half was
+  approved and has not been touched — every change so far is prose, which is why
+  the AST proof held. And ~3,400 prose lines remain, mostly in the files below
+  `voltage_cam/acquisition.py` in the density table (`pupil_cam/tracking.py`,
+  `closed_loop.py`, `dmd/alp.py`, `tests/_harness.py`, `stage/driver.py`).
+- `main.py` yielded only 19: it is the operator's file, so only comment blocks
+  were touched and nothing in the dock/settings code.
+- **The measuring script is worth rebuilding, not the trim:** density per file
+  and the AST check are ~120 lines in the session scratchpad.
 
 ### 2026-08-13 (o) — pushed the backlog; the split checker becomes a test
 - **13 commits pushed** (`7b7b337..9e503ac`). A session's work had been living
