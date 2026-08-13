@@ -1,36 +1,19 @@
 """
-The declared interfaces are honoured — devices (§5b A1) and window (§5b A4).
+`devices.py`'s protocols are honoured — devices (§5b A1) and window (§5b A4).
 
-Every instrument ships as a pair, and the `modules/` adapters are written
-against whichever one Emulate built. That contract used to be nine `getattr`/`hasattr` probes, and
-the cost was not tidiness:
+Those protocols are structural and this project ships no type checker, so one
+that is never asserted catches nothing. See `devices.py` for why they exist.
 
-    "dmd_device": getattr(c, "device_name", "none")
-
-files a session that really projected as one that never did, the moment a mock
-drifts from its real twin. It came within a forgotten property of happening.
-
-`devices.py` now writes the contract down — but this project ships **no type
-checker** (the rig installs `requirements.txt` and nothing else), so a Protocol
-that is never asserted catches exactly nothing. That is what this file is for.
-
-Layers:
-  1. **Conformance** — every twin, real and mock, satisfies the protocol its
-     adapter reads it through. Checked on the classes, never by constructing a
-     real driver.
-  2. **Parity** — the two halves of each pair expose the same public API, with
-     an explicit allowlist for the differences that are deliberate. This is the
-     one that catches a property added to the real class and forgotten on the
-     mock, which is the actual failure mode.
+  1. **Conformance** — every twin satisfies the protocol its adapter reads it
+     through. Checked on the classes, never by constructing a real driver.
+  2. **Parity** — both halves of a pair expose the same public API, bar an
+     explicit allowlist. This is the one that catches a property added to the
+     real class and forgotten on the mock.
   3. **The probes are gone** from the `modules/` adapters.
-  4. **The window surface** (§5b A4). `ModuleHost` is the same idea pointed the
-     other way: what an adapter may ask of `MainWindow`. Both directions are
-     checked — that the window still provides all of it, and that no adapter
-     reaches past it — because a Protocol on its own cannot see the second, and
-     that is the one that quietly merges the two files back together.
+  4. **The window surface** — that `MainWindow` provides all of `ModuleHost`,
+     and that no adapter reaches past it. A Protocol cannot see the second.
 
-Each layer carries a control: a deliberately incomplete stand-in that must FAIL
-the same check, so none can pass by being vacuous.
+Each layer carries a control that must FAIL, so none can pass by being vacuous.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_device_contracts.py
 """

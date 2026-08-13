@@ -91,27 +91,19 @@ class ClosedLoopModule(ModuleAdapter):
         self.panel.clear_readout()
 
     def _on_fired(self, target: str, duration: float, value: float) -> None:
-        """The rule fired, on the GUI thread — but only because of where the
-        `connect()` below happened, so keep this callback to one line anyway.
+        """The rule fired. Runs on the GUI thread — but keep it to one emit.
 
-        `fired` is emitted from inside `ClosedLoopWorker.run()`, i.e. the loop's
-        own thread. A `ModuleAdapter` is a plain object rather than a QObject,
-        so there is no receiver whose thread affinity Qt can queue against —
-        and the obvious conclusion, that Qt therefore calls this directly on the
-        emitting thread, is **wrong**. Measured on PyQt6 6.x: for a slot that is
-        not a QObject's bound method (a plain-object method, or a lambda), Qt
-        delivers it on **the thread where `connect()` was called**. That is
-        `build_session`, on the GUI thread, so this arrives queued and safe.
+        `fired` comes from the loop's own thread, and a `ModuleAdapter` is not a
+        QObject, so the obvious conclusion is that Qt calls this directly on the
+        emitting thread. Measured on PyQt6, that is **wrong**: a slot which is
+        not a QObject's bound method runs on the thread where `connect()` was
+        called — `build_session`, on the GUI thread. So it arrives queued.
 
-        The reason to keep it to one emit anyway is that the guarantee lives in
-        the *caller*, not here: move the `connect()` into a worker thread and
-        this silently becomes a cross-thread GUI call with no local sign that
-        anything changed. So the status line stays in `update_display()`, which
-        is on the GUI thread for a reason that is visible where it is written.
-
-        `sync.fire()` emits `trigger_fired`, whose receiver *is* a QObject on
-        the GUI thread (`MainWindow._on_trigger`) — so a rule-driven puff takes
-        the identical path to a scheduled one, including into the session file.
+        That guarantee lives in the caller, not here: move the `connect()` onto
+        a worker thread and this silently becomes a cross-thread GUI call. Hence
+        the status line stays in `update_display()`, where the thread is
+        obvious. `sync.fire()` then takes a rule-driven puff down the identical
+        path as a scheduled one, into the session file included.
         """
         self.win.sync.fire(target, duration)
 
