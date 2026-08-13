@@ -27,8 +27,8 @@ file precisely so nobody reads 300 lines of finished work to start.
 
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed, so **everything still open needs the rig** — see
-§6's "Needs the rig". The test suite is the contract: **454 checks, 16 files,
-~40 s, all passing.** Run it before and after anything.
+§6's "Needs the rig". The test suite is the contract: **502 checks, 17 files,
+~43 s, all passing.** Run it before and after anything.
 
 ```
 c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
@@ -59,6 +59,10 @@ reason #5 took one session instead of several.
 - When adding a test, follow the two conventions in
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
+
+**Nothing is uncommitted and nothing is unpushed.** `origin/master` is at
+`0887577` as of 2026-08-13; the 13-commit backlog that had built up over the
+size pass is gone, so the rig can pull all of it.
 
 **Committed 2026-08-12** in `69c657c` (28 files): the operator's settings-window
 work — the settings tabs moved from a dock into a `SettingsDialog` pop-up
@@ -349,6 +353,27 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-13 (o) — pushed the backlog; the split checker becomes a test
+- **13 commits pushed** (`7b7b337..9e503ac`). A session's work had been living
+  on one disk; the rig can now pull the whole size pass. Suite green before and
+  after: 454 checks, 16/16, 42.8 s.
+- **`test_undefined_names.py`** (48 checks, 0.6 s). The symtable checker that
+  caught six `NameError`s during the splits had been written and thrown away
+  twice; the suite structurally cannot see that class, because the paths it
+  breaks are the ones nothing calls. Now kept. Package scans clean — 78 files,
+  0 unresolved, 0 star imports.
+- **Controls in three layers**, the third being the one that matters: drop a
+  real used import from each of the seven files split yesterday and require the
+  scan to name it, paired against the unmodified file scanning clean.
+- **Boundary found by the controls, now asserted:** under `from __future__
+  import annotations` (66 of 78 files) annotations are strings and invisible to
+  the scan, so an annotation-only import is *not* defended. Found because the
+  injection helper first picked `modules/base.py`'s `Any` and the scan stayed
+  silent — correctly. The helper now drops a runtime-evaluated import.
+- Verified while updating this file: **`main.py` is 787 lines**, as §0 says. A
+  `Measure-Object -Line` count said 672; it undercounts. Use Python to count.
+- **502 checks, 17/17, 43.4 s.**
 
 ### 2026-08-13 (n) — size and duplication: 17051 -> 14984 lines of .py
 - **Deleted what the app had superseded.** Three Phase 0 scratch scripts
