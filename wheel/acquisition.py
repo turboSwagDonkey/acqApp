@@ -5,24 +5,21 @@ EncoderWorker    : QThread that reads ai2 (or any analog channel) on the DAQ's
                    own sample clock and derives motion from the POSITION voltage.
 MockEncoderWorker: synthetic sine wave, no hardware needed.
 
-The ai2 voltage encodes wheel angle (volts_per_rev volts per turn). Both workers
-turn each sample into a (voltage, speed, distance) triple at the full acquisition
-rate, so all three are recorded losslessly on the shared clock:
+The ai2 voltage encodes wheel angle (`volts_per_rev` volts per turn). Both
+workers turn every sample into a (voltage, speed, distance) triple at the full
+acquisition rate, so all three record losslessly:
 
     get_latest()  -> (voltage, speed, distance, elapsed_s)   # newest, for the GUI
     recording sink receives (voltage, speed, distance, acquired_at)
 
-`acquired_at` is a `time.perf_counter()` reading of when the DAQ sampled that
-voltage — not when the block carrying it reached us — so the Recorder can stamp
-it at its true time (see `Recorder.put`).
+`acquired_at` is when the DAQ *sampled* the voltage, not when the block carrying
+it reached us, so the Recorder can stamp it at its true time.
 
-Distance is NET (signed) cumulative rotation — forward minus backward. Motion is
-integrated per sample with wrap-correction; reset transitions that smear over
-several samples are rejected and coasted so distance accumulates instead of
-sawtoothing back each turn. Speed/distance are reported for a sample ~1 s in the
-PAST (buffered) so the trace is smooth and lags the live voltage. `_SIGN` orients
-"forward" as positive. Units follow the scaling: mm/s and mm when a wheel diameter
-is set, else rev/s and rev.
+Distance is NET signed rotation, integrated per sample with wrap correction; see
+`_EncoderBase` for why reset transitions are rejected rather than unwrapped.
+Speed and distance lag the live voltage by ~1 s (buffered, for a smooth trace).
+Units follow the scaling: mm/s and mm with a wheel diameter set, else rev/s and
+rev.
 """
 
 from __future__ import annotations
@@ -40,17 +37,15 @@ class _EncoderBase(PullWorker):
     """Shared position→motion derivation for the real and mock encoders.
 
     The channel carries single-turn POSITION: the voltage ramps 0→volts_per_rev
-    over one revolution, then resets. We integrate wheel motion from the per-sample
-    change in position, wrap-correcting each step. The reset can smear across a few
-    samples (sensor dead-zone / slew), and those sub-steps are too small for a
-    plain half-turn unwrap to catch — so instead we REJECT any step implying an
-    impossible speed (> _MAX_REV_S) and coast through it at the wheel's current
-    velocity (it keeps spinning during the sensor's blind spot). That's what keeps
-    cumulative distance from sawtoothing back to zero every revolution.
+    over a revolution, then resets. Motion is integrated from the per-sample
+    change, wrap-corrected. The reset **smears over a few samples** (sensor
+    dead-zone), and those sub-steps are too small for a half-turn unwrap to
+    catch — so any step implying an impossible speed (> `_MAX_REV_S`) is
+    rejected and coasted at the current velocity instead. That is what stops
+    cumulative distance sawtoothing back to zero every revolution.
 
-    Speed/distance are reported for a sample ~_LAG_S in the PAST (buffered) so the
-    trace is smooth and lags the live voltage, as requested. Distance is net
-    (signed) rotation; both carry _SIGN so forward reads positive.
+    Speed/distance are reported for a sample `_LAG_S` in the PAST, buffered, so
+    the trace is smooth. `_SIGN` orients forward as positive.
     """
     fps_update = pyqtSignal(float)      # samples / second
 
@@ -181,26 +176,21 @@ class _EncoderBase(PullWorker):
     def snapshot(self) -> tuple[float, float, float, float] | None:
         """Newest `(voltage, speed, live_speed, acquired_at)` WITHOUT consuming it.
 
-        `get_latest()` hands each sample out exactly once, and the display tick
-        is already that consumer — a second one would take samples away from
-        the plot. A watcher (the closed loop) needs to *watch* the wheel, not
-        drain it, so it reads this instead. None until the first sample.
+        `get_latest()` hands each sample out once and the display tick is
+        already that consumer, so a watcher (the closed loop) reads this instead
+        of draining the plot. None until the first sample.
 
-        The two speeds are not interchangeable, and which one a rule should
-        watch is an experimental choice rather than an implementation detail:
+        The two speeds are not interchangeable, and choosing between them is an
+        experimental decision, not an implementation detail:
 
           `speed`       the reported one — a least-squares slope centred
-                        `_LAG_S` in the past. It is what the plot draws and
-                        what `wheel_speed` records, and it is therefore about a
-                        second old. A rule on it acts a second after the animal
-                        starts running.
-          `live_speed`  the EMA velocity behind it (`_TAU_S` = 0.15 s), noisier
-                        but current. A rule that must act *while* the animal
-                        runs wants this one.
+                        `_LAG_S` in the past, so it matches `wheel_speed` in the
+                        file but is ~1 s old. A rule on it acts a second late.
+          `live_speed`  the EMA behind it (`_TAU_S` = 0.15 s): noisier, current.
+                        A rule that must act *while* the animal runs wants this.
 
-        `acquired_at` is in the `time.perf_counter()` domain (the instant the
-        DAQ sampled the voltage), so a decision made from it can be recorded at
-        the true time of its cause — the same argument as `Recorder.put(at=)`.
+        `acquired_at` is `perf_counter` at the instant the DAQ sampled, so a
+        decision can be recorded at the true time of its cause.
         """
         with self._lock:
             return self._snap
@@ -234,18 +224,16 @@ class _EncoderBase(PullWorker):
 class EncoderWorker(_EncoderBase):
     """Analog input clocked by the DAQ board, not by a Python sleep loop.
 
-    `cfg_samp_clk_timing` + continuous block reads. That matters more here than
-    it looks: speed is a SLOPE, so every millisecond of scheduler jitter in the
-    old single-sample `task.read()` loop went straight into the wheel speed —
-    and the loop was competing with a GUI thread that also paints two camera
-    previews. The board divides a 100 MHz timebase; its intervals are exact.
+    `cfg_samp_clk_timing` + continuous block reads. Speed is a SLOPE, so every
+    millisecond of scheduler jitter in the old single-sample `task.read()` loop
+    went straight into the wheel speed — and that loop competed with a GUI
+    thread painting two camera previews. The board's intervals are exact.
 
     Sample TIMES are reconstructed the way the camera's are (#1): the device
     knows the spacing but not our epoch, so the first block anchors index 0 into
-    the perf_counter domain and every sample after it is `anchor + i/rate`.
-    Intervals are then exact and the whole stream carries one constant offset —
-    the driver latency of that first read, well under one block. `timestamp_
-    source` records whether this worked, so the file says which it got.
+    the perf_counter domain and every sample after is `anchor + i/rate`. The
+    stream then carries one constant offset — that first read's driver latency.
+    `timestamp_source` records whether this worked.
 
     If the board won't take the timing configuration, acquisition falls back to
     the software-paced loop rather than losing the wheel for the session — but

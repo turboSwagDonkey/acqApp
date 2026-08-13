@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import QWidget
 from acqApp import config
 from acqApp.devices import ProjectorController
 from acqApp.dmd import alp
-from acqApp.dmd.control import (DmdController, DmdSettings, MockDmdController,
-                                SettingsPanel as DmdPanel)
+from acqApp.dmd.control import DmdController, DmdSettings, MockDmdController
+from acqApp.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.modules.base import ModuleAdapter
 
 

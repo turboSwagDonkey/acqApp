@@ -1,24 +1,24 @@
 """
 Vialux ALP device layer — no Qt, no app state.
 
-The rig's DMD is a **1024x768 Vialux ALP-4.2** unit, driven through `ALP4lib`
-(pip) on top of the vendor's ALP-4.2 high-speed API (a separate, non-pip
-install, like NI-DAQmx and DCAM). This module is the whole of the hardware
-knowledge: resolving where that API lives, turning an image into the binary
-frame the device wants, and the open/project/halt/close lifecycle.
+The rig's DMD is a **1024x768 Vialux ALP-4.2**, driven through `ALP4lib` (pip)
+on top of the vendor's high-speed API (a separate, non-pip install, like
+NI-DAQmx and DCAM). This module holds all the hardware knowledge: resolving
+where that API lives, turning an image into the binary frame the device wants,
+and the open/project/halt/close lifecycle.
 
-It is deliberately separate from `control.py` so the geometry can be tested
-without Qt and without the device — `build_frame` is pure numpy/PIL and is where
-a misplaced stimulus would actually come from.
+Separate from `control.py` so the geometry can be tested without Qt or the
+device — `build_frame` is pure numpy/PIL, and is where a misplaced stimulus
+would actually come from.
 
 The projection maths is a port of the standalone `dmdGUI_project` app
-(`dmdCommandLine.buildFrame`), which is the proven path for this hardware and
-the one the operator aligns the optics with. Keeping the two identical is the
-point: a pattern positioned in that app must land in the same place here.
+(`dmdCommandLine.buildFrame`), the proven path for this hardware and the one the
+optics are aligned with. Keeping the two identical is the point: a pattern
+positioned there must land in the same place here.
 
-**One process at a time.** The ALP is held over USB by whoever opened it, so
-acqApp and `dmdGUI_project` cannot both be connected — exactly like the stage's
-serial port. `open()` raises rather than waiting.
+**One process at a time.** Whoever opened the ALP holds it over USB, so acqApp
+and `dmdGUI_project` cannot both connect — like the stage's serial port.
+`open()` raises rather than waiting.
 """
 from __future__ import annotations
 

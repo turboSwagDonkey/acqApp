@@ -7,22 +7,20 @@ implementations without touching acquisition code.
 All timestamps come from the single session-wide SessionClock, so every
 stream in the file shares one time origin (seconds since session start).
 
-Session metadata goes into the file's root attributes in its OWN type — ints as
-ints, floats as floats, bools as bools (see `attr_value`) — so analysis reads
-`f.attrs["wheel_volts_per_rev"] * x` instead of parsing strings.
+Session metadata lands in the root attributes in its OWN type (see
+`attr_value`), so analysis reads `f.attrs["wheel_volts_per_rev"] * x` rather
+than parsing strings.
 
 HDF5 layout (one group per stream, created lazily on first write):
   /<stream>/timestamps   float64 (N,)         seconds since session start
   /<stream>/frames       <dtype> (N, H, W)    image streams (camera, pupil)
   /<stream>/values       float64 (N,)         scalar streams (encoder, puffer)
 
-Throughput / crash-safety: datasets are grown a *block* at a time (not one row
-per sample) to amortise the resize cost at high frame/sample rates. Each sample
-is still written immediately, so its data is durable as soon as HDF5 flushes the
-chunk. The `timestamps` dataset is created with a NaN fill value, so if the
-process is killed mid-block the pre-allocated tail rows are identifiable (their
-timestamp is NaN) and every written row is recoverable. On a clean close each
-dataset is trimmed to its exact length, so normally-closed files have no NaNs.
+Throughput and crash-safety: datasets grow a *block* at a time to amortise the
+resize cost at high rates, but each sample is written immediately. `timestamps`
+is created with a NaN fill, so a process killed mid-block leaves identifiable
+tail rows and every written row is recoverable. A clean close trims each dataset
+to its exact length, so a normally-closed file has no NaNs.
 """
 from __future__ import annotations
 
@@ -38,13 +36,12 @@ def attr_value(v: Any) -> Any:
     """Coerce one metadata value into something HDF5 stores in its own type.
 
     Everything used to go through `str()`, so `wheel_volts_per_rev` landed as
-    `"4.912"` and `emulated` as `"False"` — which is truthy. Analysis then has
-    to know which attributes to parse and how, for no gain: h5py stores ints,
-    floats, bools and strings natively.
+    `"4.912"` and `emulated` as `"False"` — which is truthy. h5py stores ints,
+    floats, bools and strings natively, so there was nothing to gain.
 
-    `None` becomes `""`. HDF5 has no null, and an empty string reads as "not
-    set" without pretending to be a number (0.0 for an unset volts-per-rev
-    would be indistinguishable from a measured zero).
+    `None` becomes `""`: HDF5 has no null, and an empty string reads as "not
+    set" without pretending to be a number — 0.0 for an unset volts-per-rev
+    would be indistinguishable from a measured zero.
     """
     if v is None:
         return ""

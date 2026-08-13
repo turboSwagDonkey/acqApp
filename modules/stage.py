@@ -12,8 +12,8 @@ from acqApp import config
 from acqApp.modules.base import ModuleAdapter
 from acqApp.stage.acquisition import StagePollWorker
 from acqApp.stage.control import MockStageController, StageController
-from acqApp.stage.settings import (SettingsPanel as StageSettingsPanel,
-                                   load_settings as load_stage_settings)
+from acqApp.stage.panel import SettingsPanel as StageSettingsPanel
+from acqApp.stage.settings import load_settings as load_stage_settings
 
 
 class StageModule(ModuleAdapter):
