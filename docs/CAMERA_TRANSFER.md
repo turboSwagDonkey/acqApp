@@ -12,13 +12,16 @@ The voltage camera is the primary imaging device. It captures 16-bit frames from
 a Hamamatsu ORCA-Fire via **pylablib's DCAM wrapper** (`pylablib==1.4.5`,
 DCAM-API installed on this machine). It runs in two contexts:
 
-- **Standalone toy** — `voltage_cam/_toy.py`: a single-window GUI to bring the
-  camera up in isolation (live image + ΔF/F trace + settings + record). **This is
-  where camera work should happen first.**
-- **Main app** — `main.py`: the full multi-instrument suite; the camera is the
-  central image and records into the shared-clock HDF5 session.
+- **Bring the camera up alone** — start the app, tick only this module in the
+  startup picker, and press **Free run**: live image + ΔF/F trace + settings,
+  with no session clock and no recording. **This is where camera work should
+  happen first.** It replaced `voltage_cam/_toy.py`, which duplicated the panel
+  and had already drifted from it.
+- **Main app** — the full multi-instrument suite; the camera is the central
+  image and records into the shared-clock HDF5 session.
 
-Both drive the same worker (`OrcaFireWorker`), presets, and settings panel.
+Both are the same worker (`OrcaFireWorker`), presets and settings panel — which
+is the point: there is no longer a second copy to keep in step.
 
 ---
 
@@ -29,8 +32,8 @@ pylablib, PyQt6, pyqtgraph, h5py. Run on a real display (not headless).
 
 ```powershell
 # from C:\Users\User\Desktop\python
-acqApp\.venv\Scripts\python.exe acqApp\voltage_cam\_toy.py          # real ORCA-Fire
-acqApp\.venv\Scripts\python.exe acqApp\voltage_cam\_toy.py --mock   # synthetic frames
+acqApp\.venv\Scripts\python.exe acqApp\main.py                      # tick Voltage cam only
+acqApp\.venv\Scripts\python.exe acqApp\main.py --mock               # synthetic frames
 ```
 
 Headless smoke tests (mock only) use `QT_QPA_PLATFORM=offscreen` and
@@ -48,8 +51,8 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 | [voltage_cam/acquisition.py](../voltage_cam/acquisition.py) | `OrcaFireWorker` (real, DCAM) + `MockCameraWorker`. The capture thread. **Most camera logic lives here.** |
 | [voltage_cam/presets.py](../voltage_cam/presets.py) | `ResolutionPreset`, `AcqConfig`, the datasheet-derived `PRESETS`, binning/trigger options. |
 | [voltage_cam/settings.py](../voltage_cam/settings.py) | `SettingsPanel` — resolution/binning/exposure/trigger UI; `get_config()` → `AcqConfig`. |
-| [voltage_cam/_toy.py](../voltage_cam/_toy.py) | Standalone bring-up GUI. Opens the camera, drives the worker, previews, records. |
-| [voltage_cam/recording.py](../voltage_cam/recording.py) | `RecordingManager` — the **toy's** simple fixed-N HDF5 writer (separate from the main app's pipeline). |
+| Free run (status bar) | Brings the camera up with no clock and no recording — what `voltage_cam/_toy.py` used to do. |
+| ~~voltage_cam/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records through `acq/`. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base class: `get_latest`/`set_sink`/`stop` scaffolding all workers share. |
 | [acq/recorder.py](../acq/recorder.py) | `Recorder` — main-app writer thread draining the ring buffer (stamps the shared clock). |
 | [acq/ring_buffer.py](../acq/ring_buffer.py) | Bounded ring buffer (count + **byte** cap; sheds image frames, never scalar events). |
@@ -97,9 +100,7 @@ rate (this app captures 16-bit). CoaXPress ≈ 7× higher. See the table in
 
 `AcqConfig.frame_shape` = `(rows//binning, cols//binning)`.
 
-### Recording (two separate paths — don't confuse them)
-- **Toy**: `RecordingManager` writes a fixed N frames to `toy_output/vcam.h5`.
-  Simple, self-contained; `write()` returns True at the target count.
+### Recording
 - **Main app**: worker sink → `Recorder` (thread) → `RingBuffer` → `HDF5Writer`,
   one session file with all streams on the shared clock. Ring buffer is bounded
   by **bytes** (512 MB) so full frames can't OOM, and sheds oldest **frames**

@@ -27,6 +27,12 @@ class PupilSettings:
     polarity:     str   = "rising"  # dark pupil → bright iris, scanning outward
     min_strength: float = 4.0       # min |gradient| (grey levels/px) per ray
     fit:          str   = "circle"  # "circle" or "ellipse"
+    # Display-only: draw the annulus and per-ray edge points over the preview,
+    # and allow click-to-seed. Persisted (it is a working preference, not
+    # runtime state like the LED) but deliberately absent from the session
+    # metadata — how the operator was looking at the fit is not a property of
+    # the recording.
+    show_search:  bool  = False
 
 
 class SettingsPanel(QWidget):
@@ -123,6 +129,16 @@ class SettingsPanel(QWidget):
             "Shape least-squares-fitted to the edge points. Ellipse handles an "
             "off-axis eye; radius is then the mean of the semi-axes.")
         tl.addRow("Fit shape:", self._cmb_fit)
+
+        self._chk_search = QCheckBox("Show search overlay")
+        self._chk_search.setChecked(self._s.show_search)
+        self._chk_search.setToolTip(
+            "Draw the annulus the rays sweep and every edge point they found — "
+            "green kept, red rejected as an outlier — over the pupil preview.\n"
+            "A wrong radius usually shows as rays latching onto an eyelash or a "
+            "glint, which the fitted circle alone cannot tell you.\n"
+            "While it is on, clicking the preview places the annulus by hand.")
+        tl.addRow(self._chk_search)
         root.addWidget(trk)
 
         # ── Illumination ────────────────────────────────────────────────────────
@@ -139,6 +155,7 @@ class SettingsPanel(QWidget):
             w.valueChanged.connect(self._emit)
         for c in (self._cmb_pol, self._cmb_fit):
             c.currentTextChanged.connect(self._emit)
+        self._chk_search.toggled.connect(self._emit)
 
     def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)
@@ -174,4 +191,5 @@ class SettingsPanel(QWidget):
             polarity=self._cmb_pol.currentText(),
             min_strength=self._spn_str.value(),
             fit=self._cmb_fit.currentText(),
+            show_search=self._chk_search.isChecked(),
         )

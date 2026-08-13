@@ -63,6 +63,7 @@ class PupilTrackWorker(PullWorker):
         self.tracker = tracker or PupilTracker()
         self._cfg_lock = threading.Lock()
         self._pending: dict[str, Any] | None = None
+        self._pending_seed: tuple[float, float, float] | None = None
         self._radii: deque[float] = deque(maxlen=history)
         self._n = 0
 
@@ -78,6 +79,17 @@ class PupilTrackWorker(PullWorker):
             if self._pending is None:
                 self._pending = {}
             self._pending.update(kw)
+
+    def seed(self, cx: float, cy: float, r: float) -> None:
+        """Place the annulus by hand — the LabVIEW operator workflow.
+
+        For when the auto-seed latches onto the wrong dark region (a shadow, the
+        lash line) and no threshold fixes it. Queued like `configure`, and for
+        the same reason: `PupilTracker.seed` rewrites the annulus lock that
+        `process()` may be reading on the tracking thread right now.
+        """
+        with self._cfg_lock:
+            self._pending_seed = (cx, cy, r)
 
     def take_radii(self) -> list[float]:
         """Radii tracked since the last call (NaN where the pupil was lost).
@@ -99,8 +111,13 @@ class PupilTrackWorker(PullWorker):
         while not self._stop:
             with self._cfg_lock:
                 pending, self._pending = self._pending, None
+                seed, self._pending_seed = self._pending_seed, None
             if pending:
                 self.tracker.configure(**pending)
+            # After configure: `configure` may reset the annulus lock, which
+            # would throw away a seed applied before it.
+            if seed is not None:
+                self.tracker.seed(*seed)
 
             frame = self._source()
             if frame is None:

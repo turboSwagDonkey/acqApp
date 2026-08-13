@@ -71,7 +71,7 @@ condition they detect quietly stopped being reachable.
 These test logic against fakes. They cannot tell you that DCAM populates
 `timestamp_us` on the real ORCA-Fire, that the NI lines are wired to what the
 config says, or that the stage's serial framing matches the firmware. Those need
-the rig — see the `_toy.py` harness in each package for bringing one device up
+the rig — start the app with one module ticked and press **Free run** to bring
 on its own.
 
 The DMD is the exception so far: `test_dmd` covers the call sequence and the

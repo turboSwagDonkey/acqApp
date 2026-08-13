@@ -13,9 +13,22 @@ A secondary camera that images the mouse's eye to track **pupil diameter**. It
 grabs **Mono8** (8-bit grayscale) frames from a **Basler** camera via `pypylon`,
 runs a per-frame pupil detector, and reports/records the radius. Two contexts:
 
-- **Standalone toy** — `pupil_cam/_toy.py`: single-window GUI (live image +
-  detected-pupil circle + radius trace + LED + record). **Real Basler path works
-  here** — this is where pupil-cam work should happen first.
+- **Bring the pupil cam up alone** — start the app, tick only this module in the
+  startup picker, and press **Free run**: live image, pupil outline and radius
+  trace, with no session clock and no recording. This is where pupil-cam work
+  should happen first.
+
+  **Turn on "Show search overlay"** in the Pupil cam settings tab for the rest
+  of what `pupil_cam/_toy.py` used to give you, and the reason that toy outlived
+  the other four: it shows the *search*, not just the answer. The fitted circle
+  alone cannot tell a good fit from rays latching onto an eyelash or a corneal
+  glint — both draw a plausible circle. With the overlay on, the preview also
+  carries the dashed annulus band the rays sweep and every edge point they
+  found, green kept and red rejected as an outlier, and **clicking the image
+  places the annulus by hand** when the auto-seed latches onto the wrong dark
+  region. That is what `threshold`, `min_r`/`max_r` and `exclude_deg` get tuned
+  against. Guarded by `tests/test_pupil_tracking_thread.py`, including that a
+  click with the overlay *off* does not move the annulus.
 - **Main app** — `main.py`: the pupil cam has its own dockable video box (frame +
   pupil outline) and a radius trace; records frames into the shared-clock HDF5.
   ⚠️ In the main app the *camera* is still **mock-only** (real Basler not wired
@@ -34,16 +47,17 @@ display, not headless.
 
 ```powershell
 # from C:\Users\User\Desktop\python
-acqApp\.venv\Scripts\python.exe acqApp\pupil_cam\_toy.py           # real Basler
-acqApp\.venv\Scripts\python.exe acqApp\pupil_cam\_toy.py --mock    # synthetic pupil
+acqApp\.venv\Scripts\python.exe acqApp\main.py                     # tick Pupil cam only
+acqApp\.venv\Scripts\python.exe acqApp\main.py --mock              # synthetic pupil
 acqApp\.venv\Scripts\python.exe acqApp\pupil_cam\_test_tracking.py # tracker vs ground truth
 ```
 
-The toy falls back to the mock automatically if the camera can't be opened, and
-prints why. In the toy: **click the image** to place the annulus by hand,
-**Re-seed** to drop the lock and re-detect from scratch. Green edge points were
-used in the fit, red ones were rejected as outliers, and the dashed rings are
-the annulus band the search lines sweep — that overlay is the tuning instrument.
+Tick **Pupil cam** alone in the startup picker and press **Free run** for the
+device without the session clock; Emulate falls back to the synthetic pupil.
+Then tick **Show search overlay** in the Pupil cam settings tab: **click the
+image** to place the annulus by hand, green edge points were used in the fit,
+red ones were rejected as outliers, and the dashed rings are the annulus band
+the search lines sweep — that overlay is the tuning instrument.
 
 Real hardware needs the **Basler pylon runtime + pypylon** (for the camera, on a
 **USB 3.0 port** — see §6.1) and **NI-DAQmx** (for the eye-tracking LED).
@@ -62,8 +76,8 @@ smoke tests use `QT_QPA_PLATFORM=offscreen`,
 | [pupil_cam/_test_tracking.py](../pupil_cam/_test_tracking.py) | Ground-truth validation of the tracker on synthetic eyes. No hardware. |
 | [pupil_cam/control.py](../pupil_cam/control.py) | `LedController` / `MockLedController` — eye-tracking LED on NI `Dev3/port0/line1`. |
 | [pupil_cam/settings.py](../pupil_cam/settings.py) | `PupilSettings` + `SettingsPanel` — exposure/fps, tracking params (threshold, min/max radius), LED toggle. |
-| [pupil_cam/_toy.py](../pupil_cam/_toy.py) | Standalone bring-up GUI. Opens the Basler, drives the worker, overlays the pupil circle, records. |
-| [pupil_cam/recording.py](../pupil_cam/recording.py) | `FrameWriter` (frames → HDF5) + `TrackingLog` (per-frame detection → CSV). **Toy only.** |
+| Free run + "Show search overlay" | Bring-up and tuning, in the app: annulus band, per-ray edge points (inlier/outlier), click-to-seed. Replaced `pupil_cam/_toy.py` on 2026-08-13. |
+| ~~pupil_cam/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records through `acq/`. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base: `get_latest`/`set_sink`/`stop` scaffolding both workers share. |
 | [acq/recorder.py](../acq/recorder.py), [acq/ring_buffer.py](../acq/ring_buffer.py), [acq/writer.py](../acq/writer.py), [acq/clock.py](../acq/clock.py) | Main-app shared-clock recording pipeline. |
 | [main.py](../main.py) | Full app: pupil wiring in `_start_session` (mock worker), `_start_recording` (frame sink), `_pull_frames` (detect + overlay + radius), `_on_pupil_exposure`, `_on_pupil_led`. |
@@ -78,7 +92,7 @@ smoke tests use `QT_QPA_PLATFORM=offscreen`,
   recording sink). GUI pulls with `get_latest()`.
 - `open_camera(index=0)` does the enumerate + open and **never raises** — it
   returns `None` and prints why, so the caller falls back to the mock. Call it
-  before importing Qt (see the pre-init block in `_toy.py`).
+  before importing Qt (see the pre-init block at the top of `main.py`).
 - **Real worker normally takes an already-open camera**: `PupilCameraWorker(cam,
   exposure_us, fps)`, and then never closes it — the owner does. Pass
   `cam=None` and it opens/closes its own, mirroring the ORCA's `own_cam` path.
@@ -160,7 +174,7 @@ image in the toy) or by excluding the lid sectors with `exclude_deg`.
   `PupilTracker.configure(**...)` (that re-seeds only when a change invalidates
   the current lock: `threshold`, `min_r`, `max_r`, `polarity`, `fit`).
 - `track_params` → `(threshold, min_r, max_r)` and `track_kwargs` → dict of the
-  annulus options are the per-tick reads `_toy.py` still uses, where tracking
+  annulus options are the per-tick reads the display path uses, where tracking
   runs on the GUI timer. **The app does not**: see `pupil_cam/track_worker.py`.
 
 ### Recording (two separate paths)

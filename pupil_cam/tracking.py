@@ -23,7 +23,7 @@ for the coarse seed's connected-component labelling, with a fallback if absent.
 Entry points
 ------------
 detect(frame, threshold, min_r, max_r, ...)   stateless, per-frame.  Unchanged
-                                              signature — main.py/_toy.py-safe.
+                                              signature, kept stable.
 PupilTracker                                  stateful; seeds each frame's
                                               annulus from the previous fit.
                                               Cheaper and steadier on a video
@@ -80,12 +80,6 @@ class PupilResult:
     @property
     def found(self) -> bool:
         return self.radius is not None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Annulus sampling — the "search lines through the ROI" half of the IMAQ VI
-# ══════════════════════════════════════════════════════════════════════════════
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -399,7 +393,7 @@ class PupilTracker:
 
     Thread note: not thread-safe — call `process()`/`configure()` from one
     thread. In the app that is the tracking thread (`track_worker.py`), which
-    owns a tracker and queues the panel's edits into it between frames; _toy.py,
+    owns a tracker and queues the panel's edits into it between frames;
     being one device on one timer, drives it from the GUI thread directly.
     """
 

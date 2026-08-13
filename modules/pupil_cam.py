@@ -32,6 +32,10 @@ class PupilCamModule(ModuleAdapter):
         super().__init__(win)
         self._img = None
         self._overlay = None
+        # Empty until build_views: the pupil module can be loaded without ever
+        # building its dock, and _on_settings fires from the panel before then.
+        self._search_items: tuple = ()
+        self._vb = None
         self._curve = None
         self._y: list[float] = []
         # Tracking runs on its own thread (see pupil_cam/track_worker.py): it is
@@ -51,6 +55,8 @@ class PupilCamModule(ModuleAdapter):
 
     def _on_settings(self, s) -> None:
         config.save_settings(self.key, asdict(s))
+        if self._search_items:
+            self._set_search_visible(s.show_search)
         if self._track is not None:
             # Queued, not written: the tracker belongs to its own thread.
             self._track.configure(**track_params(s))
@@ -70,10 +76,58 @@ class PupilCamModule(ModuleAdapter):
         self.win.register_pg_view(hist)
         self.win.register_pg_view(gv)
 
+        # The search, not just the answer. The fitted outline alone cannot tell
+        # a good fit from rays latching onto an eyelash or a corneal glint —
+        # both draw a plausible circle. These show where the rays looked (the
+        # dashed annulus), what they found, and which points the robust fit
+        # threw away. This is what `threshold`, `min_r`/`max_r` and `exclude_deg`
+        # are tuned against; it was the whole reason pupil_cam kept a separate
+        # `_toy.py` after the other four were deleted.
+        dash = pg.mkPen("#ffbf00", width=1, style=Qt.PenStyle.DashLine)
+        self._ann_in = pg.PlotCurveItem(pen=dash)
+        self._ann_out = pg.PlotCurveItem(pen=dash)
+        self._pts_in = pg.ScatterPlotItem(size=5, pen=None,
+                                          brush=pg.mkBrush("lime"))
+        self._pts_out = pg.ScatterPlotItem(size=5, pen=None,
+                                           brush=pg.mkBrush("red"))
         self._overlay = pg.PlotCurveItem(pen=pg.mkPen(style.HEX[self.key], width=2))
-        vb.addItem(self._overlay)
+        # Outline last so it draws on top of the points.
+        for item in (self._ann_in, self._ann_out, self._pts_out, self._pts_in,
+                     self._overlay):
+            vb.addItem(item)
+        self._search_items = (self._ann_in, self._ann_out,
+                              self._pts_in, self._pts_out)
+        self._vb = vb
+        vb.scene().sigMouseClicked.connect(self._on_click)
+        self._set_search_visible(self.panel.settings.show_search
+                                 if self.panel is not None else False)
+
         self.win.add_dock("Pupil cam", row, Qt.DockWidgetArea.RightDockWidgetArea,
                           accent=self.key)
+
+    def _set_search_visible(self, on: bool) -> None:
+        for item in self._search_items:
+            item.setVisible(on)
+
+    def _on_click(self, ev) -> None:
+        """Place the annulus by hand — the LabVIEW operator workflow.
+
+        For when the auto-seed picks the wrong dark region and no threshold
+        fixes it. Only while the search overlay is on: a stray click on the
+        preview should not silently move the tracker's annulus.
+        """
+        if self._track is None or self.panel is None:
+            return
+        if not self.panel.settings.show_search:
+            return
+        if not self._vb.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        p = self._vb.mapSceneToView(ev.scenePos())
+        s = self.panel.settings
+        r = 0.5 * (s.min_r + s.max_r)
+        self._track.seed(p.x(), p.y(), r)      # queued onto the tracker's thread
+        self.win.status(f"pupil annulus seeded at ({p.x():.0f}, {p.y():.0f}) "
+                        f"r={r:.0f} px")
 
     # ── controllers ──
     def build_controller(self, emulate: bool) -> None:
@@ -144,6 +198,7 @@ class PupilCamModule(ModuleAdapter):
         self._draw_outline(res)
 
     def _draw_outline(self, res) -> None:
+        self._draw_search(res)
         if res.center_x is None or res.radius is None:
             self._overlay.setData([], [])
             return
@@ -158,6 +213,35 @@ class PupilCamModule(ModuleAdapter):
         ca, sa = np.cos(t), np.sin(t)
         u, v = a * np.cos(th), b * np.sin(th)
         self._overlay.setData(cx + u * ca - v * sa, cy + u * sa + v * ca)
+
+    def _draw_search(self, res) -> None:
+        """The annulus and the per-ray edge points, green kept / red rejected.
+
+        Skipped entirely when the overlay is off — this runs in the 30 Hz
+        display tick and a scatter of `n_rays` points per frame is not free.
+        """
+        if self.panel is None or not self.panel.settings.show_search:
+            return
+        if res.edge_x is None or not len(res.edge_x):
+            for item in self._search_items:
+                item.setData([], [])
+            return
+        keep = (res.inliers if res.inliers is not None
+                else np.ones(len(res.edge_x), dtype=bool))
+        self._pts_in.setData(res.edge_x[keep], res.edge_y[keep])
+        self._pts_out.setData(res.edge_x[~keep], res.edge_y[~keep])
+
+        if res.radius is None:
+            self._ann_in.setData([], [])
+            self._ann_out.setData([], [])
+            return
+        th = self._theta
+        cx, cy = float(res.center_x), float(res.center_y or 0.0)
+        # The band the rays actually swept, as fractions of the fitted radius —
+        # the same 0.45/1.55 the toy drew.
+        for item, rr in ((self._ann_in, res.radius * 0.45),
+                         (self._ann_out, res.radius * 1.55)):
+            item.setData(cx + rr * np.cos(th), cy + rr * np.sin(th))
 
     # ── recording ──
     def attach_sink(self, rec) -> None:

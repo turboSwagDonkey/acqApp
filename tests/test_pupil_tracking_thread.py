@@ -27,7 +27,7 @@ import time
 
 import numpy as np
 
-from _harness import Report, pump, qt_app
+from _harness import Report, isolate_user_state, pump, qt_app
 
 SLOW_S = 0.15           # per-frame cost of the deliberately slow tracker
 TICKS = 20              # display ticks to time against it
@@ -160,6 +160,87 @@ def main() -> int:
             f"— which is what the GUI thread used to pay")
     r.info(f"display-side read is {inline / max(dt / TICKS, 1e-9):.0f}x cheaper "
            f"than the inline call it replaced")
+
+    # ── the search overlay, which replaced pupil_cam/_toy.py ─────────────────
+    # The toy survived the other four deletions because it showed the *search*
+    # — the annulus, the per-ray edge points, inliers vs outliers — and the app
+    # showed only the fitted outline. That is now in the app, so this checks the
+    # three things the toy did, or the toy went for nothing.
+    isolate_user_state()
+    import acqApp.main as M
+    sys.argv = ["main.py", "--mock"]
+
+    win = M.MainWindow(cam_info=None, mock=True, enabled={"pupil_cam"},
+                       cam_handle=None)
+    mod = win._modules[0]
+
+    # 1. the overlay items exist and follow the panel toggle
+    r.check(len(mod._search_items) == 4,
+            f"the pupil view builds the search overlay ({len(mod._search_items)} items)")
+    mod.panel._chk_search.setChecked(True)
+    pump(app, 0.05)
+    r.check(all(i.isVisible() for i in mod._search_items),
+            "the panel toggle shows it")
+    mod.panel._chk_search.setChecked(False)
+    pump(app, 0.05)
+    r.check(not any(i.isVisible() for i in mod._search_items),
+            "…and hides it again")
+
+    # 2. it draws what the tracker found — edge points split by the inlier mask
+    from acqApp.pupil_cam.tracking import PupilResult
+    edge_x = np.array([10.0, 20.0, 30.0, 40.0])
+    edge_y = np.array([11.0, 21.0, 31.0, 41.0])
+    keep = np.array([True, False, True, False])
+    mod.panel._chk_search.setChecked(True)
+    pump(app, 0.05)
+    mod._draw_outline(PupilResult(25.0, 25.0, 12.0, 0.9,
+                                  edge_x=edge_x, edge_y=edge_y, inliers=keep))
+    r.check(len(mod._pts_in.getData()[0]) == 2
+            and len(mod._pts_out.getData()[0]) == 2,
+            "inliers and outliers are drawn separately (2 green, 2 red)")
+    r.check(len(mod._ann_in.getData()[0]) > 0,
+            "…and the annulus band the rays swept is drawn")
+
+    # CONTROL: with the overlay off nothing is redrawn, so it really is skipped
+    # in the 30 Hz tick rather than drawn invisibly.
+    mod.panel._chk_search.setChecked(False)
+    pump(app, 0.05)
+    mod._pts_in.setData([], [])
+    mod._draw_outline(PupilResult(25.0, 25.0, 12.0, 0.9,
+                                  edge_x=edge_x, edge_y=edge_y, inliers=keep))
+    still = mod._pts_in.getData()[0]
+    r.check(still is None or len(still) == 0,
+            "control: overlay off skips the scatter work entirely")
+
+    # 3. click-to-seed reaches the tracker's thread
+    win._btn_run.setChecked(True)
+    pump(app, 0.3)
+    mod.panel._chk_search.setChecked(True)
+    pump(app, 0.05)
+    seeded: list = []
+    mod._track.seed = lambda cx, cy, rr: seeded.append((cx, cy, rr))
+
+    class _Ev:
+        def __init__(self, pt): self._p = pt
+        def scenePos(self): return self._p
+    centre = mod._vb.sceneBoundingRect().center()
+    mod._on_click(_Ev(centre))
+    r.check(len(seeded) == 1, f"clicking the preview seeds the annulus {seeded}")
+
+    # CONTROL: with the overlay off a stray click must NOT move the annulus.
+    mod.panel._chk_search.setChecked(False)
+    pump(app, 0.05)
+    mod._on_click(_Ev(centre))
+    r.check(len(seeded) == 1, "control: with the overlay off, a click is ignored")
+
+    win._btn_run.setChecked(False)
+    pump(app, 0.2)
+    win.close()
+    pump(app, 0.1)
+
+    # 4. the real worker exposes seed() — the queued path the click uses
+    r.check(hasattr(PupilTrackWorker, "seed"),
+            "PupilTrackWorker.seed exists (queued onto the tracking thread)")
 
     return r.finish()
 

@@ -178,6 +178,15 @@ class MainWindow(QMainWindow):
         # Emulate mode = simulated signals for dev/testing; OFF by default so the
         # app talks to real hardware. Togglable at runtime (only between sessions).
         self._emulate = mock
+        # Free run = devices without the session clock, so nothing can be
+        # recorded. Runtime only, never persisted: it is a diagnostic stance,
+        # and a launch that quietly came up unable to record would be worse than
+        # useless on a rig. Same reasoning as the closed loop's `armed`.
+        self._free_run = False
+        # Whether a session is up. Tracked rather than read off `_sync.running`,
+        # because in free run the sync controller is deliberately NOT running
+        # and every "is a session up?" test would answer no mid-session.
+        self._session_on = False
         self._enabled = enabled if enabled is not None else set(config.MODULES)
         self._cam_info = cam_info
         # Camera handle opened once at startup and reused by every session's
@@ -366,6 +375,27 @@ class MainWindow(QMainWindow):
         self._btn_run.setToolTip("Show live signals from all devices (not saved)")
         self._btn_run.toggled.connect(self._on_run_toggled)
 
+        # Free run: devices and previews, with NO session clock — which is what
+        # the per-device `_toy.py` harnesses used to provide. Their value was
+        # never the UI (the app's panels are a superset); it was that they
+        # brought one device up without the clock, recorder and session
+        # machinery, so "is it the camera or is it my session code?" could be
+        # answered on a rig with limited time. This is that, without a second
+        # copy of every panel to keep in step — and the toys had already drifted
+        # from the app they were meant to bring up.
+        #
+        # Recording is impossible here and the button says so: with no clock
+        # started, `SessionClock.at()` raises rather than inventing a timebase,
+        # and that is the correct behaviour to keep rather than work around.
+        self._btn_free = QPushButton("Free run")
+        self._btn_free.setCheckable(True)
+        self._btn_free.setStyleSheet(style.toggle_btn("stage"))
+        self._btn_free.setToolTip(
+            "Bring devices up with no session clock and no recording — for "
+            "isolating a device from the session machinery.\n"
+            "Pair with the startup module picker to run one instrument alone.")
+        self._btn_free.toggled.connect(self._on_free_toggled)
+
         # Record: live view + save to HDF5 (auto-starts live view if needed).
         self._btn_rec = QPushButton("Record")
         self._btn_rec.setCheckable(True)
@@ -376,6 +406,7 @@ class MainWindow(QMainWindow):
         sb = QStatusBar()
         self.setStatusBar(sb)
         sb.addPermanentWidget(self._btn_emulate)
+        sb.addPermanentWidget(self._btn_free)
         sb.addPermanentWidget(self._btn_run)
         sb.addPermanentWidget(self._btn_rec)
         sb.showMessage("Ready")
@@ -494,19 +525,36 @@ class MainWindow(QMainWindow):
         else:
             self._stop_session()
 
+    def _on_free_toggled(self, on: bool) -> None:
+        """Free run: devices up, no clock, no recording."""
+        self._free_run = on
+        self._btn_rec.setEnabled(not on)
+        self._btn_rec.setToolTip(
+            "Not available in free run — with no session clock there is no "
+            "timebase to stamp samples against"
+            if on else "Live view and save every stream to disk")
+        self.status("Free run — devices only, no clock and no recording"
+                    if on else "Ready")
+
     def _start_session(self) -> None:
         # Build this session's workers first, but don't start them: the shared
         # clock must reach t=0 BEFORE any device pushes a timestamped sample.
         for m in self._modules:
             m.build_session(self._emulate)
 
-        self._sync.start_all()
+        # Free run deliberately leaves the clock unstarted. Nothing else needs
+        # it: workers stamp with `perf_counter` and only the Recorder converts,
+        # and the Recorder cannot exist here because Record is disabled.
+        if not self._free_run:
+            self._sync.start_all()
         for m in self._modules:
             m.start()
 
+        self._session_on = True
         self._disp_timer.start()
         self._btn_run.setText("Stop")
         self._btn_emulate.setEnabled(False)   # can't switch real/mock mid-session
+        self._btn_free.setEnabled(False)      # …nor the clock, for the same reason
 
     def _stop_session(self) -> None:
         # Ensure recording is closed before tearing down the clock/workers.
@@ -527,11 +575,13 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.status(f"{m.key}: stop failed ({type(e).__name__}: {e})")
                 print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
-        self._sync.stop_all()
+        self._sync.stop_all()          # harmless if free run never started it
 
+        self._session_on = False
         self._btn_run.setText("Live view")
         self._btn_emulate.setEnabled(True)
-        self.status("Stopped")
+        self._btn_free.setEnabled(True)
+        self.status("Stopped (free run)" if self._free_run else "Stopped")
 
     def _on_emulate_toggled(self, on: bool) -> None:
         # Only togglable between sessions (the button is disabled while running).
@@ -563,10 +613,17 @@ class MainWindow(QMainWindow):
 
     def _on_record_toggled(self, on: bool) -> None:
         if on:
+            if self._free_run:
+                # Belt and braces: the button is disabled in free run, but a
+                # programmatic setChecked would otherwise reach the Recorder,
+                # and every put() would raise out of a worker thread.
+                self.status("Cannot record in free run — no session clock")
+                self._btn_rec.setChecked(False)
+                return
             # Record implies live view — start the session if it isn't running.
-            if not self._sync.running:
+            if not self._session_on:
                 self._btn_run.setChecked(True)   # → _start_session()
-            if not self._sync.running:            # start failed → abort record
+            if not self._session_on:              # start failed → abort record
                 self._btn_rec.setChecked(False)
                 return
             self._start_recording()
@@ -689,7 +746,7 @@ class MainWindow(QMainWindow):
         # app alive with no way back to it.
         self._settings_dialog.save_geometry()
         self._settings_dialog.close()
-        if self._sync.running:
+        if self._session_on:
             self._stop_session()
         for m in self._modules:
             m.close_controller()
