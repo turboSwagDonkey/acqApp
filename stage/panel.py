@@ -121,8 +121,7 @@ class CalibrationDialog(QDialog):
         lay.addLayout(row)
 
     def _stop_all(self) -> None:
-        # Reported into the label, not a modal: the stage may be mid-move into a
-        # hard limit, and an escaping exception here aborts the process.
+        # Into the label, not a modal — the stage may be mid-move into a limit.
         if self._ctrl is not None:
             try:
                 self._ctrl.stop_all()
@@ -503,11 +502,8 @@ class SettingsPanel(QWidget):
         self._btn_clear_home.setEnabled(have)
 
     def _call(self, what: str, fn) -> bool:
-        """Run `fn(controller)` if connected, reporting failure in one place.
-
-        Every motion command has this shape: do nothing without a controller,
-        and never let a serial error reach the GUI thread as a traceback.
-        """
+        """Run `fn(controller)` if connected, reporting failure in one place —
+        the shape every motion command shares."""
         if self._ctrl is None:
             return False
         try:
@@ -553,9 +549,8 @@ class SettingsPanel(QWidget):
                 return
         self._call("Move failed", lambda c: c.move_to_um(key, target))
 
-    # Guarded like every other command, and for a sharper reason: this is the
-    # panic path (Esc, app-wide). A dead serial link is exactly when it gets
-    # pressed, and an exception escaping a slot aborts the process.
+    # The panic path (Esc, app-wide), so guarded hardest: a dead link is exactly
+    # when it is pressed, and an escaping slot exception aborts the process.
     def _stop(self, key: str) -> None:
         self._call("Stop failed", lambda c: c.stop(key))
 

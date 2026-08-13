@@ -372,11 +372,16 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   docstrings, compare `ast.dump` with positions off. That is a mechanical proof
   no code changed — the guard this pass needed, given that a blanket edit over
   "settings" files once gutted `stage/settings.py`. Suite 502/17 after each.
-- **Not done, and deliberately visible:** the code-simplification half was
-  approved and has not been touched — every change so far is prose, which is why
-  the AST proof held. And ~3,400 prose lines remain, mostly in the files below
-  `voltage_cam/acquisition.py` in the density table (`pupil_cam/tracking.py`,
-  `closed_loop.py`, `dmd/alp.py`, `tests/_harness.py`, `stage/driver.py`).
+- **Code half, one file: `stage/panel.py` 598 → 585.** Five motion handlers
+  shared one shape, so `_call(what, fn)` holds it once; plus `_btn` and `_axis`.
+- **Pre-existing defect it surfaced:** `_stop`, `_stop_all` and the dialog's
+  `_stop_all` were unguarded — the panic path (Esc → STOP ALL, app-wide), where
+  a dead serial link is exactly the case, and an escaping slot exception aborts
+  the process (§2). Now guarded. Verified with a scratch probe (fake controller,
+  healthy and all-raising): dispatch identical, 8 warnings instead of a crash.
+  **`tests/` covers no panel motion or panic path — worth a real test.**
+- **Left:** ~3,400 prose lines (`pupil_cam/tracking.py`, `closed_loop.py`,
+  `dmd/alp.py`, `tests/_harness.py`, `stage/driver.py`); code half, one file in.
 - `main.py` yielded only 19: it is the operator's file, so only comment blocks
   were touched and nothing in the dock/settings code.
 - **The measuring script is worth rebuilding, not the trim:** density per file

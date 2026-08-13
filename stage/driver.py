@@ -261,24 +261,28 @@ class MCM6101:
                     break
         return found
 
+    def _send(self, cmd: int, axis: int | None, data: bytes | None = None,
+              **kw) -> None:
+        """Frame one command to `axis`'s bay (axis=None -> the controller) and
+        write it under the lock. Every write below goes through here."""
+        dest = CONTROLLER if axis is None else BAY0 + axis
+        pkt = (self._header_with_data(cmd, data, dest=dest) if data is not None
+               else self._header(cmd, dest=dest, **kw))
+        with self._lock:
+            self._write(pkt)
+
     def set_enabled(self, axis: int, enable: bool):
         """Enable (energize) or disable (de-energize) an axis. A disabled axis
         ignores move commands and its motor is not held - it may drift/back-drive."""
-        dest = BAY0 + axis
-        state = CHAN_ENABLE if enable else CHAN_DISABLE
-        with self._lock:
-            self._write(self._header(MGMSG_MOD_SET_CHANENABLESTATE,
-                                     p1=axis, p2=state, dest=dest))
+        self._send(MGMSG_MOD_SET_CHANENABLESTATE, axis, p1=axis,
+                   p2=CHAN_ENABLE if enable else CHAN_DISABLE)
 
     def is_enabled(self, axis: int) -> bool:
         return self.get_status(axis).enabled
 
     def identify(self, axis: int | None = None):
         """Flash an LED (safe, no motion). axis=None flashes the controller."""
-        dest = CONTROLLER if axis is None else BAY0 + axis
-        p1 = 0 if axis is None else axis
-        with self._lock:
-            self._write(self._header(MGMSG_MOD_IDENTIFY, p1=p1, dest=dest))
+        self._send(MGMSG_MOD_IDENTIFY, axis, p1=0 if axis is None else axis)
 
     # ======================================================================
     #  MOTION COMMANDS BELOW - these physically move the stage.
@@ -287,19 +291,15 @@ class MCM6101:
         """MOTION: relative move by delta in COMMAND units.
         NOTE: this firmware (MCM61010 fw 7.0.2) ignores MOVE_RELATIVE. Prefer
         move_to_readout()/jog_by_readout(), which use absolute moves."""
-        dest = BAY0 + axis
-        data = struct.pack("<Hi", axis, int(delta_cmd))
-        with self._lock:
-            self._write(self._header_with_data(MGMSG_MOT_MOVE_RELATIVE, data, dest=dest))
+        self._send(MGMSG_MOT_MOVE_RELATIVE, axis,
+                   struct.pack("<Hi", axis, int(delta_cmd)))
 
     def move_absolute(self, axis: int, position_cmd: int):
         """MOTION: move `axis` to an absolute position in COMMAND units
         (coarser than the readout; see scale()). Most callers want
         move_to_readout() instead."""
-        dest = BAY0 + axis
-        data = struct.pack("<Hi", axis, int(position_cmd))
-        with self._lock:
-            self._write(self._header_with_data(MGMSG_MOT_MOVE_ABSOLUTE, data, dest=dest))
+        self._send(MGMSG_MOT_MOVE_ABSOLUTE, axis,
+                   struct.pack("<Hi", axis, int(position_cmd)))
 
     def move_to_readout(self, axis: int, target_readout: int):
         """MOTION: move `axis` to an absolute position given in READOUT (encoder)
@@ -317,16 +317,12 @@ class MCM6101:
 
     def jog(self, axis: int, forward: bool = True):
         """MOTION: start a jog move in one direction (uses controller's jog params)."""
-        dest = BAY0 + axis
-        direction = JOG_FORWARD if forward else JOG_REVERSE
-        with self._lock:
-            self._write(self._header(MGMSG_MOT_MOVE_JOG, p1=axis, p2=direction, dest=dest))
+        self._send(MGMSG_MOT_MOVE_JOG, axis, p1=axis,
+                   p2=JOG_FORWARD if forward else JOG_REVERSE)
 
     def home(self, axis: int):
         """MOTION: home the axis to its reference/limit."""
-        dest = BAY0 + axis
-        with self._lock:
-            self._write(self._header(MGMSG_MOT_MOVE_HOME, p1=axis, dest=dest))
+        self._send(MGMSG_MOT_MOVE_HOME, axis, p1=axis)
 
     # ---- frame establishment (for absolute positioning) -------------------
     def _settle(self, axis: int, t: float = 2.0) -> int:
@@ -391,10 +387,8 @@ class MCM6101:
 
     def stop(self, axis: int, profiled: bool = True):
         """Stop motion on an axis (profiled=controlled deceleration)."""
-        dest = BAY0 + axis
-        mode = STOP_PROFILED if profiled else STOP_IMMEDIATE
-        with self._lock:
-            self._write(self._header(MGMSG_MOT_MOVE_STOP, p1=axis, p2=mode, dest=dest))
+        self._send(MGMSG_MOT_MOVE_STOP, axis, p1=axis,
+                   p2=STOP_PROFILED if profiled else STOP_IMMEDIATE)
 
     def stop_all(self, axes):
         for a in axes:
