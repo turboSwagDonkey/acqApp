@@ -91,19 +91,27 @@ class ClosedLoopModule(ModuleAdapter):
         self.panel.clear_readout()
 
     def _on_fired(self, target: str, duration: float, value: float) -> None:
-        """The rule fired. **This runs on the loop's thread, not the GUI's.**
+        """The rule fired, on the GUI thread — but only because of where the
+        `connect()` below happened, so keep this callback to one line anyway.
 
-        A `ModuleAdapter` is a plain object, not a QObject, so Qt gives this
-        connection no thread affinity to queue across and calls it directly on
-        the emitting thread. So it must do exactly one thing: emit. Touching a
-        widget or the status bar from here would be a cross-thread GUI call.
+        `fired` is emitted from inside `ClosedLoopWorker.run()`, i.e. the loop's
+        own thread. A `ModuleAdapter` is a plain object rather than a QObject,
+        so there is no receiver whose thread affinity Qt can queue against —
+        and the obvious conclusion, that Qt therefore calls this directly on the
+        emitting thread, is **wrong**. Measured on PyQt6 6.x: for a slot that is
+        not a QObject's bound method (a plain-object method, or a lambda), Qt
+        delivers it on **the thread where `connect()` was called**. That is
+        `build_session`, on the GUI thread, so this arrives queued and safe.
+
+        The reason to keep it to one emit anyway is that the guarantee lives in
+        the *caller*, not here: move the `connect()` into a worker thread and
+        this silently becomes a cross-thread GUI call with no local sign that
+        anything changed. So the status line stays in `update_display()`, which
+        is on the GUI thread for a reason that is visible where it is written.
 
         `sync.fire()` emits `trigger_fired`, whose receiver *is* a QObject on
-        the GUI thread (`MainWindow._on_trigger`), so Qt queues it properly and
-        the actuation lands back on the GUI thread with every other one — and a
-        rule-driven puff takes the identical path to a scheduled one, including
-        into the session file. The status line is left to `update_display()`,
-        which is already on the right thread.
+        the GUI thread (`MainWindow._on_trigger`) — so a rule-driven puff takes
+        the identical path to a scheduled one, including into the session file.
         """
         self.win.sync.fire(target, duration)
 
@@ -113,8 +121,8 @@ class ClosedLoopModule(ModuleAdapter):
         if latest is None:
             return
         self.panel.set_readout(*latest)
-        # Reporting the fire here rather than in _on_fired is what keeps that
-        # callback free of GUI calls — see the note there.
+        # Reporting the fire here rather than in _on_fired keeps the GUI call
+        # somewhere its thread is guaranteed locally — see the note there.
         n = latest[2]
         if n != self._reported_fires:
             self._reported_fires = n

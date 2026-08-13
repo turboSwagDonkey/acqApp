@@ -71,9 +71,20 @@ class StageModule(ModuleAdapter):
     def stop(self) -> None:
         super().stop()
         # Release the stage: unbind the controls first, then close the link.
-        self.panel.bind_controller(None)
+        if self.panel is not None:
+            self.panel.bind_controller(None)
         if self.controller is not None:
-            self.controller.close()
+            # Guarded for the same reason `ModuleAdapter.close_controller` is:
+            # `MainWindow._on_run_toggled` stops every adapter in one unguarded
+            # loop, so a serial close that raises here — an unplugged stage, a
+            # port that went away mid-session — would abort the loop and leave
+            # the modules after this one with their worker threads still
+            # running. A stage we cannot close is not a reason to leave the
+            # camera acquiring.
+            try:
+                self.controller.close()
+            except Exception as e:
+                print(f"[stage] close failed ({type(e).__name__}: {e})")
             self.controller = None
 
     def close_controller(self) -> None:
