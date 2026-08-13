@@ -102,9 +102,7 @@ class CalibrationDialog(QDialog):
         fl.addWidget(self._lbl_progress)
         lay.addWidget(frame)
 
-        self._lbl_cfg = QLabel(f"config: {config_path()}")
-        self._lbl_cfg.setWordWrap(True)
-        self._lbl_cfg.setStyleSheet("color: gray; font-size: 10px;")
+        self._lbl_cfg = self._hint(f"config: {config_path()}")
         lay.addWidget(self._lbl_cfg)
 
         # This dialog is modal, so the panel's STOP ALL is unreachable while it
@@ -123,8 +121,14 @@ class CalibrationDialog(QDialog):
         lay.addLayout(row)
 
     def _stop_all(self) -> None:
+        # Reported into the label, not a modal: the stage may be mid-move into a
+        # hard limit, and an escaping exception here aborts the process.
         if self._ctrl is not None:
-            self._ctrl.stop_all()
+            try:
+                self._ctrl.stop_all()
+            except Exception as e:
+                self._lbl_progress.setText(f"STOP ALL FAILED: {e}")
+                return
         self._lbl_progress.setText("STOP ALL sent.")
 
     def keyPressEvent(self, event) -> None:
@@ -315,13 +319,16 @@ class SettingsPanel(QWidget):
         grid.addWidget(QLabel("Step µm"), 0, 2)
         grid.addWidget(QLabel("Jog +"), 0, 3)
         grid.addWidget(QLabel("Go to µm"), 0, 4)
+        def _btn(text: str, width: int, row: int, col: int, slot) -> QPushButton:
+            b = QPushButton(text)
+            b.setMaximumWidth(width)
+            b.clicked.connect(slot)
+            grid.addWidget(b, row, col)
+            return b
+
         for r, (key, ax) in enumerate((("x", self._s.x), ("y", self._s.y)), start=1):
             grid.addWidget(QLabel(ax.name), r, 0)
-
-            btn_minus = QPushButton("−")
-            btn_minus.setMaximumWidth(28)
-            btn_minus.clicked.connect(lambda _, k=key: self._jog(k, -1))
-            grid.addWidget(btn_minus, r, 1)
+            btn_minus = _btn("−", 28, r, 1, lambda _, k=key: self._jog(k, -1))
 
             spn_step = QDoubleSpinBox()
             spn_step.setRange(0.1, 5000.0)
@@ -330,28 +337,17 @@ class SettingsPanel(QWidget):
             spn_step.setMaximumWidth(70)
             grid.addWidget(spn_step, r, 2)
 
-            btn_plus = QPushButton("+")
-            btn_plus.setMaximumWidth(28)
-            btn_plus.clicked.connect(lambda _, k=key: self._jog(k, +1))
-            grid.addWidget(btn_plus, r, 3)
+            btn_plus = _btn("+", 28, r, 3, lambda _, k=key: self._jog(k, +1))
 
             spn_goto = QDoubleSpinBox()
-            lo, hi = ax.soft_limits_um()
-            spn_goto.setRange(lo, hi)
+            spn_goto.setRange(*ax.soft_limits_um())
             spn_goto.setDecimals(1)
             spn_goto.setSuffix(" µm")
             spn_goto.setMaximumWidth(90)
             grid.addWidget(spn_goto, r, 4)
 
-            btn_go = QPushButton("Go")
-            btn_go.setMaximumWidth(34)
-            btn_go.clicked.connect(lambda _, k=key: self._goto(k))
-            grid.addWidget(btn_go, r, 5)
-
-            btn_stop = QPushButton("Stop")
-            btn_stop.setMaximumWidth(44)
-            btn_stop.clicked.connect(lambda _, k=key: self._stop(k))
-            grid.addWidget(btn_stop, r, 6)
+            btn_go = _btn("Go", 34, r, 5, lambda _, k=key: self._goto(k))
+            btn_stop = _btn("Stop", 44, r, 6, lambda _, k=key: self._stop(k))
 
             self._axis_widgets[key] = {
                 "step": spn_step, "goto": spn_goto,
@@ -473,7 +469,7 @@ class SettingsPanel(QWidget):
         """Show whether absolute go-to can be trusted, and gate the buttons."""
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
         ok = not missing
-        if ok:
+        if ok:  # absolute targets are meaningless without a frame; jog is not
             self._lbl_frame.setText("Frame OK — absolute go-to calibrated.")
             self._lbl_frame.setStyleSheet("color: gray; font-size: 10px;")
         else:
@@ -481,19 +477,19 @@ class SettingsPanel(QWidget):
                 f"No valid frame for {', '.join(missing)} — absolute go-to "
                 "disabled. Jog still works. Use Calibrate…")
             self._lbl_frame.setStyleSheet(f"color: {_BAD}; font-size: 10px;")
-        # Absolute targets are meaningless without a frame; jog is not.
         self._btn_go_zero.setEnabled(ok)
         for w in self._axis_widgets.values():
             w["goto"].setEnabled(ok)
             w["buttons"][2].setEnabled(ok)      # the "Go" button
         self._update_home_label()
 
+    def _axis(self, key: str):
+        return self._s.x if key == "x" else self._s.y
+
     def _refresh_goto_ranges(self) -> None:
         """Re-range the go-to spin boxes after the soft limits move."""
         for key, w in self._axis_widgets.items():
-            ax = self._s.x if key == "x" else self._s.y
-            lo, hi = ax.soft_limits_um()
-            w["goto"].setRange(lo, hi)
+            w["goto"].setRange(*self._axis(key).soft_limits_um())
 
     # ── session home ────────────────────────────────────────────────────────
     def _update_home_label(self) -> None:
@@ -506,16 +502,25 @@ class SettingsPanel(QWidget):
         self._btn_go_home.setEnabled(have)
         self._btn_clear_home.setEnabled(have)
 
-    def _set_home_here(self) -> None:
+    def _call(self, what: str, fn) -> bool:
+        """Run `fn(controller)` if connected, reporting failure in one place.
+
+        Every motion command has this shape: do nothing without a controller,
+        and never let a serial error reach the GUI thread as a traceback.
+        """
         if self._ctrl is None:
-            return
+            return False
         try:
-            self._ctrl.set_home_here()
+            fn(self._ctrl)
         except Exception as e:
-            QMessageBox.warning(self, "Stage", f"Could not set home: {e}")
-            return
-        self._update_home_label()
-        self._map.update()
+            QMessageBox.warning(self, "Stage", f"{what}: {e}")
+            return False
+        return True
+
+    def _set_home_here(self) -> None:
+        if self._call("Could not set home", lambda c: c.set_home_here()):
+            self._update_home_label()
+            self._map.update()
 
     def _clear_home(self) -> None:
         if self._ctrl is not None:
@@ -524,30 +529,15 @@ class SettingsPanel(QWidget):
         self._map.update()
 
     def _go_home(self) -> None:
-        if self._ctrl is None:
-            return
-        try:
-            self._ctrl.go_home()
-        except Exception as e:
-            QMessageBox.warning(self, "Stage", f"Move failed: {e}")
+        self._call("Move failed", lambda c: c.go_home())
 
     def _go_zero(self) -> None:
-        if self._ctrl is None:
-            return
-        try:
-            self._ctrl.go_to_center()
-        except Exception as e:
-            QMessageBox.warning(self, "Stage", f"Move failed: {e}")
+        self._call("Move failed", lambda c: c.go_to_center())
 
     # ── motion handlers ─────────────────────────────────────────────────────
     def _jog(self, key: str, direction: int) -> None:
-        if self._ctrl is None:
-            return
         step = self._axis_widgets[key]["step"].value()
-        try:
-            self._ctrl.jog_um(key, direction * step)
-        except Exception as e:
-            QMessageBox.warning(self, "Stage", f"Jog failed: {e}")
+        self._call("Jog failed", lambda c: c.jog_um(key, direction * step))
 
     def _goto(self, key: str) -> None:
         if self._ctrl is None:
@@ -555,25 +545,22 @@ class SettingsPanel(QWidget):
         target = self._axis_widgets[key]["goto"].value()
         cur = self._last_xy[0] if key == "x" else self._last_xy[1]
         if abs(target - cur) > self._s.confirm_move_um:
-            ax = self._s.x if key == "x" else self._s.y
             if QMessageBox.question(
                 self, "Confirm move",
-                f"Move {ax.name} from {cur:.0f} to {target:.0f} µm "
+                f"Move {self._axis(key).name} from {cur:.0f} to {target:.0f} µm "
                 f"({abs(target - cur):.0f} µm)?"
             ) != QMessageBox.StandardButton.Yes:
                 return
-        try:
-            self._ctrl.move_to_um(key, target)
-        except Exception as e:
-            QMessageBox.warning(self, "Stage", f"Move failed: {e}")
+        self._call("Move failed", lambda c: c.move_to_um(key, target))
 
+    # Guarded like every other command, and for a sharper reason: this is the
+    # panic path (Esc, app-wide). A dead serial link is exactly when it gets
+    # pressed, and an exception escaping a slot aborts the process.
     def _stop(self, key: str) -> None:
-        if self._ctrl is not None:
-            self._ctrl.stop(key)
+        self._call("Stop failed", lambda c: c.stop(key))
 
     def _stop_all(self) -> None:
-        if self._ctrl is not None:
-            self._ctrl.stop_all()
+        self._call("STOP ALL failed", lambda c: c.stop_all())
 
     # ── live readout from the poll worker ───────────────────────────────────
     def set_readout(self, x_um: float, y_um: float) -> None:
