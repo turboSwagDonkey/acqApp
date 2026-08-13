@@ -27,7 +27,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed, so **everything still open needs the rig** — see
-§6's "Needs the rig". The test suite is the contract: **431 checks, 16 files,
+§6's "Needs the rig". The test suite is the contract: **454 checks, 16 files,
 ~40 s, all passing.** Run it before and after anything.
 
 ```
@@ -68,10 +68,22 @@ phase 5 (`closed_loop.py` and its wiring) and §5b A1 (`devices.py`). Both
 strands are named separately in that commit message. Mock-verified only; none
 of it has run on the rig.
 
+**Two things that changed on 2026-08-13 and are not obvious from the code.**
+
+- **The `_toy.py` harnesses are gone** (all five, plus the four per-package
+  `recording.py` modules that only served them). To bring one device up alone:
+  start the app, tick that module in the startup picker, and press **Free run**
+  — devices and previews with the shared clock never started, so nothing can be
+  recorded. The pupil tracker's tuning overlay (annulus, per-ray edge points,
+  click-to-seed) moved into the app as **Show search overlay** in its tab.
+- **`scratch/` is down to `cam_grab.py`**, which stays: it is how §6's open
+  camera-throughput measurement gets taken. The `encoder_*.csv` beside it are
+  the rig capture behind the 4.912 V/rev figure — data, not code.
+
 **`main.py` is the operator's active file.** The settings-window work is theirs
 and ongoing: **ask before touching its dock/settings code**, and don't
 restructure it (that is why §5b A5 split `modules.py` and deliberately left
-`main.py` at 899 lines).
+`main.py` alone; it is 787 lines).
 
 **A warning that cost most of a session.** An editing pass aimed at "the
 settings" rewrote every file with *settings* in its name, including
@@ -144,7 +156,7 @@ done on top of that. Don't let it drift like that again.
 | 2 | Camera streaming + preview + HDF5 | ✅ mock-verified |
 | 3 | Encoder streaming + plot | ✅ mock-verified |
 | 4 | Unified session start/stop, shared clock, metadata | ✅ mock-verified |
-| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 431 checks |
+| **4.5** | Audit remediation + test net (§5) | ✅ all 22 closed, 454 checks |
 | **5** | Closed-loop: trigger DMD/puffer from encoder state | ✅ mock-verified — `closed_loop.py`, armed from the Closed loop tab; **never run on the rig** |
 | 6 | Hardware sync: `DaqClock` on the PCIe-6363, triggered ORCA | future |
 
@@ -337,6 +349,29 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-13 (n) — size and duplication: 17051 -> 14984 lines of .py
+- **Deleted what the app had superseded.** Three Phase 0 scratch scripts
+  (`cam_app` 799, `encoder_read` 212, `cam_live` 199), all five `_toy.py`
+  harnesses, and the four `recording.py` modules that existed only for them.
+  Nothing imported any of it. `cam_grab.py` and the `encoder_*.csv` captures
+  were kept deliberately — see §6.
+- **Two capabilities moved into the app first**, so nothing was lost with the
+  toys: **Free run** (devices, no clock, no recording — `SessionClock.at()`
+  raises rather than invent a timebase, so Record is disabled around it), and
+  the pupil **search overlay** with click-to-seed.
+- **Splits**, all verified verbatim line-by-line: `main.py` 910→787 (dialogs
+  out), `pupil_cam/tracking.py` 885→491 (rays/fits out), `stage/settings.py`
+  825→252, `dmd/control.py` 646→278. `stage/settings.py` now has **no Qt import
+  at all** — the calibration model is readable and testable without a
+  QApplication.
+- **Worth knowing: splitting does not reduce line count**, it increases it. The
+  −2,067 came from deletions and prose; the splits added ~150. Two different
+  goals, and they pull opposite ways.
+- A scratch symtable-based checker caught six names the moved code used and the
+  new imports missed — `NameError`s in the calibration dialog and DMD preview
+  that the mock suite would not have found.
+- **454 checks, 16/16.** 13 commits unpushed on `master`.
 
 ### 2026-08-13 (m) — end-of-day scan: one real defect, one wrong comment
 - **A claim committed the day before was wrong.** `_on_fired`'s docstring said
