@@ -1,39 +1,29 @@
-"""
-Pupil detection — a port of LabVIEW's IMAQ **Find Circular Edge**.
+"""Pupil detection — a port of LabVIEW's IMAQ **Find Circular Edge**.
 
-The rig's LabVIEW pipeline defines a ring-shaped (annular) search region around
-an estimated pupil centre, casts a fan of search lines (rays) outward through
-that annulus, finds the intensity edge along each ray (dark pupil → brighter
-iris), and least-squares-fits a circle to the resulting edge points.  This module
-does the same thing:
+An annular search region around an estimated centre, a fan of rays cast outward
+through it, the intensity edge along each (dark pupil → brighter iris), and a
+circle least-squares-fitted to those edge points:
 
     1. sample the annulus along `n_rays` radial lines   (_sample_annulus)
-    2. per ray, take the strongest 1-D intensity gradient within the band,
-       refined to sub-pixel by a parabola on the gradient peak   (_edges_along_rays)
-    3. robust least-squares circle fit with iterative outlier rejection, so
-       eyelashes / corneal glints / eyelid crossings drop out   (fit_circle_robust)
-    4. optionally re-fit an ellipse to the surviving inliers, for an off-axis eye
+    2. per ray, the strongest 1-D gradient in the band, sub-pixel by a parabola
+       on the peak                                      (_edges_along_rays)
+    3. robust circle fit with iterative outlier rejection, so eyelashes, glints
+       and eyelid crossings drop out                    (fit_circle_robust)
+    4. optionally an ellipse re-fit to the inliers, for an off-axis eye
 
-Step 1–3 are re-run `refine_iters` times, each pass re-centring the annulus on
-the previous fit, so a coarse seed converges.
+1–3 repeat `refine_iters` times, each pass re-centring the annulus on the last
+fit, so a coarse seed converges.
 
-Pure numpy — no cv2 (it has no wheels for the 3.14 venv).  scipy is used only
-for the coarse seed's connected-component labelling, with a fallback if absent.
+Pure numpy — cv2 has no wheels for the 3.14 venv. scipy is used only for the
+coarse seed's labelling, with a fallback if absent.
 
-Entry points
-------------
-detect(frame, threshold, min_r, max_r, ...)   stateless, per-frame.  Unchanged
-                                              signature, kept stable.
-PupilTracker                                  stateful; seeds each frame's
-                                              annulus from the previous fit.
-                                              Cheaper and steadier on a video
-                                              stream — prefer it for live use.
-find_circular_edge(...)                       the IMAQ primitive itself, if you
-                                              want to drive the annulus yourself.
+Entry points: `detect()` stateless per-frame; `PupilTracker` stateful, seeding
+each frame from the previous fit (cheaper and steadier — prefer it live);
+`find_circular_edge()` the primitive, to drive the annulus yourself.
 
-Angle convention: 0 rad = +x (image right), increasing toward +y (image *down*,
-row-major).  So 90° is the bottom of the image and 270° the top — that is what
-`exclude_deg` takes, e.g. eyelids at ``[(60, 120), (240, 300)]``.
+Angles: 0 rad = +x, increasing toward +y (image *down*), so 90° is the image
+bottom and 270° the top — what `exclude_deg` takes, e.g. eyelids at
+``[(60, 120), (240, 300)]``.
 """
 
 from __future__ import annotations
@@ -43,8 +33,8 @@ from typing import Sequence
 
 import numpy as np
 
-# The two halves that are separately testable live in their own modules; they
-# are re-exported below so `tracking.fit_circle_robust` keeps working.
+# The separately testable halves live in their own modules, re-exported here so
+# `tracking.fit_circle_robust` keeps working.
 from acqApp.pupil_cam.fits import (_ellipse_radial_residual, fit_circle_robust,
                                    fit_circle_taubin, fit_ellipse,
                                    fit_ellipse_robust)
@@ -101,23 +91,21 @@ def find_circular_edge(frame: np.ndarray,
                        min_rays: int = 8,
                        refine_iters: int = 2,
                        samples_per_px: float = 2.0) -> PupilResult:
-    """
-    Locate the pupil boundary in the annulus around `center`.
+    """Locate the pupil boundary in the annulus around `center`.
 
     Parameters mirror the IMAQ VI's controls:
       center, r_inner, r_outer   the annular ROI
       n_rays                     number of search lines
       polarity                   edge polarity (see _edges_along_rays)
-      min_strength               minimum |gradient| (grey levels per px) to
-                                 accept a ray's edge — the IMAQ "edge strength"
+      min_strength               minimum |gradient| per px to accept an edge
       exclude_deg                angular sectors to skip, e.g. eyelids
-      fit                        "circle" or "ellipse". The ellipse is fitted to
-                                 every ray hit with its own robust rejection —
-                                 the circle pass only sanity-checks it, since no
-                                 circle consensus can hold both axis extremes.
+      fit                        "circle" or "ellipse". The ellipse fits every
+                                 ray hit with its own rejection; the circle pass
+                                 only sanity-checks it, since no circle
+                                 consensus holds both axis extremes.
       refine_iters               re-centre the annulus on the fit and repeat
 
-    Returns a PupilResult; `radius is None` means no confident detection.
+    `radius is None` means no confident detection.
     """
     if frame.ndim != 2:
         raise ValueError(f"expected a 2-D grayscale frame, got shape {frame.shape}")
@@ -143,11 +131,10 @@ def find_circular_edge(frame: np.ndarray,
 
         sel = hit.copy()
         if fit != "ellipse":
-            # Pre-reject in radius space before any fitting. The annulus is
-            # already roughly concentric with the pupil, so true edge radii
-            # cluster tightly while an eyelid crossing scatters — and dropping
-            # those first stops them from dragging the initial fit somewhere
-            # the residual-based rejection can't recover from. Skipped for
+            # Pre-reject in radius space before fitting: the annulus is roughly
+            # concentric, so true edge radii cluster while an eyelid crossing
+            # scatters. Dropping those first stops them dragging the initial fit
+            # somewhere residual-based rejection can't recover from. Skipped for
             # ellipse mode, where radius genuinely varies with angle.
             rr = r_edge[sel]
             med_r = np.median(rr)
@@ -160,9 +147,8 @@ def find_circular_edge(frame: np.ndarray,
         ex = cx + r_edge[sel] * np.cos(angles[sel])
         ey = cy + r_edge[sel] * np.sin(angles[sel])
 
-        # For ellipse mode the circle pass only exists to kill gross outliers,
-        # so give it a tolerance wide enough to keep the axis extremes — a
-        # tight circle consensus would discard exactly those.
+        # In ellipse mode the circle pass only kills gross outliers, so its
+        # tolerance must stay wide enough to keep the axis extremes.
         scale = float(np.median(r_edge[sel]))
         wide = fit == "ellipse"
         rob = fit_circle_robust(
@@ -181,12 +167,10 @@ def find_circular_edge(frame: np.ndarray,
         axes = angle = None
         radius = fr
         if fit == "ellipse":
-            # Fit the ellipse to *all* the ray hits, not to the circle pass's
-            # inliers: no circle consensus can hold both axis extremes of an
-            # elongated pupil, so reusing `keep` here silently truncates the
-            # major axis. fit_ellipse_robust does its own rejection, scored on
-            # ellipse residuals, which is the only kind that means anything
-            # once the shape isn't round.
+            # To *all* ray hits, not the circle pass's inliers: no circle
+            # consensus holds both axis extremes, so reusing `keep` silently
+            # truncates the major axis. fit_ellipse_robust rejects on ellipse
+            # residuals, the only kind meaning anything once it isn't round.
             rob_e = fit_ellipse_robust(ex, ey, sigma_k=sigma_k,
                                        min_points=max(6, min_rays))
             if rob_e is not None:
@@ -229,28 +213,23 @@ def find_circular_edge(frame: np.ndarray,
 
 def coarse_seed(frame: np.ndarray, threshold: int = 60,
                 min_r: int = 10, max_r: int = 80, *, bright: bool = False):
-    """
-    Rough (cx, cy, r) for the first annulus, or None.
+    """Rough (cx, cy, r) for the first annulus, or None.
 
-    Takes the largest thresholded blob, then its **deepest interior point** via
-    a distance transform rather than a centroid.  That matters: dark eyelashes
-    and eyelid margins routinely touch the pupil and merge into one component,
-    and a centroid of that merged blob lands off the pupil entirely, whereas the
-    inscribed-circle centre stays put.  The EDT peak value is also a far better
-    radius estimate than √(area/π) for a merged blob.
+    The largest thresholded blob, then its **deepest interior point** by
+    distance transform rather than a centroid: eyelashes and eyelid margins
+    routinely merge into the pupil's component, and a centroid of that lands
+    off the pupil while the inscribed-circle centre stays put. The EDT peak is
+    also a better radius than √(area/π) for a merged blob.
 
-    Only ever used to *place* the annulus — the ray/fit stage does the real
-    work, so this just has to land inside the pupil.
+    Only places the annulus — it just has to land inside the pupil.
     """
     mask = (frame > threshold) if bright else (frame < threshold)
     n = int(mask.sum())
     if n == 0:
         return None
-    # A pupil cannot be half the sensor. When it is — lens cap on, illumination
-    # off, or simply a badly set threshold — labelling and running a distance
-    # transform over a frame-sized blob costs ~100 ms and can only ever be
-    # rejected at the end anyway. Bail out on the cheap test instead, so a dark
-    # stretch doesn't stall the display loop on every re-seed.
+    # A pupil cannot be half the sensor. When it is (lens cap, illumination off,
+    # bad threshold) labelling a frame-sized blob costs ~100 ms and is rejected
+    # at the end anyway — bail cheaply so a dark stretch can't stall the display.
     if n > 0.5 * frame.size:
         return None
 
@@ -269,10 +248,9 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
     sizes = np.bincount(lab.ravel())
     sizes[0] = 0
 
-    # Score the largest few components rather than blindly taking the biggest:
-    # a dark eyelid margin or a shadowed orbit is often larger than the pupil,
-    # but it is nowhere near as round. Circularity = area / (pi*r_inscribed^2),
-    # which is ~1 for a disc and grows without bound for an elongated band.
+    # Score the largest few, not blindly the biggest: an eyelid margin or
+    # shadowed orbit is often larger than the pupil and nowhere near as round.
+    # Circularity = area / (pi*r_inscribed^2) — ~1 for a disc, unbounded for a band.
     order = np.argsort(sizes)[::-1][:4]
     slices = ndimage.find_objects(lab)
     best = None
@@ -287,11 +265,9 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
         # punches a hole that would otherwise shrink the inscribed circle
         comp = ndimage.binary_fill_holes(lab[sl] == li)
 
-        # Bound the distance transform's cost. It is the expensive step here and
-        # scales with the component's bounding box — which for a degenerate mask
-        # (lens cap on, so every pixel is below threshold) is the whole sensor,
-        # turning a re-seed into ~200 ms. Decimating is safe: the seed only has
-        # to land inside the pupil, and find_circular_edge re-centres from there.
+        # Bound the EDT's cost: it scales with the bounding box, which for a
+        # degenerate mask is the whole sensor (~200 ms per re-seed). Decimating
+        # is safe — find_circular_edge re-centres from wherever this lands.
         step = max(1, int(np.ceil(max(comp.shape) / _SEED_MAX_PX)))
         if step > 1:
             comp = comp[::step, ::step]
@@ -321,11 +297,9 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
 #  Public API
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Annulus half-width as a fraction of the seed radius: the band spans
-# r*(1-BAND) … r*(1+BAND), so the true edge sits comfortably inside it.
-# Ellipse mode needs a much wider band: the seed radius comes from an inscribed
-# circle, which for an elongated pupil is the semi-*minor* axis, so a symmetric
-# band would never reach the major-axis edge.
+# Annulus half-width as a fraction of the seed radius: r*(1-BAND) … r*(1+BAND).
+# Ellipse mode needs a wider band — the seed radius is an inscribed circle, i.e.
+# the semi-*minor* axis, so a symmetric band never reaches the major-axis edge.
 _BAND = 0.55
 _BAND_ELLIPSE = (0.35, 2.9)          # (inner, outer) as multiples of the seed r
 
@@ -348,21 +322,17 @@ def detect(frame: np.ndarray,
            exclude_deg: Sequence[tuple[float, float]] = (),
            fit: str = "circle",
            seed: tuple[float, float, float] | None = None) -> PupilResult:
-    """
-    Stateless per-frame pupil detection: coarse seed → annular edge search →
-    robust circle fit.  Signature-compatible with the old stub.
+    """Stateless per-frame detection: coarse seed → annular edge search → robust
+    circle fit.
 
-    `seed` is an optional (cx, cy, r) placing the annulus explicitly — the
-    LabVIEW workflow, where the operator draws the annulus over the pupil once.
-    Pass it whenever you have it; auto-seeding is only a bootstrap convenience
-    and can be fooled by a dark eyelid margin larger than the pupil itself.
+    `seed` places the annulus explicitly (the LabVIEW workflow). Pass it
+    whenever you have it — auto-seeding is a bootstrap convenience and can be
+    fooled by a dark eyelid margin larger than the pupil.
 
-    For live video prefer `PupilTracker`, which seeds each annulus from the
-    previous frame instead of re-thresholding every time.
+    For live video prefer `PupilTracker`.
     """
     if seed is None:
-        # a "falling" edge means a bright pupil on a darker iris, so the seed
-        # blob is the bright one — threshold the other way round
+        # "falling" = a bright pupil on a darker iris, so seed on the bright blob
         seed = coarse_seed(frame, threshold, min_r, max_r,
                            bright=(polarity == "falling"))
         if seed is None:
@@ -376,7 +346,7 @@ def detect(frame: np.ndarray,
         exclude_deg=exclude_deg, fit=fit, refine_iters=3,
     )
     if res.radius is not None and not (min_r < res.radius < max_r):
-        # edge found but out of the allowed size band — report the position only
+        # edge found but outside the size band — report the position only
         return PupilResult(res.center_x, res.center_y, None, 0.0,
                            edge_x=res.edge_x, edge_y=res.edge_y,
                            inliers=res.inliers, rms=res.rms)
@@ -384,17 +354,13 @@ def detect(frame: np.ndarray,
 
 
 class PupilTracker:
-    """
-    Stateful pupil tracker for a live stream.
+    """Stateful pupil tracker for a live stream.
 
-    Each frame's annulus is seeded from the previous good fit (the LabVIEW
-    workflow: the operator seeds the annulus once, then it follows the pupil).
-    After `max_lost` consecutive failures it falls back to `coarse_seed`.
+    Each annulus is seeded from the previous good fit; after `max_lost`
+    consecutive failures it falls back to `coarse_seed`.
 
-    Thread note: not thread-safe — call `process()`/`configure()` from one
-    thread. In the app that is the tracking thread (`track_worker.py`), which
-    owns a tracker and queues the panel's edits into it between frames;
-    being one device on one timer, drives it from the GUI thread directly.
+    Not thread-safe — call `process()`/`configure()` from one thread. In the app
+    that is `track_worker.py`, which queues the panel's edits between frames.
     """
 
     def __init__(self, threshold: int = 60, min_r: int = 10, max_r: int = 80,
@@ -422,11 +388,8 @@ class PupilTracker:
         self._lost = 0
 
     def seed(self, cx: float, cy: float, r: float) -> None:
-        """Place the annulus by hand (the LabVIEW operator workflow).
-
-        Use this when the auto-seed picks the wrong dark region — tracking
-        continues from here exactly as if the previous frame had fitted it.
-        """
+        """Place the annulus by hand, for when the auto-seed picks the wrong
+        dark region. Tracking continues as if the last frame had fitted it."""
         self._last = (float(cx), float(cy), float(r))
         self._lost = 0
 
@@ -434,8 +397,8 @@ class PupilTracker:
     def locked(self) -> bool:
         return self._last is not None
 
-    # Changing any of these invalidates the current lock: the annulus was
-    # placed under the old assumptions, so re-seed rather than let it drift.
+    # Changing any of these invalidates the lock — the annulus was placed under
+    # the old assumptions, so re-seed rather than let it drift.
     _RESEED_ON = frozenset({"threshold", "min_r", "max_r", "polarity", "fit"})
 
     def configure(self, **kw) -> None:
@@ -475,7 +438,7 @@ class PupilTracker:
               and res.confidence >= self.min_confidence
               and self.min_r < res.radius < self.max_r)
         if ok and seeded_from_last:
-            # reject a fit that teleported — usually an eyelid edge grabbed mid-blink
+            # reject a teleport — usually an eyelid edge grabbed mid-blink
             ok = np.hypot(res.center_x - cx, res.center_y - cy) <= self.max_jump * r
 
         if ok:

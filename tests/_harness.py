@@ -1,16 +1,13 @@
-"""
-Shared scaffolding for the acqApp tests.
+"""Shared scaffolding for the acqApp tests.
 
-These are plain scripts, not pytest: pytest is not a dependency of this project
-and the rig machine installs only `requirements.txt`. Each test is runnable on
-its own, and `run_all.py` runs the set.
+Plain scripts, not pytest — the rig installs only `requirements.txt`. Each test
+runs on its own; `run_all.py` runs the set.
 
-The important part of this module is `isolate_user_state()`. The GUI tests drive
-the REAL MainWindow, which persists things as a side effect of ordinary use —
-the Save tab writes `acqapp_local.json` whenever its fields change, and closing
-the window writes the dock layout to QSettings. Without isolation, running the
-tests would silently overwrite the operator's save folder, subject ID and
-carefully arranged panel layout. Every test that builds a window must call it.
+The important part is `isolate_user_state()`. The GUI tests drive the REAL
+MainWindow, which persists as a side effect of ordinary use: the Save tab writes
+`acqapp_local.json` on every field change, and closing writes the dock layout to
+QSettings. Without isolation the tests overwrite the operator's save folder,
+subject ID and panel layout. Every test that builds a window must call it.
 """
 from __future__ import annotations
 
@@ -42,13 +39,12 @@ enable_safe_console()
 # ── isolation ─────────────────────────────────────────────────────────────────
 
 class MemorySettings:
-    """Stand-in for QSettings that keeps values in this process only.
+    """Stand-in for QSettings, in-process only.
 
-    QSettings cannot be redirected on Windows: `setPath` affects IniFormat only,
-    and `setDefaultFormat` applies solely to the `QSettings(parent)`
-    constructor — so `QSettings("acqApp", "acqApp")` goes to HKEY_CURRENT_USER
-    no matter what you set. The only reliable isolation is to substitute the
-    class before `main` imports it.
+    QSettings cannot be redirected on Windows: `setPath` is IniFormat-only and
+    `setDefaultFormat` applies only to `QSettings(parent)`, so
+    `QSettings("acqApp", "acqApp")` reaches HKEY_CURRENT_USER regardless. The
+    only reliable isolation is substituting the class before `main` imports it.
     """
 
     store: dict[str, object] = {}
@@ -69,10 +65,9 @@ class MemorySettings:
 class _BlockedDriver(types.ModuleType):
     """A vendor driver module that refuses to do anything.
 
-    Importing it succeeds — the app's `import nidaqmx` lines are inside methods
-    and are not what we want to break — but reaching for anything in it raises,
-    which every device path in this app already treats as "no hardware" and
-    falls back from.
+    Importing succeeds — the app's `import nidaqmx` lines are inside methods —
+    but touching anything raises, which every device path already treats as "no
+    hardware" and falls back from.
     """
 
     def __getattr__(self, name):
@@ -84,15 +79,13 @@ class _BlockedDriver(types.ModuleType):
 def block_real_devices(*names: str) -> None:
     """Stand refusing stubs in front of the vendor drivers.
 
-    `test_module_subsets` toggles **Emulate off**, which rebuilds the real
-    output controllers. On a developer laptop those simply fail to find a
-    device, so this never mattered — but the DMD is now plugged into this
-    machine and the suite really was opening it, and on the rig the same toggle
-    would open a DO task on the puffer's line with an animal in front of it.
-    A test must not be able to reach hardware by accident.
+    `test_module_subsets` toggles **Emulate off**, rebuilding the real output
+    controllers. That never mattered on a laptop with nothing attached — but the
+    DMD is plugged into this machine and the suite really was opening it, and on
+    the rig it would open a DO task on the puffer's line with an animal in front
+    of it. A test must not reach hardware by accident.
 
-    Tests that deliberately drive a fake device (`test_encoder_timing`) install
-    their own module instead and do not call this.
+    Tests that deliberately drive a fake device install their own module instead.
     """
     for name in (names or ("ALP4", "nidaqmx", "pylablib", "pypylon")):
         sys.modules[name] = _BlockedDriver(name)
@@ -101,19 +94,11 @@ def block_real_devices(*names: str) -> None:
 def isolate_user_state() -> Path:
     """Redirect every persistent store the app writes, and return the temp dir.
 
-    Covers:
-      * `acqapp_local.json` — theme, enabled modules, per-panel settings. The
-        Save tab rewrites it on every field edit, so a test that sets a save
-        folder would otherwise leave the operator pointing at a temp dir.
-      * QSettings — the dock layout, written on every window close. Substituted
-        wholesale (see MemorySettings), because on Windows it is the registry
-        and cannot be pointed elsewhere.
-      * the vendor drivers — see `block_real_devices`. Toggling Emulate off in
-        a test rebuilds the *real* controllers, and the DMD is now plugged into
-        this machine.
+    Covers `acqapp_local.json` (theme, enabled modules, panel settings — the
+    Save tab rewrites it on every edit), QSettings (the dock layout, substituted
+    wholesale since on Windows it is the registry), and the vendor drivers.
 
-    Call this BEFORE importing `acqApp.main`: it binds `QSettings` at import
-    time, so the substitution has to be in place first.
+    Call BEFORE importing `acqApp.main`: it binds `QSettings` at import time.
     """
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_test_"))
     block_real_devices()
@@ -140,9 +125,8 @@ def isolate_user_state() -> Path:
 class Report:
     """Collects pass/fail lines and returns a process exit code.
 
-    Deliberately not assert-based: a device test that stops at the first failure
-    hides the other five things that also broke, and these tests are slow enough
-    that one run should tell you everything.
+    Not assert-based on purpose: stopping at the first failure hides the other
+    five, and these tests are slow enough that one run should tell you all of it.
     """
 
     def __init__(self, name: str) -> None:
@@ -188,11 +172,8 @@ def qt_app():
 
 
 def pump(app, seconds: float) -> None:
-    """Run the Qt event loop for `seconds` without blocking it.
-
-    The workers are real QThreads posting to real signals, so the loop has to
-    actually turn for a session to behave the way it does in front of a user.
-    """
+    """Run the Qt event loop for `seconds` without blocking it — the workers are
+    real QThreads on real signals, so the loop has to actually turn."""
     import time
     end = time.perf_counter() + seconds
     while time.perf_counter() < end:

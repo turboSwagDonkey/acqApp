@@ -1,24 +1,19 @@
-"""
-Vialux ALP device layer — no Qt, no app state.
+"""Vialux ALP device layer — no Qt, no app state.
 
-The rig's DMD is a **1024x768 Vialux ALP-4.2**, driven through `ALP4lib` (pip)
-on top of the vendor's high-speed API (a separate, non-pip install, like
-NI-DAQmx and DCAM). This module holds all the hardware knowledge: resolving
-where that API lives, turning an image into the binary frame the device wants,
+The rig's DMD is a **1024x768 Vialux ALP-4.2** driven through `ALP4lib` over the
+vendor's high-speed API (a separate non-pip install, like NI-DAQmx and DCAM).
+All the hardware knowledge lives here: where that API is, image → binary frame,
 and the open/project/halt/close lifecycle.
 
-Separate from `control.py` so the geometry can be tested without Qt or the
-device — `build_frame` is pure numpy/PIL, and is where a misplaced stimulus
-would actually come from.
+Separate from `control.py` so the geometry is testable without Qt or the device
+— `build_frame` is pure numpy/PIL, and is where a misplaced stimulus comes from.
 
-The projection maths is a port of the standalone `dmdGUI_project` app
-(`dmdCommandLine.buildFrame`), the proven path for this hardware and the one the
-optics are aligned with. Keeping the two identical is the point: a pattern
-positioned there must land in the same place here.
+The maths is a port of `dmdGUI_project`'s `dmdCommandLine.buildFrame`, the path
+the optics are aligned with; keeping the two identical is the point, so a
+pattern positioned there lands in the same place here.
 
-**One process at a time.** Whoever opened the ALP holds it over USB, so acqApp
-and `dmdGUI_project` cannot both connect — like the stage's serial port.
-`open()` raises rather than waiting.
+**One process at a time** — whoever opened the ALP holds it over USB, so acqApp
+and `dmdGUI_project` cannot both connect. `open()` raises rather than waiting.
 """
 from __future__ import annotations
 
@@ -29,17 +24,15 @@ from typing import Any
 
 import numpy as np
 
-# The vendor API caps the time between two pictures at 10 s (ALP-4 doc,
-# AlpSeqTiming). The panel allows longer on-times, so they are clamped here and
-# reported rather than silently truncated by the driver.
+# The vendor caps the time between pictures at 10 s (ALP-4 doc, AlpSeqTiming).
+# The panel allows longer, so on-times are clamped here and reported rather than
+# silently truncated by the driver.
 MAX_PICTURE_US = 10_000_000
 
-# Where the ALP-4.2 high-speed API usually sits on this rig, relative to the
-# repo's parent. Only a hint: see resolve_lib_dir().
+# A hint only — see resolve_lib_dir().
 _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
-# The standalone DMD app's config, which already carries the operator's libDir
-# and their aligned scale/rotation — the same "share the proven app's config"
-# arrangement the stage has with stage_control/.
+# The standalone app's config already carries the operator's libDir and aligned
+# scale/rotation — the arrangement the stage has with stage_control/.
 _SIBLING_CONFIG = Path("dmdGUI_project") / "dmd_config.json"
 
 _ROOT = Path(__file__).resolve().parents[2]        # …/python
@@ -57,10 +50,9 @@ def sibling_config() -> dict[str, Any]:
 def resolve_lib_dir(explicit: str = "") -> tuple[str | None, str]:
     """Find the ALP-4.2 high-speed API → (path or None, where it came from).
 
-    `None` means "let ALP4lib look in the registry", which is the right answer
-    on a machine with a normal vendor install. The earlier sources exist because
-    this rig's copy sits in a folder next to the repo rather than under Program
-    Files, and because the standalone app already records where it is.
+    `None` means "let ALP4lib look in the registry", right for a normal vendor
+    install. The earlier sources exist because this rig's copy sits beside the
+    repo, and the standalone app already records where.
     """
     if explicit:
         return explicit, "panel setting"
