@@ -1,28 +1,25 @@
-"""
-XY stage — settings dataclasses + Qt panel.
+"""XY stage — the calibration model and its file format.
 
-The calibration lives in a JSON file that is SHARED with the standalone
-`stage_control` app: the coordinate frame can only be created in one place, so
-both programs read *and write* the same file rather than keeping copies that
-drift. See `config_path()` for the resolution order.
+The calibration is SHARED with the standalone `stage_control` app: a coordinate
+frame can only be created in one place, so both programs read *and write* the
+same file rather than keeping copies that drift.
 
-Two halves of the calibration, and they expire differently:
+Two halves, expiring differently:
   * frame-INDEPENDENT — `counts_per_um`, `span_counts`. Stable forever.
   * frame-SPECIFIC    — `slope`, `offset`, `true_center`, `travel_*`, `soft_*`.
     Valid only until the next HARD LIMIT hit, which re-references the
     controller's command origin. `establish_frame` remakes them.
+
+No Qt here on purpose — the widgets are in `panel.py`, so this stays testable
+without a QApplication.
 """
 from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
-# No Qt here on purpose: this half is the calibration model and its file
-# format, shared with the standalone `stage_control` app. The widgets are in
-# `panel.py`, so this stays readable — and testable — without a QApplication.
-
-# Shared with the standalone app (single source of truth); acqApp's own copy is
-# the fallback for when that sibling folder isn't present.
+# The standalone app is the single source of truth; acqApp's own copy is the
+# fallback for when that sibling folder isn't present.
 _LOCAL_CONFIG  = Path(__file__).with_name("stage_config.json")
 _SHARED_CONFIG = Path(__file__).resolve().parents[2] / "stage_control" / "config.json"
 
@@ -54,9 +51,8 @@ class StageAxis:
     travel_max:     int | None = None
     span_counts:    int | None = None    # full travel, frame-independent
     step_um:        float = 50.0
-    # Session-scoped working origin — a bookmark, NOT calibration. Deliberately
-    # never loaded from or written to the config: it dies with the session so a
-    # convenience marker can't be mistaken for the true zero next time.
+    # A bookmark, NOT calibration: never loaded from or written to the config,
+    # so a convenience marker can't be mistaken for the true zero next session.
     home_counts:    int | None = None
 
     @property
@@ -76,7 +72,7 @@ class StageAxis:
 
     # ── frame edits (return the JSON keys to persist) ───────────────────────
     def center_updates(self, counts: int, margin_um: float = 50.0) -> dict:
-        """Config keys that make `counts` the origin, with travel/soft limits at
+        """Config keys making `counts` the origin, travel/soft limits at
         ±half-travel around it (the ±0.5" no-wrap zone)."""
         half_um = FULL_TRAVEL_UM / 2.0
         half = int(round(half_um * self.counts_per_um))
@@ -89,8 +85,8 @@ class StageAxis:
     def apply_updates(self, upd: dict) -> None:
         """Fold persisted frame keys back into this live axis."""
         if "true_center" in upd:
-            # An explicit None means "this origin is no longer meaningful" —
-            # honour it, so a stale origin can't survive a re-frame.
+            # Explicit None = "no longer meaningful", so a stale origin can't
+            # survive a re-frame.
             if upd["true_center"] is None:
                 self.ref_counts, self.origin_set = 0.0, False
             else:
@@ -205,18 +201,15 @@ def load_settings() -> StageSettings:
 
 def save_axis_updates(updates: dict[int, dict]) -> Path:
     """Persist per-axis calibration keys ({axis_index: {key: value}}) into the
-    shared config, leaving every other key in the file untouched. Written via a
-    temp file + replace so a crash mid-write can't destroy the calibration.
+    shared config, leaving every other key untouched. Temp file + replace, so a
+    crash mid-write can't destroy the calibration, and the previous contents
+    stay as `<name>.bak` — every write is one step undoable.
 
-    The previous contents are kept alongside as `<name>.bak` — a hard-won origin
-    is worth a minute's work to reproduce, so every write is one step undoable.
-
-    A missing or unreadable config must not make this raise: the callers apply
-    the updates to the live axes BEFORE calling here (and `establish_frame()`
-    has already spent minutes driving into both hard limits), so a raise here
-    leaves memory and disk disagreeing about where 0,0 is. Start from an empty
-    config instead and write the calibration out — the old contents, if there
-    were any, are in the .bak."""
+    A missing or unreadable config must NOT raise: callers apply the updates to
+    the live axes first (and `establish_frame()` has already spent minutes
+    driving into both hard limits), so raising here leaves memory and disk
+    disagreeing about where 0,0 is. Start from an empty config instead.
+    """
     path = config_path()
     try:
         raw = path.read_text(encoding="utf-8")
