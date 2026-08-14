@@ -379,6 +379,24 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   `voltage_cam/panel.py` — its model is `AcqConfig` in `presets.py`.
   **Measured, not assumed:** the three models import with **0** PyQt6 modules
   loaded; importing a panel pulls in 5. README has the convention.
+- **`closed_loop.py` and `saving.py` are packages now**, on the same shape:
+  `closed_loop/{settings,worker,panel}.py` and `saving/{config,panel}.py`.
+  Both `__init__.py` re-export **lazily (PEP 562)** — eager ones run `panel.py`
+  and pull PyQt6 in through the parent, defeating the split. Measured:
+  `closed_loop.settings` and `saving.config` each import with **0** PyQt6
+  modules, and the old `from acqApp.closed_loop import LoopRule` still works.
+- **`main.py` cannot move into a `shell/`**, and this is the reason to write
+  down: its bootstrap derives the venv from its own directory
+  (`here = Path(__file__).parent; venv_dir = here / ".venv"`), so under
+  `shell/` it would create and install into `acqApp/shell/.venv` — breaking §2's
+  first ground rule. The documented launch command and `python -m acqApp.main`
+  would change too. Root grouping is therefore **not** a free rename.
+- **And `core/` would add an ambiguity rather than remove one:** `acq/` already
+  is the acquisition core (clock, recorder, ring buffer, worker, writer), so a
+  second core-ish package invites "why is the clock in `acq/` but the trigger
+  bus in `core/`?". If the root is grouped, the better move is smaller — put
+  `sync.py` and `devices.py` **into `acq/`**, where their neighbours already are,
+  and leave `config`/`console`/`probe`/`style`/`dialogs`/`main` as the shell.
 - **Withdrew a dead-code claim before acting on it.** `_test_tracking.py`,
   `analyze_raw.py`, `capture_raw.py` and `_check_link.py` show as unreferenced
   because they are *scripts*, run directly and never imported — and the docs
