@@ -1,7 +1,7 @@
 """
 Which physical link is DCAM actually using?
 
-    acqApp\\.venv\\Scripts\\python.exe acqApp\\voltage_cam\\_check_link.py
+    acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\voltage_cam\\_check_link.py
 
 This camera (C16240-20UP) has both a USB3 and a CoaXPress interface, and this
 machine has BOTH cabled (Active Silicon FireBird 4xCXP6-2PE8 grabber + USB).
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     # diagnostic print is otherwise indistinguishable from a device failure).
     import sys as _sys
     from pathlib import Path as _Path
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
     from acqApp.console import enable_safe_console
     enable_safe_console()
 

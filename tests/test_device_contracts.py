@@ -1,8 +1,8 @@
 """
-`devices.py`'s protocols are honoured — devices (§5b A1) and window (§5b A4).
+`acq/devices.py`'s protocols are honoured — devices (§5b A1) and window (§5b A4).
 
 Those protocols are structural and this project ships no type checker, so one
-that is never asserted catches nothing. See `devices.py` for why they exist.
+that is never asserted catches nothing. See `acq/devices.py` for why they exist.
 
   1. **Conformance** — every twin satisfies the protocol its adapter reads it
      through. Checked on the classes, never by constructing a real driver.
@@ -25,7 +25,7 @@ from _harness import Report, block_real_devices
 
 block_real_devices()
 
-from acqApp.devices import (            # noqa: E402
+from acqApp.acq.devices import (            # noqa: E402
     CameraWorker, ClockedWorker, DeviceWorker, ExposureControl,
     OutputController, ProjectorController, RecordingOutput,
 )
@@ -66,14 +66,14 @@ def main() -> int:
 
     from PyQt6.QtCore import QObject
     from acqApp.acq.worker import PullWorker
-    from acqApp.voltage_cam.acquisition import OrcaFireWorker, MockCameraWorker
-    from acqApp.wheel.acquisition import EncoderWorker, MockEncoderWorker
-    from acqApp.pupil_cam.acquisition import (PupilCameraWorker,
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker, MockCameraWorker
+    from acqApp.devices.wheel.acquisition import EncoderWorker, MockEncoderWorker
+    from acqApp.devices.pupil_cam.acquisition import (PupilCameraWorker,
                                               MockPupilCameraWorker)
-    from acqApp.pupil_cam.control import LedController, MockLedController
-    from acqApp.puffer.control import PufferController, MockPufferController
-    from acqApp.dmd.control import DmdController, MockDmdController
-    from acqApp.stage.acquisition import StagePollWorker
+    from acqApp.devices.pupil_cam.control import LedController, MockLedController
+    from acqApp.devices.puffer.control import PufferController, MockPufferController
+    from acqApp.devices.dmd.control import DmdController, MockDmdController
+    from acqApp.devices.stage.acquisition import StagePollWorker
     from acqApp.closed_loop import ClosedLoopWorker
 
     # ── 1. conformance ───────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ def main() -> int:
     # `win._save_panel`; the source scan alone lets the window drop a service
     # every adapter still calls.
     import re
-    from acqApp.devices import ModuleHost
+    from acqApp.acq.devices import ModuleHost
 
     # Safe to import: block_real_devices() stubbed pylablib, so main.py's DCAM
     # pre-init takes its "no camera" branch. No QApplication at import.

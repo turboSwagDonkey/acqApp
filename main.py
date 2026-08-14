@@ -137,7 +137,7 @@ import pyqtgraph as pg
 from acqApp import adapters, config, style
 from acqApp.dialogs import ConnectionMonitor, ModuleSelectDialog, SettingsDialog
 from acqApp.saving import SaveConfig, SavePanel
-from acqApp.sync import SyncController
+from acqApp.acq.sync import SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer

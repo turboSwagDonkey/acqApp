@@ -21,7 +21,7 @@ import sys
 
 from _harness import Report      # noqa: F401  (also puts acqApp on sys.path)
 
-from acqApp.voltage_cam import presets as P        # noqa: E402
+from acqApp.devices.voltage_cam import presets as P        # noqa: E402
 
 
 def main() -> int:

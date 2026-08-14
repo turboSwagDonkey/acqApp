@@ -36,8 +36,8 @@ sys.path.insert(0, r"{repo}")
 {harden}
 from PyQt6.QtCore import QCoreApplication
 _app = QCoreApplication([])
-from acqApp.voltage_cam.acquisition import OrcaFireWorker
-from acqApp.voltage_cam.presets import AcqConfig
+from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+from acqApp.devices.voltage_cam.presets import AcqConfig
 
 cfg = AcqConfig()                     # default: 10 ms exposure at full frame
 assert cfg.exposure_limited, "default config is expected to be exposure-limited"

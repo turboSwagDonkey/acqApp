@@ -29,8 +29,8 @@ from pathlib import Path
 
 from _harness import Report
 
-from acqApp.stage import settings as S
-from acqApp.stage.control import StageController, StageControllerError
+from acqApp.devices.stage import settings as S
+from acqApp.devices.stage.control import StageController, StageControllerError
 
 UPDATES = {1: {"true_center": 12345, "soft_min": -1000, "soft_max": 1000},
            2: {"true_center": 6789}}

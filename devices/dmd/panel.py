@@ -21,8 +21,8 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.dmd import alp
-from acqApp.dmd.control import DEFAULT_H, DEFAULT_W, DmdSettings
+from acqApp.devices.dmd import alp
+from acqApp.devices.dmd.control import DEFAULT_H, DEFAULT_W, DmdSettings
 
 
 class SettingsPanel(QWidget):

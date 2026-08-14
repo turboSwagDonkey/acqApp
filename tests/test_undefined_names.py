@@ -2,7 +2,7 @@
 
 Guards the moved-code defect: a file is split, the new module's imports miss a
 name the moved code used, and the NameError waits on a path the suite never
-calls. Happened 2026-08-13 (six names, `stage/settings.py` and `dmd/control.py`).
+calls. Happened 2026-08-13 (six names, `devices/stage/settings.py` and `devices/dmd/control.py`).
 
 `symtable` does the scoping; this asks whether what's left lands on a
 module-level binding or a builtin. Nothing is imported or executed.
@@ -112,9 +112,9 @@ def check_package(r: Report) -> None:
     files = app_sources()
     # A glob matching nothing would make every check here vacuous.
     r.check(len(files) > 60, f"the scan reaches the whole package ({len(files)} files)")
-    for must in ("main.py", "devices.py", "adapters/base.py", "dmd/control.py",
-                 "stage/settings.py", "pupil_cam/tracking.py",
-                 "closed_loop/settings.py"):
+    for must in ("main.py", "acq/devices.py", "adapters/base.py",
+                 "devices/dmd/control.py", "devices/stage/settings.py",
+                 "devices/pupil_cam/tracking.py", "closed_loop/settings.py"):
         r.check(APP_DIR / must in files, f"{must} is in the scan")
 
     bad, starred, unparsed = [], [], []
@@ -172,7 +172,7 @@ MUST_NOT_FLAG = {
         "def f():\n    return np\n",
     "TYPE_CHECKING import used in an annotation":
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
-        "    from acqApp.devices import CameraWorker\n"
+        "    from acqApp.acq.devices import CameraWorker\n"
         "def f(w: 'CameraWorker') -> None:\n    return None\n",
     "def in both branches of a conditional":
         "import sys\nif sys.platform == 'win32':\n    def pick():\n        return 1\n"
@@ -223,9 +223,9 @@ def check_controls(r: Report) -> None:
 
 def check_injection(r: Report) -> None:
     """Break real files the way a split breaks them: drop one used import."""
-    for rel in ("main.py", "dialogs.py", "adapters/base.py", "dmd/control.py",
-                "stage/panel.py", "pupil_cam/tracking.py",
-                "closed_loop/worker.py"):
+    for rel in ("main.py", "dialogs.py", "adapters/base.py",
+                "devices/dmd/control.py", "devices/stage/panel.py",
+                "devices/pupil_cam/tracking.py", "closed_loop/worker.py"):
         if not (APP_DIR / rel).is_file():
             # Report, don't crash: a moved file must fail this test loudly, not
             # take the run down with a traceback.

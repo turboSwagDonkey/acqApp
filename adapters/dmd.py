@@ -11,10 +11,10 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
-from acqApp.devices import ProjectorController
-from acqApp.dmd import alp
-from acqApp.dmd.control import DmdController, DmdSettings, MockDmdController
-from acqApp.dmd.panel import SettingsPanel as DmdPanel
+from acqApp.acq.devices import ProjectorController
+from acqApp.devices.dmd import alp
+from acqApp.devices.dmd.control import DmdController, DmdSettings, MockDmdController
+from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
 
 

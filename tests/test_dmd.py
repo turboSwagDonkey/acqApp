@@ -108,8 +108,8 @@ def main() -> int:
     install_fake_alp()                  # …and then a fake that records instead
     app = qt_app()
 
-    from acqApp.dmd import alp
-    from acqApp.dmd.control import (DmdController, DmdSettings, FRAME_START,
+    from acqApp.devices.dmd import alp
+    from acqApp.devices.dmd.control import (DmdController, DmdSettings, FRAME_START,
                                     FRAME_STOP, MockDmdController)
 
     # ══ geometry ══════════════════════════════════════════════════════════════

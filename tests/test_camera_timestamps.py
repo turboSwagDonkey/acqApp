@@ -28,8 +28,8 @@ import numpy as np
 
 from _harness import Report, qt_app
 
-from acqApp.voltage_cam.acquisition import OrcaFireWorker
-from acqApp.voltage_cam.presets import AcqConfig
+from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+from acqApp.devices.voltage_cam.presets import AcqConfig
 from acqApp.acq.clock import SessionClock
 
 # Same shape as pylablib's DCAM.TFrameInfo.

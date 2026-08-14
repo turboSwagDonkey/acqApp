@@ -401,7 +401,7 @@ if __name__ == "__main__":
     # diagnostic print is otherwise indistinguishable from a device failure).
     import sys as _sys
     from pathlib import Path as _Path
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
     from acqApp.console import enable_safe_console
     enable_safe_console()
 

@@ -45,7 +45,7 @@ class SlowTracker:
     def process(self, frame):
         self.calls += 1
         time.sleep(SLOW_S)
-        from acqApp.pupil_cam.tracking import PupilResult
+        from acqApp.devices.pupil_cam.tracking import PupilResult
         return PupilResult(1.0, 2.0, 3.0, 1.0)
 
 
@@ -53,9 +53,9 @@ def main() -> int:
     r = Report("pupil-thread")
     app = qt_app()      # the workers are real QThreads
 
-    from acqApp.pupil_cam.acquisition import MockPupilCameraWorker
-    from acqApp.pupil_cam.track_worker import PupilTrackWorker, track_params
-    from acqApp.pupil_cam.settings import PupilSettings
+    from acqApp.devices.pupil_cam.acquisition import MockPupilCameraWorker
+    from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker, track_params
+    from acqApp.devices.pupil_cam.settings import PupilSettings
 
     # ── the settings → tracker mapping ───────────────────────────────────────
     p = track_params(PupilSettings(threshold=42, min_r=7, max_r=99, n_rays=32,
@@ -64,7 +64,7 @@ def main() -> int:
     r.check(p == {"threshold": 42, "min_r": 7, "max_r": 99, "n_rays": 32,
                   "polarity": "falling", "min_strength": 2.5, "fit": "ellipse"},
             f"track_params carries every panel-owned option (got {p})")
-    from acqApp.pupil_cam.tracking import PupilTracker
+    from acqApp.devices.pupil_cam.tracking import PupilTracker
     r.check(all(hasattr(PupilTracker(), k) for k in p),
             "every track_params key is a real PupilTracker option")
 
@@ -187,7 +187,7 @@ def main() -> int:
             "…and hides it again")
 
     # 2. it draws what the tracker found — edge points split by the inlier mask
-    from acqApp.pupil_cam.tracking import PupilResult
+    from acqApp.devices.pupil_cam.tracking import PupilResult
     edge_x = np.array([10.0, 20.0, 30.0, 40.0])
     edge_y = np.array([11.0, 21.0, 31.0, 41.0])
     keep = np.array([True, False, True, False])

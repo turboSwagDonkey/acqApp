@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QSpinBox, QWidget,
 )
 
-from acqApp.wheel.settings import EncoderSettings
+from acqApp.devices.wheel.settings import EncoderSettings
 
 
 class SettingsPanel(QWidget):

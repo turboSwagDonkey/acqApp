@@ -13,7 +13,7 @@ rather than just a red line. Current expectation is sub-pixel everywhere.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[2]))
+sys.path.insert(0, str(Path(__file__).parents[3]))
 
 # Diagnostic prints in the device modules use characters a non-UTF-8 console
 # cannot encode; unguarded, that raises inside the acquisition thread and
@@ -23,7 +23,7 @@ enable_safe_console()
 
 import numpy as np
 
-from acqApp.pupil_cam.tracking import (
+from acqApp.devices.pupil_cam.tracking import (
     coarse_seed, detect, fit_circle_robust, fit_circle_taubin, fit_ellipse,
     PupilTracker,
 )

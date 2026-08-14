@@ -21,7 +21,7 @@ from pathlib import Path
 # The standalone app is the single source of truth; acqApp's own copy is the
 # fallback for when that sibling folder isn't present.
 _LOCAL_CONFIG  = Path(__file__).with_name("stage_config.json")
-_SHARED_CONFIG = Path(__file__).resolve().parents[2] / "stage_control" / "config.json"
+_SHARED_CONFIG = Path(__file__).resolve().parents[3] / "stage_control" / "config.json"
 
 FULL_TRAVEL_UM = 25400.0        # 1 inch of travel per axis
 

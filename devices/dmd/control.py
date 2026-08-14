@@ -1,7 +1,7 @@
 """
 DMD (Digital Micromirror Device) controller + settings panel.
 
-DmdController      : the real Vialux ALP-4.2 (1024x768 on this rig), via dmd/alp.py.
+DmdController      : the real Vialux ALP-4.2 (1024x768 on this rig), via devices/dmd/alp.py.
 MockDmdController  : renders patterns locally, no hardware needed.
 SettingsPanel      : QWidget for pattern, geometry, timing and trigger settings.
 """
@@ -18,7 +18,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 # Only QObject and pyqtSignal: the controllers are devices, not widgets. The
 # panel and everything it draws with live in `panel.py`.
-from acqApp.dmd import alp
+from acqApp.devices.dmd import alp
 
 # Fallback panel size before (or without) a device: this rig's ALP is XGA.
 DEFAULT_W, DEFAULT_H = 1024, 768

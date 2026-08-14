@@ -27,7 +27,7 @@ from collections import deque
 from typing import Any, Callable
 
 from acqApp.acq.worker import PullWorker
-from acqApp.pupil_cam.tracking import PupilResult, PupilTracker
+from acqApp.devices.pupil_cam.tracking import PupilResult, PupilTracker
 
 # Tracker options the settings panel owns. One list, so the panel, the adapter
 # and the worker cannot drift apart about what is configurable.

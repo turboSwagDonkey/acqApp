@@ -35,7 +35,7 @@ _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
 # scale/rotation — the arrangement the stage has with stage_control/.
 _SIBLING_CONFIG = Path("dmdGUI_project") / "dmd_config.json"
 
-_ROOT = Path(__file__).resolve().parents[2]        # …/python
+_ROOT = Path(__file__).resolve().parents[3]        # …/python
 
 
 def sibling_config() -> dict[str, Any]:

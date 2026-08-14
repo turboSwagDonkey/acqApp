@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.stage.map_widget import StageMap
-from acqApp.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
+from acqApp.devices.stage.map_widget import StageMap
+from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
                                    _C_SOFT, StageSettings, config_path,
                                    load_settings)
 

@@ -11,11 +11,11 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.closed_loop import SignalSource
-from acqApp.devices import ClockedWorker
+from acqApp.acq.devices import ClockedWorker
 from acqApp.adapters.base import PLOT_HISTORY, ModuleAdapter, _plot
-from acqApp.wheel.acquisition import EncoderWorker, MockEncoderWorker
-from acqApp.wheel.panel import SettingsPanel as WheelSettingsPanel
-from acqApp.wheel.settings import EncoderSettings
+from acqApp.devices.wheel.acquisition import EncoderWorker, MockEncoderWorker
+from acqApp.devices.wheel.panel import SettingsPanel as WheelSettingsPanel
+from acqApp.devices.wheel.settings import EncoderSettings
 
 
 class WheelModule(ModuleAdapter):

@@ -198,8 +198,8 @@ def check_drops_counted(r: Report) -> None:
 
 def check_no_hot_spin(r: Report) -> None:
     from test_camera_timestamps import FakeCam
-    from acqApp.voltage_cam.acquisition import OrcaFireWorker
-    from acqApp.voltage_cam.presets import AcqConfig
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+    from acqApp.devices.voltage_cam.presets import AcqConfig
 
     RUN_S = 1.0
 

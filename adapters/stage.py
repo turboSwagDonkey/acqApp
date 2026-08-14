@@ -10,10 +10,10 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
-from acqApp.stage.acquisition import StagePollWorker
-from acqApp.stage.control import MockStageController, StageController
-from acqApp.stage.panel import SettingsPanel as StageSettingsPanel
-from acqApp.stage.settings import load_settings as load_stage_settings
+from acqApp.devices.stage.acquisition import StagePollWorker
+from acqApp.devices.stage.control import MockStageController, StageController
+from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
+from acqApp.devices.stage.settings import load_settings as load_stage_settings
 
 
 class StageModule(ModuleAdapter):

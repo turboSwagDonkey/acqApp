@@ -12,15 +12,15 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget
 
 from acqApp import config, style
-from acqApp.devices import ExposureControl
+from acqApp.acq.devices import ExposureControl
 from acqApp.adapters.base import (PLOT_HISTORY, ModuleAdapter, _image_view,
                                  _plot)
-from acqApp.pupil_cam.acquisition import (MockPupilCameraWorker,
+from acqApp.devices.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
-from acqApp.pupil_cam.control import LedController, MockLedController
-from acqApp.pupil_cam.panel import SettingsPanel as PupilSettingsPanel
-from acqApp.pupil_cam.settings import PupilSettings
-from acqApp.pupil_cam.track_worker import PupilTrackWorker, track_params
+from acqApp.devices.pupil_cam.control import LedController, MockLedController
+from acqApp.devices.pupil_cam.panel import SettingsPanel as PupilSettingsPanel
+from acqApp.devices.pupil_cam.settings import PupilSettings
+from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker, track_params
 
 
 class PupilCamModule(ModuleAdapter):
@@ -38,7 +38,7 @@ class PupilCamModule(ModuleAdapter):
         self._vb = None
         self._curve = None
         self._y: list[float] = []
-        # Tracking runs on its own thread (see pupil_cam/track_worker.py): it is
+        # Tracking runs on its own thread (see devices/pupil_cam/track_worker.py): it is
         # the only consumer of the camera worker's frames and hands the GUI each
         # frame together with the fit made from it.
         self._track: PupilTrackWorker | None = None

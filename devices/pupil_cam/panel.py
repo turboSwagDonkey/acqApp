@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from acqApp.pupil_cam.settings import PupilSettings
+from acqApp.devices.pupil_cam.settings import PupilSettings
 
 
 class SettingsPanel(QWidget):

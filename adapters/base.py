@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QWidget
 
 from acqApp import style
 from acqApp.closed_loop import SignalSource
-from acqApp.devices import (DeviceWorker, ModuleHost, OutputController,
+from acqApp.acq.devices import (DeviceWorker, ModuleHost, OutputController,
                             RecordingOutput)
 
 

@@ -117,7 +117,7 @@ def check_rule(r: Report) -> None:
 # ── 2 + 3. the wheel's snapshot: non-consuming, and two speeds ───────────────
 
 def check_snapshot(r: Report) -> None:
-    from acqApp.wheel.acquisition import MockEncoderWorker
+    from acqApp.devices.wheel.acquisition import MockEncoderWorker
 
     w = MockEncoderWorker(4.912, 150.0)
     w.start()

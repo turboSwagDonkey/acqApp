@@ -147,7 +147,7 @@ def main() -> int:
     r = Report("encoder-timing")
     app = qt_app()
     install_fake_nidaqmx()
-    from acqApp.wheel.acquisition import EncoderWorker
+    from acqApp.devices.wheel.acquisition import EncoderWorker
 
     # ── the hardware-timed path ──────────────────────────────────────────────
     FakeTask.instances.clear()

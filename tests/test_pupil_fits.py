@@ -29,7 +29,7 @@ import numpy as np
 
 from _harness import Report      # noqa: F401  (also puts acqApp on sys.path)
 
-from acqApp.pupil_cam.tracking import (          # noqa: E402
+from acqApp.devices.pupil_cam.tracking import (          # noqa: E402
     fit_circle_robust, fit_circle_taubin, fit_ellipse,
 )
 

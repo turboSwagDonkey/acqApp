@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
-from acqApp.puffer.control import (MockPufferController, PufferController,
+from acqApp.devices.puffer.control import (MockPufferController, PufferController,
                                    PufferSettings, SettingsPanel as PufferPanel)
 
 

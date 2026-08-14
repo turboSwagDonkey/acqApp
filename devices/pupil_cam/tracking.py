@@ -35,10 +35,10 @@ import numpy as np
 
 # The separately testable halves live in their own modules, re-exported here so
 # `tracking.fit_circle_robust` keeps working.
-from acqApp.pupil_cam.fits import (_ellipse_radial_residual, fit_circle_robust,
+from acqApp.devices.pupil_cam.fits import (_ellipse_radial_residual, fit_circle_robust,
                                    fit_circle_taubin, fit_ellipse,
                                    fit_ellipse_robust)
-from acqApp.pupil_cam.rays import (_edges_along_rays, _ray_angles,
+from acqApp.devices.pupil_cam.rays import (_edges_along_rays, _ray_angles,
                                    _sample_annulus)
 
 # Longest side the coarse seed's distance transform is allowed to run on; a

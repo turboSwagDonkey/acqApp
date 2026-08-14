@@ -95,7 +95,7 @@ def _dmd() -> ProbeResult:
     except Exception as e:
         return ProbeResult("error", f"ALP4lib unavailable ({e})")
     try:
-        from acqApp.dmd import alp
+        from acqApp.devices.dmd import alp
         lib_dir, source = alp.resolve_lib_dir()
     except Exception as e:                       # pragma: no cover — import guard
         return ProbeResult("error", f"ALP API lookup failed ({e})")

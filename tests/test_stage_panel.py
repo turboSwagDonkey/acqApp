@@ -22,7 +22,7 @@ from pathlib import Path
 
 from _harness import Report, isolate_user_state, qt_app
 
-from acqApp.stage import settings as stage_settings
+from acqApp.devices.stage import settings as stage_settings
 
 # Bind the temp path before `panel` does `from ... import config_path`, or it
 # keeps a reference to the real one. The operator's calibration is shared with
@@ -33,7 +33,7 @@ stage_settings.config_path = lambda: _TMP / "config.json"
 
 from PyQt6.QtWidgets import QMessageBox           # noqa: E402
 
-from acqApp.stage.panel import SettingsPanel      # noqa: E402
+from acqApp.devices.stage.panel import SettingsPanel      # noqa: E402
 
 WARNINGS: list[str] = []
 ASKED: list[str] = []

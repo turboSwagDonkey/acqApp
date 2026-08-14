@@ -1,6 +1,6 @@
 """Closed loop — fire an output from what an instrument is measuring.
 
-Phase 5. `sync.py`'s bus fires named events at a *time*; this is the other kind,
+Phase 5. `acq/sync.py`'s bus fires named events at a *time*; this is the other kind,
 depending on what the animal is doing.
 
     settings.py   `SignalSource`, `LoopSettings`, `LoopRule` — the decision,

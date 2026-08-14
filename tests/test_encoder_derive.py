@@ -25,7 +25,7 @@ import numpy as np
 
 from _harness import Report      # noqa: F401  (also puts acqApp on sys.path)
 
-from acqApp.wheel.acquisition import _EncoderBase       # noqa: E402
+from acqApp.devices.wheel.acquisition import _EncoderBase       # noqa: E402
 
 VPR = 4.912                 # volts per revolution
 DIA = 150.0                 # wheel diameter, mm
