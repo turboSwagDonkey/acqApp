@@ -31,14 +31,14 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from acqApp import config
-from acqApp.modules.base import ModuleAdapter
-from acqApp.modules.closed_loop import ClosedLoopModule
-from acqApp.modules.dmd import DmdModule
-from acqApp.modules.puffer import PufferModule
-from acqApp.modules.pupil_cam import PupilCamModule
-from acqApp.modules.stage import StageModule
-from acqApp.modules.voltage_cam import VoltageCamModule
-from acqApp.modules.wheel import WheelModule
+from acqApp.adapters.base import ModuleAdapter
+from acqApp.adapters.closed_loop import ClosedLoopModule
+from acqApp.adapters.dmd import DmdModule
+from acqApp.adapters.puffer import PufferModule
+from acqApp.adapters.pupil_cam import PupilCamModule
+from acqApp.adapters.stage import StageModule
+from acqApp.adapters.voltage_cam import VoltageCamModule
+from acqApp.adapters.wheel import WheelModule
 
 
 # A new module needs a line here, one in config.MODULES, AND an accent colour in

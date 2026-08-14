@@ -114,7 +114,7 @@ def main() -> int:
 
     def sink(item):
         frame, at, index = item
-        # Exactly what modules.VoltageCamModule hands to Recorder.put(at=...).
+        # Exactly what adapters.VoltageCamModule hands to Recorder.put(at=...).
         got.append((clock.now() if at is None else clock.at(at), index))
         if len(got) >= n_target:
             worker._stop = True

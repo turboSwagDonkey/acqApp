@@ -8,7 +8,7 @@ on a common timebase).
 
 This file owns only what is session-wide — the clock, the sync/trigger bus, the
 recorder, the save destination, the docks and the theme. Everything specific to
-one instrument lives in a `ModuleAdapter` in `modules/`, and this window just
+one instrument lives in a `ModuleAdapter` in `adapters/`, and this window just
 iterates over the adapters for the modules the user loaded.
 
 Run it any of these ways — the bootstrap below makes them all work:
@@ -134,7 +134,7 @@ from PyQt6.QtWidgets import (
 )
 import pyqtgraph as pg
 
-from acqApp import config, modules, style
+from acqApp import adapters, config, style
 from acqApp.dialogs import ConnectionMonitor, ModuleSelectDialog, SettingsDialog
 from acqApp.saving import SaveConfig, SavePanel
 from acqApp.sync import SyncController
@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
     """Session-wide shell: clock, triggers, recorder, save target, docks, theme.
 
     Per-instrument behaviour is NOT here — each loaded subsystem is a
-    `modules.ModuleAdapter` that owns its own panel, worker, display tick,
+    `adapters.ModuleAdapter` that owns its own panel, worker, display tick,
     recording sink and metadata. This window only iterates over them, which is
     why adding an instrument is a new adapter class rather than a new branch in
     four different methods.
@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self._pg_views: list = []      # pyqtgraph views to recolour on theme change
 
         # One adapter per loaded instrument, in config.MODULES display order.
-        self._modules = modules.build_adapters(self, self._enabled)
+        self._modules = adapters.build_adapters(self, self._enabled)
         self._build_ui()
         # After the UI: controllers are configured from their own panels, so
         # those must exist before the device is opened.

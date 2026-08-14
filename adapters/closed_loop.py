@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QWidget
 from acqApp import config
 from acqApp.closed_loop import (ClosedLoopWorker, LoopSettings, SignalSource,
                                 SettingsPanel as LoopPanel)
-from acqApp.modules.base import ModuleAdapter
+from acqApp.adapters.base import ModuleAdapter
 
 
 class ClosedLoopModule(ModuleAdapter):

@@ -9,7 +9,7 @@ from typing import Any
 from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
-from acqApp.modules.base import ModuleAdapter
+from acqApp.adapters.base import ModuleAdapter
 from acqApp.stage.acquisition import StagePollWorker
 from acqApp.stage.control import MockStageController, StageController
 from acqApp.stage.panel import SettingsPanel as StageSettingsPanel

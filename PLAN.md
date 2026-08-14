@@ -240,7 +240,7 @@ because two of them are how a future wrong-data bug gets in.
       `cam_dropped_frames` read a `getattr(..., 0)` default and a lossy real
       run and a mock filed the same 0.
 - [x] **A2 A new module needs three registrations, not the two documented.** ✅
-      `modules.ADAPTERS`, `config.MODULES` **and** a `style.HEX` colour; the
+      `adapters.ADAPTERS`, `config.MODULES` **and** a `style.HEX` colour; the
       third was undocumented and only showed up as a `KeyError` at build time.
       Now stated at `ADAPTERS`, which is where someone adding a module is
       looking. Confirmed the hard way: `closed_loop` needed exactly those three.
@@ -275,7 +275,7 @@ because two of them are how a future wrong-data bug gets in.
       `modules.py` grows again, split it per instrument rather than per layer.
       **`modules.py` done 2026-08-12; `main.py` deliberately not.** The trigger
       this item set fired: the closed loop took the file from 939 to 1204 lines
-      (+28 %). It is now `modules/` — `base.py` (the adapter, the two shared
+      (+28 %). It is now `adapters/` — `base.py` (the adapter, the two shared
       widget builders, the plot constants), one file per instrument, and
       `__init__.py` holding the registry and the lifecycle table. Per
       instrument, not per layer, as instructed: a session at the rig is spent on
@@ -283,8 +283,9 @@ because two of them are how a future wrong-data bug gets in.
       each other (they import only `base`). Bodies moved verbatim — verified
       line-by-line against the pre-split file, the only differences being
       imports, section banners and the two lines A4 changed. Callers see
-      nothing: `modules.build_adapters`, `.ADAPTERS` and `.ModuleAdapter` are
-      where they were. **`main.py` was left alone on purpose** — it is the
+      nothing: `build_adapters`, `.ADAPTERS` and `.ModuleAdapter` are where they
+      were (the package itself was renamed `modules/` → `adapters/` on
+      2026-08-14). **`main.py` was left alone on purpose** — it is the
       operator's active file this week (the settings dialog work), and
       restructuring under someone's in-progress edits is how the collateral
       damage earlier this session happened.
@@ -359,13 +360,34 @@ because two of them are how a future wrong-data bug gets in.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-14 (q) — `modules/` → `adapters/`, and a dead-code claim withdrawn
+- **The operator asked why instruments live in two places.** They don't quite:
+  `X/` is the device (driver, worker, its own widgets, app-agnostic) and
+  `modules/X.py` was the *adapter* wiring it into this window. Verified the
+  layering is one-directional — only `main.py` imports the package, and no
+  device package imports it back. The confusion was the **name**, so the package
+  is now **`adapters/`**. No code moved.
+- **A regex rename corrupted code, and `test_undefined_names` caught it.** The
+  substitution `in modules` → `in adapters` hit `probe.py`'s comprehension over
+  its own `modules` *parameter*, leaving `for m in adapters` — an undefined
+  name on a path no test calls. Suite went 530 → 529 with one named failure.
+  That test was written for exactly this and paid for itself on its first real
+  restructure. **Blind renames need the checker, not just the suite.**
+- **Withdrew a dead-code claim before acting on it.** `_test_tracking.py`,
+  `analyze_raw.py`, `capture_raw.py` and `_check_link.py` show as unreferenced
+  because they are *scripts*, run directly and never imported — and the docs
+  cite all four. They are the tools that measured `volts_per_rev` and the ones
+  for §6's open camera-link question. An import-graph check is the wrong test
+  for a script. Nothing was deleted. `toy_output/` is untracked by git (it holds
+  only a gitignored capture), so there was nothing in the repo to remove.
+
 ### 2026-08-13 (p) — comment trim, batch 1 of an unfinished pass
 - **The operator's call: the codebase's comments are too long.** Measured before
   starting: 15260 lines = 9014 code + **1566 comment + 2253 docstring** + 2427
-  blank, i.e. **prose is 25 % of the tree**. Densest were `modules/__init__.py`
+  blank, i.e. **prose is 25 % of the tree**. Densest were `adapters/__init__.py`
   (63 %), `devices.py` (45 %), `wheel/acquisition.py` (43 %).
 - **Done so far: 15260 → 15030 (−230)** across 7 files — `devices.py`,
-  `modules/__init__.py`, `modules/base.py`, `acq/recorder.py`,
+  `adapters/__init__.py`, `adapters/base.py`, `acq/recorder.py`,
   `wheel/acquisition.py`, `voltage_cam/acquisition.py`, `main.py`. Committed in
   four batches so any one is a single `git revert`.
 - **Every batch verified AST-identical** against its parent: parse both, strip
@@ -425,7 +447,7 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 - **Boundary found by the controls, now asserted:** under `from __future__
   import annotations` (66 of 78 files) annotations are strings and invisible to
   the scan, so an annotation-only import is *not* defended. Found because the
-  injection helper first picked `modules/base.py`'s `Any` and the scan stayed
+  injection helper first picked `adapters/base.py`'s `Any` and the scan stayed
   silent — correctly. The helper now drops a runtime-evaluated import.
 - Verified while updating this file: **`main.py` is 787 lines**, as §0 says. A
   `Measure-Object -Line` count said 672; it undercounts. Use Python to count.
@@ -491,14 +513,14 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   every transform being tested, and `fit` overrides scale/rotation/offset. Both
   now in §6 item 1 so the next person doesn't repeat them. No code changed.
 
-### 2026-08-12 (k) — §5b A4 and A5: the window surface, and `modules/`
+### 2026-08-12 (k) — §5b A4 and A5: the window surface, and `adapters/`
 - **A4.** `devices.ModuleHost` names what an adapter may ask of the window.
   Both directions are checked, and the second is the one that earns its keep: a
   Protocol proves the window still *provides* the surface, but the drift that
   costs something is an adapter reaching *past* it, so the test scans the
   adapters' source and fails on any undeclared `self.win.X`. The docstring it
   replaced was already wrong — seven members claimed, nine used.
-- **A5.** `modules.py` (1204 lines) is now `modules/`: `base.py` plus one file
+- **A5.** `modules.py` (1204 lines) is now `adapters/`: `base.py` plus one file
   per instrument, registry in `__init__.py`. Bodies moved verbatim and verified
   line-by-line against the pre-split file. Callers unchanged. `main.py` left
   alone deliberately — it is the operator's active file.

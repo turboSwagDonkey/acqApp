@@ -15,7 +15,7 @@ from acqApp.devices import ProjectorController
 from acqApp.dmd import alp
 from acqApp.dmd.control import DmdController, DmdSettings, MockDmdController
 from acqApp.dmd.panel import SettingsPanel as DmdPanel
-from acqApp.modules.base import ModuleAdapter
+from acqApp.adapters.base import ModuleAdapter
 
 
 class DmdModule(ModuleAdapter):

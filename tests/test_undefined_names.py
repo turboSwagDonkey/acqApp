@@ -112,7 +112,7 @@ def check_package(r: Report) -> None:
     files = app_sources()
     # A glob matching nothing would make every check here vacuous.
     r.check(len(files) > 60, f"the scan reaches the whole package ({len(files)} files)")
-    for must in ("main.py", "devices.py", "modules/base.py", "dmd/control.py",
+    for must in ("main.py", "devices.py", "adapters/base.py", "dmd/control.py",
                  "stage/settings.py", "pupil_cam/tracking.py"):
         r.check(APP_DIR / must in files, f"{must} is in the scan")
 
@@ -211,7 +211,7 @@ def check_controls(r: Report) -> None:
 
     # Boundary, asserted not just described: under `from __future__ import
     # annotations` (most files here) annotations are strings and invisible to
-    # this scan — `modules/base.py` imports `Any` on exactly those terms.
+    # this scan — `adapters/base.py` imports `Any` on exactly those terms.
     # Without it they are live expressions and are checked.
     fut = "from __future__ import annotations\n"
     _, quiet = scan_source(fut + "def f(x: Missing) -> None: pass\n", "ann")
@@ -222,7 +222,7 @@ def check_controls(r: Report) -> None:
 
 def check_injection(r: Report) -> None:
     """Break real files the way a split breaks them: drop one used import."""
-    for rel in ("main.py", "dialogs.py", "modules/base.py", "dmd/control.py",
+    for rel in ("main.py", "dialogs.py", "adapters/base.py", "dmd/control.py",
                 "stage/settings.py", "pupil_cam/tracking.py", "closed_loop.py"):
         src = (APP_DIR / rel).read_text(encoding="utf-8")
         broken, dropped = _drop_a_runtime_import(src)
@@ -242,7 +242,7 @@ def check_injection(r: Report) -> None:
 def _drop_a_runtime_import(src: str) -> tuple[str | None, list[str]]:
     """Blank the first module-level import read at runtime.
 
-    Runtime, not merely present: `modules/base.py`'s `Any` is annotation-only,
+    Runtime, not merely present: `adapters/base.py`'s `Any` is annotation-only,
     so dropping it is not a defect and the scan is right to stay quiet.
     """
     tree = ast.parse(src)

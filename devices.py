@@ -106,7 +106,7 @@ class ModuleHost(Protocol):
     """What an adapter may ask of the window.
 
     Prevents an adapter reaching past these into `win._save_panel`, at which
-    point `modules/` and `main.py` are one file again. A Protocol cannot see
+    point `adapters/` and `main.py` are one file again. A Protocol cannot see
     that, so the test also scans the adapters' source: adding a service is a
     line here, helping yourself to one is a failing test.
 

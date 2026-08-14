@@ -9,7 +9,7 @@ that is never asserted catches nothing. See `devices.py` for why they exist.
   2. **Parity** — both halves of a pair expose the same public API, bar an
      explicit allowlist. This is the one that catches a property added to the
      real class and forgotten on the mock.
-  3. **The probes are gone** from the `modules/` adapters.
+  3. **The probes are gone** from the `adapters/` adapters.
   4. **The window surface** — that `MainWindow` provides all of `ModuleHost`,
      and that no adapter reaches past it. A Protocol cannot see the second.
 
@@ -166,7 +166,7 @@ def main() -> int:
     # naming the old probes, and a raw-text search reads that prose as the thing
     # it warns about. (It did, on this test's first run.)
     #
-    # The whole `modules/` package is scanned — pinned to one path it would have
+    # The whole `adapters/` package is scanned — pinned to one path it would have
     # gone vacuous the moment A5 moved the DMD's adapter out of it.
     import io
     import tokenize
@@ -177,7 +177,7 @@ def main() -> int:
             tok for tok in tokenize.generate_tokens(io.StringIO(raw).readline)
             if tok.type not in kinds)
 
-    pkg = Path(__file__).resolve().parents[1] / "modules"
+    pkg = Path(__file__).resolve().parents[1] / "adapters"
     sources = sorted(pkg.glob("*.py"))
     raw = "\n".join(p.read_text(encoding="utf-8") for p in sources)
     # Stripped per file: `untokenize` works from token positions, so feeding it
@@ -226,7 +226,7 @@ def main() -> int:
                         tokenize.COMMENT, tokenize.STRING) for p in sources)))
     extra = sorted(used - declared)
     r.check(not extra,
-            f"every self.win.X in modules/ is declared on ModuleHost"
+            f"every self.win.X in adapters/ is declared on ModuleHost"
             + (f" — undeclared {extra}" if extra else ""))
 
     # CONTROL 1: the scan has to actually find the calls. A regex that matched

@@ -9,7 +9,7 @@ from typing import Any
 from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
-from acqApp.modules.base import ModuleAdapter
+from acqApp.adapters.base import ModuleAdapter
 from acqApp.puffer.control import (MockPufferController, PufferController,
                                    PufferSettings, SettingsPanel as PufferPanel)
 

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config, style
 from acqApp.devices import ExposureControl
-from acqApp.modules.base import (PLOT_HISTORY, ModuleAdapter, _image_view,
+from acqApp.adapters.base import (PLOT_HISTORY, ModuleAdapter, _image_view,
                                  _plot)
 from acqApp.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
