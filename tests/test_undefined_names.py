@@ -113,7 +113,8 @@ def check_package(r: Report) -> None:
     # A glob matching nothing would make every check here vacuous.
     r.check(len(files) > 60, f"the scan reaches the whole package ({len(files)} files)")
     for must in ("main.py", "devices.py", "adapters/base.py", "dmd/control.py",
-                 "stage/settings.py", "pupil_cam/tracking.py"):
+                 "stage/settings.py", "pupil_cam/tracking.py",
+                 "closed_loop/settings.py"):
         r.check(APP_DIR / must in files, f"{must} is in the scan")
 
     bad, starred, unparsed = [], [], []
@@ -223,7 +224,13 @@ def check_controls(r: Report) -> None:
 def check_injection(r: Report) -> None:
     """Break real files the way a split breaks them: drop one used import."""
     for rel in ("main.py", "dialogs.py", "adapters/base.py", "dmd/control.py",
-                "stage/settings.py", "pupil_cam/tracking.py", "closed_loop.py"):
+                "stage/panel.py", "pupil_cam/tracking.py",
+                "closed_loop/worker.py"):
+        if not (APP_DIR / rel).is_file():
+            # Report, don't crash: a moved file must fail this test loudly, not
+            # take the run down with a traceback.
+            r.check(False, f"[{rel}] target has moved — update this list")
+            continue
         src = (APP_DIR / rel).read_text(encoding="utf-8")
         broken, dropped = _drop_a_runtime_import(src)
         if broken is None:
