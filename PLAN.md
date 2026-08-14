@@ -373,6 +373,12 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   name on a path no test calls. Suite went 530 → 529 with one named failure.
   That test was written for exactly this and paid for itself on its first real
   restructure. **Blind renames need the checker, not just the suite.**
+- **Device packages now have one shape.** `settings.py` = the model, no Qt;
+  `panel.py` = its widgets. `wheel/` and `pupil_cam/` were split (the stage
+  already was); `voltage_cam/settings.py` was only ever a panel, so it is now
+  `voltage_cam/panel.py` — its model is `AcqConfig` in `presets.py`.
+  **Measured, not assumed:** the three models import with **0** PyQt6 modules
+  loaded; importing a panel pulls in 5. README has the convention.
 - **Withdrew a dead-code claim before acting on it.** `_test_tracking.py`,
   `analyze_raw.py`, `capture_raw.py` and `_check_link.py` show as unreferenced
   because they are *scripts*, run directly and never imported — and the docs

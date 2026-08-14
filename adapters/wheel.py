@@ -14,8 +14,8 @@ from acqApp.closed_loop import SignalSource
 from acqApp.devices import ClockedWorker
 from acqApp.adapters.base import PLOT_HISTORY, ModuleAdapter, _plot
 from acqApp.wheel.acquisition import EncoderWorker, MockEncoderWorker
-from acqApp.wheel.settings import (EncoderSettings,
-                                   SettingsPanel as WheelSettingsPanel)
+from acqApp.wheel.panel import SettingsPanel as WheelSettingsPanel
+from acqApp.wheel.settings import EncoderSettings
 
 
 class WheelModule(ModuleAdapter):

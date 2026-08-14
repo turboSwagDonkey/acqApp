@@ -15,7 +15,7 @@ from acqApp.adapters.base import (DISP_DS, LEVELS_EVERY, PLOT_HISTORY,
                                  ModuleAdapter, _image_view, _plot)
 from acqApp.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
 from acqApp.voltage_cam.presets import AcqConfig, DEFAULT_PRESET, PRESET_KEYS
-from acqApp.voltage_cam.settings import SettingsPanel as CamSettingsPanel
+from acqApp.voltage_cam.panel import SettingsPanel as CamSettingsPanel
 
 
 class VoltageCamModule(ModuleAdapter):

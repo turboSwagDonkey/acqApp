@@ -18,8 +18,8 @@ from acqApp.adapters.base import (PLOT_HISTORY, ModuleAdapter, _image_view,
 from acqApp.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
 from acqApp.pupil_cam.control import LedController, MockLedController
-from acqApp.pupil_cam.settings import (PupilSettings,
-                                       SettingsPanel as PupilSettingsPanel)
+from acqApp.pupil_cam.panel import SettingsPanel as PupilSettingsPanel
+from acqApp.pupil_cam.settings import PupilSettings
 from acqApp.pupil_cam.track_worker import PupilTrackWorker, track_params
 
 

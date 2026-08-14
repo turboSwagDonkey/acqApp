@@ -296,6 +296,31 @@ way back out. A value that was never set reads as an empty string.
 **Adding an instrument** is a new file in `adapters/` plus one line each in
 `adapters.ADAPTERS` and `config.MODULES` — the window itself does not change.
 
+### Why an instrument appears in two places
+
+`wheel/` and `adapters/wheel.py` are not duplicates — they are the two sides of
+the boundary, and the dependency only ever runs one way:
+
+    adapters/wheel.py   the ADAPTER: how the wheel plugs into THIS window —
+                        which tab, worker lifecycle, metadata keys
+    wheel/              the DEVICE: driver, acquisition worker, its own model
+                        and widgets. Knows nothing about acqApp's window.
+
+`main.py` imports `adapters`; `adapters/X.py` imports `X/`; no device package
+imports back. That is what lets an instrument be developed and tested without
+the app, and the window be read without knowing what a pupil camera is.
+
+Inside a device package the convention is:
+
+    settings.py   the settings model — a dataclass, **no Qt**
+    panel.py      its Qt widgets
+    acquisition.py / control.py / driver.py   the device itself
+
+Keeping `settings.py` Qt-free is load-bearing, not tidiness: the models import
+with zero PyQt6 modules, so config, tests and analysis can read them without a
+QApplication. `voltage_cam/` has no `settings.py` — its model is `AcqConfig` in
+`presets.py`.
+
 ## Tests
 
 ```
