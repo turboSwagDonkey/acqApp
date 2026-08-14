@@ -386,8 +386,15 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 - **Trap worth knowing:** a `QApplication` with no live Python reference is
   collected and widget construction then aborts natively — exit code, no
   traceback, no output at all. Assign `qt_app()`.
-- **Left:** ~3,400 prose lines (`pupil_cam/tracking.py`, `closed_loop.py`,
-  `dmd/alp.py`, `tests/_harness.py`, `stage/driver.py`); code half, one file in.
+- **Second prose batch** (2026-08-14): `pupil_cam/tracking.py` −37,
+  `tests/_harness.py` −19, `closed_loop.py` −18, `dmd/alp.py` −8,
+  `acq/writer.py` −8, `voltage_cam/presets.py` −8. All AST-identical.
+- **Where it stands: 15260 → 15130.** Prose 25 % → 23 % (3,819 → 3,547 lines).
+  Note the tree grew by the new test even as the trim removed ~370.
+- **Left:** the remaining prose is now spread thin rather than pooled — biggest
+  are `main.py` (195, mostly untouchable), `test_device_contracts.py` (76),
+  `pupil_cam/acquisition.py` (76), `stage/control.py`, `stage/settings.py`.
+  The code half has covered `stage/panel.py` and `stage/driver.py`.
 - `main.py` yielded only 19: it is the operator's file, so only comment blocks
   were touched and nothing in the dock/settings code.
 - **The measuring script is worth rebuilding, not the trim:** density per file
