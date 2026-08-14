@@ -519,8 +519,9 @@ class SettingsPanel(QWidget):
             self._map.update()
 
     def _clear_home(self) -> None:
-        if self._ctrl is not None:
-            self._ctrl.clear_home()
+        # The label and map clear either way — the bookmark is ours, not the
+        # controller's, so a failed round-trip must not strand the UI.
+        self._call("Could not clear home", lambda c: c.clear_home())
         self._update_home_label()
         self._map.update()
 

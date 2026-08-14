@@ -41,6 +41,7 @@ TESTS = [
     ("closed-loop", "test_closed_loop.py"),
     ("save-paths", "test_save_paths.py"),
     ("stage-state", "test_stage_state.py"),
+    ("stage-panel", "test_stage_panel.py"),
     ("pupil-thread", "test_pupil_tracking_thread.py"),
     ("losses",    "test_recording_losses.py"),
     ("camera-ts", "test_camera_timestamps.py"),
