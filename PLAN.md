@@ -389,12 +389,22 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 - **Second prose batch** (2026-08-14): `pupil_cam/tracking.py` −37,
   `tests/_harness.py` −19, `closed_loop.py` −18, `dmd/alp.py` −8,
   `acq/writer.py` −8, `voltage_cam/presets.py` −8. All AST-identical.
-- **Where it stands: 15260 → 15130.** Prose 25 % → 23 % (3,819 → 3,547 lines).
-  Note the tree grew by the new test even as the trim removed ~370.
-- **Left:** the remaining prose is now spread thin rather than pooled — biggest
-  are `main.py` (195, mostly untouchable), `test_device_contracts.py` (76),
-  `pupil_cam/acquisition.py` (76), `stage/control.py`, `stage/settings.py`.
-  The code half has covered `stage/panel.py` and `stage/driver.py`.
+- **Third batch:** `pupil_cam/acquisition.py` −18, `stage/control.py` −10,
+  `stage/settings.py` −7, `test_device_contracts.py` −5.
+- **Where it stands: 15260 → 15090.** Prose 25 % → 23 % (3,819 → 3,508). The
+  trim removed ~410; the tree shows −170 because `test_stage_panel.py` added
+  ~240 back.
+- **A refactor that did not pay, worth recording:** folding the closed-loop
+  panel's four `QDoubleSpinBox` blocks into a `_spin()` helper **cost 2 lines**
+  (a 15-line helper against four call sites whose long tooltips stayed either
+  way). Predicted ~9 saved, measured −2, so it was reverted. Verified first that
+  all five spinboxes came out identically configured — the only diff was a
+  tooltip *I* had shortened. **Rule of thumb: a widget helper needs ~5+ call
+  sites to break even.** `stage/panel.py`'s `_call` (8 sites) and
+  `stage/driver.py`'s `_send` (7) both paid.
+- **Left:** prose is now spread thin rather than pooled — `main.py` (195, mostly
+  the operator's), then nothing above ~60 per file. The code half has covered
+  `stage/panel.py` and `stage/driver.py`.
 - `main.py` yielded only 19: it is the operator's file, so only comment blocks
   were touched and nothing in the dock/settings code.
 - **The measuring script is worth rebuilding, not the trim:** density per file

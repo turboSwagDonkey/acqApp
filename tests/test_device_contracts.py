@@ -100,9 +100,8 @@ def main() -> int:
                 f"{cls.__name__} satisfies {proto.__name__}"
                 + (f" — MISSING {missing}" if missing else ""))
 
-    # The LED is an output that is deliberately NOT a RecordingOutput: its
-    # on/off state is illumination, not an experimental event. `detach_sink`
-    # asks exactly this question, so assert the answer rather than assume it.
+    # The LED is deliberately NOT a RecordingOutput — its state is illumination,
+    # not an event. `detach_sink` asks exactly this, so assert the answer.
     for cls in (LedController, MockLedController):
         r.check(bool(has_all(cls, RecordingOutput)),
                 f"{cls.__name__} is deliberately NOT a RecordingOutput "
@@ -147,9 +146,9 @@ def main() -> int:
                 + (f" — real-only {sorted(real_only)}" if real_only else "")
                 + (f" — mock-only {sorted(mock_only)}" if mock_only else ""))
 
-    # CONTROL: the drift this test exists to catch. `skipped_frames` was on
-    # OrcaFireWorker only until A1, and `cam_dropped_frames` read it through a
-    # getattr default — so a real lossy run and a mock both filed 0.
+    # CONTROL: the drift this exists to catch. `skipped_frames` was on
+    # OrcaFireWorker only until A1, read through a getattr default — so a lossy
+    # real run and a mock both filed 0.
     class MockCameraWithoutSkipped(MockCameraWorker):
         skipped_frames = property(lambda self: (_ for _ in ()).throw(
             AttributeError("skipped_frames")))
@@ -163,13 +162,12 @@ def main() -> int:
             "is read rather than defaulted")
 
     # ── 3. the probes are actually gone from the adapters ────────────────────
-    # Comments are stripped first: the code that replaced these probes explains
-    # itself by naming them, and a search over raw text would read that prose as
-    # the thing it warns about. (It did, on the first run of this test.)
+    # Comments are stripped first: the replacement code explains itself by
+    # naming the old probes, and a raw-text search reads that prose as the thing
+    # it warns about. (It did, on this test's first run.)
     #
-    # The whole `modules/` package is scanned, not one file — A5 split it into
-    # one file per instrument, and a scan pinned to a single path would have
-    # gone quietly vacuous the moment the DMD's adapter moved out of it.
+    # The whole `modules/` package is scanned — pinned to one path it would have
+    # gone vacuous the moment A5 moved the DMD's adapter out of it.
     import io
     import tokenize
     from pathlib import Path
@@ -201,18 +199,16 @@ def main() -> int:
                 f"the adapters no longer guess {why} with a default")
 
     # ── 4. the window surface stays narrow (A4) ──────────────────────────────
-    # The protocols above point down (module -> device); `ModuleHost` points up
-    # (module -> window), and is the reason main.py and modules/ stay
-    # independently readable. It needs BOTH halves checked, because each misses
-    # what the other catches: conformance alone allows an adapter to reach past
-    # the surface into `win._save_panel`, and the source scan alone allows the
-    # window to drop a service every adapter still calls.
+    # The protocols above point down (module -> device); `ModuleHost` points up.
+    # BOTH halves are needed, because each misses what the other catches:
+    # conformance alone lets an adapter reach past the surface into
+    # `win._save_panel`; the source scan alone lets the window drop a service
+    # every adapter still calls.
     import re
     from acqApp.devices import ModuleHost
 
-    # Safe to import: block_real_devices() stubbed pylablib, so main.py's
-    # DCAM pre-init falls into its own "no camera" branch. No QApplication is
-    # built at import.
+    # Safe to import: block_real_devices() stubbed pylablib, so main.py's DCAM
+    # pre-init takes its "no camera" branch. No QApplication at import.
     from acqApp.main import MainWindow
 
     missing = has_all(MainWindow, ModuleHost)
@@ -221,10 +217,9 @@ def main() -> int:
             + (f" — MISSING {missing}" if missing else ""))
 
     declared = _members(ModuleHost)
-    # Docstrings go too, not just comments: the surface is now documented by
-    # naming it, and the package header says "every `self.win.X`" in prose.
+    # Docstrings go too: the package header says "every `self.win.X`" in prose.
     # Section 3 keeps its strings — its needles are code *containing* string
-    # literals, and stripping those would make it pass by finding nothing.
+    # literals, so stripping those would make it pass by finding nothing.
     used = set(re.findall(
         r"self\.win\.(\w+)",
         "\n".join(strip(p.read_text(encoding="utf-8"),
@@ -247,8 +242,8 @@ def main() -> int:
             f"control: a reach past the surface is caught (got {sorted(rogue)})")
 
     # CONTROL 3: conformance must fail on an incomplete host. `signal_sources`
-    # is the newest member and the exact shape of the drift that prompted A4 —
-    # two services added to the window with only a docstring to notice.
+    # is the newest member, and the exact drift that prompted A4 — services
+    # added to the window with only a docstring to notice.
     class AlmostAHost:
         sync = None
         cam_handle = None
