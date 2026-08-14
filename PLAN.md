@@ -27,8 +27,8 @@ file precisely so nobody reads 300 lines of finished work to start.
 
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed, so **everything still open needs the rig** — see
-§6's "Needs the rig". The test suite is the contract: **502 checks, 17 files,
-~43 s, all passing.** Run it before and after anything.
+§6's "Needs the rig". The test suite is the contract: **530 checks, 18 files,
+~49 s, all passing.** Run it before and after anything.
 
 ```
 c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
@@ -377,9 +377,15 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 - **Pre-existing defect it surfaced:** `_stop`, `_stop_all` and the dialog's
   `_stop_all` were unguarded — the panic path (Esc → STOP ALL, app-wide), where
   a dead serial link is exactly the case, and an escaping slot exception aborts
-  the process (§2). Now guarded. Verified with a scratch probe (fake controller,
-  healthy and all-raising): dispatch identical, 8 warnings instead of a crash.
-  **`tests/` covers no panel motion or panic path — worth a real test.**
+  the process (§2). Now guarded.
+- **`test_stage_panel.py` (28 checks)** covers those paths, which nothing else
+  pressed — the GUI tests build the panel but never click it. It found an
+  eighth bare call the manual pass had missed (`_clear_home`) on its first run.
+  Controls: the old unguarded bodies must still raise, jog stays enabled when a
+  missing frame disables go-to, an unbound panel is a silent no-op.
+- **Trap worth knowing:** a `QApplication` with no live Python reference is
+  collected and widget construction then aborts natively — exit code, no
+  traceback, no output at all. Assign `qt_app()`.
 - **Left:** ~3,400 prose lines (`pupil_cam/tracking.py`, `closed_loop.py`,
   `dmd/alp.py`, `tests/_harness.py`, `stage/driver.py`); code half, one file in.
 - `main.py` yielded only 19: it is the operator's file, so only comment blocks
