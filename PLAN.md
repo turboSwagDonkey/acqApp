@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-14 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done (**phase 5, closed-loop, built and mock-verified**); **audit remediation 100 %** (22 of 22 closed). Everything left in phases 0–5 needs the rig, bar §6 item 0. §5b has **1 open item** (A3), reviewed and deliberately left open. |
+| **Progress** | Roadmap phases 0–5 done (**phase 5, closed-loop, built and mock-verified**); **audit remediation 100 %** (22 of 22 closed). §6 item 0 (root grouping) closed 2026-08-14. What is left needs hardware — but see §2: more of it is on this machine than was thought. §5b has **1 open item** (A3), reviewed and deliberately left open. |
 
 ---
 
@@ -38,7 +38,7 @@ Use the **absolute** path to that interpreter. The shell usually starts in
 `Desktop\python` (the *parent* of this repo), where `.venv\Scripts\python.exe`
 resolves to nothing and Python reports a baffling "the module '.venv' could not
 be loaded". Python here is **3.14** — no cv2 wheels exist for it, which is why
-`pupil_cam/tracking.py` is hand-rolled numpy.
+`devices/pupil_cam/tracking.py` is hand-rolled numpy.
 
 **Sibling projects are proven code, not scratch work.** `../stage_control/` and
 `../dmdGUI_project/` are standalone apps for the stage and the DMD that already
@@ -46,7 +46,7 @@ work on this hardware. acqApp deliberately *shares their config files* rather
 than duplicating their state — the stage's calibration lives in
 `stage_control/config.json`, the DMD's ALP path and optical alignment in
 `dmdGUI_project/dmd_config.json`. Before writing a device path from scratch,
-look next door: `dmd/alp.py` is a port of `dmdCommandLine.py`, and it is the
+look next door: `devices/dmd/alp.py` is a port of `dmdCommandLine.py`, and it is the
 reason #5 took one session instead of several.
 
 **Practical gotchas that have each cost real time:**
@@ -71,8 +71,10 @@ reason #5 took one session instead of several.
 
 **Nothing is uncommitted and nothing is unpushed** (`origin/master`, 2026-08-14).
 
-**Pick up here.** One decision is open and it is small — §6 item 1, the root
-grouping. Everything else in §6 needs the rig.
+**Pick up here.** §6 item 1: **this machine has more hardware than §2 claimed**
+(ORCA on CoaXPress, the 6363, COM54 — found 2026-08-14), so several "Needs the
+rig" items may be closable without travelling. That is a question for the
+operator before anything is run, not a licence.
 
 **Two standing instructions from the operator:**
 - **Write comments terser than the surrounding style.** This codebase's prose is
@@ -85,12 +87,14 @@ grouping. Everything else in §6 needs the rig.
 in two places and they are not duplicates:
 
     adapters/wheel.py   the ADAPTER — how it plugs into THIS window
-    wheel/              the DEVICE  — driver, worker, model, widgets
+    devices/wheel/      the DEVICE  — driver, worker, model, widgets
 
-`main.py` → `adapters/` → device packages, and nothing imports back. Inside a
-device package, `settings.py` is the model (**no Qt**) and `panel.py` its
-widgets. `closed_loop/` and `saving/` follow the same shape. README has the
-long version.
+`main.py` → `adapters/` → `devices/`, and nothing imports back. Inside a device
+package, `settings.py` is the model (**no Qt**) and `panel.py` its widgets.
+`closed_loop/` and `saving/` follow the same shape. The root is the shell —
+`main`, `config`, `console`, `dialogs`, `probe`, `style` — with the acquisition
+core (clock, recorder, ring, worker, writer, `sync`, `devices` protocols) in
+`acq/`. README has the long version.
 
 **Committed 2026-08-12** in `69c657c` (28 files): the operator's settings-window
 work — the settings tabs moved from a dock into a `SettingsDialog` pop-up
@@ -119,7 +123,7 @@ restructure it (that is why §5b A5 split `modules.py` and deliberately left
 
 **A warning that cost most of a session.** An editing pass aimed at "the
 settings" rewrote every file with *settings* in its name, including
-`stage/settings.py` — which it reduced to stubs, so `load_settings()` returned
+`devices/stage/settings.py` — which it reduced to stubs, so `load_settings()` returned
 hardcoded defaults instead of reading `stage_control/config.json` and
 `save_axis_updates()` became a `pass`. It also deleted `SettingsDialog._PAD` and
 most of `DmdModule.metadata()`. Only three of those five broke a test; the
@@ -146,10 +150,16 @@ These are invariants, not preferences. Breaking one has cost real time before.
   before it goes near the rig. Real-hardware-only claims get flagged as such.
 - **This machine has *some* hardware — check, don't assume.** This rule used to
   read "the laptop has no hardware", and on 2026-08-12 that was wrong: the
-  **DMD is attached to this machine** and opens from `acqApp/.venv`. The
-  camera, NI board and stage are still rig-only. So: write + commit + push
+  **DMD is attached to this machine** and opens from `acqApp/.venv`. **It was
+  wrong a second time on 2026-08-14:** `probe_all` here reports the ORCA
+  (1 DCAM camera), `Dev3 PCIe-6363` for wheel *and* puffer, and COM54 for the
+  stage — everything but the Basler pupil camera. Treat "rig-only" as a claim
+  to re-check, not a fact. Two caveats: a probe is *enumeration*, so COM54
+  "present" is not a working serial link (`devices/stage/driver.py` still fails
+  to open it here), and presence is not permission — the stage and puffer are
+  actuators. So: write + commit + push
   here, pull + run + fix on the rig, but *probe before concluding* a device is
-  absent — `dmd/alp.py`'s `AlpDevice.open()` answers in 0.14 s. Anything that
+  absent — `devices/dmd/alp.py`'s `AlpDevice.open()` answers in 0.14 s. Anything that
   genuinely can't be checked here goes in §6 "Needs the rig".
 - **Ask before actuating anything physical.** Opening, configuring and
   uploading to a device are safe and reversible; **emitting light, firing the
@@ -245,7 +255,7 @@ because two of them are how a future wrong-data bug gets in.
       2026-08-12: adding `device_name`/`resolution`/`on_pixels` to
       `DmdController` meant remembering all three on `MockDmdController`, with
       nothing to catch the omission.
-      **Done 2026-08-12.** New `devices.py` holds seven small `Protocol`s
+      **Done 2026-08-12.** New `acq/devices.py` holds seven small `Protocol`s
       (`DeviceWorker`, `TimestampedWorker`, `CameraWorker`, `ClockedWorker`,
       `ExposureControl`, `OutputController`, `RecordingOutput`,
       `ProjectorController`), split rather than fat: the eye-tracking LED is
@@ -281,7 +291,7 @@ because two of them are how a future wrong-data bug gets in.
       promise.** ✅ Adapters get the whole `win` object; the seven-method
       contract in the header was enforced by nothing. A `Protocol` here too
       would make it real, and pairs naturally with A1.
-      **Done 2026-08-12.** `devices.ModuleHost` — the same idea pointed up
+      **Done 2026-08-12.** `acq.devices.ModuleHost` — the same idea pointed up
       instead of down. The docstring was already wrong when this was written:
       it named seven members while the code used nine, because the closed loop
       added `module_keys` and `signal_sources` with nothing to notice.
@@ -290,7 +300,7 @@ because two of them are how a future wrong-data bug gets in.
       the drift that actually costs something is an adapter reaching *past* it
       into `win._save_panel`. So the second half scans the adapters' source and
       fails on any `self.win.X` that `ModuleHost` doesn't declare. Widening the
-      surface is now a deliberate line in `devices.py`.
+      surface is now a deliberate line in `acq/devices.py`.
 - [x] **A5 `main.py` (899) and `modules.py` (1204) are large.** ✅ `main.py`
       still carries window chrome, docks, theme, session start/stop and
       recording wiring; `modules.py` was seven cohesive adapters in one file.
@@ -315,20 +325,17 @@ because two of them are how a future wrong-data bug gets in.
 
 ## 6. Next actions
 
-0. **One open decision, and it is the only thing not blocked on the rig: how (or
-   whether) to group the root modules.** Raised 2026-08-14; two structural
-   changes were made and this third was deliberately stopped before, because
-   checking it turned up a hard constraint. Pick one and it is done:
-   - **(a) Smaller and recommended** — move `sync.py` and `devices.py` into
-     `acq/`, where clock/recorder/worker/writer already live. ~8 import sites,
-     removes an inconsistency, does not touch the bootstrap.
-   - **(b) The full `shell/` + `core/`** — needs the bootstrap reworked first:
-     `main.py` derives the venv from its own directory, so under `shell/` it
-     would install into `acqApp/shell/.venv` and break §2's first rule.
-   - **(c) Leave it.** The root is 8 modules and legible; `acq/` already carries
-     the acquisition core.
+0. ~~Group the root modules.~~ **Done 2026-08-14** — option (a), plus the
+   operator's call to gather the six instrument packages under `devices/`. See
+   §7 (r).
 
-1. **Project through the full app.** *Half of this closed on 2026-08-12, on
+1. **Decide what the hardware on this machine is for.** §2's "rig-only" list was
+   wrong (see there): the ORCA, the 6363 and COM54 all answer here. That may
+   unblock several "Needs the rig" items *without* travelling, but it also means
+   an unguarded script here can drive real hardware — ask first, as §2 says.
+   The cheapest next measurement is phase 0's, below.
+
+2. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
    **app's** path (the adapter and panel, not just the standalone script of
    §5 #5): the real ALP opens as `ALP-4.2 1024x768` with the API resolved from
@@ -345,7 +352,7 @@ because two of them are how a future wrong-data bug gets in.
    overrides scale, rotation and offset** by design, so a sweep with `fit` on
    measures nothing. The panel is honest about the second: it greys those
    spinboxes out.
-2. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
+3. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
    never seen an animal, and the one number it needs cannot be guessed here:
    **what wheel speed counts as "running"** for this rig's V/rev and diameter.
    The tab is designed for finding it — disarmed, the rule still evaluates and
@@ -353,14 +360,14 @@ because two of them are how a future wrong-data bug gets in.
    against a live animal without actuating anything. Arm only after that reads
    sensibly. Start with the puffer (a puff is recoverable; a stimulus train
    mid-experiment is not), `retrigger` off, and a `max_fires` ceiling.
-3. **Decide which wheel speed a rule should watch.** The panel offers both and
+4. **Decide which wheel speed a rule should watch.** The panel offers both and
    the file records the choice, but the default is `wheel_speed_live` on the
    grounds that a closed loop should act while the animal runs. Measured this
    session: the recorded speed crosses the same threshold **1.15 s** after the
    live one. If the paradigm wants the rule to agree exactly with the recorded
    trace, switch it — this is a scientific call, not a default worth inheriting.
 
-**Needs the rig (can't be closed from the laptop):**
+**Needs the rig — but check first, since 2026-08-14 found most of it here:**
 - The DMD's *optical* alignment: the electrical path is proven and the geometry
   math is now verified against the real panel, but nothing has confirmed where
   the projected pattern lands **on the sample**. That is what `dmdGUI_project`
@@ -378,6 +385,12 @@ because two of them are how a future wrong-data bug gets in.
 - Phase 0's camera throughput number:
   `.venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save`
   → the achieved MB/s sizes the ring buffer (#14) and confirms the SSD keeps up.
+  **The camera answers on this machine** (2026-08-14), so this is now a matter of
+  asking, not travelling. The *link* half is already settled:
+  `devices/voltage_cam/_check_link.py` reports **CoaXPress**, 8.68 ms full-frame
+  period → 115.3 fps, 2307 MB/s — which closes the CoaXPress-vs-USB3 question
+  §5 B2 left open. That is `get_frame_timings()`, i.e. what the camera says it
+  can deliver; it is **not** the sustained-to-SSD number this item wants.
 - Encoder **wheel diameter** — still unmeasured, and until it is set the app
   reports rev/s and rev rather than mm/s and mm. The panel now keeps whatever is
   typed in, so measure once and it stays measured. (`volts_per_rev` is *not*
@@ -395,6 +408,46 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-14 (r) — the root regroup, and "rig-only" turns out to be wrong
+- **§6 item 0 closed, option (a) + the operator's addition.** `sync.py` and
+  `devices.py` → `acq/`; the six instrument packages → `devices/`. The root is
+  now the shell (`main`, `config`, `console`, `dialogs`, `probe`, `style`) and
+  four packages beside it. `git mv` throughout, so history follows the files.
+- **The move's real hazard was not the imports.** Eight files walk up to
+  `Desktop/python` with `Path(__file__).resolve().parents[2]`, and one level
+  deeper makes that `acqApp/`. Two are load-bearing and **neither fails loudly**:
+  `devices/stage/settings.py` would have silently stopped reading
+  `stage_control/config.json` (falling back to defaults — the exact 2026-08-13
+  failure), and `devices/dmd/alp.py` would have lost the ALP path. All eight are
+  `parents[3]` now, verified by printing the resolved paths, not by inference.
+- **`test_undefined_names` earned its keep again**, differently: it carries two
+  hardcoded file lists and failed with *"target has moved — update this list"*
+  ×3 rather than passing vacuously. That is the behaviour it was written for.
+- **A dotted-path rewrite is safe where a bare-word one is not** (contrast (q)):
+  `acqApp.wheel` → `acqApp.devices.wheel` cannot collide with a local variable.
+  Ordering did matter — old `acqApp.devices` (the protocols) had to become
+  `acqApp.acq.devices` *before* `acqApp.<instrument>` started producing
+  `acqApp.devices.<instrument>`. Suite green after: 531 / 18 / 44.3 s.
+- **Docs: the relative links were broken by the move**, not just stale — every
+  `[stage/driver.py](../stage/driver.py)` in `docs/*_TRANSFER.md` pointed at
+  nothing. Fixed there, in README (which also gained `acq/devices.py`, never
+  described), `requirements.txt`, `tests/README.md` and both `CLAUDE.md`s.
+  Archives (`SESSIONLOG.md`, `AUDIT-2026-08.md`) and §7 below are **left alone**:
+  they record what was true then. Paths naming files deleted *before* the move
+  (`wheel/_toy.py`, the four `recording.py`) were reverted for the same reason.
+- **Then the four scripts were run to prove they still work at the new depth —
+  and one of them contradicted §2.** `_check_link.py` reported a real ORCA on
+  **this machine**: `C16240-20UP`, **CoaXPress**, 8.68 ms full frame → 115.3 fps.
+  `probe_all` then found `Dev3 PCIe-6363` (wheel + puffer) and COM54 as well;
+  only the Basler is absent. §2's "the camera, NI board and stage are still
+  rig-only" was wrong, and §6 is re-pointed accordingly. Nothing was actuated —
+  a camera open and an enumeration are both non-actuating, and the stage was
+  only enumerated.
+- **One flake, unexplained:** `test_closed_loop` failed a single check on one
+  full run (530/17), then passed standalone and on the two runs after. The check
+  name was not captured. If it recurs, capture it — the file's timing checks are
+  the suspects.
 
 ### 2026-08-14 (q) — `modules/` → `adapters/`, and a dead-code claim withdrawn
 - **The operator asked why instruments live in two places.** They don't quite:
