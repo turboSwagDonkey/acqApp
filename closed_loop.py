@@ -1,29 +1,26 @@
-"""
-Closed loop — fire an output from what an instrument is measuring.
+"""Closed loop — fire an output from what an instrument is measuring.
 
-Phase 5. `sync.py`'s bus fires named events at a *time* ("puff at t = 5 s");
-this is the other kind, one that depends on what the animal is doing.
+Phase 5. `sync.py`'s bus fires named events at a *time*; this is the other kind,
+depending on what the animal is doing.
 
   `SignalSource`      what a rule can watch, contributed by the adapters — so
-                      this module depends on *a scalar signal*, never on the
-                      wheel. Adding pupil radius is one method on that adapter.
-  `LoopRule`          the decision, as a pure function of (value, time). No Qt,
-                      no devices; pinned by `tests/test_closed_loop.py`.
+                      this module depends on *a scalar*, never on the wheel.
+  `LoopRule`          the decision, a pure function of (value, time). No Qt, no
+                      devices; pinned by `tests/test_closed_loop.py`.
   `ClosedLoopWorker`  a thread that samples the source and runs the rule.
 
-**Why a thread.** The 30 Hz display tick paints the camera previews, so a rule
-evaluated there inherits every stall they have (same argument as
-`pupil_cam/track_worker.py`). It *polls* the source rather than consuming it:
-`get_latest()` hands each sample out once and the display is already that
-consumer, so the loop reads a non-consuming snapshot instead.
+**Why a thread.** A rule on the 30 Hz display tick inherits every stall the
+camera previews have. It *polls* rather than consumes: `get_latest()` hands each
+sample out once and the display is already that consumer, so the loop reads a
+non-consuming snapshot.
 
-**The decision happens on this thread; the actuation does not.** The worker
-emits `fired`; the adapter re-emits it on the ordinary trigger bus, so a
-rule-driven puff runs the identical path to a scheduled one.
+**The decision is on this thread; the actuation is not.** The worker emits
+`fired` and the adapter re-emits it on the trigger bus, so a rule-driven puff
+takes the identical path to a scheduled one.
 
-**Arming is deliberately absent from `LoopSettings`** so it cannot be
-persisted. Same reasoning as the LED in audit #4: restoring "armed" means a
-rule that fires the puffer at next launch, before anyone checked the threshold.
+**Arming is deliberately absent from `LoopSettings`** so it cannot be persisted
+— as with the LED in audit #4, restoring "armed" means a rule that fires the
+puffer at next launch, before anyone checked the threshold.
 """
 from __future__ import annotations
 
@@ -43,14 +40,12 @@ from acqApp.acq.worker import PullWorker
 
 COMPARISONS = ("above", "below")
 
-# Outputs a rule can drive, key → label. Both are actuators: the key is a
-# module key, so firing one is `sync.fire(key, duration)` and the module's own
-# `on_trigger` does the rest.
+# Outputs a rule can drive, key → label. The key is a module key, so firing is
+# `sync.fire(key, duration)` and the module's `on_trigger` does the rest.
 TARGETS: dict[str, str] = {"puffer": "Puffer", "dmd": "DMD"}
 
-# Rule evaluation rate. Not a panel setting: it is a latency floor, not an
-# experimental parameter, and 200 Hz is already below the wheel's own 120 Hz
-# sample rate — polling faster would only re-read the same sample.
+# A latency floor, not an experimental parameter, so not a panel setting —
+# 200 Hz already outruns the wheel's 120 Hz, so faster only re-reads a sample.
 POLL_HZ = 200.0
 
 
@@ -58,14 +53,12 @@ POLL_HZ = 200.0
 class SignalSource:
     """A live scalar a rule can watch.
 
-    `read()` returns `(value, acquired_at)`, or None while the signal isn't
-    running yet — normal, not an error. `acquired_at` is a `perf_counter()`
-    reading of when the sample was ACQUIRED, the domain `Recorder.put(at=)`
-    wants, so a fire lands in the file at the sample that caused it rather than
-    at the GUI hop after it.
+    `read()` -> `(value, acquired_at)`, or None while the signal isn't running
+    yet (normal, not an error). `acquired_at` is the `perf_counter()` instant
+    the sample was ACQUIRED — the domain `Recorder.put(at=)` wants — so a fire
+    lands in the file at its cause, not at the GUI hop after it.
 
-    Called from the loop's thread, and must not consume: the display tick is
-    already the consumer of every worker's `get_latest()`.
+    Called from the loop's thread, and must not consume.
     """
     key:   str                                       # stable id: config + file
     label: str                                       # what the combo shows
@@ -75,11 +68,9 @@ class SignalSource:
 
 @dataclass
 class LoopSettings:
-    """The rule, as persisted — note what is *not* here: `armed`.
-
-    All of this reaches `acqapp_local.json` and the session file. Arming lives
-    on the panel, so no code path can restore a rig into an armed state.
-    """
+    """The rule, as persisted — note what is *not* here: `armed`. All of this
+    reaches `acqapp_local.json` and the session file, so arming lives on the
+    panel and no code path can restore a rig into an armed state."""
     source:       str   = ""          # SignalSource.key; "" = first on offer
     comparison:   str   = "above"     # one of COMPARISONS
     threshold:    float = 50.0        # in the source's units
@@ -95,14 +86,14 @@ class LoopRule:
     """Should this fire, given the newest value? Pure, Qt-free, testable.
 
     One `update()` per sample, True on exactly the samples that should actuate.
-    Each gate exists for a way a bare threshold misbehaves on a real signal:
+    Each gate covers a way a bare threshold misbehaves on a real signal:
 
       `hold_s`       noise crosses a threshold many times a second; holding
                      turns a crossing into an event
-      `refractory_s` without it, a condition that stays true fires on every
+      `refractory_s` without it a condition that stays true fires on every
                      sample — 200 puffs a second
-      `retrigger`    True: re-fire each refractory while the condition holds.
-                     False: one fire per bout, the signal must fall back first
+      `retrigger`    True: re-fire each refractory while it holds. False: one
+                     fire per bout, the signal must fall back first
       `max_fires`    session ceiling, so a wrong rule is wrong a bounded number
                      of times
 
@@ -123,17 +114,16 @@ class LoopRule:
         self.n_fires = 0
 
     def configure(self, settings: LoopSettings) -> None:
-        """Adopt new settings mid-session, keeping the fire history: nudging a
-        threshold must not hand back a fresh `max_fires` budget, nor let the
-        next sample fire inside the refractory window."""
+        """Adopt new settings mid-session, keeping the fire history — nudging a
+        threshold must not hand back a fresh `max_fires` budget, nor let the next
+        sample fire inside the refractory window."""
         self._s = settings
         self._since = None
 
     def idle(self) -> None:
-        """Called while disarmed. Forgets the in-progress hold, so arming
-        starts the hold timer at the moment of arming rather than from whenever
-        the animal happened to start running. The count and refractory survive.
-        """
+        """Called while disarmed. Forgets the in-progress hold, so the timer
+        starts at the moment of arming rather than from whenever the animal
+        began running. Count and refractory survive."""
         self._since = None
         self._cleared = True
 
@@ -142,9 +132,8 @@ class LoopRule:
         return self._s
 
     def satisfied(self, value: float | None) -> bool:
-        """Is the condition true right now? (Ignores every gate — this is what
-        the panel's readout shows, so a threshold can be set against a live
-        animal while disarmed.)"""
+        """Is the condition true right now? Ignores every gate — it is what the
+        panel shows, so a threshold can be set against a live animal disarmed."""
         if value is None:
             return False
         return (value > self._s.threshold if self._s.comparison == "above"
@@ -175,11 +164,11 @@ class LoopRule:
 class ClosedLoopWorker(PullWorker):
     """Samples one `SignalSource` and runs a `LoopRule` over it.
 
-    `fired` is emitted from this thread; Qt queues it, so the actuation happens
-    on the GUI thread with every other one.
+    `fired` is emitted from this thread; Qt queues it, so actuation happens on
+    the GUI thread with every other one.
 
-    Disarmed, the rule still *evaluates* and the panel still shows whether the
-    condition is met — it just does not fire. That is what makes a threshold
+    Disarmed, the rule still evaluates and the panel still shows whether the
+    condition is met — it just does not fire, which is what makes a threshold
     settable against a live animal without actuating anything.
     """
 
@@ -208,9 +197,8 @@ class ClosedLoopWorker(PullWorker):
         return self._armed
 
     def configure(self, settings: LoopSettings) -> None:
-        """Queue a settings change, applied before the next evaluation. Queued,
-        not written straight in, for the same reason as `track_worker`: the
-        panel edits on the GUI thread while `update()` runs on this one."""
+        """Queue a settings change, applied before the next evaluation — queued
+        because the panel edits on the GUI thread while `update()` runs here."""
         with self._cfg_lock:
             self._pending = settings
 
@@ -224,10 +212,9 @@ class ClosedLoopWorker(PullWorker):
     def recorded_fires(self) -> int:
         """Fires that reached the sink, i.e. that are in `/closed_loop`.
 
-        Separate from `n_fires` because they genuinely differ: the rule runs all
-        session but the sink is attached only while recording, so an armed rule
-        can fire before Record. Filing `n_fires` as `loop_fires` would leave an
-        attribute disagreeing with the length of the stream beside it.
+        Separate from `n_fires` because they genuinely differ — the rule runs all
+        session but the sink is attached only while recording. Filing `n_fires`
+        would leave an attribute disagreeing with the stream beside it.
         """
         return self._recorded
 
@@ -257,10 +244,8 @@ class ClosedLoopWorker(PullWorker):
                 self._rule.idle()
                 hit = False
 
-            # Readout for the display tick — the newest evaluation, whether or
-            # not it fired. Not routed through _publish(): the sink must carry
-            # fires only, not a 200 Hz copy of a stream the wheel already
-            # records.
+            # Readout for the display tick, fired or not. Not via _publish():
+            # the sink carries fires only, not a 200 Hz copy of the wheel.
             self._set_latest((value, self._rule.satisfied(value),
                               self._rule.n_fires, self._armed))
 
@@ -278,11 +263,8 @@ class ClosedLoopWorker(PullWorker):
 
 
 class SettingsPanel(QWidget):
-    """The rule, plus the arming switch.
-
-    `settings_changed` carries a `LoopSettings` (persisted); `armed_changed`
-    carries the arming state (never persisted — see the module docstring).
-    """
+    """The rule, plus the arming switch. `settings_changed` carries a
+    `LoopSettings` (persisted); `armed_changed` the arming state (never)."""
 
     settings_changed = pyqtSignal(object)      # emits LoopSettings
     armed_changed    = pyqtSignal(bool)
