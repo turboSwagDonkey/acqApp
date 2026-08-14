@@ -1,18 +1,12 @@
-"""
-XY stage — controller that OWNS the serial connection.
+"""XY stage — controller that OWNS the serial connection.
 
-Only one program can hold the MCM6101's USB serial port, so a single
-StageController instance is the sole device owner. Both the polling worker
-(reads position on its thread) and the GUI motion buttons (jog / go-to / stop)
-call this controller; the underlying driver is lock-guarded, so concurrent
-reads and motion commands serialize safely on one connection.
+Only one program can hold the MCM6101's port, so a single StageController is the
+sole device owner. The polling worker (on its thread) and the GUI motion buttons
+both call it; the driver is lock-guarded, so reads and motion commands serialize
+safely on one connection.
 
-StageController      : real hardware (Thorlabs MCM6101 via the APT driver).
-MockStageController  : simulated stage (eases toward a commanded target), so the
-                       controls and recording can be exercised with no hardware.
-
-Motion methods take/return MICRONS; soft limits (from config) clamp every target.
-Nothing moves unless a jog_um / move_to_um is called.
+Motion methods take and return MICRONS, and soft limits clamp every target.
+Nothing moves unless `jog_um` / `move_to_um` is called.
 """
 from __future__ import annotations
 
@@ -33,7 +27,7 @@ class StageController:
         from .driver import MCM6101
         dev = MCM6101(self._s.port)
         dev.open()
-        # Load the calibrated command→encoder map so absolute moves land right.
+        # The calibrated command→encoder map, so absolute moves land right.
         for ax in (self._s.x, self._s.y):
             if ax.slope is not None and ax.offset is not None:
                 dev.set_linear_map(ax.index, ax.slope, ax.offset)
@@ -82,12 +76,10 @@ class StageController:
             self._dev.stop_all([self._s.x.index, self._s.y.index])
 
     # ── frame / origin calibration ──────────────────────────────────────────
-    # The controller re-references its command origin every time a HARD LIMIT is
-    # hit, which invalidates slope/offset (absolute go-to lands wrong; jog still
-    # works). These two rebuild it:
-    #   set_center_here()  — no motion. Declares "here" as 0,0.
-    #   establish_frame()  — MOTION: drives to the reverse limit and re-measures
-    #                        the command→encoder map.
+    # A HARD LIMIT hit re-references the controller's command origin, which
+    # invalidates slope/offset — absolute go-to lands wrong, jog still works.
+    #   set_center_here()  — no motion; declares "here" as 0,0.
+    #   establish_frame()  — MOTION: drives to the reverse limit and re-measures.
 
     def read_xy_counts(self) -> tuple[int, int]:
         """Raw encoder counts (no origin applied) — the calibration works here."""
@@ -111,22 +103,21 @@ class StageController:
 
     def establish_frame(self, progress=None) -> dict[int, dict]:
         """MOTION — drives X then Y into their REVERSE hard limits, then probes
-        twice in range to re-measure `enc = slope·cmd + offset`. Restores absolute
+        twice to re-measure `enc = slope·cmd + offset`, restoring absolute
         positioning after a limit hit.
 
-        Never invents an origin. The driver reports a geometric centre
-        (reverse limit + half travel); on this hardware that is NOT where anyone
-        wants 0,0, and overwriting a user-set origin with it silently moves the
-        coordinate system. 0,0 comes from set_center_here() only.
+        Never invents an origin. The driver's geometric centre (reverse limit +
+        half travel) is NOT where anyone wants 0,0 on this hardware, and
+        overwriting a user-set origin with it silently moves the coordinate
+        system. 0,0 comes from `set_center_here()` only.
 
         An existing origin is KEPT if it still falls inside the freshly measured
-        travel, and DROPPED if it doesn't — a limit hit can re-reference the
-        encoder readout as well as the command origin, which leaves a stored
-        `true_center` pointing at nothing. Dropping it forces a deliberate
-        re-zero instead of quietly reporting wrong microns.
+        travel and DROPPED if not — a limit hit can re-reference the encoder
+        readout too, leaving `true_center` pointing at nothing. Dropping forces a
+        deliberate re-zero instead of quietly reporting wrong microns.
 
         Blocks for a minute or more per axis — call it off the GUI thread.
-        `progress(text)` is called with human-readable steps."""
+        """
         if self._dev is None:
             raise StageControllerError("not connected")
 
@@ -146,8 +137,8 @@ class StageController:
             if ax.origin_set and lo <= ax.ref_counts <= hi:
                 note = f"origin kept at {ax.ref_counts:.0f}"
             else:
-                # Stale or absent: park safe soft limits on the measured travel
-                # and leave the origin unset so the UI blocks absolute go-to.
+                # Stale or absent: park soft limits on the measured travel and
+                # leave the origin unset, so the UI blocks absolute go-to.
                 margin = int(round(self._s.margin_um * ax.counts_per_um))
                 upd.update({"true_center": None,
                             "travel_min": lo, "travel_max": hi,
@@ -176,9 +167,8 @@ class StageController:
             self._dev.move_to_readout(ax.index, int(round(ax.ref_counts)))
 
     # ── session home (a bookmark, not calibration) ──────────────────────────
-    # Kept in memory for the life of the session and never written to the config:
-    # it's "the spot I'm working at today", which must not outlive the sample and
-    # must never be confused with the calibrated true zero.
+    # In memory only, never written to the config: "the spot I'm working at
+    # today" must not outlive the sample, nor be confused with the true zero.
 
     def set_home_here(self) -> tuple[float, float]:
         """Bookmark the current position as this session's home. No motion."""
