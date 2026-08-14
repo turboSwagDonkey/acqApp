@@ -12,13 +12,13 @@ The hardware is a **Thorlabs PLS-XY** stage on an **MCM6101** controller. There 
 - **`acqApp/stage/`** — the integrated device: position + jog/go-to/stop inside the
   acquisition app, and (**since 2026-08-07**) origin/frame calibration of its own.
 
-The driver is a byte-for-byte **copy**: [stage/driver.py](../stage/driver.py)
+The driver is a byte-for-byte **copy**: [devices/stage/driver.py](../devices/stage/driver.py)
 == `stage_control/mcm6101.py`. If you fix the protocol in one, port it to the other.
 
 **The calibration JSON is no longer duplicated.** Both apps now read *and write*
-`stage_control/config.json`; [stage/stage_config.json](../stage/stage_config.json)
+`stage_control/config.json`; [devices/stage/stage_config.json](../devices/stage/stage_config.json)
 is a **fallback only**, used if the sibling folder is missing, and is not kept
-current. `stage/settings.py` `config_path()` resolves it; the panel shows the
+current. `devices/stage/settings.py` `config_path()` resolves it; the panel shows the
 path in use.
 
 ---
@@ -27,12 +27,12 @@ path in use.
 
 | File | Role |
 |------|------|
-| [stage/driver.py](../stage/driver.py) | `MCM6101` APT/serial driver. All motion methods flagged. Copy of the standalone `mcm6101.py`. |
-| [stage/control.py](../stage/control.py) | `StageController` (owns the serial connection) + `MockStageController`. Motion API in **microns**; soft limits clamp every target. |
-| [stage/acquisition.py](../stage/acquisition.py) | `StagePollWorker` — read-only position poller (a `PullWorker`). Never issues motion. |
-| [stage/settings.py](../stage/settings.py) | `StageAxis`/`StageSettings` dataclasses + Qt panel (port, poll rate, live X/Y readout, travel map, jog/go-to/stop, session home, **Calibrate…**) + `CalibrationDialog`. `config_path()`, `load_settings()`, `save_axis_updates()`. |
-| [stage/map_widget.py](../stage/map_widget.py) | `StageMap` — read-only picture of the stage inside its travel. Nothing here commands motion. |
-| [stage/stage_config.json](../stage/stage_config.json) | **Fallback copy only** — the live calibration is `stage_control/config.json`. |
+| [devices/stage/driver.py](../devices/stage/driver.py) | `MCM6101` APT/serial driver. All motion methods flagged. Copy of the standalone `mcm6101.py`. |
+| [devices/stage/control.py](../devices/stage/control.py) | `StageController` (owns the serial connection) + `MockStageController`. Motion API in **microns**; soft limits clamp every target. |
+| [devices/stage/acquisition.py](../devices/stage/acquisition.py) | `StagePollWorker` — read-only position poller (a `PullWorker`). Never issues motion. |
+| [devices/stage/settings.py](../devices/stage/settings.py) | `StageAxis`/`StageSettings` dataclasses + Qt panel (port, poll rate, live X/Y readout, travel map, jog/go-to/stop, session home, **Calibrate…**) + `CalibrationDialog`. `config_path()`, `load_settings()`, `save_axis_updates()`. |
+| [devices/stage/map_widget.py](../devices/stage/map_widget.py) | `StageMap` — read-only picture of the stage inside its travel. Nothing here commands motion. |
+| [devices/stage/stage_config.json](../devices/stage/stage_config.json) | **Fallback copy only** — the live calibration is `stage_control/config.json`. |
 
 ---
 
@@ -72,7 +72,7 @@ unreliable because the encoder wraps and the forward limit doesn't trip cleanly)
 Positions in the app are **µm relative to `true_center`**; soft limits sit at ±0.5"
 to keep the stage in the no-wrap zone.
 
-On connect, [stage/control.py](../stage/control.py) `connect()` loads the
+On connect, [devices/stage/control.py](../devices/stage/control.py) `connect()` loads the
 config's `slope`/`offset` into the driver (`set_linear_map`) so absolute go-to lands
 right — **this assumes the frame in the JSON is still valid.**
 
@@ -101,7 +101,7 @@ re-zeroing 0,0 moves where home *reads* in µm but not where it physically is.
 
 ### The travel map
 
-[stage/map_widget.py](../stage/map_widget.py) draws, in µm relative to 0,0:
+[devices/stage/map_widget.py](../devices/stage/map_widget.py) draws, in µm relative to 0,0:
 the hard travel rectangle, the soft-limit rectangle dashed inside it, the origin
 (green cross), the session home (orange diamond), and the current position (blue
 dot with guide lines to the edges). +Y is drawn screen-up when `xy_pad.invert_y`
@@ -242,7 +242,7 @@ Implementation notes:
    large move.
 
 ## Safety
-Every motion method in [stage/driver.py](../stage/driver.py) is flagged. Nothing
+Every motion method in [devices/stage/driver.py](../devices/stage/driver.py) is flagged. Nothing
 moves unless `jog_um` / `move_to_um` / `home` is called — the poll worker and all
 reads are motion-free. Do not send motion during dev without the user watching.
 `home()` would drive to a limit and **break the frame** — don't call it.

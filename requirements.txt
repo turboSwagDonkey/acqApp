@@ -9,7 +9,7 @@
 #   - pypylon  -> needs the Basler pylon runtime (ships with pylon Viewer)
 #   - alp4lib  -> needs the Vialux "ALP-4.2 high-speed API" folder. acqApp finds
 #                 it via the registry, ACQAPP_ALP_DIR, or the standalone
-#                 dmdGUI_project's dmd_config.json — see dmd/alp.py.
+#                 dmdGUI_project's dmd_config.json — see devices/dmd/alp.py.
 
 PyQt6
 pyqtgraph

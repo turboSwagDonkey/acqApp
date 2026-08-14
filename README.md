@@ -63,7 +63,7 @@ stage to the wrong place.
 
 Calibration, soft limits and the origin live in the config **shared with the
 standalone `stage_control` app** (`../stage_control/config.json`, falling back
-to `stage/stage_config.json`), so both programs agree on where 0,0 is. Only one
+to `devices/stage/stage_config.json`), so both programs agree on where 0,0 is. Only one
 program can hold the serial port at a time. Every write to that file leaves the
 previous contents as `.bak`.
 
@@ -260,18 +260,20 @@ way back out. A value that was never set reads as an empty string.
 
 - `acq/` — device-agnostic infrastructure: `SessionClock`, `RingBuffer`,
   `Recorder`, `Writer`/`HDF5Writer`.
-- `sync.py` — `SyncController`: shared clock + tick + trigger bus.
-- one package per subsystem, each with `acquisition.py` (a `QThread` worker with
+- `acq/sync.py` — `SyncController`: shared clock + tick + trigger bus.
+- `acq/devices.py` — the `Protocol`s an adapter reads its worker/controller
+  through, and `ModuleHost`, the surface an adapter may ask of the window.
+- `devices/` — one package per subsystem, each with `acquisition.py` (a `QThread` worker with
   a mock twin), `settings.py`/`control.py` (a Qt panel), `recording.py`, and a
   **Free run** button: tick one module at startup and run it with no session
   clock and no recording. The pupil cam's tuning overlay (annulus, per-ray
   edge points, click-to-seed) is the **Show search overlay** box in its tab.
-- `dmd/alp.py` — the whole of the Vialux hardware knowledge, Qt-free: where the
+- `devices/dmd/alp.py` — the whole of the Vialux hardware knowledge, Qt-free: where the
   vendor API lives, `build_frame` (image → the binary panel frame, which is
   where a mispositioned stimulus would come from, so it is unit-tested), and the
-  open/project/halt/close lifecycle. `dmd/control.py` holds only the panel and
+  open/project/halt/close lifecycle. `devices/dmd/control.py` holds only the panel and
   the app-facing controller.
-- `pupil_cam/track_worker.py` — pupil **tracking** gets a thread of its own, on
+- `devices/pupil_cam/track_worker.py` — pupil **tracking** gets a thread of its own, on
   top of the camera's. Tracking is unbounded work (a degenerate mask costs
   100–200 ms in `coarse_seed`, and a lost pupil re-seeds every frame), so in the
   display tick it froze the whole window, voltage-camera preview included. It is
@@ -298,16 +300,16 @@ way back out. A value that was never set reads as an empty string.
 
 ### Why an instrument appears in two places
 
-`wheel/` and `adapters/wheel.py` are not duplicates — they are the two sides of
-the boundary, and the dependency only ever runs one way:
+`devices/wheel/` and `adapters/wheel.py` are not duplicates — they are the two
+sides of the boundary, and the dependency only ever runs one way:
 
     adapters/wheel.py   the ADAPTER: how the wheel plugs into THIS window —
                         which tab, worker lifecycle, metadata keys
-    wheel/              the DEVICE: driver, acquisition worker, its own model
+    devices/wheel/      the DEVICE: driver, acquisition worker, its own model
                         and widgets. Knows nothing about acqApp's window.
 
-`main.py` imports `adapters`; `adapters/X.py` imports `X/`; no device package
-imports back. That is what lets an instrument be developed and tested without
+`main.py` imports `adapters`; `adapters/X.py` imports `devices/X/`; no device
+package imports back. That is what lets an instrument be developed and tested without
 the app, and the window be read without knowing what a pupil camera is.
 
 Inside a device package the convention is:
@@ -318,7 +320,7 @@ Inside a device package the convention is:
 
 Keeping `settings.py` Qt-free is load-bearing, not tidiness: the models import
 with zero PyQt6 modules, so config, tests and analysis can read them without a
-QApplication. `voltage_cam/` has no `settings.py` — its model is `AcqConfig` in
+QApplication. `devices/voltage_cam/` has no `settings.py` — its model is `AcqConfig` in
 `presets.py`.
 
 ## Tests

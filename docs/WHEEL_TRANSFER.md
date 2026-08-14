@@ -44,8 +44,8 @@ Real hardware needs **NI-DAQmx + `nidaqmx`** and the 6363 present as `Dev3`
 
 | File | Role |
 |------|------|
-| [wheel/acquisition.py](../wheel/acquisition.py) | `EncoderWorker` (real NI ai) + `MockEncoderWorker`. The poll thread. |
-| [wheel/settings.py](../wheel/settings.py) | `EncoderSettings` + `SettingsPanel` — channel, sample rate, and (unused) scaling fields. |
+| [devices/wheel/acquisition.py](../devices/wheel/acquisition.py) | `EncoderWorker` (real NI ai) + `MockEncoderWorker`. The poll thread. |
+| [devices/wheel/settings.py](../devices/wheel/settings.py) | `EncoderSettings` + `SettingsPanel` — channel, sample rate, and (unused) scaling fields. |
 | Free run (status bar) | Brings the encoder up with no clock and no recording — what `wheel/_toy.py` used to do. (That toy never wrote CSV; this table said it did.) |
 | ~~wheel/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records via the shared pipeline. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base both workers subclass. |

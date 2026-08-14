@@ -61,8 +61,8 @@ grabber not being the enumerated path. The app cannot choose the link; the
 measured label is only how you tell which one you got.
 
 The two diagnostic tools from that session are still in the tree and still the
-way to answer a wheel question: `wheel/capture_raw.py` (hardware-clocked 1 kHz
-raw capture) and `wheel/analyze_raw.py` (measures V/rev peak-to-peak, net
+way to answer a wheel question: `devices/wheel/capture_raw.py` (hardware-clocked 1 kHz
+raw capture) and `devices/wheel/analyze_raw.py` (measures V/rev peak-to-peak, net
 rotation, path).
 
 ## Update 2026-07-27 — main is wired up

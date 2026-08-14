@@ -49,7 +49,7 @@ display, not headless.
 # from C:\Users\User\Desktop\python
 acqApp\.venv\Scripts\python.exe acqApp\main.py                     # tick Pupil cam only
 acqApp\.venv\Scripts\python.exe acqApp\main.py --mock              # synthetic pupil
-acqApp\.venv\Scripts\python.exe acqApp\pupil_cam\_test_tracking.py # tracker vs ground truth
+acqApp\.venv\Scripts\python.exe acqApp\devices\pupil_cam\_test_tracking.py # tracker vs ground truth
 ```
 
 Tick **Pupil cam** alone in the startup picker and press **Free run** for the
@@ -71,11 +71,11 @@ smoke tests use `QT_QPA_PLATFORM=offscreen`,
 
 | File | Role |
 |------|------|
-| [pupil_cam/acquisition.py](../pupil_cam/acquisition.py) | `open_camera()` + `PupilCameraWorker` (real Basler) + `MockPupilCameraWorker`. The capture thread. |
-| [pupil_cam/tracking.py](../pupil_cam/tracking.py) | `detect(...)`, `PupilTracker`, `find_circular_edge(...)`. **The pupil algorithm — an IMAQ Find Circular Edge port.** |
-| [pupil_cam/_test_tracking.py](../pupil_cam/_test_tracking.py) | Ground-truth validation of the tracker on synthetic eyes. No hardware. |
-| [pupil_cam/control.py](../pupil_cam/control.py) | `LedController` / `MockLedController` — eye-tracking LED on NI `Dev3/port0/line1`. |
-| [pupil_cam/settings.py](../pupil_cam/settings.py) | `PupilSettings` + `SettingsPanel` — exposure/fps, tracking params (threshold, min/max radius), LED toggle. |
+| [devices/pupil_cam/acquisition.py](../devices/pupil_cam/acquisition.py) | `open_camera()` + `PupilCameraWorker` (real Basler) + `MockPupilCameraWorker`. The capture thread. |
+| [devices/pupil_cam/tracking.py](../devices/pupil_cam/tracking.py) | `detect(...)`, `PupilTracker`, `find_circular_edge(...)`. **The pupil algorithm — an IMAQ Find Circular Edge port.** |
+| [devices/pupil_cam/_test_tracking.py](../devices/pupil_cam/_test_tracking.py) | Ground-truth validation of the tracker on synthetic eyes. No hardware. |
+| [devices/pupil_cam/control.py](../devices/pupil_cam/control.py) | `LedController` / `MockLedController` — eye-tracking LED on NI `Dev3/port0/line1`. |
+| [devices/pupil_cam/settings.py](../devices/pupil_cam/settings.py) | `PupilSettings` + `SettingsPanel` — exposure/fps, tracking params (threshold, min/max radius), LED toggle. |
 | Free run + "Show search overlay" | Bring-up and tuning, in the app: annulus band, per-ray edge points (inlier/outlier), click-to-seed. Replaced `pupil_cam/_toy.py` on 2026-08-13. |
 | ~~pupil_cam/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records through `acq/`. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base: `get_latest`/`set_sink`/`stop` scaffolding both workers share. |
@@ -175,7 +175,7 @@ image in the toy) or by excluding the lid sectors with `exclude_deg`.
   the current lock: `threshold`, `min_r`, `max_r`, `polarity`, `fit`).
 - `track_params` → `(threshold, min_r, max_r)` and `track_kwargs` → dict of the
   annulus options are the per-tick reads the display path uses, where tracking
-  runs on the GUI timer. **The app does not**: see `pupil_cam/track_worker.py`.
+  runs on the GUI timer. **The app does not**: see `devices/pupil_cam/track_worker.py`.
 
 ### Recording (two separate paths)
 - **Toy**: `FrameWriter` streams frames to `toy_output/pupil_frames.h5`;

@@ -48,9 +48,9 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 
 | File | Role |
 |------|------|
-| [voltage_cam/acquisition.py](../voltage_cam/acquisition.py) | `OrcaFireWorker` (real, DCAM) + `MockCameraWorker`. The capture thread. **Most camera logic lives here.** |
-| [voltage_cam/presets.py](../voltage_cam/presets.py) | `ResolutionPreset`, `AcqConfig`, the datasheet-derived `PRESETS`, binning/trigger options. |
-| [voltage_cam/settings.py](../voltage_cam/settings.py) | `SettingsPanel` — resolution/binning/exposure/trigger UI; `get_config()` → `AcqConfig`. |
+| [devices/voltage_cam/acquisition.py](../devices/voltage_cam/acquisition.py) | `OrcaFireWorker` (real, DCAM) + `MockCameraWorker`. The capture thread. **Most camera logic lives here.** |
+| [devices/voltage_cam/presets.py](../devices/voltage_cam/presets.py) | `ResolutionPreset`, `AcqConfig`, the datasheet-derived `PRESETS`, binning/trigger options. |
+| [devices/voltage_cam/settings.py](../devices/voltage_cam/settings.py) | `SettingsPanel` — resolution/binning/exposure/trigger UI; `get_config()` → `AcqConfig`. |
 | Free run (status bar) | Brings the camera up with no clock and no recording — what `voltage_cam/_toy.py` used to do. |
 | ~~voltage_cam/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records through `acq/`. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base class: `get_latest`/`set_sink`/`stop` scaffolding all workers share. |
@@ -83,7 +83,7 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 stable id (`"4432x512"`) with a display label carrying the framerate. Frame rate
 is set almost entirely by **row count**; labels show the **USB3.1 Gen1 16-bit**
 rate (this app captures 16-bit). CoaXPress ≈ 7× higher. See the table in
-[presets.py](../voltage_cam/presets.py):
+[presets.py](../devices/voltage_cam/presets.py):
 
 ```
  Y     CoaXPress   USB 16-bit   USB 8-bit
@@ -124,7 +124,7 @@ Voltage cam: TDeviceInfo(vendor='HAMAMATSU', model='C16240-20UP', ...)
 - The vendor string changed from `'Hamamatsu'` (USB module) to `'HAMAMATSU'`,
   i.e. a *different DCAM interface module* is now enumerating the camera.
 
-Confirm on demand with `acqApp\voltage_cam\_check_link.py` (full frame should
+Confirm on demand with `acqApp\devices\voltage_cam\_check_link.py` (full frame should
 show ~8.7 ms, not 63.3 ms). §4b below records the earlier USB-only state and the
 commissioning steps, kept for history.
 
