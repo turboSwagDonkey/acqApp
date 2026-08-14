@@ -1,11 +1,8 @@
-"""
-Hamamatsu ORCA-Fire acquisition presets and configuration.
-Sensor: 4432 × 2368 pixels.
+"""Hamamatsu ORCA-Fire acquisition presets and configuration. Sensor 4432×2368.
 
-Resolution presets follow the ORCA-Fire datasheet (Standard scan, Area Readout
-mode). Readout is row-by-row at full width (X = 4432), so the frame rate is set
-almost entirely by the number of ROWS (Y): fewer rows → proportionally higher
-fps. Datasheet max readout rates (fps):
+Presets follow the datasheet (Standard scan, Area Readout). Readout is
+row-by-row at full width, so frame rate is set almost entirely by the number of
+ROWS: fewer rows → proportionally higher fps. Datasheet maxima (fps):
 
     Y (rows)   CoaXPress   USB3.1 Gen1 16-bit   USB3.1 Gen1 8-bit
       2368        115            15.7                 31.5
@@ -18,10 +15,9 @@ fps. Datasheet max readout rates (fps):
          8      15200          2360                5260
          4      19500          3960                7200
 
-Labels show the **USB3.1 Gen1 16-bit** rate (this app captures 16-bit); on
-CoaXPress the rates are ~7× higher. Actual fps = min(readout max, 1/exposure),
-and vertical binning multiplies the rate further. All ROI sizes/positions are
-multiples of 4 as required by DCAM-API.
+Labels show the **USB3.1 Gen1 16-bit** rate; CoaXPress is ~7× higher. Actual
+fps = min(readout max, 1/exposure), and vertical binning multiplies it further.
+ROI sizes and positions are multiples of 4, as DCAM-API requires.
 """
 from __future__ import annotations
 import math
@@ -59,21 +55,17 @@ def _band(label: str, rows: int) -> ResolutionPreset:
     return ResolutionPreset(label, SENSOR_W, rows, 0, vpos)
 
 
-# (rows, USB3.1 Gen1 16-bit fps, CoaXPress fps) straight from the datasheet,
-# slowest → fastest.
+# (rows, USB3.1 Gen1 16-bit fps, CoaXPress fps), datasheet, slowest → fastest.
 #
-# WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both a USB3 and a CoaXPress
-# interface. This rig is cabled over **CoaXPress** (Active Silicon FireBird
-# 4xCXP6-2PE8 grabber), so DEFAULT_LINK below is CXP and full frame should run
-# ~8.7 ms → 115 fps. (An earlier 2026-07-29 note measured 63.30 ms → 15.8 fps →
-# 316 MB/s, which is USB3 bandwidth — that was with USB enumerated; it does NOT
-# apply to a CoaXPress-only setup.) Nothing in software chooses the link; it is
-# whichever interface DCAM enumerates. This constant only picks which datasheet
-# column the pre-Start label shows.
+# WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both interfaces. This rig is
+# cabled over **CoaXPress** (Active Silicon FireBird 4xCXP6-2PE8), so
+# DEFAULT_LINK is CXP and full frame should run ~8.7 ms → 115 fps. An earlier
+# 2026-07-29 measurement of 15.8 fps was USB3 bandwidth with USB enumerated, and
+# does not apply here. Nothing in software picks the link — DCAM enumerates it;
+# this constant only chooses which datasheet column the label shows.
 #
-# Treat these as ESTIMATES for UI/buffer sizing only. At run time the worker asks
-# the camera itself via get_frame_timings(), which is authoritative — and the
-# settings panel now shows that measured rate once a capture starts.
+# ESTIMATES, for UI and buffer sizing. At run time get_frame_timings() is
+# authoritative, and the panel shows that measured rate once capture starts.
 _ROWS_FPS_BOTH: List[tuple[int, float, float]] = [
     (2368, 15.7,  115.0),
     (2304, 16.2,  118.0),

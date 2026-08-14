@@ -1,26 +1,21 @@
-"""
-Writer ABC + HDF5Writer.
+"""Writer ABC + HDF5Writer.
 
-A Writer receives (stream, timestamp, data) tuples and persists them. Swap
-implementations without touching acquisition code.
+A Writer takes (stream, timestamp, data) tuples and persists them, swappable
+without touching acquisition code. Timestamps all come from the session-wide
+SessionClock, so every stream shares one origin.
 
-All timestamps come from the single session-wide SessionClock, so every
-stream in the file shares one time origin (seconds since session start).
+Metadata lands in the root attributes in its OWN type (see `attr_value`), so
+analysis reads `f.attrs["wheel_volts_per_rev"] * x` instead of parsing strings.
 
-Session metadata lands in the root attributes in its OWN type (see
-`attr_value`), so analysis reads `f.attrs["wheel_volts_per_rev"] * x` rather
-than parsing strings.
-
-HDF5 layout (one group per stream, created lazily on first write):
+Layout, one group per stream, created lazily on first write:
   /<stream>/timestamps   float64 (N,)         seconds since session start
   /<stream>/frames       <dtype> (N, H, W)    image streams (camera, pupil)
   /<stream>/values       float64 (N,)         scalar streams (encoder, puffer)
 
-Throughput and crash-safety: datasets grow a *block* at a time to amortise the
-resize cost at high rates, but each sample is written immediately. `timestamps`
-is created with a NaN fill, so a process killed mid-block leaves identifiable
-tail rows and every written row is recoverable. A clean close trims each dataset
-to its exact length, so a normally-closed file has no NaNs.
+Datasets grow a *block* at a time to amortise the resize cost, but each sample
+is written immediately. `timestamps` has a NaN fill, so a process killed
+mid-block leaves identifiable tail rows and every written row is recoverable; a
+clean close trims to exact length, so a normally-closed file has no NaNs.
 """
 from __future__ import annotations
 
@@ -36,12 +31,11 @@ def attr_value(v: Any) -> Any:
     """Coerce one metadata value into something HDF5 stores in its own type.
 
     Everything used to go through `str()`, so `wheel_volts_per_rev` landed as
-    `"4.912"` and `emulated` as `"False"` — which is truthy. h5py stores ints,
-    floats, bools and strings natively, so there was nothing to gain.
+    `"4.912"` and `emulated` as `"False"` — which is truthy.
 
     `None` becomes `""`: HDF5 has no null, and an empty string reads as "not
-    set" without pretending to be a number — 0.0 for an unset volts-per-rev
-    would be indistinguishable from a measured zero.
+    set" without pretending to be a number, where 0.0 for an unset
+    volts-per-rev would be indistinguishable from a measured zero.
     """
     if v is None:
         return ""
@@ -66,10 +60,9 @@ class Writer(ABC):
     def update_metadata(self, metadata: dict[str, Any]) -> None:
         """Add or overwrite file metadata after open().
 
-        Some facts about a recording are only known once it is over — which
-        timebase the camera actually gave us, how many samples were shed. They
-        belong in the file rather than in a status-bar message that scrolls
-        away. Optional: a Writer that cannot do this may ignore it.
+        Some facts are known only once the recording is over — which timebase
+        the camera gave us, how much was shed — and belong in the file rather
+        than a status message that scrolls away. Optional.
         """
 
     @abstractmethod
@@ -79,14 +72,13 @@ class Writer(ABC):
 class HDF5Writer(Writer):
     """Streams any number of named image/scalar channels into one HDF5 file.
 
-    Image streams are written UNCOMPRESSED by default. The voltage camera
-    sustains ~330 MB/s at full frame (21 MB × 15.7 fps, which is USB3.1 Gen1
-    saturation); single-threaded gzip manages roughly a third of that on noisy
-    16-bit sensor data, so compressing here stalls the writer thread, backs the
-    ring buffer up and drops frames. An NVMe SSD absorbs 330 MB/s comfortably.
+    Images are UNCOMPRESSED by default: the voltage camera sustains ~330 MB/s at
+    full frame, single-threaded gzip manages about a third of that on noisy
+    16-bit data, so compressing stalls the writer, backs up the ring buffer and
+    drops frames. An NVMe absorbs 330 MB/s comfortably.
 
-    Pass `compression="gzip"` (or an `hdf5plugin` codec, once installed) only
-    for slow streams or when disk space matters more than keeping up.
+    Pass `compression="gzip"` only for slow streams, or when disk space matters
+    more than keeping up.
     """
 
     _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
