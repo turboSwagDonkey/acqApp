@@ -52,9 +52,12 @@ class OrcaFireWorker(PullWorker):
     _BUFFER_BYTES   = 768 << 20
     _BUFFER_MIN     = 16
     _BUFFER_MAX     = 4096
-    # Measured NVMe writer throughput (CAMERA_TRANSFER.md §4b), used only to warn
-    # before a recording that physically cannot be written.
-    _WRITER_MBPS    = 1200.0
+    # Sustained end-to-end write rate, used only to warn before a recording that
+    # physically cannot be written. Measured 2026-08-17 through the real path
+    # (worker → Recorder → HDF5Writer → D:), NOT the writer benchmark: 1004 MB/s
+    # over a 10 s full-frame run, against 1165 on the bench. The old 1200 put the
+    # advised cap at 60 fps where the truth is 48.
+    _WRITER_MBPS    = 1000.0
 
     def __init__(self, device_index: int = 0, config: AcqConfig | None = None,
                  cam=None):

@@ -40,8 +40,9 @@ def main() -> int:
               f"({W * H * 2 * fps / (1 << 20):.0f} MB/s)")
         if fps > 40:
             print("LINK: CoaXPress")
-            print("NOTE: recording full frame needs ~2300 MB/s; the HDF5 writer "
-                  "benchmarks at ~1165 MB/s, so recording will cap near 58 fps.")
+            print("NOTE: recording full frame needs ~2300 MB/s; the write path "
+                  "sustains ~1004 MB/s end to end (measured), so recording caps "
+                  "near 48 fps. 2x2 binning records all of it.")
         else:
             print("LINK: USB3  — CoaXPress is NOT in use")
             print("To switch: unplug USB, power-cycle the camera, re-run this.")

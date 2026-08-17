@@ -81,10 +81,12 @@ a measurement artefact and is withdrawn** (§7 (t)). Nothing above the hardware
 is eating 13 ms per frame, because there is no 13 ms.
 
 What this re-points: acquisition is not the constraint, **the writer is**.
-Full frame produces ~2223 MB/s and the HDF5 writer sustains ~1165–1200, so
-**recording caps near 55–60 fps** whatever the buffers do. `_check_link.py` has
-said exactly that all along ("recording will cap near 58 fps"); this file called
-that note "superseded" and was wrong. It is reinstated.
+Full frame produces ~2223 MB/s and the write path sustains a **measured
+1004 MB/s end to end**, so **recording caps near 48 fps** whatever the buffers
+do — a bin-1 session stores 52.9 % of its frames. **2×2 binning stores 100 %**
+at the full 114.9 fps and is the standing recommendation. `_check_link.py` was
+right in kind all along ("recording will cap near 58 fps") where this file
+called it "superseded"; it was only optimistic by the benchmark-vs-path gap.
 
 **Two standing instructions from the operator:**
 - **Write comments terser than the surrounding style.** This codebase's prose is
@@ -397,9 +399,21 @@ because two of them are how a future wrong-data bug gets in.
      this is the whole answer and needs no code.
    - Otherwise cap the rate (the panel already warns and names the exposure), or
      take a smaller ROI.
-   - **Not yet measured: the writer's real sustained rate through a session**,
-     as opposed to its benchmark. That number decides how much binning is
-     enough, needs no animal, and can be run right here (§2).
+   - ~~Not yet measured: the writer's real sustained rate through a session.~~
+     **Measured 2026-08-17 through the real path** (ORCA → `OrcaFireWorker` →
+     `Recorder` → `HDF5Writer` → D:), 10 s per run, frames counted **off the
+     closed file**, not off a counter:
+
+     | run | offered | on disk | kept | sustained |
+     |---|---|---|---|---|
+     | full frame, bin 1 | 957 | 506 | **52.9 %** | 1004 MB/s (47.9 fps) |
+     | full frame, bin 2 | 1153 | 1153 | **100 %** | 603 MB/s (114.9 fps) |
+
+     **1004 MB/s, not the 1165 benchmark** — a benchmark measured the writer,
+     this measures the path. `_WRITER_MBPS` was 1200 and is now **1000**, which
+     moves the advised cap from a wrong 60 fps to a right 48. The bin-1 warning
+     the app already prints was accurate to within 1 % (predicted ~48 % loss,
+     actual 47.1 %).
    - **Done 2026-08-17: the offered presets stop at `4432x512`.** Below that the
      sensor outruns the writer so far that the preset could only produce an
      unrecordable session. `MIN_PRESET_ROWS` trims the *dropdown*; the datasheet
@@ -529,8 +543,25 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   Splitting "what the sensor can do" from "what we offer" is the §2 SOLID rule
   applied on the same day it was written. Two tests pinned `4432x4` for a cheap
   frame shape and now use `4432x512` at bin 4.
+- **The writer's real number, and it is not the benchmark: 1004 MB/s.** Measured
+  end to end rather than in isolation (table in §6 item 1). Full frame keeps
+  **52.9 %** of its frames; **2×2 binning keeps 100 %** at the full 114.9 fps.
+  `_WRITER_MBPS` 1200 → **1000**, which is the difference between advising a cap
+  of 60 fps and of 48. Two stale figures went with it: `writer.py`'s docstring
+  claimed "~330 MB/s at full frame" (the USB3-era *camera* rate, in a *writer*
+  docstring) and `_check_link.py` still quoted the 1165 bench.
+- **A trap worth the two minutes it cost:** importing `acqApp.main` **opens the
+  camera** at module scope (`main.py:116`) and holds the handle, so a bench that
+  imports it for a constant then fails its own `DCAMCamera()` open with
+  `DCAMERR_FAILOPENCAMERA`. The fix is the faithful one — reuse
+  `appmain._cam_handle`, which is what the worker does in the app anyway, and it
+  skips the 7 s open per run. Same one-process-owns-the-device rule as the DMD.
+- **The system drive is nearly full: C: has 11.1 GB.** Not where sessions land —
+  `default_folder()` already picks the largest-free fixed drive, so recordings
+  go to D: (945 GB free, and where these runs wrote) — but 11 GB is thin for
+  temp files and the page file on a box that pins GB-scale buffers.
 - Bench scripts stayed in the scratchpad; nothing was added to the repo. Suite
-  green throughout: **552 → 556 checks, 19/19, 45.3 s** (+4 for the preset
+  green throughout: **552 → 556 checks, 19/19, 44.8 s** (+4 for the preset
   boundary, one of them a control that the table still holds what the dropdown
   drops).
 

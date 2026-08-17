@@ -72,10 +72,14 @@ class Writer(ABC):
 class HDF5Writer(Writer):
     """Streams any number of named image/scalar channels into one HDF5 file.
 
-    Images are UNCOMPRESSED by default: the voltage camera sustains ~330 MB/s at
-    full frame, single-threaded gzip manages about a third of that on noisy
-    16-bit data, so compressing stalls the writer, backs up the ring buffer and
-    drops frames. An NVMe absorbs 330 MB/s comfortably.
+    Images are UNCOMPRESSED by default: single-threaded gzip manages a fraction
+    of the rate on noisy 16-bit data, so compressing stalls the writer, backs up
+    the ring buffer and drops frames.
+
+    Measured end to end 2026-08-17 (ORCA → Recorder → here → NVMe): **1004 MB/s
+    sustained**. Full frame offers ~2100 MB/s, so a bin-1 recording keeps ~53 %
+    of its frames; 2×2 binning keeps 100 %. The earlier "~330 MB/s at full
+    frame" in this docstring was the USB3-era camera rate, not a writer figure.
 
     Pass `compression="gzip"` only for slow streams, or when disk space matters
     more than keeping up.
