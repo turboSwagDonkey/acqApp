@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **556 checks, 19 files, ~45 s, all passing.** Run it before and
+the contract: **568 checks, 19 files, ~45 s, all passing.** Run it before and
 after anything.
 
 ```
@@ -73,7 +73,18 @@ reason #5 took one session instead of several.
 **Nothing is uncommitted; PLAN.md's 2026-08-17 (t) update is committed but
 not yet pushed.**
 
-**Pick up here — §6 item 1, and the answer is that there was nothing wrong.**
+**PICK UP HERE — §6 item 1: test the pupil tracker on a sample video.** The
+operator's next task, stated 2026-08-17 and deliberately started in a fresh
+session. Read that item before anything else: it already carries the
+reconnaissance, and the headline is that **the blocker is video decoding, not
+tracking** — this venv has no cv2, no imageio, no av and no ffmpeg, so a TIFF
+stack or HDF5 works today and an mp4 needs an install. **First question to ask:
+what format is the sample?**
+
+The rest of this section is context for a project that is otherwise in a good
+state; nothing below is blocking.
+
+**The camera work that filled 2026-08-17 is finished and closed.**
 The grab path was measured through `OrcaFireWorker` itself on 2026-08-17:
 **105.92 fps / 2223 MB/s** at full frame against a camera offering 115.26 — 92 %
 of the ceiling, not the 40 % that 46.17 fps implied. **Phase 0's 46.17 / 969 was
@@ -370,25 +381,57 @@ because two of them are how a future wrong-data bug gets in.
 
 1. ~~Raise the capture rate.~~ **Closed 2026-08-17 — the premise was wrong.**
    The grab path was already at 92 % of the camera. See §7 (t) for the numbers
-   and for why the old figure was low. Three findings it left behind, none
-   urgent, all cheap, in the order they are worth doing:
-   - **`_buffer_frames` gives 0.33 s of slack at full frame, not the 2.0 s
-     `_BUFFER_SECONDS` claims.** `_BUFFER_BYTES` (768 MB) binds first at 20.99
-     MB/frame → 38 buffers. A 6 s run with a *no-op* sink still dropped 13
-     frames. Raising the byte budget buys real slack, but it is a memory call
-     the operator should make, not a constant to change quietly.
-   - **The drop message misdiagnoses.** It prints "writer cannot keep up" for
-     any shortfall, and the run above had no writer at all — the copy out of the
-     driver buffer costs ~9.2 ms against an 8.68 ms frame period, so the buffer
-     fills even with nothing downstream. Name the two causes separately.
-   - **`_maximise_readout_speed` is a no-op on this camera.**
-     `get_all_readout_speeds()` returns `[]` and `get_readout_speed()` returns
-     `1`, so `"fast" in speeds` is never true. It is not broken, it just does
-     nothing here — worth a line so nobody counts on it again.
+   and for why the old figure was low. **The three findings it left behind are
+   all closed 2026-08-17** — as *diagnostics*, not as tuning. A loss reported
+   with the wrong cause costs as much as a silent one, because it sends the next
+   session after the wrong fix:
+   - **The drop message blamed the writer for a driver-buffer overflow.** It
+     cannot be the writer: the sink only enqueues (`Recorder.put` → ring, no
+     disk I/O), so a slow writer sheds in the *ring* and is counted there. A
+     camera skip means *this loop* did not drain in time. Now
+     `_skip_report()`, which names the read loop and says the writer is a
+     separate count. The status bar had said this correctly all along.
+   - **`_buffer_frames` announces when the byte cap beats the time target.**
+     Still 0.33 s at full frame, and **still not retuned** — `_BUFFER_BYTES` is
+     a memory call, and the arithmetic in §7 (t) shows a bigger buffer cannot
+     fix a *sustained* deficit anyway. What changed is that it now says so, and
+     prints what the full 2 s would cost (3.9 GiB).
+   - **`_maximise_readout_speed` reports absence** instead of silently doing
+     nothing. Returns `absent`/`set`/`already`/`error`;
+     `get_all_readout_speeds()` is `[]` on this model.
+
+   Twelve checks in `test_recording_losses`, each with a control — the warning
+   must stay quiet on a small frame, and a camera that *does* offer `fast` must
+   still be switched to it.
 
 **Open, in order:**
 
-1. **Make full-frame recording fit the writer.** This is the real constraint and
+1. **Test the pupil tracker on a sample video** — the operator's stated next
+   task (2026-08-17, to be picked up in a fresh session). What exists and what
+   is missing, so this does not get rediscovered:
+   - **`devices/pupil_cam/_test_tracking.py` is not this.** It validates against
+     *synthetic* eyes with known ground truth (sub-pixel, no hardware, no Qt) —
+     valuable, and the thing to re-run after any `tracking.py` change, but it
+     proves nothing about real footage. The new job is real frames, where there
+     is **no ground truth**, so the test is "does it track plausibly and not
+     lose lock", judged by eye against the overlay.
+   - **The blocker is decoding, not tracking.** Probed 2026-08-17 in
+     `acqApp/.venv`: **cv2, imageio, imageio-ffmpeg and av are all absent, and
+     ffmpeg is not on PATH.** Present: `tifffile`, `Pillow 12.2`, `h5py`,
+     `numpy`, `matplotlib`. So a **TIFF stack or an HDF5 works today**; an
+     **mp4/avi needs an install** — and Python here is 3.14, which is why there
+     is no cv2 at all, so prefer `imageio` + `imageio-ffmpeg` (pure-Python
+     wrapper round a bundled binary) over `av` (needs a compiled wheel).
+     Installs go **only** into `acqApp/.venv` (§2).
+   - **First question for the operator: what format is the sample?** That
+     decides whether this needs an install at all.
+   - The pieces to feed it through: `tracking.py` (hand-rolled numpy — `detect`,
+     `coarse_seed`, `fit_circle_robust`, `fit_ellipse`), `PupilTracker` for the
+     stateful path, and the tuning overlay is **Show search overlay** in the
+     pupil tab (annulus, per-ray edge points, click-to-seed).
+   - `../rig_captures/` holds **encoder CSVs only** — no pupil footage there.
+
+2. **Make full-frame recording fit the writer.** This is the real constraint and
    it is now the only one: ~2223 MB/s acquired against ~1165–1200 written, so
    about half the frames cannot be stored. The levers, and the one measurement
    that picks between them:
@@ -422,7 +465,7 @@ because two of them are how a future wrong-data bug gets in.
      `test_readout_fps` hold that line apart, one of them the control that the
      table still carries what the dropdown does not.
 
-2. **Project through the full app.** *Half of this closed on 2026-08-12, on
+3. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
    **app's** path (the adapter and panel, not just the standalone script of
    §5 #5): the real ALP opens as `ALP-4.2 1024x768` with the API resolved from
@@ -439,7 +482,7 @@ because two of them are how a future wrong-data bug gets in.
    overrides scale, rotation and offset** by design, so a sweep with `fit` on
    measures nothing. The panel is honest about the second: it greys those
    spinboxes out.
-3. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
+4. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
    never seen an animal, and the one number it needs cannot be guessed here:
    **what wheel speed counts as "running"** for this rig's V/rev and diameter.
    The tab is designed for finding it — disarmed, the rule still evaluates and
@@ -447,7 +490,7 @@ because two of them are how a future wrong-data bug gets in.
    against a live animal without actuating anything. Arm only after that reads
    sensibly. Start with the puffer (a puff is recoverable; a stimulus train
    mid-experiment is not), `retrigger` off, and a `max_fires` ceiling.
-4. **Decide which wheel speed a rule should watch.** The panel offers both and
+5. **Decide which wheel speed a rule should watch.** The panel offers both and
    the file records the choice, but the default is `wheel_speed_live` on the
    grounds that a closed loop should act while the animal runs. Measured this
    session: the recorded speed crosses the same threshold **1.15 s** after the
@@ -560,10 +603,20 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   `default_folder()` already picks the largest-free fixed drive, so recordings
   go to D: (945 GB free, and where these runs wrote) — but 11 GB is thin for
   temp files and the page file on a box that pins GB-scale buffers.
+- **The three leftover findings are closed as diagnostics, not as tuning.** The
+  drop message blamed the writer for something the writer structurally cannot
+  cause (`Recorder.put` only enqueues), `_buffer_frames` let a 2 s promise
+  become 0.33 s in silence, and `_maximise_readout_speed` did nothing at all on
+  a camera with no selectable speeds. All three now say what is true; **no
+  constant was retuned**, because §6 item 1's arithmetic shows a deeper buffer
+  cannot fix a sustained deficit. 12 checks, each with a control.
+- **Reconnaissance for the next task, done before clearing context:** the venv
+  has **no video decoder whatsoever** — no cv2 (Python 3.14), no imageio, no av,
+  no ffmpeg on PATH. `tifffile`, `Pillow`, `h5py` are present. That is §6 item 1
+  and it is the whole reason that item leads with a question about file format.
 - Bench scripts stayed in the scratchpad; nothing was added to the repo. Suite
-  green throughout: **552 → 556 checks, 19/19, 44.8 s** (+4 for the preset
-  boundary, one of them a control that the table still holds what the dropdown
-  drops).
+  green throughout: **552 → 568 checks, 19/19, 44.7 s** (+4 preset boundary,
+  +12 diagnostics, controls throughout).
 
 ### 2026-08-17 (s) — phase 0 closed, `scratch/` gone, and the tree gets a map
 - **Phase 0's camera number, taken at last: 46.17 fps / 969.0 MB/s** (200 frames,

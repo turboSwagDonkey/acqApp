@@ -250,6 +250,101 @@ def check_no_hot_spin(r: Report) -> None:
     r.check(dt >= RUN_S, f"the loop ran for the full window ({dt:.2f} s)")
 
 
+# ── the diagnostics themselves (2026-08-17) ──────────────────────────────────
+# A loss that is reported with the WRONG CAUSE costs as much as a silent one:
+# it sends the next session after the wrong fix. These three all misreported.
+
+def check_skip_report_blames_the_loop(r: Report) -> None:
+    """A camera skip is a read-loop shortfall, never the writer's.
+
+    The sink only enqueues (Recorder.put -> ring, no disk I/O), so a slow
+    writer sheds in the ring and is counted there instead.
+    """
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+
+    class St:
+        skipped, unread, buffer_size = 143, 38, 38
+
+    msg = OrcaFireWorker._skip_report(St())
+    r.check("143" in msg and "38/38" in msg,
+            "the skip report carries the counts")
+    r.check("writer cannot keep up" not in msg,
+            "it no longer blames the writer for a driver-buffer overflow")
+    r.check("read loop" in msg,
+            f"it names the read loop as the cause (got: {msg[:60]}...)")
+    # Control: it must still mention the writer, to say it is NOT this count —
+    # a message that simply deleted the word would also pass the check above.
+    r.check("WRITER" in msg,
+            "it still distinguishes the writer's separate count")
+
+
+def check_memory_capped_buffer_is_announced(r: Report) -> None:
+    """The 2 s of slack the constant promises silently becomes 0.33 s at full
+    frame. Announcing which bound won is the whole fix."""
+    import io
+    from contextlib import redirect_stdout
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+    from acqApp.devices.voltage_cam.presets import AcqConfig
+
+    w = OrcaFireWorker(0, AcqConfig())
+
+    def sizing(cfg, fps):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            n = w._buffer_frames(cfg, fps)
+        return n, buf.getvalue()
+
+    big = AcqConfig()                                   # full frame, 21 MB
+    n_big, out_big = sizing(big, 115.0)
+    r.check(n_big < 115.0 * OrcaFireWorker._BUFFER_SECONDS,
+            f"full frame really is memory-capped ({n_big} frames)")
+    r.check("MEMORY-capped" in out_big,
+            "and the shortfall is announced, not left in the arithmetic")
+    r.check("GiB" in out_big,
+            "the announcement says what the full slack would cost")
+
+    # Control: a small frame is NOT capped, and must stay quiet — otherwise the
+    # check above would pass on a warning that always fires.
+    small = AcqConfig(preset_key="4432x512", binning=4)  # ~0.28 MB
+    n_small, out_small = sizing(small, 115.0)
+    r.check(n_small == int(115.0 * OrcaFireWorker._BUFFER_SECONDS),
+            f"a small frame gets the full {OrcaFireWorker._BUFFER_SECONDS} s "
+            f"({n_small} frames)")
+    r.check("MEMORY-capped" not in out_small,
+            "and stays quiet — the warning is not unconditional")
+
+
+def check_readout_speed_absence_is_reported(r: Report) -> None:
+    """`get_all_readout_speeds() == []` on this model, so the 'fast' path never
+    ran and silently looked like it had."""
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+
+    class NoSpeeds:
+        def get_all_readout_speeds(self): return []
+        def get_readout_speed(self): return 1
+
+    class HasSpeeds:
+        def __init__(self): self.set_to = None
+        def get_all_readout_speeds(self): return ["slow", "fast"]
+        def get_readout_speed(self): return "slow"
+        def set_readout_speed(self, v): self.set_to = v
+
+    class Broken:
+        def get_all_readout_speeds(self): raise RuntimeError("no such property")
+        def get_readout_speed(self): raise RuntimeError("no such property")
+
+    r.check(OrcaFireWorker._maximise_readout_speed(NoSpeeds()) == "absent",
+            "a camera with no selectable speeds reports 'absent', not success")
+    # Control: where the control DOES exist it must still be used, or the fix
+    # would just be a way of never setting the speed.
+    cam = HasSpeeds()
+    r.check(OrcaFireWorker._maximise_readout_speed(cam) == "set"
+            and cam.set_to == "fast",
+            "a camera that offers 'fast' is still switched to it")
+    r.check(OrcaFireWorker._maximise_readout_speed(Broken()) == "error",
+            "a camera that raises reports 'error', and does not propagate")
+
+
 def main() -> int:
     r = Report("losses")
     qt_app()                            # the camera worker declares pyqtSignals
@@ -258,6 +353,9 @@ def main() -> int:
     check_unstamped(r)
     check_drops_counted(r)
     check_no_hot_spin(r)
+    check_skip_report_blames_the_loop(r)
+    check_memory_capped_buffer_is_announced(r)
+    check_readout_speed_absence_is_reported(r)
     return r.finish()
 
 

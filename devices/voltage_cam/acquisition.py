@@ -105,18 +105,38 @@ class OrcaFireWorker(PullWorker):
     # ── setup helpers ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _maximise_readout_speed(cam) -> None:
+    def _maximise_readout_speed(cam) -> str:
         """Force the fastest readout speed — the ORCA can sit in slow
         (ultra-quiet) mode, which costs frame rate with no indication in the ROI
-        or exposure settings."""
+        or exposure settings.
+
+        Returns what happened, and says so when the control does not exist: on
+        this C16240 over CoaXPress `get_all_readout_speeds()` returns `[]`, so
+        this did nothing at all and looked like it had worked.
+        """
         try:
             speeds = cam.get_all_readout_speeds()
             current = cam.get_readout_speed()
-            if "fast" in speeds and current != "fast":
-                cam.set_readout_speed("fast")
-                print(f"[voltage_cam] readout speed: {current} → fast")
+        except Exception as e:
+            print(f"[voltage_cam] could not read readout speed ({e})")
+            return "error"
+        if not speeds:
+            print(f"[voltage_cam] readout speed: not selectable on this model "
+                  f"(reports {current!r}) — left as found")
+            return "absent"
+        if "fast" not in speeds:
+            print(f"[voltage_cam] readout speed: no 'fast' among {speeds} "
+                  f"— left at {current!r}")
+            return "absent"
+        if current == "fast":
+            return "already"
+        try:
+            cam.set_readout_speed("fast")
         except Exception as e:
             print(f"[voltage_cam] could not set readout speed ({e})")
+            return "error"
+        print(f"[voltage_cam] readout speed: {current} → fast")
+        return "set"
 
     # NOTE: pylablib's "chunks" format is the fastest read path but is NOT safe
     # with a per-frame sink: it returns 3D blocks, so each frame handed on is a
@@ -157,13 +177,26 @@ class OrcaFireWorker(PullWorker):
 
     def _buffer_frames(self, cfg, fps: float) -> int:
         """DCAM ring-buffer depth: enough frames to cover _BUFFER_SECONDS of
-        acquisition, capped by a memory budget."""
+        acquisition, capped by a memory budget.
+
+        Says which bound won. At full frame the byte cap wins by a wide margin —
+        38 frames, 0.33 s, not the 2 s advertised — and that silent shortfall is
+        the difference between absorbing a GC pause and dropping through it.
+        """
         by_time  = int(max(fps, 1.0) * self._BUFFER_SECONDS)
         by_bytes = self._BUFFER_BYTES // cfg.frame_bytes
         n = int(np.clip(min(by_time, by_bytes), self._BUFFER_MIN, self._BUFFER_MAX))
+        slack = n / max(fps, 1.0)
         print(f"[voltage_cam] buffer: {n} frames "
               f"({n * cfg.frame_bytes / (1 << 20):.0f} MB, "
-              f"{n / max(fps, 1.0):.2f} s of slack)")
+              f"{slack:.2f} s of slack)")
+        if by_bytes < by_time:
+            want_gib = by_time * cfg.frame_bytes / (1 << 30)
+            print(f"[voltage_cam] buffer is MEMORY-capped at "
+                  f"{self._BUFFER_BYTES / (1 << 20):.0f} MB: {slack:.2f} s of "
+                  f"slack, not the {self._BUFFER_SECONDS:.1f} s intended. A "
+                  f"stall longer than {slack:.2f} s sheds frames; the full "
+                  f"{self._BUFFER_SECONDS:.1f} s would need {want_gib:.1f} GiB.")
         return n
 
     # ── per-frame timing ─────────────────────────────────────────────────────
@@ -234,6 +267,22 @@ class OrcaFireWorker(PullWorker):
                 n += 1
                 last = block
         return n, last
+
+    @staticmethod
+    def _skip_report(st) -> str:
+        """What a camera-side skip means — which is NOT "the writer".
+
+        The sink only enqueues (`Recorder.put` → ring buffer, no disk I/O), so a
+        slow writer sheds in the Recorder's ring and is counted there. A skip
+        here means *this* loop did not drain the driver buffer in time. The two
+        have different fixes, and the old message named the wrong one; the
+        status-bar text has always said this correctly.
+        """
+        return (f"[voltage_cam] DROPPED {st.skipped} frames (driver buffer "
+                f"{st.unread}/{st.buffer_size} unread) — the read loop is not "
+                f"draining in time. Suspects: the per-frame copy at this frame "
+                f"size, or a sink that blocks. A slow WRITER is a separate "
+                f"count (recorder drops), not this one.")
 
     def _warn_data_rate(self, cfg, fps: float) -> None:
         """Flag a configuration producing data faster than it can be written.
@@ -406,9 +455,7 @@ class OrcaFireWorker(PullWorker):
                             # preview skips on purpose.
                             if sink is not None and st.skipped != self._skipped:
                                 self._skipped = st.skipped
-                                print(f"[voltage_cam] DROPPED {st.skipped} frames"
-                                      f" (buffer {st.unread}/{st.buffer_size}"
-                                      f" unread) — writer cannot keep up")
+                                print(self._skip_report(st))
                                 self.drops_update.emit(st.skipped, st.buffer_size)
                         except Exception:      # no status support — count our own
                             self.fps_update.emit(win_n, win_n / dt)
