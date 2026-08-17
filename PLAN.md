@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-17 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done — **phase 0 fully closed 2026-08-17** (camera 46.17 fps / 969 MB/s), phase 5 built and mock-verified; **audit remediation 100 %** (22 of 22 closed); root regroup done. Next is not a gap but a target: **raise the capture rate** (§6 item 1). §5b has **1 open item** (A3), reviewed and deliberately left open. |
+| **Progress** | Roadmap phases 0–5 done — **phase 0 closed 2026-08-17, and its number corrected the same day**: the grab path does **105.9 fps / 2223 MB/s** through the app's own loop, not 46.17 / 969. Phase 5 built and mock-verified; **audit remediation 100 %** (22 of 22 closed); root regroup done. §6 item 1 (raise the capture rate) is **answered and closed** — there was no gap to close. §5b has **1 open item** (A3), reviewed and deliberately left open. |
 
 ---
 
@@ -70,15 +70,21 @@ reason #5 took one session instead of several.
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
 
-**Nothing is uncommitted and nothing is unpushed** (`origin/master`, 2026-08-14).
+**Nothing is uncommitted; PLAN.md's 2026-08-17 (t) update is committed but
+not yet pushed.**
 
-**Pick up here — §6 item 1, the operator's stated goal for next session: raise
-the capture rate by finding what limits the grab path.** Phase 0 closed with a
-measured **46.17 fps / 969 MB/s** at full frame, and the interesting part is what
-that is *not* limited by: the CoaXPress link offers 115.3 fps and the HDF5 writer
-benchmarks ~1165 MB/s, so neither the cable nor the disk explains the gap. The
-suspect is the read loop. **The camera is on this machine** (see §2), so this is
-a laptop-side investigation, not a rig trip — and a camera grab actuates nothing.
+**Pick up here — §6 item 1, and the answer is that there was nothing wrong.**
+The grab path was measured through `OrcaFireWorker` itself on 2026-08-17:
+**105.92 fps / 2223 MB/s** at full frame against a camera offering 115.26 — 92 %
+of the ceiling, not the 40 % that 46.17 fps implied. **Phase 0's 46.17 / 969 was
+a measurement artefact and is withdrawn** (§7 (t)). Nothing above the hardware
+is eating 13 ms per frame, because there is no 13 ms.
+
+What this re-points: acquisition is not the constraint, **the writer is**.
+Full frame produces ~2223 MB/s and the HDF5 writer sustains ~1165–1200, so
+**recording caps near 55–60 fps** whatever the buffers do. `_check_link.py` has
+said exactly that all along ("recording will cap near 58 fps"); this file called
+that note "superseded" and was wrong. It is reinstated.
 
 **Two standing instructions from the operator:**
 - **Write comments terser than the surrounding style.** This codebase's prose is
@@ -174,6 +180,13 @@ These are invariants, not preferences. Breaking one has cost real time before.
   be an animal under the objective. The pattern that worked for the DMD: verify
   the whole path *short of* the actuating call (open → render → upload →
   release, which projects nothing), report that, and ask before the last step.
+- **Follow SOLID.** New code and refactors are judged against it: one
+  responsibility per class, extend rather than modify (a new instrument is a
+  subclass plus a registry line, not an edit to the window), subtypes
+  substitutable for their base, interfaces split rather than fat, and
+  high-level code depending on the `Protocol`s in `acq/devices.py` rather than
+  on concrete drivers. §5b is the standing review against these — read its
+  "What is strong" list before changing that shape.
 - **Commit before restructuring.** See the warning in §3 — this is currently
   the single biggest risk to the project.
 - **An exception escaping a `QThread.run()` aborts the process** (PyQt6
@@ -200,7 +213,7 @@ done on top of that. Don't let it drift like that again.
 
 | Phase | Scope | State |
 |-------|-------|-------|
-| 0 | Hardware de-risk (encoder, camera throughput) | ✅ **both closed 2026-08-14** — encoder 4.912 V/rev; camera **46.17 fps, 969 MB/s** measured |
+| 0 | Hardware de-risk (encoder, camera throughput) | ✅ **both closed** — encoder 4.912 V/rev; camera **105.9 fps, 2223 MB/s** through the app's loop (re-measured 2026-08-17; the earlier 46.17 / 969 was an artefact, §7 (t)) |
 | 1 | `acq/` skeleton: clock, ring buffer, recorder, writer | ✅ |
 | 2 | Camera streaming + preview + HDF5 | ✅ mock-verified |
 | 3 | Encoder streaming + plot | ✅ mock-verified |
@@ -332,31 +345,46 @@ because two of them are how a future wrong-data bug gets in.
 
 ## 6. Next actions
 
+**Closed — kept for the reasoning, not the tick:**
+
 0. ~~Group the root modules.~~ **Done 2026-08-14** — option (a), plus the
    operator's call to gather the six instrument packages under `devices/`. See
    §7 (r).
 
-1. **Raise the capture rate: find what limits the grab path.** The operator's
-   goal for the next session. Measured 2026-08-14, full frame, 5 ms exposure:
-   **46.17 fps, 969 MB/s** — against a 115.3 fps link and a ~1165 MB/s writer.
-   Roughly 21.7 ms per frame where the camera offers 8.68 ms, so ~13 ms is being
-   spent somewhere above the hardware.
-   - **The decisive first experiment is a discriminator, not a fix:** re-measure
-     at 2×2 binning (¼ the bytes per frame). If **MB/s stays ~969** the limit is
-     bandwidth somewhere in the transfer; if **fps stays ~46** it is per-frame
-     overhead in the Python read loop. Those two point at completely different
-     fixes, so do this before changing anything.
-   - Suspects for the per-frame case, cheapest first: `wait_for_frame()` +
-     `read_multiple_images()` allocating a fresh 21 MB array per frame;
-     pylablib's internal buffer count (too few buffers → the camera stalls
-     waiting for a free one); and `set_frame_format("try_chunks")`, which
-     CAMERA_TRANSFER notes cuts per-frame object churn.
-   - **Measure the app's own loop too, not just a bench.** `OrcaFireWorker` has
-     its own read path and its number is the one that matters for recording;
-     the 46 fps came from a standalone script's loop.
-   - The bench script was deleted with phase 0. Recover it rather than rewriting:
-     `git show 2443a61:scratch/cam_grab.py > bench.py` (it is in history at that
-     commit and earlier). Do not re-add it to the repo.
+1. ~~Raise the capture rate.~~ **Closed 2026-08-17 — the premise was wrong.**
+   The grab path was already at 92 % of the camera. See §7 (t) for the numbers
+   and for why the old figure was low. Three findings it left behind, none
+   urgent, all cheap, in the order they are worth doing:
+   - **`_buffer_frames` gives 0.33 s of slack at full frame, not the 2.0 s
+     `_BUFFER_SECONDS` claims.** `_BUFFER_BYTES` (768 MB) binds first at 20.99
+     MB/frame → 38 buffers. A 6 s run with a *no-op* sink still dropped 13
+     frames. Raising the byte budget buys real slack, but it is a memory call
+     the operator should make, not a constant to change quietly.
+   - **The drop message misdiagnoses.** It prints "writer cannot keep up" for
+     any shortfall, and the run above had no writer at all — the copy out of the
+     driver buffer costs ~9.2 ms against an 8.68 ms frame period, so the buffer
+     fills even with nothing downstream. Name the two causes separately.
+   - **`_maximise_readout_speed` is a no-op on this camera.**
+     `get_all_readout_speeds()` returns `[]` and `get_readout_speed()` returns
+     `1`, so `"fast" in speeds` is never true. It is not broken, it just does
+     nothing here — worth a line so nobody counts on it again.
+
+**Open, in order:**
+
+1. **Make full-frame recording fit the writer.** This is the real constraint and
+   it is now the only one: ~2223 MB/s acquired against ~1165–1200 written, so
+   about half the frames cannot be stored. The levers, and the one measurement
+   that picks between them:
+   - **Binning does not cost frame rate on this camera.** The frame period stays
+     **8.68 ms at bin 1, 2 and 4** — binning cuts bytes, not time. So 2×2 gives
+     ¼ the data at the *same* 115 fps (measured: 114.26 fps, 600 MB/s), which
+     fits the writer with room to spare. If the science tolerates 2216×1184,
+     this is the whole answer and needs no code.
+   - Otherwise cap the rate (the panel already warns and names the exposure), or
+     take a smaller ROI.
+   - **Not yet measured: the writer's real sustained rate through a session**,
+     as opposed to its benchmark. That number decides how much binning is
+     enough, and it is a laptop-side test.
 
 2. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
@@ -405,17 +433,13 @@ because two of them are how a future wrong-data bug gets in.
   still works — it only applies to a **fresh install** with no saved value, and
   this machine has one. Revisit only if the projected field needs to be
   registered to the optics rather than filling the panel.
-- ~~Phase 0's camera throughput number.~~ **Measured 2026-08-14, on this
-  machine, and phase 0 is closed.** 200 frames, full frame (4432×2368, 20.99
-  MB/frame), 5 ms exposure → **46.17 fps, 969.0 MB/s**. Three numbers now bracket
-  the pipeline and they disagree usefully: the link claims **115.3 fps**
-  (`_check_link.py`, `get_frame_timings()`), the HDF5 writer benchmarks at
-  **~1165 MB/s**, and the achieved grab is **969 MB/s**. So neither the CoaXPress
-  cable nor the disk is the limit — **the read path is** (`wait_for_frame` +
-  `read_multiple_images` in a Python loop). Size the ring buffer (#14) from 969
-  MB/s. The old note predicting "recording caps near 58 fps" is superseded:
-  acquisition alone caps at 46. Worth re-measuring through `OrcaFireWorker`,
-  whose read loop is not the same code.
+- ~~Phase 0's camera throughput number.~~ **Closed, and re-measured 2026-08-17
+  through `OrcaFireWorker` itself: 105.92 fps, 2223 MB/s** at full frame
+  (4432×2368, 20.99 MB/frame, 5 ms), against a camera offering 115.26. The
+  three numbers now agree instead of disagreeing: link ~115 fps ≈ 2419 MB/s,
+  achieved 2223 MB/s (92 %), writer ~1165–1200 MB/s. **The read path is not the
+  limit; the writer is.** Size the ring buffer (#14) from 2223 MB/s, not 969.
+  The **2026-08-14 figure of 46.17 fps / 969 MB/s is withdrawn** — see §7 (t).
 - Encoder **wheel diameter** — still unmeasured, and until it is set the app
   reports rev/s and rev rather than mm/s and mm. The panel now keeps whatever is
   typed in, so measure once and it stays measured. (`volts_per_rev` is *not*
@@ -434,10 +458,52 @@ because two of them are how a future wrong-data bug gets in.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-17 (t) — the grab path was never slow; phase 0's number withdrawn
+- **§6 item 1 is closed by disproving its premise.** The app's own loop —
+  `OrcaFireWorker` with a counting sink, so the recording branch — sustains
+  **105.92 fps / 2223 MB/s** at full frame against a camera offering 115.26.
+  That is 92 % of the ceiling. The "~13 ms per frame spent above the hardware"
+  this file has carried since (s) does not exist.
+- **What made 46.17 fps.** `cam_grab.py` takes `t0` *before*
+  `cam.start_acquisition()` and calls it with no `nframes`, so pylablib
+  allocates its default 100 buffers — **2.1 GB, and 1.09 s** — inside the timed
+  window. Measured directly: first `start_acquisition` 1090 ms, second 52 ms
+  (buffers are reused). 1.09 s of setup + 1.85 s of grabbing at ~108 fps = 2.94 s
+  for 200 frames = 68 fps, and the script rerun **verbatim today gave 69.26 fps**
+  against its own recorded 46.17. So the artefact is proven and worth ~36 % of
+  the figure; the rest of the original gap did not reproduce at all and is
+  most likely machine state that day. **A number that cannot be reproduced by
+  its own script should be withdrawn, not explained** — which is why the header,
+  §4 and §6 now all carry 105.9 instead.
+- **The discriminator answered a third way.** Neither "MB/s flat" (bandwidth)
+  nor "fps flat" (per-frame overhead): the frame period is **8.68 ms at bin 1, 2
+  and 4 alike**, so on this camera binning cuts *bytes, not time* — bin2 gave
+  114.26 fps / 600 MB/s, bin4 114.35 fps / 150 MB/s, both essentially at the
+  camera ceiling with the loop idle in `wait_for_frame` 66–81 % of the time.
+  That makes binning the lever for **fitting the writer**, not for going faster,
+  and it is now §6 item 1.
+- **The residual 8 % at full frame is a copy wall, not Python.**
+  `read_multiple_images` costs **9.16–10.02 ms/frame** against an 8.68 ms frame
+  period (~2.3 GB/s memcpy out of the driver buffer), so the buffer fills slowly
+  and overflows. Deeper buffers delay that; they cannot fix a sustained deficit.
+  Retaining every frame costs ~10 % on top (97.44 vs 107.51 fps).
+- **Two smaller things the runs exposed**, both in §6 item 1: `_buffer_frames`
+  delivers **0.33 s of slack at full frame, not the 2.0 s `_BUFFER_SECONDS`
+  advertises** (`_BUFFER_BYTES` binds first → 38 buffers), which dropped 13
+  frames in 6 s *with no writer attached* — and the drop message blames the
+  writer for it regardless. And `_maximise_readout_speed` is a **no-op on this
+  model**: `get_all_readout_speeds()` returns `[]`.
+- **§2 gains a SOLID ground rule** at the operator's request, pointing at §5b.
+- Bench scripts stayed in the scratchpad; nothing was added to the repo. Suite
+  green before and after: **552 checks, 19/19, 46.1 s**.
+
 ### 2026-08-17 (s) — phase 0 closed, `scratch/` gone, and the tree gets a map
 - **Phase 0's camera number, taken at last: 46.17 fps / 969.0 MB/s** (200 frames,
   full frame 4432×2368, 20.99 MB/frame, 5 ms exposure). Taken *here*, not at the
   rig, because §2 turned out to be wrong about the camera. Phase 0 is now ✅.
+  **↑ This figure was withdrawn the next day — see (t). The real number is
+  105.9 fps / 2223 MB/s; the rest of this entry's reasoning rests on the wrong
+  one.**
 - **The number's value is the disagreement, not the figure.** Link 115.3 fps,
   writer ~1165 MB/s, achieved 969 MB/s → neither the cable nor the disk is the
   limit; ~13 ms per frame goes somewhere above the hardware. That is §6 item 1
