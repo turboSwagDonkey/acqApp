@@ -102,7 +102,9 @@ def main() -> int:
     r = Report("camera-ts")
     qt_app()                                # the worker declares pyqtSignals
 
-    cfg = AcqConfig(preset_key="4432x4", exposure_us=1000.0)
+    # Smallest offered preset, binned hard: this test wants a cheap frame shape
+    # for FakeCam, not a particular ROI.
+    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
     clock = SessionClock()
     clock.start()
     n_target = BATCH * 8

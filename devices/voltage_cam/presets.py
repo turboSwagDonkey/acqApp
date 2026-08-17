@@ -18,6 +18,10 @@ ROWS: fewer rows → proportionally higher fps. Datasheet maxima (fps):
 Labels show the **USB3.1 Gen1 16-bit** rate; CoaXPress is ~7× higher. Actual
 fps = min(readout max, 1/exposure), and vertical binning multiplies it further.
 ROI sizes and positions are multiples of 4, as DCAM-API requires.
+
+The whole table is the sensor's physics and stays complete; only rows ≥
+MIN_PRESET_ROWS are OFFERED as presets. Those are separate questions — see the
+note there before deleting a row.
 """
 from __future__ import annotations
 import math
@@ -101,8 +105,17 @@ def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
     return f"{tag} · {fps_usb:g} USB / {fps_cxp:g} CXP fps"
 
 
+# Smallest band the UI offers. Below 512 rows the sensor outruns the writer by
+# so much that the preset can only produce an unrecordable configuration.
+# The table above deliberately keeps its smaller entries: readout_fps()
+# interpolates them for BINNED ROIs — 512 rows at bin 4 reads out like 128 — so
+# trimming the table would corrupt the estimate it exists to make.
+MIN_PRESET_ROWS: int = 512
+
 PRESETS: Dict[str, ResolutionPreset] = {}
 for _rows, _u, _c in _ROWS_FPS_BOTH:
+    if _rows < MIN_PRESET_ROWS:
+        continue
     _key = f"{SENSOR_W}x{_rows}"
     _lab = _label(_rows, _u, _c)
     if _rows == SENSOR_H:

@@ -104,6 +104,26 @@ def main() -> int:
     r.check(P.DEFAULT_PRESET in P.PRESETS,
             f"the default preset {P.DEFAULT_PRESET!r} exists")
 
+    # ── the offered list is trimmed; the datasheet table is NOT ──────────────
+    small = [k for k in P.PRESET_KEYS if P.PRESETS[k].vsize < P.MIN_PRESET_ROWS]
+    r.check(not small, f"no preset is offered below {P.MIN_PRESET_ROWS} rows "
+                       f"(offending: {small})")
+    r.check(min(P.PRESETS[k].vsize for k in P.PRESET_KEYS) == P.MIN_PRESET_ROWS,
+            f"the smallest offered preset is exactly {P.MIN_PRESET_ROWS} rows")
+
+    # Control: the check above is vacuous unless the table still HAS smaller
+    # rows to have excluded. It must, because binning interpolates them.
+    r.check(any(rws < P.MIN_PRESET_ROWS for rws, _u, _c in P._ROWS_FPS_BOTH),
+            f"the datasheet table still carries rows below "
+            f"{P.MIN_PRESET_ROWS} (trimming presets must not trim physics)")
+    # The consequence that would break silently: the smallest preset at bin 4
+    # reads out like 128 rows, and only the table knows that rate.
+    r.check(abs(P.readout_fps(P.MIN_PRESET_ROWS, binning=4)
+                - P.readout_fps(P.MIN_PRESET_ROWS // 4)) < 1e-9,
+            f"{P.MIN_PRESET_ROWS} rows at bin 4 still resolves to the "
+            f"{P.MIN_PRESET_ROWS // 4}-row rate "
+            f"({P.readout_fps(P.MIN_PRESET_ROWS, binning=4):.0f} fps)")
+
     return r.finish()
 
 

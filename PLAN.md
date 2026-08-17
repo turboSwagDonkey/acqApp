@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-17 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done — **phase 0 closed 2026-08-17, and its number corrected the same day**: the grab path does **105.9 fps / 2223 MB/s** through the app's own loop, not 46.17 / 969. Phase 5 built and mock-verified; **audit remediation 100 %** (22 of 22 closed); root regroup done. §6 item 1 (raise the capture rate) is **answered and closed** — there was no gap to close. §5b has **1 open item** (A3), reviewed and deliberately left open. |
+| **Progress** | Roadmap phases 0–5 done — **phase 0 closed 2026-08-17, and its number corrected the same day**: the grab path does **105.9 fps / 2223 MB/s** through the app's own loop, not 46.17 / 969. Phase 5 built and mock-verified; **audit remediation 100 %** (22 of 22 closed); root regroup done. §6 item 1 (raise the capture rate) is **answered and closed** — there was no gap to close. **§2 corrected: this machine IS the rig computer.** §5b has **1 open item** (A3), reviewed and deliberately left open. |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **552 checks, 19 files, ~50 s, all passing.** Run it before and
+the contract: **556 checks, 19 files, ~45 s, all passing.** Run it before and
 after anything.
 
 ```
@@ -161,6 +161,18 @@ These are invariants, not preferences. Breaking one has cost real time before.
   this; never pip-install into another interpreter.
 - **Mock first.** Every change must pass `tests/run_all.py` in Emulate mode
   before it goes near the rig. Real-hardware-only claims get flagged as such.
+- **This machine IS the rig computer** — confirmed by the operator 2026-08-17,
+  and it resolves three sessions of confusion. Every "surprise" below was the
+  same fact seen from the wrong end: the devices are here because *here is the
+  rig*. Two consequences that outrank the rest of this section. **First, the
+  actuation rule is live, not theoretical** — an animal may genuinely be under
+  the objective while this session runs, so the "ask before actuating" rule
+  below is the operating rule, not a precaution for later. **Second, "measure it
+  at the rig" and "measure it here" are the same errand**, so anything §6 defers
+  to a rig trip should be re-read as doable now.
+  *If work ever resumes on a different machine, this line is the first thing to
+  re-check.* The older wording is kept below because it is how the mistake was
+  made, and the shape of it is worth recognising again:
 - **This machine has *some* hardware — check, don't assume.** This rule used to
   read "the laptop has no hardware", and on 2026-08-12 that was wrong: the
   **DMD is attached to this machine** and opens from `acqApp/.venv`. **It was
@@ -198,6 +210,9 @@ These are invariants, not preferences. Breaking one has cost real time before.
 
 `acqApp/` is a git repo — `turboSwagDonkey/acqApp` (private), branch `master`.
 The laptop writes and pushes; the rig pulls, runs, fixes and pushes back.
+**As of 2026-08-17 that is one machine, not two** — this box is the rig (§2), so
+a commit made here is already on the machine that runs it. Push anyway: the
+remote is still the backup.
 
 **Caught up 2026-08-11.** Before that, the last commit was 2026-06-29: six
 weeks and 68 files — `modules.py`, `config.py`, `console.py`, `saving.py`,
@@ -384,7 +399,14 @@ because two of them are how a future wrong-data bug gets in.
      take a smaller ROI.
    - **Not yet measured: the writer's real sustained rate through a session**,
      as opposed to its benchmark. That number decides how much binning is
-     enough, and it is a laptop-side test.
+     enough, needs no animal, and can be run right here (§2).
+   - **Done 2026-08-17: the offered presets stop at `4432x512`.** Below that the
+     sensor outruns the writer so far that the preset could only produce an
+     unrecordable session. `MIN_PRESET_ROWS` trims the *dropdown*; the datasheet
+     table keeps all nine rows, because `readout_fps()` interpolates them for
+     binned ROIs — 512 rows at bin 4 reads out like 128. Four checks in
+     `test_readout_fps` hold that line apart, one of them the control that the
+     table still carries what the dropdown does not.
 
 2. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
@@ -494,8 +516,23 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   writer for it regardless. And `_maximise_readout_speed` is a **no-op on this
   model**: `get_all_readout_speeds()` returns `[]`.
 - **§2 gains a SOLID ground rule** at the operator's request, pointing at §5b.
+- **THE MACHINE IS THE RIG COMPUTER** — the operator said so, and it dissolves
+  the confusion §2 has been carrying since 2026-08-12. The DMD "surprise", the
+  ORCA "surprise", the 6363 and COM54: all one fact, seen from the wrong end.
+  §2 and §3 are corrected. The rule that gets sharper, not looser: **an animal
+  may be under the objective while a session runs here**, so actuation asks are
+  live. The rule that gets looser: nothing needs deferring to "a rig trip".
+- **The offered presets now stop at `4432x512`** (operator's call). The trim is
+  `MIN_PRESET_ROWS` over the *dropdown* only — the nine-row datasheet table is
+  untouched on purpose, since `readout_fps()` interpolates its small rows for
+  binned ROIs and cutting them would silently mis-rate 512-at-bin-4 by 2×.
+  Splitting "what the sensor can do" from "what we offer" is the §2 SOLID rule
+  applied on the same day it was written. Two tests pinned `4432x4` for a cheap
+  frame shape and now use `4432x512` at bin 4.
 - Bench scripts stayed in the scratchpad; nothing was added to the repo. Suite
-  green before and after: **552 checks, 19/19, 46.1 s**.
+  green throughout: **552 → 556 checks, 19/19, 45.3 s** (+4 for the preset
+  boundary, one of them a control that the table still holds what the dropdown
+  drops).
 
 ### 2026-08-17 (s) — phase 0 closed, `scratch/` gone, and the tree gets a map
 - **Phase 0's camera number, taken at last: 46.17 fps / 969.0 MB/s** (200 frames,

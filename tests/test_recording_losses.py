@@ -222,7 +222,9 @@ def check_no_hot_spin(r: Report) -> None:
                 self.worker._stop = True
             raise RuntimeError("link down")
 
-    cfg = AcqConfig(preset_key="4432x4", exposure_us=1000.0)
+    # Smallest offered preset, binned hard — BrokenCam never yields a frame, so
+    # the shape only has to be cheap.
+    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
     cam = BrokenCam(cfg.frame_shape)
     worker = OrcaFireWorker(0, cfg, cam=cam)
     cam.worker = worker
