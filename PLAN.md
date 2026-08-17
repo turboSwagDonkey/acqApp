@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-14 |
+| **Last updated** | 2026-08-17 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done (**phase 5, closed-loop, built and mock-verified**); **audit remediation 100 %** (22 of 22 closed). §6 item 0 (root grouping) closed 2026-08-14. What is left needs hardware — but see §2: more of it is on this machine than was thought. §5b has **1 open item** (A3), reviewed and deliberately left open. |
+| **Progress** | Roadmap phases 0–5 done — **phase 0 fully closed 2026-08-17** (camera 46.17 fps / 969 MB/s), phase 5 built and mock-verified; **audit remediation 100 %** (22 of 22 closed); root regroup done. Next is not a gap but a target: **raise the capture rate** (§6 item 1). §5b has **1 open item** (A3), reviewed and deliberately left open. |
 
 ---
 
@@ -26,9 +26,10 @@ chasing a specific item number or an old decision.** They were split out of this
 file precisely so nobody reads 300 lines of finished work to start.
 
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
-2026-08-10 audit is closed, so **everything still open needs the rig** — see
-§6's "Needs the rig". The test suite is the contract: **531 checks, 18 files,
-~44 s, all passing.** Run it before and after anything.
+2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
+throughput number, so the roadmap is clear through phase 5. The test suite is
+the contract: **552 checks, 19 files, ~50 s, all passing.** Run it before and
+after anything.
 
 ```
 c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
@@ -71,10 +72,13 @@ reason #5 took one session instead of several.
 
 **Nothing is uncommitted and nothing is unpushed** (`origin/master`, 2026-08-14).
 
-**Pick up here.** §6 item 1: **this machine has more hardware than §2 claimed**
-(ORCA on CoaXPress, the 6363, COM54 — found 2026-08-14), so several "Needs the
-rig" items may be closable without travelling. That is a question for the
-operator before anything is run, not a licence.
+**Pick up here — §6 item 1, the operator's stated goal for next session: raise
+the capture rate by finding what limits the grab path.** Phase 0 closed with a
+measured **46.17 fps / 969 MB/s** at full frame, and the interesting part is what
+that is *not* limited by: the CoaXPress link offers 115.3 fps and the HDF5 writer
+benchmarks ~1165 MB/s, so neither the cable nor the disk explains the gap. The
+suspect is the read loop. **The camera is on this machine** (see §2), so this is
+a laptop-side investigation, not a rig trip — and a camera grab actuates nothing.
 
 **Two standing instructions from the operator:**
 - **Write comments terser than the surrounding style.** This codebase's prose is
@@ -112,9 +116,12 @@ of it has run on the rig.
   — devices and previews with the shared clock never started, so nothing can be
   recorded. The pupil tracker's tuning overlay (annulus, per-ray edge points,
   click-to-seed) moved into the app as **Show search overlay** in its tab.
-- **`scratch/` is down to `cam_grab.py`**, which stays: it is how §6's open
-  camera-throughput measurement gets taken. The `encoder_*.csv` beside it are
-  the rig capture behind the 4.912 V/rev figure — data, not code.
+- **`scratch/` and `toy_output/` are gone (2026-08-14).** `cam_grab.py` was kept
+  only to take phase 0's camera number; that was taken (46.17 fps, 969 MB/s) and
+  the script deleted with phase 0. The five raw captures beside it were **moved,
+  not destroyed** — `../rig_captures/`, outside the repo, with a README naming
+  what each one established. They were gitignored, so that folder is the only
+  copy.
 
 **`main.py` is the operator's active file.** The settings-window work is theirs
 and ongoing: **ask before touching its dock/settings code**, and don't
@@ -193,7 +200,7 @@ done on top of that. Don't let it drift like that again.
 
 | Phase | Scope | State |
 |-------|-------|-------|
-| 0 | Hardware de-risk (encoder, camera throughput) | encoder ✅ · **camera MB/s never measured on the rig** ❌ |
+| 0 | Hardware de-risk (encoder, camera throughput) | ✅ **both closed 2026-08-14** — encoder 4.912 V/rev; camera **46.17 fps, 969 MB/s** measured |
 | 1 | `acq/` skeleton: clock, ring buffer, recorder, writer | ✅ |
 | 2 | Camera streaming + preview + HDF5 | ✅ mock-verified |
 | 3 | Encoder streaming + plot | ✅ mock-verified |
@@ -329,11 +336,27 @@ because two of them are how a future wrong-data bug gets in.
    operator's call to gather the six instrument packages under `devices/`. See
    §7 (r).
 
-1. **Decide what the hardware on this machine is for.** §2's "rig-only" list was
-   wrong (see there): the ORCA, the 6363 and COM54 all answer here. That may
-   unblock several "Needs the rig" items *without* travelling, but it also means
-   an unguarded script here can drive real hardware — ask first, as §2 says.
-   The cheapest next measurement is phase 0's, below.
+1. **Raise the capture rate: find what limits the grab path.** The operator's
+   goal for the next session. Measured 2026-08-14, full frame, 5 ms exposure:
+   **46.17 fps, 969 MB/s** — against a 115.3 fps link and a ~1165 MB/s writer.
+   Roughly 21.7 ms per frame where the camera offers 8.68 ms, so ~13 ms is being
+   spent somewhere above the hardware.
+   - **The decisive first experiment is a discriminator, not a fix:** re-measure
+     at 2×2 binning (¼ the bytes per frame). If **MB/s stays ~969** the limit is
+     bandwidth somewhere in the transfer; if **fps stays ~46** it is per-frame
+     overhead in the Python read loop. Those two point at completely different
+     fixes, so do this before changing anything.
+   - Suspects for the per-frame case, cheapest first: `wait_for_frame()` +
+     `read_multiple_images()` allocating a fresh 21 MB array per frame;
+     pylablib's internal buffer count (too few buffers → the camera stalls
+     waiting for a free one); and `set_frame_format("try_chunks")`, which
+     CAMERA_TRANSFER notes cuts per-frame object churn.
+   - **Measure the app's own loop too, not just a bench.** `OrcaFireWorker` has
+     its own read path and its number is the one that matters for recording;
+     the 46 fps came from a standalone script's loop.
+   - The bench script was deleted with phase 0. Recover it rather than rewriting:
+     `git show 2443a61:scratch/cam_grab.py > bench.py` (it is in history at that
+     commit and earlier). Do not re-add it to the repo.
 
 2. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
@@ -382,15 +405,17 @@ because two of them are how a future wrong-data bug gets in.
   still works — it only applies to a **fresh install** with no saved value, and
   this machine has one. Revisit only if the projected field needs to be
   registered to the optics rather than filling the panel.
-- Phase 0's camera throughput number:
-  `.venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save`
-  → the achieved MB/s sizes the ring buffer (#14) and confirms the SSD keeps up.
-  **The camera answers on this machine** (2026-08-14), so this is now a matter of
-  asking, not travelling. The *link* half is already settled:
-  `devices/voltage_cam/_check_link.py` reports **CoaXPress**, 8.68 ms full-frame
-  period → 115.3 fps, 2307 MB/s — which closes the CoaXPress-vs-USB3 question
-  §5 B2 left open. That is `get_frame_timings()`, i.e. what the camera says it
-  can deliver; it is **not** the sustained-to-SSD number this item wants.
+- ~~Phase 0's camera throughput number.~~ **Measured 2026-08-14, on this
+  machine, and phase 0 is closed.** 200 frames, full frame (4432×2368, 20.99
+  MB/frame), 5 ms exposure → **46.17 fps, 969.0 MB/s**. Three numbers now bracket
+  the pipeline and they disagree usefully: the link claims **115.3 fps**
+  (`_check_link.py`, `get_frame_timings()`), the HDF5 writer benchmarks at
+  **~1165 MB/s**, and the achieved grab is **969 MB/s**. So neither the CoaXPress
+  cable nor the disk is the limit — **the read path is** (`wait_for_frame` +
+  `read_multiple_images` in a Python loop). Size the ring buffer (#14) from 969
+  MB/s. The old note predicting "recording caps near 58 fps" is superseded:
+  acquisition alone caps at 46. Worth re-measuring through `OrcaFireWorker`,
+  whose read loop is not the same code.
 - Encoder **wheel diameter** — still unmeasured, and until it is set the app
   reports rev/s and rev rather than mm/s and mm. The panel now keeps whatever is
   typed in, so measure once and it stays measured. (`volts_per_rev` is *not*
@@ -408,6 +433,33 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-17 (s) — phase 0 closed, `scratch/` gone, and the tree gets a map
+- **Phase 0's camera number, taken at last: 46.17 fps / 969.0 MB/s** (200 frames,
+  full frame 4432×2368, 20.99 MB/frame, 5 ms exposure). Taken *here*, not at the
+  rig, because §2 turned out to be wrong about the camera. Phase 0 is now ✅.
+- **The number's value is the disagreement, not the figure.** Link 115.3 fps,
+  writer ~1165 MB/s, achieved 969 MB/s → neither the cable nor the disk is the
+  limit; ~13 ms per frame goes somewhere above the hardware. That is §6 item 1
+  and the operator's goal for next session.
+- **`scratch/` and `toy_output/` deleted.** `cam_grab.py` existed only to take
+  the number above, so it went with phase 0 — recover from git if the grab-path
+  work needs a bench (`git show 2443a61:scratch/cam_grab.py`, verified). The five
+  raw captures were **moved, not destroyed**: `../rig_captures/` with a README
+  naming what each established. They were gitignored, so that is the only copy —
+  worth knowing before anyone tidies that folder too.
+- **`docs/STRUCTURE.md` is new, and it is checked, not trusted.**
+  `tests/test_structure.py` (21 checks) validates both halves: the tree block
+  against the filesystem, and the **mermaid arrows against the AST**. The second
+  is the one worth having — it fails if an adapter starts importing another
+  adapter, or if anything under `acq/` imports upward. It confirmed today that
+  all 21 drawn edges are real and that `acq/` imports nothing in the app.
+  Two edges nobody guesses: `probe.py → devices` and `adapters → closed_loop`.
+- **The rule that comes with it** is in `CLAUDE.md` and §8 item 7: a move,
+  rename or new module updates STRUCTURE.md *in the same commit*. The suite
+  enforces it, which is the only reason such a doc survives a refactor — this
+  one was written the day after a regroup broke every link in `docs/`.
+- Suite is now **552 checks, 19 files**.
 
 ### 2026-08-14 (r) — the root regroup, and "rig-only" turns out to be wrong
 - **§6 item 0 closed, option (a) + the operator's addition.** `sync.py` and
@@ -587,6 +639,11 @@ small enough to read at the start of every session.
    a new gotcha that cost you time, and above all anything left **uncommitted**.
    §0 is the only part of this file written for someone who has never seen the
    project.
+
+7. If anything **moved, was renamed or was added**, update
+   [docs/STRUCTURE.md](docs/STRUCTURE.md) in the same commit — the tree *and*
+   the diagram. `tests/test_structure.py` will fail the suite if you don't,
+   which is the only reason a structure doc survives contact with a refactor.
 
 Do this as a *small* edit to this file, never a rewrite — the reasoning in the
 session log is the part that's expensive to reconstruct.

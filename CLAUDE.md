@@ -18,6 +18,11 @@ Finished work is archived, not deleted: the closed 2026-08-10 audit is in
 [docs/SESSIONLOG.md](docs/SESSIONLOG.md). **Open those only to chase a specific
 item number or an old decision** — never as part of getting oriented.
 
+- [docs/STRUCTURE.md](docs/STRUCTURE.md) — **the map of the tree, and the rule
+  that comes with it: any move, rename or new module updates this file in the
+  same commit.** It is not on trust — `tests/test_structure.py` checks the tree
+  against the filesystem and the mermaid arrows against the AST, so a stale map
+  fails the suite. Read it to find something; update it when you move something.
 - [README.md](README.md) — the authoritative *description* (architecture,
   recording format). PLAN.md is the *plan*. Keep that split.
 - [docs/](docs/) — historical handoff and per-device notes. Where they disagree
@@ -28,7 +33,7 @@ item number or an old decision** — never as part of getting oriented.
 - **Installs go ONLY into `acqApp/.venv`.** Never pip-install into another
   interpreter, even if the user's shell is running one.
 - **Verify in Emulate/mock mode**: `acqApp\.venv\Scripts\python.exe
-  acqApp\tests\run_all.py` — 531 checks, ~44 s, no hardware, no windows. Use the
+  acqApp\tests\run_all.py` — 552 checks, ~50 s, no hardware, no windows. Use the
   **absolute** interpreter path; the shell usually starts in this repo's parent,
   where the relative one fails obscurely. Say plainly when something is
   mock-verified only: apart from the wheel encoder and the DMD, none of this

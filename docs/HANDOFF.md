@@ -42,7 +42,7 @@ reset as **+1 rev of real motion**, cancelling the turn — cumulative distance
 then sawtooths back to zero once per revolution, invisibly. That is why
 `_derive` rejects any step implying more than `_MAX_REV_S` and *coasts* through
 the sensor's blind spot instead of unwrapping. Against the real capture
-(`toy_output/wheel.csv`, 7 resets) the final version leaks **0** resets.
+(`../../rig_captures/wheel_2026-08-06.csv`, 7 resets) the final version leaks **0** resets.
 
 Two earlier derivations that also failed, so they don't get retried:
 differentiating the *raw* voltage (per-sample ADC noise of ±0.045 V ≈ 0.46 rev/s
@@ -50,15 +50,15 @@ of phantom speed — a velocity deadband cannot tell that from motion), and
 rectified distance (`+= |Δ|`), which accumulated that noise. Speed is now an LSQ
 slope over a ±0.25 s window and distance is the deadband-gated integral of it.
 
-**Camera link — still open, and the reason the label exists.** The frame-rate
-label used to be a hardcoded `DEFAULT_LINK = USB`; this rig is CoaXPress-only,
-so it read the wrong column of the readout table (audit #11). The panel now
-shows the camera's *measured* rate once running. **Watch that number at full
-frame:** ~115 fps means CoaXPress is live; ~15.8 fps means it is still
-bandwidth-capped like USB3, which would be a DCAM/grabber enumeration problem
-*below* this app — the camera's USB interface also enumerating, or the FireBird
-grabber not being the enumerated path. The app cannot choose the link; the
-measured label is only how you tell which one you got.
+**Camera link — answered 2026-08-14: CoaXPress is live.** The frame-rate label
+used to be a hardcoded `DEFAULT_LINK = USB`; this rig is CoaXPress-only, so it
+read the wrong column of the readout table (audit #11). The panel now shows the
+camera's *measured* rate once running. `devices/voltage_cam/_check_link.py`
+reports an 8.68 ms full-frame period → **115.3 fps**, the CoaXPress figure;
+~15.8 fps would have meant DCAM had enumerated the USB3 interface instead, a
+problem *below* this app. The app cannot choose the link; the measured label is
+only how you tell which one you got. Note the ceiling is not the throughput:
+an actual grab achieves **46 fps / 969 MB/s** (above).
 
 The two diagnostic tools from that session are still in the tree and still the
 way to answer a wheel question: `devices/wheel/capture_raw.py` (hardware-clocked 1 kHz
@@ -148,31 +148,30 @@ workers for hardware and a JSON dataclass config. We extend that pattern.
 **Everything above is verified against the `--mock` workers only.** No real
 hardware has run this code yet — the immediate next step is unchanged.
 
-## THE immediate next step
+## ~~THE immediate next step~~ — done 2026-08-14
 
-Run the camera throughput test on the rig and bring back the achieved **MB/s**:
+The camera throughput test has been run, and on the *dev* machine, not the rig:
+200 frames, full frame, 5 ms → **46.17 fps, 969.0 MB/s** (20.99 MB/frame). Size
+the ring buffer from that. `scratch/cam_grab.py` was deleted with phase 0, as
+the note below always said it would be.
 
-```
-.venv\Scripts\python scratch\cam_grab.py --frames 200 --exposure 0.005 --save
-```
-
-That number sizes the ring buffer and confirms the SSD can keep up — it gates
-the Phase 2 storage design. Until we have it, Phase 1 skeleton work can proceed
-(clock/recorder/dock are independent of the camera rate).
+The three figures bracketing the pipeline disagree usefully — link 115.3 fps,
+HDF5 writer ~1165 MB/s, achieved 969 MB/s — so the limit is the **read path**,
+not the cable or the disk. See PLAN §6.
 
 ## Repo / transfer workflow
 
 - GitHub: `turboSwagDonkey/acqApp` (private).
-- Laptop has no hardware → write code, commit, push. Rig → pull, run, commit fixes,
-  push. `.venv` is gitignored; recreate with `pip install -r requirements.txt`.
-- Phase 0 scripts live in `scratch/` and get deleted as Phase 0 is validated.
-  **Three went on 2026-08-13** — `cam_app.py` (a LabVIEW-front-panel emulator),
-  `cam_live.py` (a matplotlib preview) and `encoder_read.py`, all superseded by
-  the app itself and by the per-package bring-up harnesses, and
-  referenced by nothing. `cam_grab.py` **stays**: the camera throughput number
-  is the one Phase 0 item still open, and that script is how it gets measured
-  (PLAN §6). The `encoder_*.csv` captures stay too — they are the rig data the
-  4.912 V/rev measurement came from, not code.
+- Write code, commit, push here; the rig pulls, runs, commits fixes, pushes.
+  `.venv` is gitignored; recreate with `pip install -r requirements.txt`.
+  **"The laptop has no hardware" is false** — as of 2026-08-14 the ORCA, the
+  6363 and COM54 all answer on this machine. See PLAN §2.
+- ~~Phase 0 scripts live in `scratch/`~~ — **`scratch/` is gone (2026-08-14)**,
+  which is what "deleted as Phase 0 is validated" always meant. `cam_app.py`,
+  `cam_live.py` and `encoder_read.py` went on 2026-08-13; `cam_grab.py` went
+  once it had produced the number above. The raw captures moved to
+  `../../rig_captures/` — data, not code, and gitignored, so that is the only
+  copy.
 
 ## Open items to confirm
 
@@ -180,6 +179,6 @@ the Phase 2 storage design. Until we have it, Phase 1 skeleton work can proceed
   capture (see Hardware facts). The **wheel diameter** is still unmeasured, and
   until it is set the app reports rev/s and rev rather than mm/s and mm.
 - ~~Whether the analog encoder voltage wraps~~ — **answered: yes.** It is a
-  continuous-turn sensor; a real capture (`toy_output/wheel.csv`) contains 7
+  continuous-turn sensor; a real capture (`../../rig_captures/wheel_2026-08-06.csv`) contains 7
   resets, and they are smeared across 2–3 samples, which is what the reset
   rejection in `_derive` exists for.

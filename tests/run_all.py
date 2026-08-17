@@ -32,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 TESTS = [
     ("console",   "test_console_safety.py"),
     ("undefined", "test_undefined_names.py"),
+    ("structure", "test_structure.py"),
     ("fits",      "test_pupil_fits.py"),
     ("readout",   "test_readout_fps.py"),
     ("encoder",   "test_encoder_derive.py"),

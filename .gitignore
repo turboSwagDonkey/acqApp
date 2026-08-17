@@ -16,11 +16,6 @@ sessions/
 *.npy
 *.csv
 
-# Phase 0 scratch outputs
-acqApp/scratch/*_out.*
-scratch/*_out.*
-cam_grab_out.*
-
 # --- Build / transfer artifacts ---
 # The repo is how code moves between the laptop and the rig now; a tarball of a
 # snapshot only ever goes stale (acqapp_phase1_2.tar.gz was six weeks out of
