@@ -32,7 +32,9 @@ from acqApp.devices.pupil_cam.tracking import PupilResult, PupilTracker
 # Tracker options the settings panel owns. One list, so the panel, the adapter
 # and the worker cannot drift apart about what is configurable.
 TRACK_KEYS = ("threshold", "min_r", "max_r",
-              "n_rays", "polarity", "min_strength", "fit")
+              "n_rays", "polarity", "min_strength", "fit",
+              "edge_select", "smooth_sigma", "min_confidence",
+              "smooth_median", "smooth_ema", "reseed_after")
 
 
 def track_params(settings) -> dict[str, Any]:

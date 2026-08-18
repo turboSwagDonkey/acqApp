@@ -60,9 +60,13 @@ def main() -> int:
     # ── the settings → tracker mapping ───────────────────────────────────────
     p = track_params(PupilSettings(threshold=42, min_r=7, max_r=99, n_rays=32,
                                    polarity="falling", min_strength=2.5,
-                                   fit="ellipse"))
+                                   fit="ellipse", edge_select="strongest",
+                                   smooth_sigma=9.0, min_confidence=0.05))
     r.check(p == {"threshold": 42, "min_r": 7, "max_r": 99, "n_rays": 32,
-                  "polarity": "falling", "min_strength": 2.5, "fit": "ellipse"},
+                  "polarity": "falling", "min_strength": 2.5, "fit": "ellipse",
+                  "edge_select": "strongest", "smooth_sigma": 9.0,
+                  "min_confidence": 0.05, "smooth_median": 3,
+                  "smooth_ema": 0.5, "reseed_after": 30},
             f"track_params carries every panel-owned option (got {p})")
     from acqApp.devices.pupil_cam.tracking import PupilTracker
     r.check(all(hasattr(PupilTracker(), k) for k in p),

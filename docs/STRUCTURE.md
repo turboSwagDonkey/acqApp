@@ -103,6 +103,7 @@ devices/                one package per instrument
   pupil_cam/
     _test_tracking.py   script: tracker vs synthetic ground truth, no hardware
     acquisition.py      Basler worker + mock twin
+    avi.py              uncompressed-AVI reader (no Qt); there is no decoder here
     control.py          eye-tracking LED
     fits.py             circle/ellipse fitting
     panel.py
@@ -110,6 +111,7 @@ devices/                one package per instrument
     settings.py
     track_worker.py     tracking gets its own thread — it is unbounded work
     tracking.py         the pupil algorithm (IMAQ Find Circular Edge port)
+    video.py            third frame source: replay footage to tune the tracker
   stage/
     acquisition.py      read-only position poller; never issues motion
     control.py          StageController + mock; microns, soft-limit clamped
@@ -156,6 +158,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_module_subsets.py
   test_pupil_fits.py
   test_pupil_tracking_thread.py
+  test_pupil_video.py
   test_readout_fps.py
   test_recording_losses.py
   test_save_paths.py

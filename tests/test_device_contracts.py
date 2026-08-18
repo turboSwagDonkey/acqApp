@@ -71,6 +71,7 @@ def main() -> int:
     from acqApp.devices.pupil_cam.acquisition import (PupilCameraWorker,
                                               MockPupilCameraWorker)
     from acqApp.devices.pupil_cam.control import LedController, MockLedController
+    from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
     from acqApp.devices.puffer.control import PufferController, MockPufferController
     from acqApp.devices.dmd.control import DmdController, MockDmdController
     from acqApp.devices.stage.acquisition import StagePollWorker
@@ -85,8 +86,10 @@ def main() -> int:
         (MockEncoderWorker,       ClockedWorker),
         (PupilCameraWorker,       ExposureControl),
         (MockPupilCameraWorker,   ExposureControl),
+        (VideoFileCameraWorker,   ExposureControl),
         (PupilCameraWorker,       DeviceWorker),
         (MockPupilCameraWorker,   DeviceWorker),
+        (VideoFileCameraWorker,   DeviceWorker),
         (StagePollWorker,         DeviceWorker),
         (ClosedLoopWorker,        DeviceWorker),
         (PufferController,        RecordingOutput),
@@ -134,6 +137,8 @@ def main() -> int:
          set(), {"RATE"}),                      # mock's synthetic sample rate
         (PupilCameraWorker, MockPupilCameraWorker, PullWorker,
          set(), {"W", "H"}),                    # mock's synthetic frame size
+        (PupilCameraWorker, VideoFileCameraWorker, PullWorker,
+         set(), {"n_frames", "source_name"}),   # what clip, and how long
         (LedController, MockLedController, object, set(), set()),
         (PufferController, MockPufferController, QObject, set(), set()),
         (DmdController, MockDmdController, QObject, set(), set()),

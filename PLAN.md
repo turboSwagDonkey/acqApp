@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-17 |
+| **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done — **phase 0 closed 2026-08-17, and its number corrected the same day**: the grab path does **105.9 fps / 2223 MB/s** through the app's own loop, not 46.17 / 969. Phase 5 built and mock-verified; **audit remediation 100 %** (22 of 22 closed); root regroup done. §6 item 1 (raise the capture rate) is **answered and closed** — there was no gap to close. **§2 corrected: this machine IS the rig computer.** §5b has **1 open item** (A3), reviewed and deliberately left open. |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** — it was locking the eyelid, and the cause was in the algorithm, not the settings. Suite **598 checks, 20 files**. §5b **A3 has now triggered** (a third pupil frame source) and is the one open item. Next big piece is **DMD ROI photostimulation** (§6 item 1). |
 
 ---
 
@@ -28,8 +28,11 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **568 checks, 19 files, ~45 s, all passing.** Run it before and
-after anything.
+the contract: **598 checks, 20 files, ~47 s** (three currently red — see the
+`_SIGN` note below). Run it before and after anything. For pupil work also run
+`devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
+suite and that script cover different failures, and 2026-08-18 showed the
+script passing 15/15 while the tracker could not follow a real eye at all.
 
 ```
 c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
@@ -70,16 +73,20 @@ reason #5 took one session instead of several.
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
 
-**Nothing is uncommitted; PLAN.md's 2026-08-17 (t) update is committed but
-not yet pushed.**
+**Uncommitted: `devices/wheel/acquisition.py` — the operator flipped `_SIGN`
+−1 → +1 and it is deliberately not committed.** It makes **encoder,
+enc-timing and closed-loop fail**, because `test_encoder_derive.sim()` builds a
+falling ramp and documents the opposite convention. Don't "fix" either side
+without settling which way the rig's encoder actually ramps (§7 (u)). The
+2026-08-18 pupil work is committed; nothing is pushed.
 
-**PICK UP HERE — §6 item 1: test the pupil tracker on a sample video.** The
-operator's next task, stated 2026-08-17 and deliberately started in a fresh
-session. Read that item before anything else: it already carries the
-reconnaissance, and the headline is that **the blocker is video decoding, not
-tracking** — this venv has no cv2, no imageio, no av and no ffmpeg, so a TIFF
-stack or HDF5 works today and an mp4 needs an install. **First question to ask:
-what format is the sample?**
+**PICK UP HERE — §6 item 1: DMD ROI photostimulation.** Image with the DMD
+all-on, draw ROIs on that frame, project the mask back. Read that item first:
+the headline is that **the blocker is registration, not drawing** — an ROI is in
+camera pixels, a mask is in DMD mirrors, and acqApp has no measured transform
+between them because the DMD runs with `fit=True`, which ignores scale, rotation
+and offset outright. The deferred optical-alignment question is now on the
+critical path.
 
 The rest of this section is context for a project that is otherwise in a good
 state; nothing below is blocking.
@@ -335,6 +342,15 @@ because two of them are how a future wrong-data bug gets in.
       arrived (`closed_loop`) and did *not* trigger this: it has no mock/real
       pair at all — its device is another module's signal. So the condition
       this item set for itself has still not been met. Leaving it.
+      **Triggered 2026-08-18, from the direction this item did not predict.**
+      Not a seventh *module* but a **third variant of one device**:
+      `VideoFileCameraWorker` replays a clip as the pupil camera, so
+      `PupilCamModule.build_session` is now an `if` chain over three concrete
+      classes it imports itself. The cost was paid immediately — testing the
+      tracker on real footage first needed a `sys.modules` monkeypatch of
+      exactly the kind this item names, before the source was made a real
+      setting. A `build_session(source_factory)` seam would have made that a
+      one-line injection. Still not urgent, but the condition is now met.
 - [x] **A4 The adapter's "narrow surface" onto the window is a docstring
       promise.** ✅ Adapters get the whole `win` object; the seven-method
       contract in the header was enforced by nothing. A `Protocol` here too
@@ -406,32 +422,63 @@ because two of them are how a future wrong-data bug gets in.
 
 **Open, in order:**
 
-1. **Test the pupil tracker on a sample video** — the operator's stated next
-   task (2026-08-17, to be picked up in a fresh session). What exists and what
-   is missing, so this does not get rediscovered:
-   - **`devices/pupil_cam/_test_tracking.py` is not this.** It validates against
-     *synthetic* eyes with known ground truth (sub-pixel, no hardware, no Qt) —
-     valuable, and the thing to re-run after any `tracking.py` change, but it
-     proves nothing about real footage. The new job is real frames, where there
-     is **no ground truth**, so the test is "does it track plausibly and not
-     lose lock", judged by eye against the overlay.
-   - **The blocker is decoding, not tracking.** Probed 2026-08-17 in
-     `acqApp/.venv`: **cv2, imageio, imageio-ffmpeg and av are all absent, and
-     ffmpeg is not on PATH.** Present: `tifffile`, `Pillow 12.2`, `h5py`,
-     `numpy`, `matplotlib`. So a **TIFF stack or an HDF5 works today**; an
-     **mp4/avi needs an install** — and Python here is 3.14, which is why there
-     is no cv2 at all, so prefer `imageio` + `imageio-ffmpeg` (pure-Python
-     wrapper round a bundled binary) over `av` (needs a compiled wheel).
-     Installs go **only** into `acqApp/.venv` (§2).
-   - **First question for the operator: what format is the sample?** That
-     decides whether this needs an install at all.
-   - The pieces to feed it through: `tracking.py` (hand-rolled numpy — `detect`,
-     `coarse_seed`, `fit_circle_robust`, `fit_ellipse`), `PupilTracker` for the
-     stateful path, and the tuning overlay is **Show search overlay** in the
-     pupil tab (annulus, per-ray edge points, click-to-seed).
+1. **DMD ROI photostimulation: image → draw ROIs → project the mask.** The
+   operator's stated next big addition (2026-08-18). The workflow is: put the
+   DMD in **all-on** (full mirror) mode, grab a frame with the imaging camera,
+   **draw ROIs on that frame**, turn them into a DMD mask, and re-image with
+   only those mirrors on.
+   - **The blocker is registration, not drawing.** An ROI is drawn in *camera*
+     pixels; a mask is in *DMD mirror* coordinates (1024×768). Converting one to
+     the other needs a measured camera↔DMD transform, and **acqApp has none**:
+     the DMD runs with `fit = True`, which computes its own scale to fill the
+     panel and **ignores scale, rotation and offset entirely** (decided
+     2026-08-12, see "Needs the rig" below). So the optical-alignment question
+     this file has deferred twice is now on the critical path — you cannot aim
+     at an ROI with a projector you have not registered to the camera.
+   - **How to get it:** project a sparse **asymmetric** pattern (≥3
+     non-collinear spots, or a grid) with the DMD, image it on the ORCA, and
+     least-squares fit an affine — projective if the throw is oblique — from DMD
+     mirrors to camera pixels. Invert it to turn ROIs into masks. Asymmetric is
+     not optional: item 4 below records that a **checkerboard cannot show a
+     geometry error**, being symmetric under every transform being measured.
+     Store the fit next to the existing alignment rather than inside `fit`.
+   - **Actuation applies at two points** (§2): the calibration projection *and*
+     every stimulation. Verify open → render → upload → release first, which
+     projects nothing, then ask.
+   - **What already exists**, so none of it gets rewritten: `devices/dmd/alp.py`
+     (open/upload/display, a port of `dmdCommandLine.py`), the DMD panel's
+     `all_on` and permanent static hold, `build_frame`'s geometry, and — for the
+     drawing half — pyqtgraph's ROI items over `adapters/base._image_view`,
+     which the pupil tab already uses for click-to-seed.
+   - Open questions for the operator: **which camera** provides the image (the
+     ORCA is the imaging path, but the pupil cam also exists), whether ROIs need
+     to persist across sessions, and whether a mask is one static pattern or a
+     sequence.
+
+2. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
+   found a real bug, not a tuning problem.** See §7 (u). Kept because the three
+   findings underneath it are the durable part:
+   - **No decoder was needed after all.** The rig's clip
+     (`E:\pAce\VF203.2R\20260701\FOV1_T1\FOV1_T1_Pupil.avi`) is **uncompressed
+     `IYUV`**, where the Y plane *is* the grayscale frame — a reshape, not a
+     decode. 2026-08-17's "an avi needs an install" was true of compressed avi
+     only. `devices/pupil_cam/avi.py` reads IYUV/I420/YV12, Y800 and BI_RGB and
+     **refuses anything compressed by name**, since cv2/imageio/av are all still
+     absent on 3.14.
+   - **`_test_tracking.py` could not have caught this**, and that is the lesson.
+     It validates against *synthetic* eyes, where the pupil edge is the
+     highest-contrast thing in frame. Real IR footage inverts that: the
+     orbit→fur margin is a ~200 grey-level step against the pupil's ~30. A
+     synthetic suite that passes 15/15 said nothing about it. **Re-run both**
+     after any `tracking.py` change — the script for accuracy, a clip for
+     realism.
+   - **Auto-seeding cannot work on this rig's framing.** `coarse_seed` returns
+     `None` on every frame: at threshold 60 the dark mask exceeds half the
+     sensor and it bails at its own cheap guard. Click-to-seed (**Show search
+     overlay** → click) is the operating procedure, not a fallback.
    - `../rig_captures/` holds **encoder CSVs only** — no pupil footage there.
 
-2. **Make full-frame recording fit the writer.** This is the real constraint and
+3. **Make full-frame recording fit the writer.** This is the real constraint and
    it is now the only one: ~2223 MB/s acquired against ~1165–1200 written, so
    about half the frames cannot be stored. The levers, and the one measurement
    that picks between them:
@@ -465,7 +512,7 @@ because two of them are how a future wrong-data bug gets in.
      `test_readout_fps` hold that line apart, one of them the control that the
      table still carries what the dropdown does not.
 
-3. **Project through the full app.** *Half of this closed on 2026-08-12, on
+4. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
    **app's** path (the adapter and panel, not just the standalone script of
    §5 #5): the real ALP opens as `ALP-4.2 1024x768` with the API resolved from
@@ -482,7 +529,7 @@ because two of them are how a future wrong-data bug gets in.
    overrides scale, rotation and offset** by design, so a sweep with `fit` on
    measures nothing. The panel is honest about the second: it greys those
    spinboxes out.
-4. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
+5. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
    never seen an animal, and the one number it needs cannot be guessed here:
    **what wheel speed counts as "running"** for this rig's V/rev and diameter.
    The tab is designed for finding it — disarmed, the rule still evaluates and
@@ -490,7 +537,7 @@ because two of them are how a future wrong-data bug gets in.
    against a live animal without actuating anything. Arm only after that reads
    sensibly. Start with the puffer (a puff is recoverable; a stimulus train
    mid-experiment is not), `retrigger` off, and a `max_fires` ceiling.
-5. **Decide which wheel speed a rule should watch.** The panel offers both and
+6. **Decide which wheel speed a rule should watch.** The panel offers both and
    the file records the choice, but the default is `wheel_speed_live` on the
    grounds that a closed loop should act while the animal runs. Measured this
    session: the recorded speed crosses the same threshold **1.15 s** after the
@@ -536,6 +583,73 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (u) — the pupil tracker was locking the eyelid; a real bug, not a setting
+- **The tracker never worked on a real eye, and no parameter could have fixed
+  it.** `rays._edges_along_rays` took the **strongest** gradient on each ray
+  (`argmax` over the whole ray). On IR footage the pupil→iris step is ~30 grey
+  levels and the orbit→saturated-fur margin is ~200, so the eyelid won *every*
+  ray. Now the default is **`edge_select="first"`** — the innermost sustained
+  edge, which is right by construction: scanning outward from inside the pupil,
+  its rim is what you meet first. Measured on the rig clip, click-seeded, stock
+  defaults: **lock 0 % → 98.7 %**, radius 53.4 ± 3.1 px, fit rms 1.18 px.
+- **Two guards had to come with it**, and both were found by regression, not by
+  design. A per-ray **noise floor** (`_NOISE_K` × robust MAD of the gradient) or
+  speckle inside the pupil gets the first vote and the fit collapses inward; and
+  a **sustained-step test**, or the corneal glint's rising edge is taken as the
+  boundary. `_NOISE_K` is sensitive: at 4.0 it killed 19 of 64 legitimate rays,
+  which shrank the true circle's majority enough that RANSAC chose a spurious
+  consensus and broke the 40 % eyelid case. **1.5 satisfies both the synthetic
+  suite and the real clip.**
+- **A cross-ray consensus vote was tried and reverted.** It did not fix the
+  eyelid draw *and* it broke `_test_tracking`'s "auto-seed defeated → never
+  confidently wrong" contract. A cleverer mechanism that makes the safety case
+  worse is not an improvement.
+- **Second compounding bug:** `find_circular_edge` re-centred the annulus each
+  refinement pass but kept `half` fixed, so a pass that landed on the lid
+  dragged the band outward with it and the next pass saw only the wrong edge.
+  The lock was self-reinforcing. The band now contracts (`_BAND_CONTRACT`).
+- **`min_confidence` 0.25 → 0.10.** Only ~half the rays ever find an edge on a
+  real eye, so `(kept/cast) × exp(-rms/2)` caps a *good* real fit near 0.28 —
+  0.25 was discarding fits whose rms was 1.2 px.
+- **Temporal filtering added at the operator's request** (median-3 then EMA 0.5,
+  both panel-adjustable). Measured: |Δcentre|/frame max **22.7 → 3.45 px**,
+  |Δr| max **11.0 → 1.38 px**, lock unchanged. Built to the operator's
+  constraint that **a blink must still register**: the filter runs over
+  *consecutive* frames only and is dropped the moment one is lost, so a blink
+  stays as lost frames instead of being interpolated across; the annulus seed is
+  *retained* through it, so the eye is picked up where it left off (frame 131 of
+  the clip returns at the right radius immediately); and the unfiltered fit
+  survives in `PupilResult.raw_center/raw_radius`, so smoothing never destroys
+  the observation. `reseed_after` re-thresholds only after a long closure, and
+  keeps the pre-blink estimate if that search finds nothing.
+- **A third pupil frame source: `devices/pupil_cam/video.py` + `avi.py`**, so a
+  recorded clip can be replayed through the real panel, track worker and overlay
+  ("Sample video…" in the pupil tab). This is what **§5b A3 finally triggered
+  on** — the seventh module never did, but the third variant of one device did,
+  exactly as A3 said it would. `build_session` is now an `if` chain over three
+  concrete classes. The clip is recorded as `pupil_video` in the session
+  metadata: replayed frames must never read as rig data.
+- **The clip is `IYUV` — uncompressed.** The Y plane is the grayscale frame, so
+  no decoder was needed and (t)'s install question never arose.
+- **Verified both ways:** `_test_tracking.py` 15/15 (synthetic ground truth) and
+  the suite **568 → 598 checks, 20 files**. The new `test_pupil_video.py` pairs
+  the eyelid fix with a control — on a synthetic eye with a high-contrast lid
+  margin *inside* the band, `first` returns r=40.1 (truth 40) and `strongest`
+  returns 61.9 (lid at 62). Without the fix that control fails.
+- **Two self-inflicted traps worth not repeating.** A `python - <<EOF` patch
+  script wrote `panel.py` through the console's ANSI codepage (mangling an
+  em-dash to a non-UTF-8 byte) and turned `\n` escapes into literal newlines;
+  `p.write_text()` then doubled every line ending to `\r\r\n`. **Edit files with
+  the editor, not with a generated patch script** — and if you must, write bytes
+  with an explicit `encoding="utf-8", newline=""`.
+- **Not from this session but noticed by it:** the operator flipped
+  `wheel/acquisition.py:_SIGN` −1 → +1. `test_encoder_derive.sim()` generates a
+  *falling* ramp and documents "the rig's forward direction is the falling one",
+  so the two now contradict each other and **encoder / enc-timing / closed-loop
+  fail**. Left alone deliberately: which way the real encoder ramps is a
+  hardware fact, and the sign decides whether recorded distance is positive.
+  If the flip is right, `sim()`'s `(-rev_s * t)` is what needs changing.
 
 ### 2026-08-17 (t) — the grab path was never slow; phase 0's number withdrawn
 - **§6 item 1 is closed by disproving its premise.** The app's own loop —

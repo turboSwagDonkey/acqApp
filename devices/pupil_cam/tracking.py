@@ -45,6 +45,15 @@ from acqApp.devices.pupil_cam.rays import (_edges_along_rays, _ray_angles,
 # larger component is decimated to fit (see coarse_seed).
 _SEED_MAX_PX = 256
 
+# Annulus half-width per refinement pass, and the floor it stops at. The floor
+# has to stay wide enough for a dilating pupil to move between frames.
+_BAND_CONTRACT = 0.7
+_MIN_HALF_BAND = 6.0
+
+# Most the annulus may widen while the eye stays shut, before the tracker is
+# looking over so much of the orbit that anything could satisfy it.
+_MAX_BAND_GROWTH = 2.5
+
 __all__ = [
     "PupilResult", "detect", "find_circular_edge", "PupilTracker",
     "coarse_seed", "fit_circle_taubin", "fit_circle_robust", "fit_ellipse",
@@ -66,6 +75,12 @@ class PupilResult:
     inliers: np.ndarray | None = None            # bool mask into edge_x/edge_y
     rms:     float | None = None                 # fit residual, px
     n_rays:  int = 0                             # rays that yielded an edge
+
+    # This frame's unfiltered fit, when PupilTracker smoothed the fields above.
+    # Kept so the per-frame measurement is never destroyed by the filter — the
+    # smoothed value is the better estimate, the raw one is the observation.
+    raw_center: tuple[float, float] | None = None
+    raw_radius: float | None = None
 
     @property
     def found(self) -> bool:
@@ -90,7 +105,8 @@ def find_circular_edge(frame: np.ndarray,
                        sigma_k: float = 2.5,
                        min_rays: int = 8,
                        refine_iters: int = 2,
-                       samples_per_px: float = 2.0) -> PupilResult:
+                       samples_per_px: float = 2.0,
+                       edge_select: str = "first") -> PupilResult:
     """Locate the pupil boundary in the annulus around `center`.
 
     Parameters mirror the IMAQ VI's controls:
@@ -124,7 +140,7 @@ def find_circular_edge(frame: np.ndarray,
         values, r0, step = _sample_annulus(frame, cx, cy, r_inner, r_outer,
                                            angles, samples_per_px)
         r_edge, strength, hit = _edges_along_rays(
-            values, r0, step, polarity, min_strength, smooth_sigma)
+            values, r0, step, polarity, min_strength, smooth_sigma, edge_select)
 
         if hit.sum() < min_rays:
             return result
@@ -138,8 +154,15 @@ def find_circular_edge(frame: np.ndarray,
             # ellipse mode, where radius genuinely varies with angle.
             rr = r_edge[sel]
             med_r = np.median(rr)
-            mad_r = 1.4826 * np.median(np.abs(rr - med_r))
-            tol_r = max(3.0 * mad_r, 0.15 * med_r)
+            # Scale from the OUTER side only. With edge_select="first" every
+            # error is inward — an eyelid crossing the pupil, or speckle inside
+            # it, reports a radius too small and never one too large — so a
+            # two-sided MAD is inflated by exactly the points being rejected and
+            # breaks down near 50 % occlusion (the 40 % eyelid case). The outer
+            # half is uncontaminated, so it measures the real spread.
+            hi = rr[rr >= med_r]
+            mad_r = 1.4826 * np.median(np.abs(hi - med_r)) if hi.size else 0.0
+            tol_r = max(3.0 * mad_r, 0.08 * med_r)
             near = np.abs(r_edge - med_r) <= tol_r
             if (sel & near).sum() >= min_rays:
                 sel &= near
@@ -197,9 +220,14 @@ def find_circular_edge(frame: np.ndarray,
             edge_x=ex, edge_y=ey, inliers=keep, rms=rms, n_rays=int(keep.sum()),
         )
 
-        # re-centre the annulus on this fit and go round again
+        # Re-centre the annulus on this fit and go round again, narrowing the
+        # band as it converges. A fixed half-width lets a pass that landed on a
+        # stronger outer edge drag the band outward with it, and the next pass
+        # then only sees the wrong edge — the eyelid lock is self-reinforcing.
+        # Contracting means each pass searches nearer the radius it just found.
         moved = np.hypot(fcx - cx, fcy - cy)
         cx, cy = float(fcx), float(fcy)
+        half = max(_MIN_HALF_BAND, half * _BAND_CONTRACT)
         r_inner, r_outer = max(1.0, radius - half), radius + half
         if moved < 0.25 and it > 0:
             break
@@ -321,6 +349,8 @@ def detect(frame: np.ndarray,
            min_strength: float = 4.0,
            exclude_deg: Sequence[tuple[float, float]] = (),
            fit: str = "circle",
+           smooth_sigma: float = 1.5,
+           edge_select: str = "first",
            seed: tuple[float, float, float] | None = None) -> PupilResult:
     """Stateless per-frame detection: coarse seed → annular edge search → robust
     circle fit.
@@ -343,7 +373,8 @@ def detect(frame: np.ndarray,
     res = find_circular_edge(
         frame, (cx, cy), r_in, r_out,
         n_rays=n_rays, polarity=polarity, min_strength=min_strength,
-        exclude_deg=exclude_deg, fit=fit, refine_iters=3,
+        smooth_sigma=smooth_sigma, exclude_deg=exclude_deg, fit=fit,
+        edge_select=edge_select, refine_iters=3,
     )
     if res.radius is not None and not (min_r < res.radius < max_r):
         # edge found but outside the size band — report the position only
@@ -367,8 +398,11 @@ class PupilTracker:
                  *, n_rays: int = 64, polarity: str = "rising",
                  min_strength: float = 4.0, smooth_sigma: float = 1.5,
                  exclude_deg: Sequence[tuple[float, float]] = (),
-                 fit: str = "circle", min_confidence: float = 0.25,
-                 max_lost: int = 5, max_jump: float = 0.5):
+                 fit: str = "circle", edge_select: str = "first",
+                 min_confidence: float = 0.10,
+                 max_lost: int = 5, max_jump: float = 0.5,
+                 smooth_median: int = 3, smooth_ema: float = 0.5,
+                 reseed_after: int = 30):
         self.threshold = threshold
         self.min_r = min_r
         self.max_r = max_r
@@ -378,14 +412,52 @@ class PupilTracker:
         self.smooth_sigma = smooth_sigma
         self.exclude_deg = exclude_deg
         self.fit = fit
+        self.edge_select = edge_select
         self.min_confidence = min_confidence
         self.max_lost = max_lost
         self.max_jump = max_jump          # allowed centre jump, × previous radius
+        self.smooth_median = smooth_median
+        self.smooth_ema = smooth_ema
+        self.reseed_after = reseed_after
         self.reset()
 
     def reset(self) -> None:
         self._last: tuple[float, float, float] | None = None   # cx, cy, r
         self._lost = 0
+        self._clear_filter()
+
+    def _clear_filter(self) -> None:
+        """Drop the temporal filter's state, keeping the annulus seed.
+
+        Called whenever a frame is lost, so smoothing never runs *across* a gap:
+        a blink has to show up in the trace as lost frames, not be interpolated
+        away, and the estimate that resumes afterwards must describe the eye that
+        reopened rather than a blend with the one that closed.
+        """
+        self._hist: list[tuple[float, float, float]] = []
+        self._ema: tuple[float, float, float] | None = None
+
+    def _filter(self, cx: float, cy: float, r: float
+                ) -> tuple[float, float, float]:
+        """Median over the last `smooth_median` consecutive fits, then an EMA.
+
+        Two stages doing two jobs: the median removes the single-frame
+        excursions that a half-closed lid produces (measured on rig footage:
+        the fit leaves and returns within two frames), and the EMA takes out the
+        residual sub-pixel jitter the median leaves behind.
+        """
+        n = max(1, int(self.smooth_median))
+        self._hist.append((float(cx), float(cy), float(r)))
+        del self._hist[:-n]
+        med = tuple(float(np.median([h[i] for h in self._hist]))
+                    for i in range(3))
+        a = float(np.clip(self.smooth_ema, 0.0, 1.0))
+        if self._ema is None or a >= 1.0:
+            self._ema = med
+        else:
+            self._ema = tuple(a * m + (1.0 - a) * p
+                              for m, p in zip(med, self._ema))
+        return self._ema  # type: ignore[return-value]
 
     def seed(self, cx: float, cy: float, r: float) -> None:
         """Place the annulus by hand, for when the auto-seed picks the wrong
@@ -399,7 +471,8 @@ class PupilTracker:
 
     # Changing any of these invalidates the lock — the annulus was placed under
     # the old assumptions, so re-seed rather than let it drift.
-    _RESEED_ON = frozenset({"threshold", "min_r", "max_r", "polarity", "fit"})
+    _RESEED_ON = frozenset({"threshold", "min_r", "max_r", "polarity", "fit",
+                            "edge_select"})
 
     def configure(self, **kw) -> None:
         """Cheap per-tick update from the settings panel."""
@@ -414,6 +487,18 @@ class PupilTracker:
             self._last = None
 
     def process(self, frame: np.ndarray) -> PupilResult:
+        # After a long run of failures, try re-thresholding — but only as an
+        # *offer*: if coarse_seed finds nothing (a closed eye is not a blob),
+        # the pre-blink estimate is still the best place to look, so it is kept
+        # rather than discarded. That is the difference between resuming when the
+        # eye reopens and hunting for the pupil from scratch.
+        if self._last is not None and self._lost >= self.reseed_after:
+            offer = coarse_seed(frame, self.threshold, self.min_r, self.max_r,
+                                bright=(self.polarity == "falling"))
+            if offer is not None:
+                self._last = offer
+                self._lost = 0
+
         seeded_from_last = self._last is not None
         if seeded_from_last:
             cx, cy, r = self._last
@@ -422,15 +507,27 @@ class PupilTracker:
                                bright=(self.polarity == "falling"))
             if seed is None:
                 self._lost += 1
+                self._clear_filter()
                 return PupilResult(None, None, None, 0.0)
             cx, cy, r = seed
 
         r_in, r_out = _band(r, self.fit, self.max_r)
+        # Once the eye has been shut for a while, widen the band around the
+        # retained estimate instead of abandoning it: the pupil may have moved
+        # or changed size behind the lid, and a band sized for the old radius
+        # would never see the new edge.
+        if self._lost >= self.max_lost:
+            grow = min(_MAX_BAND_GROWTH,
+                       1.0 + 0.2 * (self._lost - self.max_lost + 1))
+            mid = 0.5 * (r_in + r_out)
+            half = 0.5 * (r_out - r_in) * grow
+            r_in, r_out = max(1.0, mid - half), min(mid + half, self.max_r * 2.0)
         res = find_circular_edge(
             frame, (cx, cy), r_in, r_out,
             n_rays=self.n_rays, polarity=self.polarity,
             min_strength=self.min_strength, smooth_sigma=self.smooth_sigma,
             exclude_deg=self.exclude_deg, fit=self.fit,
+            edge_select=self.edge_select,
             refine_iters=2 if seeded_from_last else 3,
         )
 
@@ -442,13 +539,27 @@ class PupilTracker:
             ok = np.hypot(res.center_x - cx, res.center_y - cy) <= self.max_jump * r
 
         if ok:
-            self._last = (res.center_x, res.center_y, res.radius)
+            # Report the filtered estimate; keep this frame's own fit in
+            # `raw_*` so the observation survives the smoothing. The annulus is
+            # seeded from the filtered value too — that is what stops one bad
+            # frame from dragging the search region somewhere it then has to
+            # crawl back from.
+            raw = (res.center_x, res.center_y, res.radius)
+            cxs, cys, rs = self._filter(*raw)
+            if res.axes is not None and res.radius:
+                k = rs / res.radius        # keep the drawn ellipse consistent
+                res.axes = (res.axes[0] * k, res.axes[1] * k)
+            res.raw_center, res.raw_radius = (raw[0], raw[1]), raw[2]
+            res.center_x, res.center_y, res.radius = cxs, cys, rs
+            self._last = (cxs, cys, rs)
             self._lost = 0
             return res
 
+        # A blink must show up as lost frames, not be smoothed over, so the
+        # filter is dropped here. `_last` is deliberately NOT — it is the eye's
+        # last known position and the right place to resume from.
         self._lost += 1
-        if self._lost >= self.max_lost:
-            self._last = None          # give up on the seed; re-threshold next frame
+        self._clear_filter()
         return PupilResult(None, None, None, 0.0,
                            edge_x=res.edge_x, edge_y=res.edge_y,
                            inliers=res.inliers, rms=res.rms)

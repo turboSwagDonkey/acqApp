@@ -21,6 +21,7 @@ from acqApp.devices.pupil_cam.control import LedController, MockLedController
 from acqApp.devices.pupil_cam.panel import SettingsPanel as PupilSettingsPanel
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker, track_params
+from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
 
 
 class PupilCamModule(ModuleAdapter):
@@ -155,7 +156,24 @@ class PupilCamModule(ModuleAdapter):
     # ── session ──
     def build_session(self, emulate: bool) -> None:
         s = self.panel.settings
-        if emulate:
+        if s.video_path:
+            # A third source beside real and mock, and the reason §5b A3 is worth
+            # revisiting: the `if emulate:` pair below is now an `if` chain.
+            # Checked before emulate so a clip replays either way — the point is
+            # to tune tracking on real frames, which has nothing to do with
+            # whether the rest of the rig is simulated.
+            try:
+                cam = self._adopt(VideoFileCameraWorker(s.video_path, fps=s.fps))
+            except Exception as e:
+                # A missing or compressed file must not kill the session: say so
+                # and fall back, rather than leaving the operator with a dead tab.
+                print(f"[main] pupil video {s.video_path!r} unusable ({e}) "
+                      f"— falling back to the camera")
+                self.win.status(f"pupil video unusable: {e}")
+                cam = self._adopt(MockPupilCameraWorker(fps=s.fps) if emulate
+                                  else PupilCameraWorker(
+                                      exposure_us=s.exposure_us, fps=s.fps))
+        elif emulate:
             cam = self._adopt(MockPupilCameraWorker(fps=s.fps))
         else:
             # cam=None → the worker opens/closes its own Basler on its thread.
@@ -250,8 +268,17 @@ class PupilCamModule(ModuleAdapter):
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
-        return {"pupil_exposure_us": s.exposure_us,
-                "pupil_fps":         s.fps,
-                "pupil_threshold":   s.threshold,
-                "pupil_min_r":       s.min_r,
-                "pupil_max_r":       s.max_r}
+        return {"pupil_exposure_us":   s.exposure_us,
+                "pupil_fps":           s.fps,
+                "pupil_threshold":     s.threshold,
+                "pupil_min_r":         s.min_r,
+                "pupil_max_r":         s.max_r,
+                "pupil_edge_select":   s.edge_select,
+                "pupil_smooth_sigma":  s.smooth_sigma,
+                "pupil_min_confidence": s.min_confidence,
+                "pupil_smooth_median": s.smooth_median,
+                "pupil_smooth_ema":    s.smooth_ema,
+                # "" for the camera. Recorded because frames replayed from a
+                # clip are not this session's data, and nothing else in the file
+                # would show it.
+                "pupil_video":         s.video_path}

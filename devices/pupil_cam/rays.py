@@ -14,6 +14,15 @@ from typing import Sequence
 
 import numpy as np
 
+# "first" edge mode only: how many robust sigmas of a ray's own gradient noise
+# an edge must clear, on top of `min_strength`. 4 keeps the pupil edge on real
+# footage while rejecting speckle inside the pupil at high noise.
+_NOISE_K = 1.5
+
+# Minimum span, in px, over which an edge must not reverse to count as a step
+# rather than a glint. `smooth_sigma` can be far smaller than any real edge.
+_SUSTAIN_PX = 3.0
+
 
 def _bilinear(img: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
     """Bilinear sample `img` at float coords; NaN outside the image."""
@@ -85,14 +94,42 @@ def _smooth_rows(a: np.ndarray, sigma: float) -> np.ndarray:
     return np.divide(num, den, out=np.full_like(num, np.nan), where=den > 0.35)
 
 
-def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma):
+def _sustained(score: np.ndarray, width: int) -> np.ndarray:
+    """Lowest score within `width` samples *after* each column.
+
+    Distinguishes a step from a spike: after a real boundary the gradient decays
+    towards zero, whereas a corneal glint is a bright bar whose rising edge is
+    followed by an equally strong falling one. Padded with +inf on the right so
+    the last columns are never rejected for running out of profile.
     """
-    Strongest gradient along each ray → (r_edge, strength, hit).
+    n = score.shape[1]
+    pad = np.pad(score, ((0, 0), (0, width)), constant_values=np.inf)
+    out = np.full_like(score, np.inf)
+    for d in range(1, width + 1):
+        out = np.minimum(out, pad[:, d:d + n])
+    return out
+
+
+def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma,
+                      edge_select: str = "first"):
+    """
+    The pupil edge along each ray → (r_edge, strength, hit).
 
     `polarity` mirrors the IMAQ edge-polarity control:
       "rising"  dark→bright scanning outward (a dark pupil on a bright iris)
       "falling" bright→dark  (bright-pupil / retro-illumination setups)
       "any"     strongest transition either way
+
+    `edge_select` decides *which* qualifying edge on the ray is the pupil:
+      "first"      the innermost sustained one — the default, and the only
+                   choice that is right by construction: scanning outward from
+                   inside the pupil, the boundary is whatever you meet first.
+      "strongest"  the largest gradient anywhere on the ray. Fine on a
+                   synthetic disc or a well-exposed eye, and wrong as soon as
+                   anything outside the pupil has more contrast than the pupil
+                   edge itself — on real IR footage the orbit→fur margin is a
+                   ~200 grey-level step against the pupil's ~30, so it wins
+                   every ray and the fit lands on the eyelid.
     """
     prof = _smooth_rows(values, smooth_sigma)
     grad = np.gradient(prof, step, axis=1)
@@ -113,9 +150,42 @@ def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma):
     score[:, -1] = -np.inf
 
     rows = np.arange(score.shape[0])
-    k = np.argmax(score, axis=1)
+    if edge_select == "strongest":
+        k = np.argmax(score, axis=1)
+        hit_row = np.ones(score.shape[0], dtype=bool)
+    elif edge_select == "first":
+        # Taking the innermost edge means noise gets the first vote, so the
+        # strength floor has to rise with each ray's own noise — a fixed
+        # `min_strength` that suits a clean profile lets a speckle inside the
+        # pupil pass, and the fit then collapses inward. Robust scale (MAD of
+        # the gradient) rather than an sd, which the true edge would inflate.
+        sfin = np.where(np.isfinite(score), score, np.nan)
+        # A ray entirely outside the image is all-NaN; zero it so nanmedian has
+        # something to chew on (`hit` rejects the row anyway).
+        sfin = np.where(np.isfinite(sfin).any(axis=1, keepdims=True), sfin, 0.0)
+        med = np.nanmedian(sfin, axis=1, keepdims=True)
+        mad = 1.4826 * np.nanmedian(np.abs(sfin - med), axis=1, keepdims=True)
+        floor = np.maximum(min_strength, _NOISE_K * np.nan_to_num(mad))
+
+        # Local maxima at or above that floor…
+        cand = np.zeros(score.shape, dtype=bool)
+        cand[:, 1:-1] = ((score[:, 1:-1] >= score[:, :-2])
+                         & (score[:, 1:-1] > score[:, 2:])
+                         & (score[:, 1:-1] >= floor))
+        # …that are not the leading edge of a spike. Half the peak is a wide
+        # margin: a step's gradient decays to ~0, a glint's reverses to ~-peak.
+        width = max(1, int(round(max(smooth_sigma, _SUSTAIN_PX)
+                                 / max(step, 1e-6))))
+        cand &= _sustained(score, width) > -0.5 * np.where(cand, score, 0.0)
+        # First True per row; argmax on an all-False row gives 0, which `hit`
+        # rejects anyway because column 0 is -inf.
+        k = np.argmax(cand, axis=1)
+        hit_row = cand.any(axis=1)
+    else:
+        raise ValueError(
+            f"edge_select must be first/strongest, got {edge_select!r}")
     peak = score[rows, k]
-    hit = np.isfinite(peak) & (peak >= min_strength)
+    hit = hit_row & np.isfinite(peak) & (peak >= min_strength)
 
     # parabola through (k-1, k, k+1) for the sub-pixel peak. Rows that never
     # hit carry -inf neighbours, so zero them first rather than doing inf
