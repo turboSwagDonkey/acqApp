@@ -98,8 +98,9 @@ class FakeTask:
 
     @staticmethod
     def value(i: int) -> float:
-        """A descending sawtooth — one turn every 100 samples, like the rig."""
-        return float(((-i / 100.0) % 1.0) * VPR)
+        """A rising sawtooth — one turn every 100 samples, like the rig.
+        Forward rotation ramps the voltage UP here (operator, 2026-08-19)."""
+        return float(((i / 100.0) % 1.0) * VPR)
 
     def read(self, number_of_samples_per_channel=None, timeout=10.0):
         if number_of_samples_per_channel is None:       # on-demand (fallback)

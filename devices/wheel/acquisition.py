@@ -331,8 +331,9 @@ class MockEncoderWorker(_EncoderBase):
             phase = t % 12.0
             spin = 0.4 if phase < 6 else (0.0 if phase < 9 else -0.25)
             rev += spin * period
-            # Descending sawtooth (like the rig) so forward spin → positive distance.
-            voltage = float(((-rev) % 1.0) * vfs + rng.normal(0, 0.045))
+            # Rising sawtooth, like the rig: forward rotation ramps the voltage
+            # UP, which with _SIGN = +1.0 reads as positive speed and distance.
+            voltage = float((rev % 1.0) * vfs + rng.normal(0, 0.045))
             voltage = min(max(voltage, 0.0), vfs)
             n += 1
             self._emit_sample(voltage, t, t0 + t)

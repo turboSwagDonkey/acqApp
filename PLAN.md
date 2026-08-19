@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-19 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0): the pupil tracker now works on real footage and is **3.5× faster**, the DMD registration and ROI editor exist offline and no longer need **11.4 GB** to run at camera scale, **boot 13.4 s → 8.1 s**, the config file survives a crash mid-write, and the UI stopped calling a frame-dropping setup healthy. Suite **670 checks, 22 files** — **3 red, all one unanswered question** (`_SIGN`). §5b **A3 triggered** and is the one open architecture item. Next: §6's top three. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0): the pupil tracker now works on real footage and is **3.5× faster**, the DMD registration and ROI editor exist offline and no longer need **11.4 GB** to run at camera scale, **boot 13.4 s → 8.1 s**, the config file survives a crash mid-write, and the UI stopped calling a frame-dropping setup healthy. Suite **688 checks, 22 files — all green** (`_SIGN` settled 2026-08-19). §5b **A3 triggered** and is the one open architecture item. Next: §6's top three. |
 
 ---
 
@@ -28,8 +28,8 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **670 checks, 22 files, ~48 s** (three currently red — see the
-`_SIGN` note below). Run it before and after anything. For pupil work also run
+the contract: **688 checks, 22 files, ~48 s**, and as of 2026-08-19 it is
+ALL GREEN. Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
 script passing 15/15 while the tracker could not follow a real eye at all.
@@ -73,15 +73,15 @@ reason #5 took one session instead of several.
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
 
-**The `_SIGN` flip is committed** (`25ed583`, on its own so it stays findable)
-and **encoder, enc-timing and closed-loop are red because of it** —
-`test_encoder_derive.sim()` builds a *falling* ramp and documents the opposite
-convention. **The seven encoder failures are pure sign inversions: −706.9 vs
-706.9, −1.500 vs 1.5, every magnitude exact.** So this is one convention
-disagreeing with another, not a maths error, and it is one character to fix
-**once someone says which way the rig's encoder ramps on forward rotation**
-(§7 (u)). Don't guess: a green suite with the sign backwards is worse than a
-red one. Everything else is committed **and pushed** — the working tree is clean.
+**`_SIGN` is settled and the suite is fully green — 688 checks, 22/22.** The
+operator confirmed 2026-08-19: **a mouse running forward reads positive, and the
+encoder voltage ramps UP as it does.** So `_SIGN = +1.0` was right and three
+*fixtures* were wrong — they generated a falling ramp and asserted in a docstring
+that "the rig's forward direction is the falling one". Fixed in
+`test_encoder_derive.sim()`, `test_encoder_timing`'s fake task and
+`MockEncoderWorker`. **The rig fact to remember: forward = rising voltage =
+positive speed and distance.** Everything is committed and pushed; the working
+tree is clean.
 
 **PICK UP HERE — §6's "THE NEXT THREE THINGS".** In order: settle `_SIGN` (one
 question for the operator, three red tests), the DMD ROI work at the rig (asks
@@ -411,19 +411,20 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Settle `_SIGN`** — one fact, one character, three red tests. Which way does
-   the encoder voltage ramp when the wheel turns *forwards*? Nothing else in the
-   suite is red, and nobody should guess: the sign decides whether recorded
-   distance is positive. If the operator's `+1.0` is right, change `sim()`'s
-   `(-rev_s * t)` in `test_encoder_derive.py` and `MockEncoderWorker`'s
-   descending sawtooth with it. Detail in §0 and §7 (u); the failures are pure
-   sign inversions with exact magnitudes, so the maths on both sides is right.
-2. **DMD ROI photostimulation, the rig half** (item 4 below). The offline half
+1. **DMD ROI photostimulation, the rig half** (item 4 below). The offline half
    is built, verified and now sized for a real camera. What is left needs
    someone in front of the hardware and **projects light**, so it is an ask:
    run the sweep, check the fields overlap, wire `RoiEditor` into the adapter.
-3. **Finish the trim/optimise pass** (item 5 below) — it carries its own ordered
+2. **Finish the trim/optimise pass** (item 5 below) — it carries its own ordered
    file list and stops where it stops.
+3. **Measure the wheel diameter** — the last unmeasured constant. Until it is
+   set the app reports rev/s and rev instead of mm/s and mm, and the closed
+   loop's threshold has to be set in revolutions. `volts_per_rev` is already
+   measured (4.912) and the sign is now settled, so this is the only thing
+   between the wheel and fully physical units.
+
+~~Settle `_SIGN`.~~ **Done 2026-08-19** — the operator answered it; see §0 and
+§7 (ad). The suite went 19/22 → **22/22**.
 
 **Closed — kept for the reasoning, not the tick:**
 
@@ -746,6 +747,29 @@ kept for its reasoning, not a queue.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-19 (ad) — `_SIGN` answered; the suite is green for the first time
+- **The operator settled it: a mouse running forward reads positive, and the
+  voltage ramps UP as it does.** So `_SIGN = +1.0` was right all along and the
+  code under test was never wrong — **three fixtures were**, each independently
+  encoding a falling ramp:
+  `test_encoder_derive.sim()` (`frac = (-rev_s * t) % 1.0`, with a docstring
+  asserting "the rig's forward direction is the falling one"),
+  `test_encoder_timing`'s fake DAQ task, and `MockEncoderWorker`.
+- **A fourth thing had to move with them**: `sim()` finds each reset with
+  `np.diff(frac) > 0.5`, which only detects a *falling* ramp's wrap. Flipping
+  the ramp alone would have found no wraps, silently stopped smearing them, and
+  turned the test that exists for smeared resets into one that never sees one.
+  Now `< -0.5`.
+- **19/22 → 22/22, 670 → 688 checks.** Verified beyond the suite: driving
+  `_EncoderBase` with a rising ramp gives **+188.5 mm/s** forward, −188.5 mm/s
+  backward and exactly 0 at rest, against an expected 0.4 × π × 150 = 188.5.
+- **The durable fact, now written where §0 will be read: forward = rising
+  voltage = positive speed and distance.** The old note claimed the opposite in
+  a docstring, which is how it survived three sessions — a fixture that asserts
+  a hardware fact is a claim, and this one was never checked against the rig.
+- Nothing else changed. The wheel diameter is now the last unmeasured constant
+  and has been promoted into §6's top three.
 
 ### 2026-08-19 (ac) — the three UI changes the operator asked for
 - **Record is now the largest control on the status bar**, red while armed, and

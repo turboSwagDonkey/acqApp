@@ -39,13 +39,16 @@ def sim(seconds: float, rev_s: float = REV_S, smear: int = SMEAR,
         noise: float = 0.0, seed: int = 3):
     """(times, voltages) for a wheel turning at `rev_s`, resets smeared.
 
-    Position runs *downward* through the ramp: `_SIGN` is set so that the rig's
-    forward direction is the falling one, and forward must read positive.
+    Position runs *upward* through the ramp, because that is what this rig
+    does: the operator confirmed 2026-08-19 that a mouse running forward reads
+    positive with `_SIGN = +1.0`, which is only true of a rising ramp. This
+    fixture previously asserted the opposite ("the forward direction is the
+    falling one") and was simply wrong about the hardware — see §7 (ad).
     """
     rng = np.random.default_rng(seed)
     n = int(seconds * RATE)
     t = np.arange(n) / RATE
-    frac = (-rev_s * t) % 1.0
+    frac = (rev_s * t) % 1.0
     v = frac * VPR
 
     # Smear each reset: while the sensor crosses its dead zone the output is
@@ -53,7 +56,10 @@ def sim(seconds: float, rev_s: float = REV_S, smear: int = SMEAR,
     # transition is then several sub-steps of ~1/smear of a turn each — every
     # one implying tens of rev/s, which is the signature _derive rejects, and
     # every one under the half-turn a plain unwrap needs to see.
-    jump = np.nonzero(np.diff(frac) > 0.5)[0] + 1        # sample after each wrap
+    # A rising ramp wraps DOWNWARD (…0.99 → 0.00), so the reset is a large
+    # negative step. Flipping the ramp without flipping this would find no
+    # wraps at all and quietly stop smearing them — the whole point of `sim`.
+    jump = np.nonzero(np.diff(frac) < -0.5)[0] + 1       # sample after each wrap
     for j in jump:
         if smear <= 0 or j + smear >= n:
             continue
