@@ -158,6 +158,40 @@ def main() -> int:
     r.check("led" not in json.dumps(saved).lower(),
             "the eye-tracking LED was not persisted as a setting")
 
+    # ── surviving a write that dies partway ──────────────────────────────────
+    # This file is the operator's whole working setup and is rewritten on every
+    # spinbox step, while the app can die natively mid-write (a qFatal out of a
+    # worker, a DCAM segfault — the reason main enables faulthandler). Writing
+    # beside it and renaming is what keeps a half-written file from becoming
+    # "no settings at all".
+    from acqApp import config as C
+    intact = cfg_path.read_text(encoding="utf-8")
+    real_dump = C.json.dump
+
+    def die_partway(obj, fh, **kw):
+        fh.write('{"settings": {"voltage_cam": {"expos')     # a partial record
+        raise OSError("simulated: no space left on device")
+
+    C.json.dump = die_partway
+    try:
+        C.save_config({"theme": "light", "settings": {"wiped": True}})
+    finally:
+        C.json.dump = real_dump
+    r.check(cfg_path.read_text(encoding="utf-8") == intact,
+            "a write that dies partway leaves the previous config untouched")
+    r.check(not list(tmp.glob("*.tmp")),
+            f"…and cleans up after itself ({[p.name for p in tmp.glob('*.tmp')]})")
+    # CONTROL: the damage this prevents is real — the same partial content
+    # written in place is what load_config() would then have to read.
+    (tmp / "wrecked.json").write_text('{"settings": {"voltage_cam": {"expos',
+                                      encoding="utf-8")
+    C._CONFIG_PATH, keep_path = tmp / "wrecked.json", C._CONFIG_PATH
+    r.check(C.load_config() == {},
+            "control: a truncated config really is unreadable")
+    r.check((tmp / "wrecked.corrupt.json").is_file(),
+            "…and is moved aside rather than silently overwritten with defaults")
+    C._CONFIG_PATH = keep_path
+
     # ── second launch: read the panels back ──────────────────────────────────
     win2 = M.MainWindow(cam_info=None, mock=True, enabled=enabled, cam_handle=None)
     panels2 = {m.key: m.panel for m in win2._modules}

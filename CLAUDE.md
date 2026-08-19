@@ -33,7 +33,7 @@ item number or an old decision** — never as part of getting oriented.
 - **Installs go ONLY into `acqApp/.venv`.** Never pip-install into another
   interpreter, even if the user's shell is running one.
 - **Verify in Emulate/mock mode**: `acqApp\.venv\Scripts\python.exe
-  acqApp\tests\run_all.py` — 657 checks, ~48 s, no hardware, no windows. Use the
+  acqApp\tests\run_all.py` — 661 checks, ~48 s, no hardware, no windows. Use the
   **absolute** interpreter path; the shell usually starts in this repo's parent,
   where the relative one fails obscurely. Say plainly when something is
   mock-verified only: apart from the wheel encoder and the DMD, none of this

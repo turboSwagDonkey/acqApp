@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **657 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **661 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **657 checks, 22 files, ~48 s** (three currently red — see the
+the contract: **661 checks, 22 files, ~48 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -719,6 +719,37 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (z) — `acqapp_local.json` could be lost by a crash mid-write
+- **Looked for GUI-thread disk I/O and mostly found none**, which is worth
+  recording so nobody re-audits it: the Save tab uses `editingFinished`, not
+  `textChanged`, so it refreshes once per committed field, and that refresh
+  costs **0.09 ms** even with 60 existing recordings for `resolve(unique=True)`
+  to step past. The 30 Hz display tick is 0.92 ms. Neither needs touching.
+- **What the search did find is durability, not speed.** `save_config` used
+  `open(path, "w")`, which **truncates before writing**, and the exposure
+  spinbox is wired to `valueChanged` — so this file is rewritten on *every step*
+  of a spin. It holds the operator's entire working setup (modules, theme, every
+  panel's parameters), and this app can die natively mid-write: a PyQt6 qFatal
+  out of a worker, or a DCAM segfault, which is exactly why `main` enables
+  faulthandler. The window left a truncated file, and `load_config` read that as
+  **"no settings at all"**.
+- **Now written beside it and renamed** (`os.replace`, atomic on Windows and
+  POSIX). Demonstrated rather than asserted: a subprocess looping on
+  `save_config` was killed repeatedly and the file still parsed every time.
+  **No fsync** — the threat is a process crash, not power loss, and fsync per
+  spinbox step would cost more than the write it protects.
+- **`load_config` no longer discards a damaged file.** Returning `{}` is right
+  (the app must start), but the next save then overwrote the only copy with
+  defaults, turning a recoverable corruption into a permanent loss. It is moved
+  to `.corrupt.json` and said out loud.
+- **Cost measured honestly: 1.32 → 1.53 ms**, +0.2 ms. An intermediate figure of
+  6.94 ms was measurement noise in a scratch script and is withdrawn — the
+  isolated write benchmark (0.17 → 0.43 ms) and the clean panel benchmark agree.
+- Four checks in `test_settings_persistence`, verified to **fail** against the
+  old truncate-write. The interesting one is deterministic rather than racy: it
+  monkeypatches `json.dump` to write a partial record and then raise, and asserts
+  the previous config is untouched. Suite **657 → 661**.
 
 ### 2026-08-18 (y) — the ROI editor at real camera size: 272 ms → 2.2 ms a drag
 - **Driving the editor at 4432×2368 was the test that mattered**, and it still

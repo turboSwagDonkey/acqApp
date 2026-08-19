@@ -1,13 +1,16 @@
 """
-Persistent app config — currently just which modules the user last loaded.
+Persistent app config: the loaded modules, the theme, and every panel's saved
+parameters.
 
-Stored as JSON next to the package (`acqapp_local.json`, gitignored via the
-`*_local.json` rule) so the startup module picker can default to the most
-recently used selection.
+JSON next to the package (`acqapp_local.json`, gitignored via `*_local.json`).
+It is the operator's whole working setup, and it is rewritten **on every
+spinbox step**, so `save_config` writes atomically and `load_config` refuses to
+throw a damaged one away — see both.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 # The subsystems the user can load, in display order.
@@ -30,19 +33,54 @@ _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")
 
 
 def load_config() -> dict:
+    """The saved config, or {} if there is none.
+
+    A damaged file is moved aside rather than discarded. Returning {} is right —
+    the app has to start — but the next `save_config` would then overwrite the
+    only copy of the operator's setup with defaults, turning a recoverable
+    corruption into a permanent loss.
+    """
     try:
         with open(_CONFIG_PATH, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError):
+            data = json.load(fh)
+    except FileNotFoundError:
         return {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        keep = _CONFIG_PATH.with_suffix(".corrupt.json")
+        try:
+            os.replace(_CONFIG_PATH, keep)
+            print(f"[config] {_CONFIG_PATH.name} is unreadable ({e}); kept as "
+                  f"{keep.name} and starting from defaults")
+        except OSError:
+            print(f"[config] {_CONFIG_PATH.name} is unreadable ({e})")
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def save_config(cfg: dict) -> None:
+    """Write the config atomically: temp file in the same directory, then rename.
+
+    `open(path, "w")` truncates before it writes, and this file is rewritten on
+    every spinbox step. This app can die natively mid-write — a PyQt6 qFatal
+    from a worker thread, or a DCAM segfault, which is why `main` enables
+    faulthandler — and that left a truncated file which `load_config` read as
+    "no settings at all". `os.replace` is atomic on Windows and POSIX alike, so
+    a reader sees either the old config or the new one.
+
+    No fsync: the threat here is a process crash, not power loss, and fsync on
+    every spinbox step would cost more than the write it protects.
+    """
+    tmp = _CONFIG_PATH.with_name(f"{_CONFIG_PATH.name}.{os.getpid()}.tmp")
     try:
-        with open(_CONFIG_PATH, "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2)
+        os.replace(tmp, _CONFIG_PATH)
     except OSError as e:
         print(f"[config] could not save {_CONFIG_PATH}: {e}")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def load_enabled_modules() -> list[str]:
