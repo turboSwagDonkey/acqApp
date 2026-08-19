@@ -35,7 +35,10 @@ TRACK_KEYS = ("threshold", "min_r", "max_r",
 
 def track_params(settings) -> dict[str, Any]:
     """The tracker kwargs carried by a `PupilSettings`."""
-    return {k: getattr(settings, k) for k in TRACK_KEYS}
+    p = {k: getattr(settings, k) for k in TRACK_KEYS}
+    # Not in TRACK_KEYS: three settings fields collapse to one tracker option.
+    p["limit"] = settings.search_limit()
+    return p
 
 
 class PupilTrackWorker(PullWorker):

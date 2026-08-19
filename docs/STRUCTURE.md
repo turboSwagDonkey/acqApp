@@ -163,6 +163,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_encoder_timing.py
   test_module_subsets.py
   test_pupil_fits.py
+  test_pupil_limit.py         the search-limit circle: seed, fit, panel, preview
   test_pupil_tracking_thread.py
   test_pupil_video.py
   test_readout_fps.py

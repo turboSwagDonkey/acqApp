@@ -30,6 +30,14 @@ class PupilSettings:
     # Losses before re-thresholding; the pre-blink estimate is kept if that
     # finds nothing, so a reopening eye resumes instead of being hunted for.
     reseed_after:   int   = 30
+    # ── search limit ──
+    # The animal is head-fixed, so the eye occupies one fixed part of the frame.
+    # This circle (camera px) is where the pupil is allowed to be: it bounds the
+    # seed search and rejects a fit centred outside it. r <= 0 = whole frame.
+    # It constrains the CENTRE, not the edge points — a rim may cross it.
+    limit_x:      float = 0.0
+    limit_y:      float = 0.0
+    limit_r:      float = 0.0
     # Replay a clip instead of the camera; "" = camera/mock. Recorded in the
     # session metadata — replayed frames must never read as rig data.
     video_path:   str   = ""
@@ -37,3 +45,13 @@ class PupilSettings:
     # kept out of the metadata: how the operator looked at the fit is not a
     # property of the recording.
     show_search:  bool  = False
+
+    def search_limit(self) -> tuple[float, float, float] | None:
+        """The limit circle as (cx, cy, r), or None for the whole frame.
+
+        Three fields, one tracker option: "no limit" then has exactly one
+        representation, so nothing downstream has to test the radius itself.
+        """
+        if self.limit_r <= 0.0:
+            return None
+        return (float(self.limit_x), float(self.limit_y), float(self.limit_r))

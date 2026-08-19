@@ -46,6 +46,7 @@ TESTS = [
     ("stage-state", "test_stage_state.py"),
     ("stage-panel", "test_stage_panel.py"),
     ("pupil-thread", "test_pupil_tracking_thread.py"),
+    ("pupil-limit", "test_pupil_limit.py"),
     ("pupil-video", "test_pupil_video.py"),
     ("losses",    "test_recording_losses.py"),
     ("camera-ts", "test_camera_timestamps.py"),

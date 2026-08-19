@@ -61,13 +61,20 @@ def main() -> int:
     p = track_params(PupilSettings(threshold=42, min_r=7, max_r=99, n_rays=32,
                                    polarity="falling", min_strength=2.5,
                                    fit="ellipse", edge_select="strongest",
-                                   smooth_sigma=9.0, min_confidence=0.05))
+                                   smooth_sigma=9.0, min_confidence=0.05,
+                                   limit_x=300.0, limit_y=200.0, limit_r=90.0))
     r.check(p == {"threshold": 42, "min_r": 7, "max_r": 99, "n_rays": 32,
                   "polarity": "falling", "min_strength": 2.5, "fit": "ellipse",
                   "edge_select": "strongest", "smooth_sigma": 9.0,
                   "min_confidence": 0.05, "smooth_median": 3,
-                  "smooth_ema": 0.5, "reseed_after": 30},
+                  "smooth_ema": 0.5, "reseed_after": 30,
+                  "limit": (300.0, 200.0, 90.0)},
             f"track_params carries every panel-owned option (got {p})")
+    # The three limit fields collapse to one tracker option, so "no limit" has
+    # a single representation rather than a radius the tracker has to test.
+    r.check(track_params(PupilSettings(limit_x=300.0, limit_y=200.0))["limit"]
+            is None,
+            "a zero radius reaches the tracker as no limit at all")
     from acqApp.devices.pupil_cam.tracking import PupilTracker
     r.check(all(hasattr(PupilTracker(), k) for k in p),
             "every track_params key is a real PupilTracker option")

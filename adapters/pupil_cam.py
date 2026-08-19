@@ -36,6 +36,8 @@ class PupilCamModule(ModuleAdapter):
         # Empty until build_views: the pupil module can be loaded without ever
         # building its dock, and _on_settings fires from the panel before then.
         self._search_items: tuple = ()
+        self._limit_curve = None
+        self._limit_roi = None
         self._vb = None
         self._curve = None
         self._y: list[float] = []
@@ -52,12 +54,14 @@ class PupilCamModule(ModuleAdapter):
         self.panel.exposure_changed.connect(self._on_exposure)
         self.panel.led_toggled.connect(self._on_led)
         self.panel.settings_changed.connect(self._on_settings)
+        self.panel.limit_edit_toggled.connect(self._on_limit_edit)
         return self.panel
 
     def _on_settings(self, s) -> None:
         config.save_settings(self.key, asdict(s))
         if self._search_items:
             self._set_search_visible(s.show_search)
+        self._draw_limit(s)
         if self._track is not None:
             # Queued, not written: the tracker belongs to its own thread.
             self._track.configure(**track_params(s))
@@ -92,9 +96,14 @@ class PupilCamModule(ModuleAdapter):
         self._pts_out = pg.ScatterPlotItem(size=5, pen=None,
                                            brush=pg.mkBrush("red"))
         self._overlay = pg.PlotCurveItem(pen=pg.mkPen(style.HEX[self.key], width=2))
+        # The search limit, in its own colour and NOT tied to the search
+        # overlay: it changes what the tracker will accept, so it has to be
+        # visible whenever it is in force.
+        self._limit_curve = pg.PlotCurveItem(
+            pen=pg.mkPen("#00e5ff", width=2, style=Qt.PenStyle.DashLine))
         # Outline last so it draws on top of the points.
         for item in (self._ann_in, self._ann_out, self._pts_out, self._pts_in,
-                     self._overlay):
+                     self._limit_curve, self._overlay):
             vb.addItem(item)
         self._search_items = (self._ann_in, self._ann_out,
                               self._pts_in, self._pts_out)
@@ -102,6 +111,8 @@ class PupilCamModule(ModuleAdapter):
         vb.scene().sigMouseClicked.connect(self._on_click)
         self._set_search_visible(self.panel.settings.show_search
                                  if self.panel is not None else False)
+        if self.panel is not None:
+            self._draw_limit(self.panel.settings)
 
         self.win.add_dock("Pupil cam", row, Qt.DockWidgetArea.RightDockWidgetArea,
                           accent=self.key)
@@ -125,10 +136,64 @@ class PupilCamModule(ModuleAdapter):
             return
         p = self._vb.mapSceneToView(ev.scenePos())
         s = self.panel.settings
+        lim = s.search_limit()
+        if lim is not None and np.hypot(p.x() - lim[0], p.y() - lim[1]) > lim[2]:
+            # The tracker would reject every fit made from this seed, so say so
+            # rather than queue a seed that silently does nothing.
+            self.win.status("click is outside the pupil search limit — move the "
+                            "limit circle or clear it")
+            return
         r = 0.5 * (s.min_r + s.max_r)
         self._track.seed(p.x(), p.y(), r)      # queued onto the tracker's thread
         self.win.status(f"pupil annulus seeded at ({p.x():.0f}, {p.y():.0f}) "
                         f"r={r:.0f} px")
+
+    # ── search limit ──
+    def _draw_limit(self, s) -> None:
+        """Outline the limit circle, or clear it when there is none."""
+        if self._limit_curve is None:
+            return
+        lim = s.search_limit()
+        if lim is None:
+            self._limit_curve.setData([], [])
+            return
+        cx, cy, r = lim
+        th = self._theta
+        self._limit_curve.setData(cx + r * np.cos(th), cy + r * np.sin(th))
+
+    def _on_limit_edit(self, on: bool) -> None:
+        """Show/hide the draggable circle that sets the limit."""
+        if self._vb is None or self.panel is None:
+            return
+        if not on:
+            if self._limit_roi is not None:
+                self._vb.removeItem(self._limit_roi)
+                self._limit_roi = None
+            return
+        if self._limit_roi is not None:
+            return
+        lim = self.panel.settings.search_limit() or self._default_limit()
+        cx, cy, r = lim
+        self._limit_roi = pg.CircleROI(
+            pos=(cx - r, cy - r), radius=r, movable=True, removable=False,
+            pen=pg.mkPen("#00e5ff", width=2))
+        # ChangeFinished, not Changed: `limit` is in the tracker's _RESEED_ON,
+        # so writing it back mid-drag would re-seed on every mouse move.
+        self._limit_roi.sigRegionChangeFinished.connect(self._limit_dragged)
+        self._vb.addItem(self._limit_roi)
+        self._limit_dragged(self._limit_roi)    # a first drag is not required
+
+    def _default_limit(self) -> tuple[float, float, float]:
+        """Where the circle starts when none has ever been set: the middle of
+        the frame, a quarter of its short side."""
+        img = getattr(self._img, "image", None)
+        h, w = img.shape[:2] if img is not None else (480, 640)
+        return (w / 2.0, h / 2.0, min(w, h) / 4.0)
+
+    def _limit_dragged(self, roi) -> None:
+        p, sz = roi.pos(), roi.size()
+        r = float(sz[0]) / 2.0
+        self.panel.set_limit(float(p[0]) + r, float(p[1]) + r, r)
 
     # ── controllers ──
     def build_controller(self, emulate: bool) -> None:
@@ -278,6 +343,11 @@ class PupilCamModule(ModuleAdapter):
                 "pupil_min_confidence": s.min_confidence,
                 "pupil_smooth_median": s.smooth_median,
                 "pupil_smooth_ema":    s.smooth_ema,
+                # 0 = whole frame. Recorded because it decides which fits were
+                # accepted, so a trace cannot be read without it.
+                "pupil_limit_x":       s.limit_x,
+                "pupil_limit_y":       s.limit_y,
+                "pupil_limit_r":       s.limit_r,
                 # "" for the camera. Recorded because frames replayed from a
                 # clip are not this session's data, and nothing else in the file
                 # would show it.

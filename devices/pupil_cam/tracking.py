@@ -59,6 +59,20 @@ __all__ = [
     "coarse_seed", "fit_circle_taubin", "fit_circle_robust", "fit_ellipse",
 ]
 
+# A search limit is (cx, cy, r) in frame px, or None for the whole frame — the
+# region the eye is known to stay in on a head-fixed animal. It bounds the seed
+# and the fitted centre; edge points are free to cross it.
+Limit = tuple[float, float, float] | None
+
+
+def _within(limit: Limit, x: float | None, y: float | None) -> bool:
+    if limit is None:
+        return True
+    if x is None or y is None:
+        return False
+    cx, cy, r = limit
+    return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
+
 
 @dataclass
 class PupilResult:
@@ -236,7 +250,8 @@ def find_circular_edge(frame: np.ndarray,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def coarse_seed(frame: np.ndarray, threshold: int = 60,
-                min_r: int = 10, max_r: int = 80, *, bright: bool = False):
+                min_r: int = 10, max_r: int = 80, *, bright: bool = False,
+                limit: Limit = None):
     """Rough (cx, cy, r) for the first annulus, or None.
 
     The largest thresholded blob, then its **deepest interior point** by
@@ -244,16 +259,40 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
     merge into the pupil's component, and a centroid of that lands off the pupil
     while the inscribed-circle centre stays put (and its radius beats √(area/π)).
 
+    `limit` restricts the search to one disc of the frame. On this rig that is
+    the difference between working and not: unrestricted, the dark mask covers
+    more than half the sensor and this bails at its own guard (below), so
+    auto-seeding never fires. Cropping to the disc also drops the labelling and
+    distance transform from sensor-sized to ROI-sized.
+
     Only places the annulus — it just has to land inside the pupil.
     """
+    ox = oy = 0
+    inside = None
+    if limit is not None:
+        lx, ly, lr = limit
+        x0 = max(0, int(np.floor(lx - lr)))
+        x1 = min(frame.shape[1], int(np.ceil(lx + lr)) + 1)
+        y0 = max(0, int(np.floor(ly - lr)))
+        y1 = min(frame.shape[0], int(np.ceil(ly + lr)) + 1)
+        if x1 <= x0 or y1 <= y0:            # the circle misses the frame
+            return None
+        frame = frame[y0:y1, x0:x1]
+        ox, oy = x0, y0
+        yy, xx = np.ogrid[y0:y1, x0:x1]     # absolute px, as lx/ly are
+        inside = (xx - lx) ** 2 + (yy - ly) ** 2 <= lr * lr
+
     mask = (frame > threshold) if bright else (frame < threshold)
+    if inside is not None:
+        mask = mask & inside
     n = int(mask.sum())
     if n == 0:
         return None
-    # A pupil cannot be half the sensor. When it is (lens cap, bad threshold)
-    # labelling costs ~100 ms and is rejected at the end anyway — bail cheaply
-    # so a dark stretch can't stall the display.
-    if n > 0.5 * frame.size:
+    # A pupil cannot be half the search area. When it is (lens cap, bad
+    # threshold) labelling costs ~100 ms and is rejected at the end anyway —
+    # bail cheaply so a dark stretch can't stall the display.
+    area = int(inside.sum()) if inside is not None else frame.size
+    if n > 0.5 * area:
         return None
 
     try:
@@ -263,7 +302,8 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
         r = float(np.sqrt(n / np.pi))
         if not (0.4 * min_r < r < 2.5 * max_r):
             return None
-        return float(xs.mean()), float(ys.mean()), float(np.clip(r, min_r, max_r))
+        return (float(xs.mean()) + ox, float(ys.mean()) + oy,
+                float(np.clip(r, min_r, max_r)))
 
     lab, nlab = ndimage.label(mask)
     if nlab == 0:
@@ -319,7 +359,7 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
     if best is None:
         return None
     _, cx, cy, r = best
-    return cx, cy, float(np.clip(r, min_r, max_r))
+    return cx + ox, cy + oy, float(np.clip(r, min_r, max_r))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -352,18 +392,20 @@ def detect(frame: np.ndarray,
            fit: str = "circle",
            smooth_sigma: float = 1.5,
            edge_select: str = "first",
+           limit: Limit = None,
            seed: tuple[float, float, float] | None = None) -> PupilResult:
     """Stateless per-frame: coarse seed → annular edge search → robust fit.
 
     `seed` places the annulus explicitly (the LabVIEW workflow). Pass it
     whenever you have it — auto-seeding is a bootstrap convenience and a dark
-    eyelid margin larger than the pupil fools it. For live video use
-    `PupilTracker`.
+    eyelid margin larger than the pupil fools it. `limit` is the disc the eye
+    is known to be in; it bounds the auto-seed and rejects a fit centred
+    outside. For live video use `PupilTracker`.
     """
     if seed is None:
         # "falling" = a bright pupil on a darker iris, so seed on the bright blob
         seed = coarse_seed(frame, threshold, min_r, max_r,
-                           bright=(polarity == "falling"))
+                           bright=(polarity == "falling"), limit=limit)
         if seed is None:
             return PupilResult(None, None, None, 0.0)
     cx, cy, r = seed
@@ -375,8 +417,10 @@ def detect(frame: np.ndarray,
         smooth_sigma=smooth_sigma, exclude_deg=exclude_deg, fit=fit,
         edge_select=edge_select, refine_iters=3,
     )
-    if res.radius is not None and not (min_r < res.radius < max_r):
-        # edge found but outside the size band — report the position only
+    if res.radius is not None and not (
+            min_r < res.radius < max_r
+            and _within(limit, res.center_x, res.center_y)):
+        # edge found, but the wrong size or outside the limit — position only
         return PupilResult(res.center_x, res.center_y, None, 0.0,
                            edge_x=res.edge_x, edge_y=res.edge_y,
                            inliers=res.inliers, rms=res.rms)
@@ -398,7 +442,7 @@ class PupilTracker:
                  min_strength: float = 4.0, smooth_sigma: float = 1.5,
                  exclude_deg: Sequence[tuple[float, float]] = (),
                  fit: str = "circle", edge_select: str = "first",
-                 min_confidence: float = 0.10,
+                 min_confidence: float = 0.10, limit: Limit = None,
                  max_lost: int = 5, max_jump: float = 0.5,
                  smooth_median: int = 3, smooth_ema: float = 0.5,
                  reseed_after: int = 30):
@@ -413,6 +457,7 @@ class PupilTracker:
         self.fit = fit
         self.edge_select = edge_select
         self.min_confidence = min_confidence
+        self.limit = limit
         self.max_lost = max_lost
         self.max_jump = max_jump          # allowed centre jump, × previous radius
         self.smooth_median = smooth_median
@@ -468,7 +513,7 @@ class PupilTracker:
     # Changing any of these invalidates the lock — the annulus was placed under
     # the old assumptions, so re-seed rather than let it drift.
     _RESEED_ON = frozenset({"threshold", "min_r", "max_r", "polarity", "fit",
-                            "edge_select"})
+                            "edge_select", "limit"})
 
     def configure(self, **kw) -> None:
         """Cheap per-tick update from the settings panel."""
@@ -489,7 +534,8 @@ class PupilTracker:
         # difference between resuming and hunting from scratch.
         if self._last is not None and self._lost >= self.reseed_after:
             offer = coarse_seed(frame, self.threshold, self.min_r, self.max_r,
-                                bright=(self.polarity == "falling"))
+                                bright=(self.polarity == "falling"),
+                                limit=self.limit)
             if offer is not None:
                 self._last = offer
                 self._lost = 0
@@ -499,7 +545,8 @@ class PupilTracker:
             cx, cy, r = self._last
         else:
             seed = coarse_seed(frame, self.threshold, self.min_r, self.max_r,
-                               bright=(self.polarity == "falling"))
+                               bright=(self.polarity == "falling"),
+                               limit=self.limit)
             if seed is None:
                 self._lost += 1
                 self._clear_filter()
@@ -525,9 +572,12 @@ class PupilTracker:
             refine_iters=2 if seeded_from_last else 3,
         )
 
+        # The limit is applied to the FIT, not to the rays: the eye is where the
+        # operator said it is, but its rim may sit just outside a tight circle.
         ok = (res.radius is not None
               and res.confidence >= self.min_confidence
-              and self.min_r < res.radius < self.max_r)
+              and self.min_r < res.radius < self.max_r
+              and _within(self.limit, res.center_x, res.center_y))
         if ok and seeded_from_last:
             # reject a teleport — usually an eyelid edge grabbed mid-blink
             ok = np.hypot(res.center_x - cx, res.center_y - cy) <= self.max_jump * r
