@@ -38,11 +38,10 @@ class DmdModule(ModuleAdapter):
     def _settings(self) -> DmdSettings:
         """Saved settings, defaulting to the standalone DMD app's alignment.
 
-        Scale and rotation are how the projected pattern is registered to the
-        optics, and that alignment is found in `dmdGUI_project`. Starting a
-        fresh acqApp install at 100 % / 0° would project something in the wrong
-        place while looking correctly configured, so its saved values seed ours
-        — the same arrangement the stage has with `stage_control/config.json`.
+        Scale and rotation register the pattern to the optics, and that
+        alignment lives in `dmdGUI_project`. A fresh install at 100 % / 0° would
+        project in the wrong place while looking correctly configured — the same
+        arrangement the stage has with `stage_control/config.json`.
         """
         s = config.load_dataclass(DmdSettings, self.key)
         saved = config.load_settings(self.key)
@@ -77,10 +76,9 @@ class DmdModule(ModuleAdapter):
         if self.panel is not None:
             self.panel.set_device(self.controller.device_name,
                                   self.controller.resolution, real)
-        # A pattern the panel is showing — restored from the config, or loaded
-        # before Emulate was toggled — has to be uploaded to this controller
-        # too, or Display projects whatever the fresh controller defaults to
-        # while the panel names a file.
+        # A pattern the panel is showing must be uploaded to this controller
+        # too, or Display projects the fresh controller's default while the
+        # panel names a file.
         path = s.pattern_path
         if path is not None and Path(path).is_file():
             self.controller.load_pattern(Path(path))
@@ -102,11 +100,9 @@ class DmdModule(ModuleAdapter):
     def on_trigger(self, name: str, duration: float) -> None:
         """Project on a trigger — the closed loop's other output.
 
-        The DMD has no pulse of its own: the panel holds one image until Stop,
-        and the ALP free-runs its sequence once started. So a *timed* stimulus
-        is display-now plus a single-shot stop, which is what `duration` buys.
-        `duration <= 0` leaves the pattern up until Stop is pressed, which is
-        what a trigger with no duration asks for.
+        The DMD has no pulse of its own: the ALP free-runs its sequence once
+        started and holds until Stop. So a *timed* stimulus is display-now plus
+        a single-shot stop, and `duration <= 0` leaves the pattern up.
         """
         if name != self.key:
             return
@@ -124,20 +120,18 @@ class DmdModule(ModuleAdapter):
         s = self.panel.settings
         c = self.controller
         # Both twins declare device_name/resolution/on_pixels
-        # (`ProjectorController`), so these are read, not guessed. The old
-        # `getattr(c, "device_name", "none")` would file a session that really
-        # projected as one that never did, the moment the two drifted — which
-        # is the whole of §5b A1.
+        # (`ProjectorController`), so these are read, not guessed: the old
+        # `getattr(c, "device_name", "none")` filed a session that really
+        # projected as one that never did (§5b A1).
         w, h = c.resolution if c is not None else (0, 0)
         return {
             "dmd_on_time_ms":  s.on_time_ms,
             "dmd_static_hold": s.static_hold,
             "dmd_trigger":     s.trigger_mode,
             "dmd_repeats":     s.n_repeats,
-            # What was projected, and where. Without the geometry a recorded
-            # stimulus cannot be located in the field of view afterwards, and
-            # without the device name there is no way to tell a session that
-            # projected from one that ran against the mock.
+            # What was projected, and where: without the geometry a recorded
+            # stimulus cannot be located in the FOV afterwards, and without the
+            # name a real session is indistinguishable from a mock one.
             "dmd_device":      c.device_name if c is not None else "none",
             "dmd_width":       w,
             "dmd_height":      h,

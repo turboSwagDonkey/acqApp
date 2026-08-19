@@ -19,16 +19,14 @@ from acqApp.adapters.base import ModuleAdapter
 class ClosedLoopModule(ModuleAdapter):
     """Phase 5: fire an output from what another instrument is measuring.
 
-    Not an instrument — it owns no device. It is a `ModuleAdapter` because it
-    needs exactly what one provides: a settings tab, a per-session worker, a
-    recording sink and metadata. It is **last** in `config.MODULES` so that
-    every source-providing adapter exists before its panel asks what is on
-    offer.
+    Owns no device, but needs exactly what a `ModuleAdapter` provides: a
+    settings tab, a per-session worker, a sink and metadata. **Last** in
+    `config.MODULES`, so every source-providing adapter exists before its panel
+    asks what is on offer.
 
-    It reaches its neighbours only through the two service methods on the
-    window (`signal_sources`, `module_keys`) and the shared trigger bus — never
-    into another adapter. That is what keeps the wheel ignorant of the loop and
-    the loop ignorant of the puffer.
+    It reaches its neighbours only through `signal_sources`/`module_keys` on the
+    window and the shared trigger bus — never into another adapter. That is what
+    keeps the wheel ignorant of the loop and the loop ignorant of the puffer.
     """
     key = "closed_loop"
     tab_label = "Closed loop"
@@ -93,17 +91,15 @@ class ClosedLoopModule(ModuleAdapter):
     def _on_fired(self, target: str, duration: float, value: float) -> None:
         """The rule fired. Runs on the GUI thread — but keep it to one emit.
 
-        `fired` comes from the loop's own thread, and a `ModuleAdapter` is not a
-        QObject, so the obvious conclusion is that Qt calls this directly on the
-        emitting thread. Measured on PyQt6, that is **wrong**: a slot which is
-        not a QObject's bound method runs on the thread where `connect()` was
-        called — `build_session`, on the GUI thread. So it arrives queued.
+        `fired` comes from the loop's thread and a `ModuleAdapter` is not a
+        QObject, so this looks like a direct call on the emitting thread.
+        Measured on PyQt6 it is not: a slot that is not a QObject's bound method
+        runs on the thread where `connect()` was called — `build_session`, on
+        the GUI thread — so it arrives queued.
 
-        That guarantee lives in the caller, not here: move the `connect()` onto
-        a worker thread and this silently becomes a cross-thread GUI call. Hence
-        the status line stays in `update_display()`, where the thread is
-        obvious. `sync.fire()` then takes a rule-driven puff down the identical
-        path as a scheduled one, into the session file included.
+        That guarantee lives in the caller, so move the `connect()` onto a
+        worker thread and this silently becomes a cross-thread GUI call. Hence
+        the status line stays in `update_display()`.
         """
         self.win.sync.fire(target, duration)
 
@@ -128,10 +124,9 @@ class ClosedLoopModule(ModuleAdapter):
             return
 
         def sink(event: tuple[float | None, float]) -> None:
-            """One entry per fire: the value that caused it, stamped at the
-            instant of the sample it was measured from — so the decision lines
-            up in the file with its own cause rather than with the GUI hop
-            after it."""
+            """One entry per fire, stamped at the instant of the sample it was
+            measured from — so the decision lines up in the file with its cause,
+            not with the GUI hop after it."""
             value, at = event
             rec.put("closed_loop", float(value or 0.0), at=at)
 
@@ -158,19 +153,16 @@ class ClosedLoopModule(ModuleAdapter):
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        # 0 is the honest answer for "no worker": build_session refuses to make
-        # one when the rule's signal source isn't loaded, and a rule that never
-        # ran fired nothing. `loop_armed` above is what distinguishes that from
-        # a rule that ran and never met its condition.
+        # 0 is honest for "no worker": build_session refuses to make one when
+        # the source isn't loaded, and a rule that never ran fired nothing.
+        # `loop_armed` distinguishes that from one that ran and never matched.
         if self.worker is None:
             return {"loop_fires": 0, "loop_fires_session": 0}
         return {
-            # Fires that are IN this file — always equal to len(/closed_loop),
-            # so an attribute and the stream beside it cannot disagree.
+            # Always equal to len(/closed_loop), so the attribute and the stream
+            # beside it cannot disagree.
             "loop_fires":         self.worker.recorded_fires,
-            # Fires over the whole session. Larger when the rule was armed
-            # during Live view and fired before Record was pressed — those
-            # actuated the hardware but are in no file, which is worth knowing
-            # rather than silently dropping.
+            # Larger when the rule was armed during Live view and fired before
+            # Record: those actuated the hardware but are in no file.
             "loop_fires_session": self.worker.n_fires,
         }

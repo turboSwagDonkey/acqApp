@@ -3,14 +3,12 @@
 The rig's DMD is a **1024x768 Vialux ALP-4.2** driven through `ALP4lib` over the
 vendor's high-speed API (a separate non-pip install, like NI-DAQmx and DCAM).
 All the hardware knowledge lives here: where that API is, image → binary frame,
-and the open/project/halt/close lifecycle.
-
-Separate from `control.py` so the geometry is testable without Qt or the device
-— `build_frame` is pure numpy/PIL, and is where a misplaced stimulus comes from.
+and the open/project/halt/close lifecycle. Separate from `control.py` so
+`build_frame` — pure numpy/PIL, and where a misplaced stimulus comes from — is
+testable without Qt or the device.
 
 The maths is a port of `dmdGUI_project`'s `dmdCommandLine.buildFrame`, the path
-the optics are aligned with; keeping the two identical is the point, so a
-pattern positioned there lands in the same place here.
+the optics are aligned with; keeping the two identical is the point.
 
 **One process at a time** — whoever opened the ALP holds it over USB, so acqApp
 and `dmdGUI_project` cannot both connect. `open()` raises rather than waiting.
@@ -24,14 +22,14 @@ from typing import Any
 
 import numpy as np
 
-# The vendor caps the time between pictures at 10 s (ALP-4 doc, AlpSeqTiming).
-# The panel allows longer, so on-times are clamped here and reported rather than
-# silently truncated by the driver.
+# Vendor cap on the time between pictures (ALP-4 doc, AlpSeqTiming). The panel
+# allows longer, so on-times are clamped here and reported rather than silently
+# truncated by the driver.
 MAX_PICTURE_US = 10_000_000
 
 # A hint only — see resolve_lib_dir().
 _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
-# The standalone app's config already carries the operator's libDir and aligned
+# The standalone app's config carries the operator's libDir and aligned
 # scale/rotation — the arrangement the stage has with stage_control/.
 _SIBLING_CONFIG = Path("dmdGUI_project") / "dmd_config.json"
 
@@ -50,9 +48,9 @@ def sibling_config() -> dict[str, Any]:
 def resolve_lib_dir(explicit: str = "") -> tuple[str | None, str]:
     """Find the ALP-4.2 high-speed API → (path or None, where it came from).
 
-    `None` means "let ALP4lib look in the registry", right for a normal vendor
+    `None` = let ALP4lib look in the registry, right for a normal vendor
     install. The earlier sources exist because this rig's copy sits beside the
-    repo, and the standalone app already records where.
+    repo and the standalone app already records where.
     """
     if explicit:
         return explicit, "panel setting"
@@ -81,15 +79,14 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
     Order — binarize, invert, scale, rotate, place — is the standalone app's,
     and so is every convention in it:
 
-      * the threshold is >127, applied to the source AND again after the
-        interpolating scale/rotate, so the frame really is binary (the mirrors
-        have no grey);
-      * rotation is **clockwise-positive**, matching Qt (and so the standalone
-        GUI's dial), which is the opposite of PIL's;
-      * `offset_x/offset_y` move the pattern's centre off the DMD's centre in
-        device pixels, so 0,0 is centred whatever the image size;
-      * `fit` scales to the largest size that fits and re-centres, overriding
-        scale, rotation and offset.
+      * threshold >127, applied to the source AND again after the interpolating
+        scale/rotate, so the frame really is binary (mirrors have no grey);
+      * rotation is **clockwise-positive**, matching Qt and the standalone GUI's
+        dial, which is the opposite of PIL's;
+      * `offset_x/offset_y` move the pattern's centre off the DMD's in device
+        pixels, so 0,0 is centred whatever the image size;
+      * `fit` scales to the largest size that fits and re-centres, **overriding
+        scale, rotation and offset** — so a calibration sweep must not use it.
 
     Anything outside the panel is cropped: the DMD cannot project it.
     """
@@ -141,12 +138,12 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
 class AlpDevice:
     """Open / upload / project / halt / close, and nothing else.
 
-    Sequence lifecycle per projection, as in the standalone app:
+    Per projection, as in the standalone app:
         SeqAlloc(1 image, 1 bit) -> SeqPut(frame) -> SeqControl(BIN_UNINTERRUPTED)
         -> SetTiming(...) -> Run(loop)
-    and `halt()` is Halt + FreeSeq, so the next `project()` starts from a clean
-    sequence. ALP_BIN_UNINTERRUPTED is what makes a held pattern actually hold:
-    the mirrors keep their state between pictures instead of blanking.
+    and `halt()` is Halt + FreeSeq, so the next `project()` starts clean.
+    ALP_BIN_UNINTERRUPTED is what makes a held pattern hold: the mirrors keep
+    their state between pictures instead of blanking.
     """
 
     def __init__(self, lib_dir: str | None = None, version: str = "4.2") -> None:
@@ -200,11 +197,11 @@ class AlpDevice:
         dev.Run(loop=loop)
 
     def halt(self) -> None:
-        """Stop display and release the sequence. Safe to call at any time.
+        """Stop display and release the sequence. Safe at any time.
 
         Each step is guarded separately: a device unplugged mid-run fails the
-        Halt but must still get the FreeSeq attempt, and neither failure should
-        stop the caller from closing.
+        Halt but must still get the FreeSeq, and neither failure should stop the
+        caller from closing.
         """
         if self._dev is None or not self._seq:
             return

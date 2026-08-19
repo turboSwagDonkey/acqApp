@@ -1,16 +1,12 @@
 """Pupil camera fed from a recorded file instead of the Basler.
 
-A third frame source beside the real camera and the synthetic mock, for tuning
-the tracker against real footage with no animal and no hardware — which is the
-only way to find parameters that survive fur, lashes and a corneal glint. The
-mock's clean disc cannot show whether a setting works on an eye.
+A third frame source beside the real camera and the mock, for tuning the tracker
+against real footage with no animal and no hardware — the mock's clean disc
+cannot show whether a setting survives fur, lashes and a corneal glint.
 
 Same surface as `PupilCameraWorker`, so the adapter, `PupilTrackWorker` and the
-search overlay are unchanged; `set_exposure` is a no-op because a recorded
-frame's exposure is already fixed.
-
-A session recorded from one of these is NOT rig data. The adapter files
-`pupil_video` in the metadata so the HDF5 says so.
+overlay are unchanged. A session recorded from one of these is NOT rig data; the
+adapter files `pupil_video` in the metadata so the HDF5 says so.
 """
 from __future__ import annotations
 

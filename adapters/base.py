@@ -70,8 +70,8 @@ class ModuleAdapter:
         self.win = win
         self.panel: QWidget | None = None
         # Declared, not duck-typed (devices.py). Subclasses narrow these to the
-        # protocol they need, so metadata reads straight off the object instead
-        # of through a getattr default that invents a value.
+        # protocol they need, so metadata reads off the object instead of
+        # through a getattr default that invents a value.
         self.worker: DeviceWorker | None = None
         self.controller: OutputController | None = None
 

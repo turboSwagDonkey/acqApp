@@ -6,27 +6,21 @@ grabs; it is the pure half, so the whole pipeline can be tested against a known
 transform before any light is emitted (PLAN.md §2).
 
 Everything rests on **complementary pairs**: project a pattern and its inverse,
-and
-
-    m = (I_on - I_off) / (I_on + I_off)
-
-cancels the sample. Tissue structure, background fluorescence and illumination
-falloff are identical in both frames and divide out; what survives is how
-strongly each *camera* pixel is modulated by the projector. That makes `m` both
-the per-pixel bit decision and, thresholded, the DMD's field boundary — which is
-the cheapest answer to "do the two fields even overlap".
+and `m = (on - off) / (on + off)` cancels the sample. Structure, background and
+vignetting are identical in both frames and divide out; what survives is how
+strongly the projector modulates each *camera* pixel. So `m` is both the
+per-pixel bit decision and, thresholded, the DMD's field boundary.
 
 Two ways to use it:
 
-  `checkerboard_pair()`  one pair. Gives the field extent and an eyeball check,
-                         with corner marks that are mutually distinguishable so
-                         a mirror flip cannot pass as a valid registration.
-  `gray_planes()`        ~2*(10+10) frames encoding each mirror's x and y in
-                         Gray code, so every camera pixel is labelled with the
-                         mirror that lit it. Thousands of correspondences rather
-                         than four — and four points fit a homography exactly,
-                         leaving no residual and so no way to tell a good fit
-                         from a bad one.
+  `checkerboard_pair()`  one pair — the field extent and an eyeball check, with
+                         corner marks that are mutually distinguishable so a
+                         mirror flip cannot pass as a valid registration.
+  `gray_planes()`        ~2*(10+10) frames Gray-coding each mirror's x and y, so
+                         every camera pixel is labelled with the mirror that lit
+                         it. Thousands of correspondences rather than four —
+                         and four points fit a homography *exactly*, leaving no
+                         residual to tell a good fit from a bad one.
 
 Patterns are built at the device's own size and must be handed to
 `AlpDevice.project()` **directly**. Do not route them through `build_frame`: its
@@ -64,7 +58,7 @@ def corner_marks(width: int, height: int, *, inset: int = 40,
 
     Distinguishable, not merely present: the relay can introduce a mirror flip,
     and four identical marks cannot reveal one — a flipped field still shows a
-    mark in every corner. Counting dots pins the orientation and the handedness.
+    mark in every corner. Counting dots pins orientation and handedness.
     """
     f = _blank(width, height)
     corners = ((inset, inset, +1, +1), (width - inset, inset, -1, +1),
@@ -171,9 +165,9 @@ def decode(on_stack, off_stack, n_bits_x: int, n_bits_y: int, *,
     """Gray-coded stacks → (dmd_x, dmd_y, valid), all camera-shaped.
 
     `on_stack[i]`/`off_stack[i]` are the camera's view of plane i and its
-    inverse, in the order `gray_planes` returned them. A pixel is valid only if
-    *every* plane modulated it: one ambiguous bit is one wrong mirror coordinate,
-    and a confidently wrong correspondence is worse than a missing one.
+    inverse, in `gray_planes` order. A pixel is valid only if *every* plane
+    modulated it: one ambiguous bit is a wrong mirror coordinate, and a
+    confidently wrong correspondence is worse than a missing one.
     """
     on = np.asarray(on_stack, dtype=np.float64)
     off = np.asarray(off_stack, dtype=np.float64)
@@ -251,7 +245,9 @@ def _homography(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
                                u * x, u * y, u])
     A[1::2] = np.column_stack([np.zeros((n, 3)), -x, -y, -np.ones(n),
                                v * x, v * y, v])
-    H = np.linalg.svd(A)[2][-1].reshape(3, 3)
+    # full_matrices=False: only the 9x9 Vh is wanted, and the default would
+    # build a (2n, 2n) U — 300 MB and seconds at a few thousand points.
+    H = np.linalg.svd(A, full_matrices=False)[2][-1].reshape(3, 3)
     H = np.linalg.inv(Td) @ H @ Ts
     return H / H[2, 2]
 
@@ -269,21 +265,20 @@ def fit_transform(src: np.ndarray, dst: np.ndarray, *, model: str = "affine",
     """Least-squares src → dst → (M, rms_px, inliers).
 
     **The residual is the point.** Four corner marks fit a homography exactly
-    and report rms 0 whether or not the registration is right; a dense fit over
-    thousands of Gray-code points reports a residual that says whether the model
-    is adequate at all — an affine rms of several px on a well-decoded frame
-    means the optics are not affine, not that the data is noisy.
+    and report rms 0 right or wrong; a dense Gray-code fit reports a residual
+    that says whether the model is adequate — an affine rms of several px on a
+    well-decoded frame means the optics are not affine, not that it is noisy.
     """
     src = np.asarray(src, dtype=np.float64)
     dst = np.asarray(dst, dtype=np.float64)
     if len(src) != len(dst):
         raise ValueError(f"{len(src)} src points vs {len(dst)} dst")
+    if model not in ("affine", "homography"):
+        raise ValueError(f"model must be affine/homography, got {model!r}")
     need = 3 if model == "affine" else 4
     if len(src) < need:
         raise ValueError(f"{model} needs >= {need} points, got {len(src)}")
     fit = _affine if model == "affine" else _homography
-    if model not in ("affine", "homography"):
-        raise ValueError(f"model must be affine/homography, got {model!r}")
 
     keep = np.ones(len(src), bool)
     M = fit(src, dst)
@@ -309,9 +304,9 @@ def fit_transform(src: np.ndarray, dst: np.ndarray, *, model: str = "affine",
 class DmdCalibration:
     """A measured DMD↔camera registration, and what it took to get it.
 
-    The residual and the point count are stored, not just the matrix: a
-    transform with no provenance cannot be judged later, and "rms 0.4 px over
-    4100 points" is the difference between trusting it and re-running it.
+    The residual and point count are stored alongside the matrix: a transform
+    with no provenance cannot be judged later, and "rms 0.4 px over 4100 points"
+    is the difference between trusting it and re-running it.
     """
     cam_to_dmd: np.ndarray            # 3×3, camera px → DMD mirrors
     dmd_size:   tuple[int, int]       # (width, height) mirrors

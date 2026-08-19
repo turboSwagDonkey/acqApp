@@ -52,11 +52,10 @@ class OrcaFireWorker(PullWorker):
     _BUFFER_BYTES   = 768 << 20
     _BUFFER_MIN     = 16
     _BUFFER_MAX     = 4096
-    # Sustained end-to-end write rate, used only to warn before a recording that
-    # physically cannot be written. Measured 2026-08-17 through the real path
-    # (worker → Recorder → HDF5Writer → D:), NOT the writer benchmark: 1004 MB/s
-    # over a 10 s full-frame run, against 1165 on the bench. The old 1200 put the
-    # advised cap at 60 fps where the truth is 48.
+    # Sustained end-to-end write rate, to warn before a recording that cannot
+    # physically be written. Measured 2026-08-17 through the real path (worker →
+    # Recorder → HDF5Writer → D:), NOT the bench: 1004 MB/s over a 10 s full-frame
+    # run against 1165 benched. The old 1200 advised a 60 fps cap; the truth is 48.
     _WRITER_MBPS    = 1000.0
 
     def __init__(self, device_index: int = 0, config: AcqConfig | None = None,
@@ -107,12 +106,12 @@ class OrcaFireWorker(PullWorker):
     @staticmethod
     def _maximise_readout_speed(cam) -> str:
         """Force the fastest readout speed — the ORCA can sit in slow
-        (ultra-quiet) mode, which costs frame rate with no indication in the ROI
+        (ultra-quiet) mode, which costs frame rate with no sign of it in the ROI
         or exposure settings.
 
-        Returns what happened, and says so when the control does not exist: on
-        this C16240 over CoaXPress `get_all_readout_speeds()` returns `[]`, so
-        this did nothing at all and looked like it had worked.
+        Returns what happened, including when the control does not exist: on
+        this C16240 `get_all_readout_speeds()` returns `[]`, so this did nothing
+        and looked like it had worked.
         """
         try:
             speeds = cam.get_all_readout_speeds()
@@ -145,12 +144,10 @@ class OrcaFireWorker(PullWorker):
     # (CAMERA_TRANSFER.md open question 9), not a format flag.
 
     def _query_timings(self, cam, cfg, verbose: bool = True) -> float:
-        """Ask the camera what frame period it can sustain rather than trusting
-        the datasheet. Returns fps, falling back to the estimate.
-
-        `verbose=False` for hot exposure changes — dragging the control calls
-        this every loop tick, and printing would put console I/O in the capture
-        path.
+        """The camera's own sustainable frame period, falling back to the
+        datasheet estimate. `verbose=False` for hot exposure changes — dragging
+        the control calls this every tick, and printing would put console I/O in
+        the capture path.
         """
         fps = cfg.expected_fps
         try:
@@ -176,8 +173,7 @@ class OrcaFireWorker(PullWorker):
         return fps
 
     def _buffer_frames(self, cfg, fps: float) -> int:
-        """DCAM ring-buffer depth: enough frames to cover _BUFFER_SECONDS of
-        acquisition, capped by a memory budget.
+        """DCAM ring depth: _BUFFER_SECONDS of frames, capped by a memory budget.
 
         Says which bound won. At full frame the byte cap wins by a wide margin —
         38 frames, 0.33 s, not the 2 s advertised — and that silent shortfall is
@@ -205,11 +201,11 @@ class OrcaFireWorker(PullWorker):
         """This frame's acquisition time in the `perf_counter()` domain, or None
         to let the Recorder stamp it on arrival.
 
-        Frames are read in batches, so stamping on arrival gives a whole batch
-        one timestamp and then a gap, quantising the timebase to the read
-        cadence. The camera stamps each frame itself; its clock has an arbitrary
-        epoch, so it is anchored to perf_counter on the session's first frame.
-        Intervals are then exact and the stream carries one constant offset.
+        Frames are read in batches, so arrival stamping gives a whole batch one
+        timestamp and then a gap, quantising the timebase to the read cadence.
+        The camera stamps each frame itself; its epoch is arbitrary, so it is
+        anchored to perf_counter on the session's first frame — intervals exact,
+        one constant offset on the stream.
         """
         if not self._use_cam_time or info is None:
             return None
@@ -272,11 +268,10 @@ class OrcaFireWorker(PullWorker):
     def _skip_report(st) -> str:
         """What a camera-side skip means — which is NOT "the writer".
 
-        The sink only enqueues (`Recorder.put` → ring buffer, no disk I/O), so a
-        slow writer sheds in the Recorder's ring and is counted there. A skip
-        here means *this* loop did not drain the driver buffer in time. The two
-        have different fixes, and the old message named the wrong one; the
-        status-bar text has always said this correctly.
+        The sink only enqueues (`Recorder.put` → ring, no disk I/O), so a slow
+        writer sheds in the Recorder's ring and is counted there. A skip here
+        means *this* loop did not drain the driver buffer in time. Different
+        fixes, and the old message named the wrong one.
         """
         return (f"[voltage_cam] DROPPED {st.skipped} frames (driver buffer "
                 f"{st.unread}/{st.buffer_size} unread) — the read loop is not "
@@ -388,12 +383,11 @@ class OrcaFireWorker(PullWorker):
                         cam.wait_for_frame(timeout=_WAIT_TIMEOUT)
                         wait_fails = 0
                     except Exception as e:
-                        # Two failures arrive through one exception. A real
-                        # TIMEOUT is legitimate (an external trigger that hasn't
-                        # fired) and already paced; an IMMEDIATE failure is a
-                        # device error, and retrying it unpaced spins a core for
-                        # the whole session. Tell them apart by elapsed time,
-                        # not by vendor exception types.
+                        # Two failures share one exception. A real TIMEOUT is
+                        # legitimate (an external trigger that hasn't fired) and
+                        # already paced; an IMMEDIATE failure is a device error,
+                        # and retrying it unpaced spins a core all session. Tell
+                        # them apart by elapsed time, not by exception type.
                         waited = time.perf_counter() - t_wait
                         wait_fails += 1
                         if waited < _WAIT_TIMEOUT * 0.5:
@@ -412,12 +406,10 @@ class OrcaFireWorker(PullWorker):
                     sink = self._sink
 
                     if sink is None:
-                        # PREVIEW ONLY. Reading every frame would copy the
-                        # camera's full output (2+ GB/s on CoaXPress) out of the
-                        # driver buffer just to discard all but the newest — the
-                        # copy alone can't keep up, so the buffer fills and
-                        # un-read frames are overwritten. Skips here are
-                        # deliberate.
+                        # PREVIEW ONLY. Reading every frame would copy 2+ GB/s
+                        # out of the driver buffer to discard all but the
+                        # newest — the copy alone can't keep up, so the buffer
+                        # fills anyway. Skips here are deliberate.
                         img = cam.read_newest_image()
                         if img is not None:
                             if first:
@@ -425,10 +417,9 @@ class OrcaFireWorker(PullWorker):
                                 first = False
                             self._set_latest(img)
                     else:
-                        # Record EVERY frame, each carrying the time the CAMERA
-                        # says it was acquired. `return_info` also gives the
-                        # frame index, so driver-skipped frames stay visible
-                        # instead of silently closing the gap.
+                        # Record EVERY frame at the time the CAMERA says it was
+                        # acquired. `return_info` also gives the frame index, so
+                        # driver-skipped frames stay visible in the file.
                         res = cam.read_multiple_images(return_info=True)
                         imgs, infos = res if res else (None, None)
                         if imgs:
@@ -490,10 +481,10 @@ class MockCameraWorker(PullWorker):
 
     @property
     def skipped_frames(self) -> int:
-        """Always 0 — frames are generated on demand. It exists so
-        `cam_dropped_frames` reads straight off the worker instead of through a
-        `getattr(..., 0)` default that would keep filing 0 if the real property
-        were renamed (§5b A1)."""
+        """Always 0 — frames are generated on demand. Exists so
+        `cam_dropped_frames` reads off the worker instead of a `getattr(…, 0)`
+        default that would keep filing 0 if the real property were renamed
+        (§5b A1)."""
         return 0
 
     def set_exposure(self, us: float) -> None:
