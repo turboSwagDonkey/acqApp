@@ -107,12 +107,10 @@ class SaveConfig:
         """Full path of the .h5 file for a recording starting now.
 
         With `unique=True` the returned path does not exist: `_001`, `_002`, …
-        are appended until the name is free. The template is free text, so
-        `{subject}` alone — or anything without `{time}` — resolves every
-        recording of the day to one path. The writer would refuse that (mode
-        "x"), so this is not about truncation: auto-numbering rather than
-        refusing keeps the Record button working with an animal on the rig. The
-        resolved name is shown in the Save tab and in the status line.
+        until the name is free. A template without `{time}` resolves every
+        recording of the day to one path; the writer would refuse that (mode
+        "x"), so this is not about truncation — auto-numbering keeps the Record
+        button working with an animal on the rig.
         """
         stem = self.stem(when)
         base = self.resolved_folder()

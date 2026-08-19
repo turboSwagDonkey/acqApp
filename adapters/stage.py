@@ -1,6 +1,6 @@
 """
 The XY stage's adapter. The calibration itself is shared with the standalone
-`stage_control/` app and lives in `acqApp/stage/settings.py`.
+`stage_control/` app and lives in `devices/stage/settings.py`.
 """
 from __future__ import annotations
 
@@ -22,11 +22,9 @@ class StageModule(ModuleAdapter):
     # No plot: live position is the X/Y readout in the Stage tab, and it is
     # recorded as stage_x_um / stage_y_um.
 
-    # Everything else about the stage (axis calibration, soft limits, the
-    # origin) lives in the config shared with the standalone stage_control app
-    # and must keep coming from there — StageSettings nests two StageAxis
-    # objects, which do not survive a round trip through this config's flat
-    # JSON. Only the two fields the panel itself owns are persisted here.
+    # Only what the panel itself owns. Calibration, soft limits and the origin
+    # must keep coming from the shared stage_control config: StageSettings nests
+    # two StageAxis objects, which do not survive this config's flat JSON.
     _PANEL_KEYS = ("port", "poll_hz")
 
     def build_panel(self) -> QWidget:
@@ -74,13 +72,9 @@ class StageModule(ModuleAdapter):
         if self.panel is not None:
             self.panel.bind_controller(None)
         if self.controller is not None:
-            # Guarded for the same reason `ModuleAdapter.close_controller` is:
-            # `MainWindow._on_run_toggled` stops every adapter in one unguarded
-            # loop, so a serial close that raises here — an unplugged stage, a
-            # port that went away mid-session — would abort the loop and leave
-            # the modules after this one with their worker threads still
-            # running. A stage we cannot close is not a reason to leave the
-            # camera acquiring.
+            # `MainWindow._on_run_toggled` stops every adapter in one loop, so
+            # a raise here (unplugged stage, port gone mid-session) would strand
+            # every module after this one with its worker still running.
             try:
                 self.controller.close()
             except Exception as e:

@@ -103,14 +103,12 @@ class ProjectorController(RecordingOutput, Protocol):
 
 @runtime_checkable
 class ModuleHost(Protocol):
-    """What an adapter may ask of the window.
+    """What an adapter may ask of the window — reaching past it into
+    `win._save_panel` makes `adapters/` and `main.py` one file again.
 
-    Prevents an adapter reaching past these into `win._save_panel`, at which
-    point `adapters/` and `main.py` are one file again. A Protocol cannot see
-    that, so the test also scans the adapters' source: adding a service is a
-    line here, helping yourself to one is a failing test.
-
-    `Any` at the Qt boundary keeps this importable without PyQt6.
+    A Protocol cannot see that, so the test also scans the adapters' source:
+    adding a service is a line here. `Any` at the Qt boundary keeps this
+    importable without PyQt6.
     """
 
     @property

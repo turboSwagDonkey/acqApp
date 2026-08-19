@@ -22,10 +22,9 @@ MODULES: dict[str, str] = {
     "puffer":      "Puffer",
     "stage":       "XY stage",
     "dmd":         "DMD",
-    # Not an instrument — it owns no device. It watches a signal another module
-    # produces and fires another module's output, so it must come last: its
-    # panel asks the window what sources exist, and the adapters are built in
-    # this order.
+    # Not an instrument: it watches one module's signal and fires another's
+    # output. Must come last — its panel asks the window what sources exist,
+    # and the adapters are built in this order.
     "closed_loop": "Closed loop",
 }
 
@@ -35,10 +34,9 @@ _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")
 def load_config() -> dict:
     """The saved config, or {} if there is none.
 
-    A damaged file is moved aside rather than discarded. Returning {} is right —
-    the app has to start — but the next `save_config` would then overwrite the
-    only copy of the operator's setup with defaults, turning a recoverable
-    corruption into a permanent loss.
+    A damaged file is moved aside, not discarded: returning {} is right (the app
+    has to start), but the next `save_config` would then overwrite the only copy
+    of the operator's setup, turning recoverable corruption into a loss.
     """
     try:
         with open(_CONFIG_PATH, "r", encoding="utf-8") as fh:
@@ -60,15 +58,13 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     """Write the config atomically: temp file in the same directory, then rename.
 
-    `open(path, "w")` truncates before it writes, and this file is rewritten on
-    every spinbox step. This app can die natively mid-write — a PyQt6 qFatal
-    from a worker thread, or a DCAM segfault, which is why `main` enables
-    faulthandler — and that left a truncated file which `load_config` read as
-    "no settings at all". `os.replace` is atomic on Windows and POSIX alike, so
-    a reader sees either the old config or the new one.
+    `open(path, "w")` truncates first, and this file is rewritten on every
+    spinbox step — so a native death mid-write (a PyQt6 qFatal from a worker, a
+    DCAM segfault) left a truncated file that `load_config` read as "no settings
+    at all". `os.replace` is atomic on Windows and POSIX alike.
 
-    No fsync: the threat here is a process crash, not power loss, and fsync on
-    every spinbox step would cost more than the write it protects.
+    No fsync: the threat is a process crash, not power loss, and fsync per
+    spinbox step would cost more than the write it protects.
     """
     tmp = _CONFIG_PATH.with_name(f"{_CONFIG_PATH.name}.{os.getpid()}.tmp")
     try:

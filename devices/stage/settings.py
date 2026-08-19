@@ -10,8 +10,7 @@ Two halves, expiring differently:
     Valid only until the next HARD LIMIT hit, which re-references the
     controller's command origin. `establish_frame` remakes them.
 
-No Qt here on purpose — the widgets are in `panel.py`, so this stays testable
-without a QApplication.
+No Qt: the widgets are in `panel.py`, so this is testable without a QApplication.
 """
 from __future__ import annotations
 import json
@@ -201,14 +200,13 @@ def load_settings() -> StageSettings:
 
 def save_axis_updates(updates: dict[int, dict]) -> Path:
     """Persist per-axis calibration keys ({axis_index: {key: value}}) into the
-    shared config, leaving every other key untouched. Temp file + replace, so a
-    crash mid-write can't destroy the calibration, and the previous contents
-    stay as `<name>.bak` — every write is one step undoable.
+    shared config, leaving every other key untouched. Temp file + replace so a
+    crash mid-write can't destroy it; the old contents stay as `<name>.bak`.
 
     A missing or unreadable config must NOT raise: callers apply the updates to
-    the live axes first (and `establish_frame()` has already spent minutes
-    driving into both hard limits), so raising here leaves memory and disk
-    disagreeing about where 0,0 is. Start from an empty config instead.
+    the live axes first, and `establish_frame()` has already spent minutes
+    driving both hard limits — raising here would leave memory and disk
+    disagreeing about where 0,0 is.
     """
     path = config_path()
     try:

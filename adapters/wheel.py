@@ -47,9 +47,9 @@ class WheelModule(ModuleAdapter):
     def _on_settings(self, st) -> None:
         """Push live V/rev and wheel-diameter changes to a running worker.
 
-        These two are the scaling constants for every wheel number in the
-        session file, and both are still unmeasured on this rig — so they are
-        also the values most likely to be silently wrong if they reset.
+        They scale every wheel number in the session file. V/rev is a measured
+        4.912; the diameter is still unmeasured, so until it is set the file
+        carries rev/s rather than mm/s.
         """
         config.save_settings(self.key, asdict(st))
         if self.worker is not None:
@@ -116,16 +116,11 @@ class WheelModule(ModuleAdapter):
     def signal_sources(self) -> list[SignalSource]:
         """Both wheel speeds, because they are not interchangeable.
 
-        `wheel_speed` is the recorded one — a least-squares slope centred a
-        second in the past (`_EncoderBase._report`), so a rule on it acts a
-        second after the animal starts running, and agrees exactly with the
-        trace in the file. `wheel_speed_live` is the EMA velocity behind it:
-        noisier, but current. Which one a paradigm wants is a scientific
-        choice, so both are offered and the session file records which was
-        used.
-
-        The reads are non-consuming (`snapshot()`), so watching the wheel never
-        takes a sample away from the plot.
+        `wheel_speed` is the recorded one — a slope centred a second in the past
+        (`_EncoderBase._report`), so a rule on it agrees with the trace in the
+        file but acts a second late. `wheel_speed_live` is the EMA behind it:
+        noisier, current. A scientific choice, so both are offered and the file
+        records which was used. Reads are non-consuming (`snapshot()`).
         """
         u = self._speed_units()
         return [
@@ -153,13 +148,12 @@ class WheelModule(ModuleAdapter):
             return
 
         def sink(sample: tuple[float, float, float, float | None]) -> None:
-            """Raw voltage + derived speed + distance: three scalar streams
-            sharing the one timebase.
+            """Voltage + speed + distance: three streams on the one timebase.
 
-            `at` is when the DAQ sampled the voltage, not when the block
-            carrying it reached us — hardware-timed reads arrive in batches, so
-            stamping on arrival would quantise the wheel's timebase to the read
-            cadence exactly as it did for the camera (#1).
+            `at` is when the DAQ sampled, not when the block reached us —
+            hardware-timed reads arrive in batches, so stamping on arrival
+            quantises the timebase to the read cadence, as it did for the
+            camera (#1).
             """
             v, speed, dist, at = sample
             rec.put("wheel_voltage", v, at=at)
@@ -186,12 +180,10 @@ class WheelModule(ModuleAdapter):
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        # Which timebase the samples actually carry is only known once the
-        # worker has configured the board — and it decides whether the recorded
-        # speed is a hardware measurement or a scheduler artefact. Read off the
-        # worker rather than defaulted: "software" and "unknown" mean different
-        # things, and a rate of 0.0 would be indistinguishable from a measured
-        # stall.
+        # Known only once the worker has configured the board, and it decides
+        # whether the recorded speed is a measurement or a scheduler artefact.
+        # Read off the worker, never defaulted: "software" and "unknown" differ,
+        # and a defaulted 0.0 Hz would read as a measured stall.
         if self.worker is None:
             return {"wheel_timestamp_source": "unknown",
                     "wheel_rate_actual_hz":   0.0}

@@ -1,10 +1,8 @@
 """
 Device connection probes.
 
-Lightweight presence checks for each subsystem — enumeration only, so they
-never open, hold, or reconfigure a device. That makes them safe to run at any
-time, including while a session is acquiring (they won't fight the worker for
-the camera / DAQ / serial port).
+Enumeration only — never open, hold or reconfigure a device — so these are safe
+to run mid-session without fighting a worker for the camera / DAQ / serial port.
 
 Each probe returns a ProbeResult(status, detail):
     "ok"      device detected
@@ -12,7 +10,7 @@ Each probe returns a ProbeResult(status, detail):
     "error"   couldn't check (driver/import missing, or the check raised)
     "stub"    no hardware path exists yet (DMD)
 
-Qt-free on purpose, so it can be unit-tested or run from a plain script.
+Qt-free, so it runs from a plain script.
 """
 from __future__ import annotations
 
@@ -30,10 +28,9 @@ class ProbeResult:
 
 def _voltage_cam(cam_open: bool = False) -> ProbeResult:
     """`cam_open` short-circuits the enumeration when the app already holds the
-    camera. That is both faster and *truer*: `DCAM.get_cameras_number()` costs
-    ~6.5 s and does so on every call (it re-enumerates; it is not one-time DLL
-    init), and this runs on the GUI thread when the Devices window refreshes —
-    while the handle we hold is the one a session will actually use.
+    camera — faster and truer. `DCAM.get_cameras_number()` costs ~6.5 s on
+    *every* call (it re-enumerates, it is not one-time DLL init) and this runs
+    on the GUI thread; the handle we hold is the one a session will use.
     """
     if cam_open:
         return ProbeResult("ok", "open and held by this app")
@@ -91,12 +88,10 @@ def _stage(port: str = DEFAULT_STAGE_PORT) -> ProbeResult:
 def _dmd() -> ProbeResult:
     """The ALP *API*, not the device.
 
-    Opening the ALP is the only way to know a DMD is really there, and opening
-    it takes the USB from whoever holds it — a running session, or the
-    standalone dmdGUI_project app. This monitor promises never to disturb a
-    device, so it reports what can be checked without connecting. The DMD tab
-    is where "is a real one attached" is answered, because that is the code
-    that actually opened it.
+    Opening the ALP is the only way to know a DMD is there, and it takes the USB
+    from whoever holds it — a running session, or dmdGUI_project. So this
+    reports what can be checked without connecting; the DMD tab answers "is a
+    real one attached", because it is the code that opened it.
     """
     try:
         import ALP4  # noqa: F401     (import only — the DLL loads on construction)

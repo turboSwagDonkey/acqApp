@@ -14,8 +14,8 @@ fingerprint:
     USB3.1 Gen1 16-bit   ~63.3 ms   (15.8 fps,   316 MB/s)
     CoaXPress             ~8.7 ms   ( 115 fps,  2300 MB/s)
 
-Run this after any cabling change. Requires the camera to be free (close the
-toy and the main app first — DCAM will not hand out the device twice).
+Run this after any cabling change, with the camera free — DCAM will not hand
+out the device twice, so close the app first.
 """
 from pylablib.devices import DCAM
 
@@ -52,9 +52,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # Make the console unable to raise on this script's own output before it
-    # prints anything (see acqApp/console.py -- a UnicodeEncodeError from a
-    # diagnostic print is otherwise indistinguishable from a device failure).
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))

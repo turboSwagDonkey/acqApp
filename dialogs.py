@@ -1,14 +1,12 @@
 """
 The shell's three modal windows.
 
-Split out of `main.py`, which is session wiring: none of these knows about the
-clock, the recorder or a device. They are the windows the operator opens *at*
-the app rather than the app itself.
+Split out of `main.py`: none of these knows about the clock, the recorder or a
+device.
 
 `SettingsDialog` reads and writes `QSettings` for its geometry, so
-`tests/_harness.isolate_user_state()` substitutes `QSettings` **here** as well
-as in `main` — leaving that out would let the suite overwrite the operator's
-real window geometry.
+`tests/_harness.isolate_user_state()` substitutes `QSettings` **here** too —
+without that the suite overwrites the operator's real window geometry.
 """
 from __future__ import annotations
 
@@ -61,11 +59,10 @@ class ModuleSelectDialog(QDialog):
 class SettingsDialog(QDialog):
     """Modeless settings window: the Save tab plus one tab per subsystem.
 
-    A separate window rather than a dock inside the main window. The panels are
-    read and edited *while* watching the live view, and a floating window can sit
-    beside the app (or on a second screen) without taking width from the camera
-    pane. It is built once and hidden on close — the panels inside are live
-    objects wired to the running controllers, so it must not be destroyed.
+    A window rather than a dock: the panels are edited *while* watching the live
+    view, and a floating one can sit on a second screen without taking width
+    from the camera pane. Built once and hidden on close — the panels inside are
+    live objects wired to the running controllers, so it must not be destroyed.
     """
 
     _GEOM_KEY = "settingsGeometry"
@@ -102,15 +99,13 @@ class SettingsDialog(QDialog):
     def default_size(self) -> QSize:
         """Big enough to show the largest panel whole, clamped to the screen.
 
-        Measured rather than hard-coded, so a panel that grows a row doesn't
-        silently start opening behind a scrollbar. The floor keeps the small
-        panels from opening in a cramped window; the clamp matters because the
-        rig's display is not this laptop's — a fixed size that is comfortable
-        here can open taller than the screen there, which on Windows puts the
+        Measured, not hard-coded, so a panel that grows a row doesn't start
+        opening behind a scrollbar. The clamp matters because a size comfortable
+        here can open taller than the rig's screen, which on Windows puts the
         bottom of the window out of reach.
 
-        `QScrollArea` reports a small hint of its own (that is the point of it),
-        so this asks the tab widget inside instead."""
+        Asks the tab widget, not the `QScrollArea` — a scroll area reports a
+        small hint of its own, which is the point of it."""
         hint = self.tabs.sizeHint()
         w = max(self._MIN_DEFAULT[0], hint.width()  + 2 * self._PAD)
         h = max(self._MIN_DEFAULT[1], hint.height() + 2 * self._PAD)
