@@ -42,7 +42,7 @@ class _EncoderBase(PullWorker):
     _LAG_S = 1.0            # report speed/distance this far in the past
     _SLOPE_WIN_S = 0.25     # half-width (s) of the least-squares speed window
     _HIST_S = _LAG_S + _SLOPE_WIN_S + 0.3     # (t, position) history retained
-    _SIGN = -1.0            # forward reads positive; flip if the wiring inverts
+    _SIGN = +1.0            # forward reads positive; flip if the wiring inverts
     _DEADBAND_REV_S = 0.05  # below this the readout reads exactly zero
 
     # Read together out of the session file, and the pair that says whether the
