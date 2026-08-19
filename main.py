@@ -1,15 +1,13 @@
 """
 In vivo acquisition suite — top-level entry point.
 
-Wires together voltage_cam, pupil_cam, wheel, puffer, stage and dmd around ONE
-shared SessionClock: every device timestamps its data against the same origin,
-and a single Recorder streams all streams into one HDF5 session file (gap-free,
-on a common timebase).
+Wires voltage_cam, pupil_cam, wheel, puffer, stage and dmd around ONE shared
+SessionClock, so every device timestamps against the same origin and one
+Recorder streams the lot into a single HDF5 session file.
 
 This file owns only what is session-wide — the clock, the sync/trigger bus, the
-recorder, the save destination, the docks and the theme. Everything specific to
-one instrument lives in a `ModuleAdapter` in `adapters/`, and this window just
-iterates over the adapters for the modules the user loaded.
+recorder, the save destination, the docks and the theme. Anything specific to
+one instrument is a `ModuleAdapter` in `adapters/`; this window iterates.
 
 Run it any of these ways — the bootstrap below makes them all work:
   acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py          (run the file)
@@ -35,15 +33,13 @@ faulthandler.enable()
 # ── Environment bootstrap (must run before any third-party import) ────────────
 def _bootstrap() -> None:
     """
-    Make `main.py` robust to how/where it was launched, WITHOUT ever touching an
-    environment other than the project's own `acqApp/.venv`:
-      1. Put the acqApp parent dir on sys.path so `import acqApp` resolves when
-         the file is run directly (not just via `-m acqApp.main`), then make the
-         console safe — both before anything is printed.
-      2. If we're not running the project venv, create it (if missing) and
-         re-exec into it — so the wrong interpreter is never used.
-      3. Install requirements.txt if a core dependency is missing — but ONLY when
-         we're inside the venv, so pip never installs into an unrelated Python.
+    Survive being launched from anywhere, WITHOUT ever touching an environment
+    other than `acqApp/.venv`:
+      1. parent dir on sys.path (so a direct run resolves `import acqApp`), then
+         harden the console — both before anything is printed.
+      2. not in the project venv → create it if missing and re-exec into it.
+      3. a core dependency missing → install requirements.txt, but ONLY from
+         inside the venv, so pip never reaches an unrelated Python.
     """
     here = Path(__file__).resolve().parent            # …/acqApp
     scripts = "Scripts" if os.name == "nt" else "bin"
@@ -51,10 +47,9 @@ def _bootstrap() -> None:
     venv_dir = here / ".venv"
     venv_py = venv_dir / scripts / exe
 
-    # (1) make the package importable, then harden stdout — FIRST, so every
-    # print below can use arrows and symbols without risking
-    # UnicodeEncodeError, which kills device threads (see console.py). That
-    # module imports only `sys`, so this is safe pre-re-exec.
+    # (1) importable, then stdout hardened FIRST, so every print below can use
+    # arrows and symbols without the UnicodeEncodeError that kills device
+    # threads (console.py). That module imports only `sys`, so it is safe here.
     parent = str(here.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
@@ -158,30 +153,27 @@ def _sample_nbytes(item) -> int:
 class MainWindow(QMainWindow):
     """Session-wide shell: clock, triggers, recorder, save target, docks, theme.
 
-    Per-instrument behaviour is NOT here — each loaded subsystem is a
-    `adapters.ModuleAdapter` that owns its own panel, worker, display tick,
-    recording sink and metadata. This window only iterates over them, which is
-    why adding an instrument is a new adapter class rather than a new branch in
-    four different methods.
+    Per-instrument behaviour is NOT here — each subsystem is an
+    `adapters.ModuleAdapter` owning its own panel, worker, display tick, sink
+    and metadata, and this window only iterates. That is why adding an
+    instrument is a new adapter class, not a new branch in four methods.
     """
 
     def __init__(self, cam_info=None, mock=False, enabled: set[str] | None = None,
                  cam_handle=None):
         super().__init__()
-        # Simulated signals for dev/testing; OFF by default, and togglable only
-        # between sessions.
+        # Simulated signals; OFF by default, togglable only between sessions.
         self._emulate = mock
         # Devices without the session clock, so nothing can be recorded. Never
-        # persisted: a launch that quietly came up unable to record would be
+        # persisted — a launch that quietly came up unable to record would be
         # worse than useless on a rig (as with the closed loop's `armed`).
         self._free_run = False
-        # Tracked rather than read off `_sync.running`: in free run the sync
-        # controller is deliberately not running, so that would answer no
-        # mid-session.
+        # Tracked, not read off `_sync.running`: free run leaves the sync
+        # controller deliberately stopped, so that would answer no mid-session.
         self._session_on = False
         self._enabled = enabled if enabled is not None else set(config.MODULES)
         self._cam_info = cam_info
-        # Opened once at startup and reused by every session's worker (see the
+        # Opened once at startup, reused by every session's worker (see the
         # pre-init note). None in emulate/no-camera runs.
         self._cam_handle = cam_handle
 
@@ -260,8 +252,8 @@ class MainWindow(QMainWindow):
         return self._make_dock(title, widget, area, accent)
 
     def on_worker_error(self, msg: str) -> None:
-        # A device thread raised. Without this the exception would escape
-        # QThread.run() and PyQt6 would abort the whole process.
+        # A device thread raised. Without this it escapes QThread.run() and
+        # PyQt6 aborts the whole process.
         sender = self.sender()
         name = type(sender).__name__ if sender is not None else "device"
         self.status(f"{name}: {msg}")
@@ -272,9 +264,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.resize(1600, 900)
         # (the app-wide stylesheet is applied once on the QApplication in main())
-        # Let docks be tabbed together and nested, so the user can drag panels
-        # into any arrangement.
-        self.setDockNestingEnabled(True)
+        self.setDockNestingEnabled(True)      # docks tabbable and nestable
 
         self._build_central()
         self._build_settings_dialog()
@@ -282,8 +272,8 @@ class MainWindow(QMainWindow):
         for m in self._modules:          # extra docks (e.g. the pupil video box)
             m.build_views()
 
-        # Initial width ≈ the classic 420 for the signals column; the user can
-        # drag from here and the layout is remembered across runs.
+        # A starting width for the signals column only — dragged from here, and
+        # the layout is remembered across runs.
         self.resizeDocks([self._plots_dock], [420], Qt.Orientation.Horizontal)
 
         self._build_status_bar()
@@ -326,8 +316,8 @@ class MainWindow(QMainWindow):
         `_build_controllers()` opens any device."""
         self._settings_dialog = SettingsDialog(self)
 
-        # Save destination is session-wide (not tied to a module), and it is the
-        # first thing to get right before recording — so it leads the tabs.
+        # Session-wide, not a module's, and the first thing to get right before
+        # recording — so it leads the tabs.
         self._save_panel = SavePanel(config.load_dataclass(SaveConfig, "saving"))
         self._save_panel.settings_changed.connect(self._save_save_settings)
         self._settings_dialog.add_panel(self._save_panel, "Save", "saving")
@@ -367,12 +357,11 @@ class MainWindow(QMainWindow):
         self._btn_run.toggled.connect(self._on_run_toggled)
 
         # Free run: devices and previews with NO session clock — what the
-        # `_toy.py` harnesses provided, minus a second copy of every panel to
-        # keep in step. It answers "is it the camera or is it my session code?"
-        # on a rig with limited time.
-        #
-        # Recording is impossible here and the button says so: with no clock
-        # started, `SessionClock.at()` raises rather than invent a timebase.
+        # `_toy.py` harnesses did, without a second copy of every panel. It
+        # answers "is it the camera or my session code?" on a rig with limited
+        # time. Recording is impossible here and the button says so: with no
+        # clock started, `SessionClock.at()` raises rather than invent a
+        # timebase.
         self._btn_free = QPushButton("Free run")
         self._btn_free.setCheckable(True)
         self._btn_free.setStyleSheet(style.toggle_btn("stage"))
@@ -408,9 +397,9 @@ class MainWindow(QMainWindow):
         self._sidebar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
 
-        # Checkable action ↔ window visibility, kept in sync both ways: closing
-        # the window (title-bar ✕ or Esc, both of which reach `finished`) also
-        # un-checks the tab, so the next click re-opens instead of doing nothing.
+        # Action ↔ visibility both ways: closing the window (✕ or Esc, both of
+        # which reach `finished`) un-checks the tab, so the next click re-opens
+        # instead of doing nothing.
         self._settings_action = QAction("⚙ Settings", self)
         self._settings_action.setCheckable(True)
         self._settings_action.setToolTip("Open the settings window")
@@ -474,8 +463,8 @@ class MainWindow(QMainWindow):
         theme = "dark" if dark else "light"
         config.set_theme(theme)
         style.apply_theme(QApplication.instance(), theme)
-        # Recolour existing pyqtgraph views (setConfigOption only affects new
-        # ones). Axis label colours don't repaint live but are correct next run.
+        # Recolour existing pyqtgraph views — setConfigOption only affects new
+        # ones. Axis labels don't repaint live but are right next run.
         bg = style.plot_colors(theme)[0]
         for v in self._pg_views:
             try:
@@ -528,8 +517,8 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             m.build_session(self._emulate)
 
-        # Free run deliberately leaves the clock unstarted: workers stamp with
-        # `perf_counter` and only the Recorder converts, which cannot exist here.
+        # Free run leaves the clock unstarted on purpose: workers stamp with
+        # `perf_counter` and only the Recorder converts — and there isn't one.
         if not self._free_run:
             self._sync.start_all()
         for m in self._modules:
@@ -548,10 +537,10 @@ class MainWindow(QMainWindow):
 
         self._disp_timer.stop()
         # Guarded per module, because teardown touches hardware. Unguarded, one
-        # raise skips every module after it — worker threads still running — and
-        # skips stop_all(), leaving the clock and trigger bus alive with the UI
-        # saying "Stopped". Through closeEvent it also skips the DCAM handle
-        # close, which is the native crash the pre-init note describes.
+        # raise skips every module after it — threads still running — and skips
+        # stop_all(), leaving the clock alive with the UI saying "Stopped".
+        # Through closeEvent it also skips the DCAM close: the native crash the
+        # pre-init note describes.
         for m in self._modules:
             try:
                 m.stop()
@@ -597,9 +586,9 @@ class MainWindow(QMainWindow):
     def _on_record_toggled(self, on: bool) -> None:
         if on:
             if self._free_run:
-                # Belt and braces: the button is disabled in free run, but a
-                # programmatic setChecked would otherwise reach the Recorder,
-                # and every put() would raise out of a worker thread.
+                # The button is disabled in free run, but a programmatic
+                # setChecked would still reach the Recorder, and every put()
+                # would raise out of a worker thread.
                 self.status("Cannot record in free run — no session clock")
                 self._btn_rec.setChecked(False)
                 return
@@ -616,8 +605,7 @@ class MainWindow(QMainWindow):
     def _start_recording(self) -> None:
         if self._save_panel is None:
             return
-        # Destination comes from the Save tab. Fail *before* any data is taken
-        # rather than after it has nowhere to go.
+        # Fail *before* any data is taken, not after it has nowhere to go.
         err = self._save_panel.writable_error()
         if err is not None:
             self.status(f"Cannot record — {err}")
@@ -625,9 +613,9 @@ class MainWindow(QMainWindow):
             return
 
         now = datetime.now()
-        # unique=True: never hand the writer a path that already holds a
-        # recording. The writer refuses to truncate one anyway (mode "x"), but
-        # failing to record is also a lost session — take the next free name.
+        # unique=True: the writer refuses to truncate an existing session
+        # (mode "x"), but failing to record is also a lost session — so take
+        # the next free name rather than raise.
         path = self._save_panel.resolve(now, unique=True)
         sc = self._save_panel.settings
         metadata = {
@@ -646,17 +634,17 @@ class MainWindow(QMainWindow):
         try:
             rec.start(path, metadata)
         except OSError as e:
-            # Opening happens on this thread, before the writer thread exists —
-            # a full disk or a name taken between resolve() and open() must
-            # un-toggle Record, not leave a half-built Recorder attached.
+            # Opening is on this thread, before the writer thread exists: a
+            # full disk, or a name taken between resolve() and open(), must
+            # un-toggle Record rather than leave a half-built Recorder.
             self.status(f"Cannot record → {path}: {e}")
             self._btn_rec.setChecked(False)
             return
         self._recorder = rec
         self._rec_path = path
 
-        # Attach per-device sinks. The Recorder stamps each sample on the shared
-        # clock, so all streams in the file share one time origin.
+        # The Recorder stamps each sample on the shared clock, so every stream
+        # in the file shares one time origin.
         for m in self._modules:
             m.attach_sink(self._recorder)
 
@@ -669,10 +657,10 @@ class MainWindow(QMainWindow):
         rec = self._recorder
         self._recorder = None
         if rec is not None:
-            # What the run actually did, not just how it was configured — a file
+            # What the run actually did, not how it was configured — a file
             # that shed samples should say so itself. A callback because the
-            # counts are final only after the drain, while the file is still
-            # open; Recorder.stop() sequences both.
+            # counts are final only after the drain and before the close, which
+            # only Recorder.stop() can sequence.
             def final() -> dict[str, Any]:
                 d: dict[str, Any] = {
                     "recorder_dropped_samples":   rec.drop_count,
@@ -723,8 +711,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_layout()
-        # A top-level settings window would outlive the main window and keep the
-        # app alive with no way back to it.
+        # A top-level settings window outlives the main one and keeps the app
+        # alive with no way back to it.
         self._settings_dialog.save_geometry()
         self._settings_dialog.close()
         if self._session_on:

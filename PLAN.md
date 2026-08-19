@@ -73,12 +73,15 @@ reason #5 took one session instead of several.
   [tests/README.md](tests/README.md): isolate user state, and include a control
   wherever the test could be vacuous.
 
-**Uncommitted: `devices/wheel/acquisition.py` — the operator flipped `_SIGN`
-−1 → +1 and it is deliberately not committed.** It makes **encoder,
-enc-timing and closed-loop fail**, because `test_encoder_derive.sim()` builds a
-falling ramp and documents the opposite convention. Don't "fix" either side
-without settling which way the rig's encoder actually ramps (§7 (u)). The
-2026-08-18 pupil work is committed; nothing is pushed.
+**The `_SIGN` flip is committed** (`25ed583`, on its own so it stays findable)
+and **encoder, enc-timing and closed-loop are red because of it** —
+`test_encoder_derive.sim()` builds a *falling* ramp and documents the opposite
+convention. **The seven encoder failures are pure sign inversions: −706.9 vs
+706.9, −1.500 vs 1.5, every magnitude exact.** So this is one convention
+disagreeing with another, not a maths error, and it is one character to fix
+**once someone says which way the rig's encoder ramps on forward rotation**
+(§7 (u)). Don't guess: a green suite with the sign backwards is worse than a
+red one. Everything else is committed; **nothing is pushed** (5 commits).
 
 **PICK UP HERE — §6 item 2, the trim/optimise pass.** It is mid-way through an
 ordered file list; that item names exactly where it stopped and what is queued
@@ -499,7 +502,8 @@ because two of them are how a future wrong-data bug gets in.
    why-not-the-obvious-thing. Drop restatements of the code, second explanations
    of the same point, and adjectives.
 
-   **Done** (commits `9131017`, `7b40bb9`, and the third of the session):
+   **Done** (`9131017`, `7b40bb9`, `383c787`, and the last of the session):
+   `main.py` `wheel/acquisition.py`
    `pupil_cam/settings.py` `console.py` `closed_loop/{__init__,settings}.py`
    `adapters/{__init__,base,dmd,closed_loop,voltage_cam}.py`
    `pupil_cam/{track_worker,rays,tracking,fits,video}.py`
@@ -515,11 +519,11 @@ because two of them are how a future wrong-data bug gets in.
    `pupil_cam/{acquisition,avi}.py`, `closed_loop/worker.py`,
    `dmd/{control,roi,roi_panel}.py`, `puffer/control.py`, the remaining tests.
 
-   **Two files are deliberately excluded, and stay excluded until told:**
-   - `devices/wheel/acquisition.py` — carries the operator's uncommitted `_SIGN`
-     flip. Trimming it would make that change impossible to commit on its own.
-   - `main.py` — the operator's active file (§0). 122 comment lines, the single
-     biggest remaining block, and untouched on purpose.
+   **The two files that were excluded are now done** (operator authorised them,
+   2026-08-18). `devices/wheel/acquisition.py` was unblocked by committing the
+   `_SIGN` flip on its own first (`25ed583`), so it stays findable instead of
+   buried in a trim; `main.py` was trimmed without restructuring — no code
+   moved, only comments.
 
    **Optimisations found so far, all behaviour-identical and all measured:**
    - `calibration._homography` called `np.linalg.svd(A)` with the default
@@ -535,10 +539,15 @@ because two of them are how a future wrong-data bug gets in.
      on a 1600×1200 synthetic eye, same radius to 2 dp.
    - `presets.readout_fps` sorted its datasheet table on every call.
 
-   **Queued, blocked on the `_SIGN` question** (§7 (u)): `_EncoderBase._report`
-   runs `np.polyfit` **per sample** — 120 Hz × an SVD-backed lstsq over ~60
-   points. A closed-form slope (`cov(t,p)/var(t)`) is ~10× cheaper and exact.
-   Cannot be done without touching the excluded file above.
+   - `_EncoderBase._report` ran `np.polyfit` **per sample** — an SVD behind a
+     Vandermonde, 120×/s, to fit a straight line. Now the closed-form slope
+     `cov(t,p)/var(t)`, plus `searchsorted` for the window (the buffer is
+     time-ordered, so it is a contiguous slice, not a mask). **49.3 → 31.0 µs
+     per sample**, speed and distance identical to 6 dp. Honest caveat: the
+     wheel was never a bottleneck at 120 Hz — the value is that a straight-line
+     fit no longer goes through an SVD. `np.fromiter` over the deque is now the
+     cost, and fixing *that* needs a preallocated ring, which is not worth the
+     complexity in load-bearing code.
 
    **How to verify anything in this item:** `tests/run_all.py` **and**
    `devices/pupil_cam/_test_tracking.py` — the second is what covers the pupil
@@ -697,12 +706,23 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 - **Nothing changed behaviour.** Every optimisation was checked against both
   suites — `run_all.py` at 642 checks and `_test_tracking.py` 15/15 — and the
   two benchmarks report identical fits, not merely passing ones.
-- **Two files were left alone on purpose and both are named in §6 item 2:**
-  `wheel/acquisition.py` (holds the uncommitted `_SIGN` flip — trimming it would
-  make that impossible to commit alone) and `main.py` (the operator's file).
-  The wheel one also hides a live optimisation: `_report` runs `np.polyfit`
-  **per sample** at 120 Hz where a closed-form slope is exact and ~10× cheaper.
-- Commits `9131017`, `7b40bb9` and this session's third. Still nothing pushed.
+- **`main.py` and `wheel/acquisition.py` were held back, then done** on the
+  operator's say-so. The wheel one was unblocked by committing their `_SIGN`
+  flip **on its own first** (`25ed583`) — a hardware fact deserves its own
+  commit, not a burial inside a comment trim. `main.py` was trimmed with no code
+  moved, since §0 asks for no restructuring there.
+- **`_EncoderBase._report` fitted a straight line with `np.polyfit` — an SVD
+  behind a Vandermonde — once per SAMPLE at 120 Hz.** Closed-form slope plus a
+  `searchsorted` window: **49.3 → 31.0 µs/sample**, speed and distance identical
+  to 6 dp. Small in absolute terms, and said so in §6 item 2 rather than dressed
+  up: the wheel was never a bottleneck.
+- **The `_SIGN` failures got sharper, which is progress even though they are
+  still red.** All seven encoder checks fail as *pure sign inversions* with
+  exact magnitudes (−706.9 vs 706.9). That rules out a maths error on either
+  side, including in the `_report` rewrite above, and reduces the open question
+  to a single fact about the rig's wiring.
+- Commits `9131017`, `7b40bb9`, `383c787`, `25ed583` and this session's last.
+  **Nothing pushed.**
 
 ### 2026-08-18 (u) — the pupil tracker was locking the eyelid; a real bug, not a setting
 - **The tracker never worked on a real eye, and no parameter could have fixed
