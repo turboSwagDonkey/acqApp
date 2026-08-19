@@ -289,10 +289,11 @@ class MainWindow(QMainWindow):
         """Track a pyqtgraph view so the theme toggle can recolour it."""
         self._pg_views.append(view)
 
-    def set_expected_rate(self, mbps: float) -> None:
-        """Feed the acquisition data rate to the Save tab's capacity estimate."""
+    def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
+        """Feed the acquisition rate — and what the write path sustains — to the
+        Save tab's capacity estimate. The disk fills at the smaller of the two."""
         if self._save_panel is not None:
-            self._save_panel.set_expected_rate(mbps)
+            self._save_panel.set_expected_rate(mbps, writer_mbps)
 
     def add_dock(self, title: str, widget: QWidget, area: "Qt.DockWidgetArea",
                  accent: str = "sync") -> QDockWidget:

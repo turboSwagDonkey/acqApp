@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **661 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **663 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **661 checks, 22 files, ~48 s** (three currently red — see the
+the contract: **663 checks, 22 files, ~48 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -719,6 +719,41 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (ab) — looked at the UI, and it was telling the operator wrong
+- **Rendered the real window and every settings tab to PNG and read them.**
+  `QT_QPA_PLATFORM=offscreen` plus `QT_QPA_FONTDIR=C:/Windows/Fonts` (without the
+  second, text draws as boxes). Worth repeating before any UI change — none of
+  what follows was visible from the source.
+- **The Save tab called a frame-dropping configuration healthy.** It read
+  "936 GB free — about 8.0 min at 2002 MB/s" **in green**, for a full-frame bin-1
+  setup that can only write half its frames. Two errors in one line: the disk
+  fills at what is *written* (~1000 MB/s), so the real figure is 16 min, and the
+  colour said "fine". Now amber, with the shortfall named and a pointer to the
+  camera tab.
+- **The camera tab said nothing about it at all.** The single most consequential
+  fact about a configuration — that recording it loses ~50 % of frames — existed
+  only in a console print (`_warn_data_rate`). There is now a **Recording** row
+  beside Frame rate, red when the rate exceeds the writer, naming the remedy
+  (2×2 binning, smaller ROI, or the fps to cap at).
+- **`WRITER_MBPS` moved to `presets.py`** so the worker and the panel cannot
+  disagree, and reaches the Save tab through a widened
+  `ModuleHost.set_expected_rate(mbps, writer_mbps)` — `saving/` must not import
+  `devices/`, and `test_structure` enforces that.
+- **`devices/pupil_cam/panel.py` was doubly-encoded**, so the operator saw
+  `8000 Ãµs` and `Sample videoâ€¦` in the pupil tab. Residue of §7 (u)'s patch
+  script: 26 damaged runs, one file, and the whole file's em-dashes and box
+  characters with them. The repair is exact and self-checking —
+  `encode('cp1252').decode('utf-8')` inverts it, and correct text cannot survive
+  that round trip, so only damaged runs were touched.
+  **`test_console_safety` now scans every source file for it**, with a control.
+  That test already owned the other half of this problem (a *print* dying on
+  cp1252); this is the same accident committed to disk instead.
+- **Click-to-seed is now named in the checkbox label**, not just its tooltip. On
+  this rig the auto-seed *cannot* work — `coarse_seed` bails when the dark mask
+  exceeds half the sensor — so seeding by hand is the operating procedure, and
+  "Show search overlay" was the only route to it.
+- Suite **661 → 663**.
 
 ### 2026-08-18 (aa) — boot: 13.4 s → 8.1 s, and the Devices window 8.6 s → 0.3 s
 - **Imports are not the problem and never were: 350 ms for all of

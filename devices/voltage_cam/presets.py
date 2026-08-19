@@ -143,6 +143,13 @@ def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
             return math.exp(math.log(f0) + w * (math.log(f1) - math.log(f0)))
     return tbl[-1][1]
 
+# Sustained END-TO-END write rate, MB/s: worker → Recorder → HDF5Writer → NVMe,
+# measured 2026-08-17 over a 10 s full-frame run with frames counted off the
+# closed file. NOT a disk benchmark (that said 1165) — this is the path. It
+# lives here, with the other rig facts, because both the acquisition worker and
+# the settings panel have to agree about what can be recorded.
+WRITER_MBPS: float = 1000.0
+
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1
 

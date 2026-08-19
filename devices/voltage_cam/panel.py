@@ -21,6 +21,7 @@ from .presets import (
     PRESET_KEYS, DEFAULT_PRESET,
     BINNING_OPTIONS, DEFAULT_BINNING,
     TRIGGER_MODES, DEFAULT_TRIGGER,
+    WRITER_MBPS,
 )
 
 
@@ -85,6 +86,15 @@ class SettingsPanel(QWidget):
         self._lbl_rate = QLabel()
         lay.addRow("Frame rate:", self._lbl_rate)
 
+        # Whether a RECORDING of this configuration can actually be written. The
+        # camera happily offers ~2200 MB/s at full frame and the writer sustains
+        # ~1000, so a bin-1 session silently keeps about half its frames — the
+        # single most consequential fact about a configuration, and until now it
+        # was only ever printed to a console the operator may never see.
+        self._lbl_rec = QLabel()
+        self._lbl_rec.setWordWrap(True)
+        lay.addRow("Recording:", self._lbl_rec)
+
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
@@ -98,6 +108,7 @@ class SettingsPanel(QWidget):
         self._refresh_rate()
 
     def _refresh_rate(self) -> None:
+        self._refresh_recordability()
         # Prefer the camera's own measured rate once a capture is running — it
         # can't disagree with the real link the way the datasheet estimate can.
         if self._measured is not None:
@@ -118,6 +129,31 @@ class SettingsPanel(QWidget):
             self._lbl_rate.setText(
                 f"{cfg.expected_fps:.1f} fps — at {link} readout limit")
             self._lbl_rate.setStyleSheet("color:#2e7d32;")
+
+    def _refresh_recordability(self) -> None:
+        """Say whether a recording of this configuration fits the writer.
+
+        `WRITER_MBPS` is the measured end-to-end rate (worker → Recorder →
+        HDF5Writer → NVMe), not a disk benchmark — see OrcaFireWorker. Binning
+        is the lever: on this camera it cuts bytes, not time, so 2×2 keeps the
+        full frame rate at a quarter of the data.
+        """
+        cfg = self.get_config()
+        fps = self._measured[0] if self._measured is not None else cfg.expected_fps
+        mbps = cfg.frame_bytes * fps / (1 << 20)
+        if mbps <= WRITER_MBPS:
+            self._lbl_rec.setText(
+                f"{mbps:.0f} MB/s — fits the writer (~{WRITER_MBPS:.0f} MB/s)")
+            self._lbl_rec.setStyleSheet("color:#2e7d32;")
+            return
+        keep = WRITER_MBPS / mbps
+        cap = WRITER_MBPS / (cfg.frame_bytes / (1 << 20))
+        self._lbl_rec.setText(
+            f"⚠ {mbps:.0f} MB/s — only ~{100 * keep:.0f}% of frames can be "
+            f"written (~{WRITER_MBPS:.0f} MB/s). Live view is unaffected. "
+            f"Use 2×2 binning, a smaller ROI, or cap the rate near "
+            f"{cap:.0f} fps (exposure ≥ {1e6 / cap:.0f} µs).")
+        self._lbl_rec.setStyleSheet("color:#c62828; font-weight:bold;")
 
     # ── Public API ────────────────────────────────────────────────────────────
 

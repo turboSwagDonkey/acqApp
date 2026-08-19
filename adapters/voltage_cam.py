@@ -14,7 +14,7 @@ from acqApp.acq.devices import CameraWorker
 from acqApp.adapters.base import (DISP_DS, LEVELS_EVERY, PLOT_HISTORY,
                                  ModuleAdapter, _image_view, _plot)
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
-from acqApp.devices.voltage_cam.presets import AcqConfig, DEFAULT_PRESET, PRESET_KEYS
+from acqApp.devices.voltage_cam.presets import AcqConfig, DEFAULT_PRESET, PRESET_KEYS, WRITER_MBPS
 from acqApp.devices.voltage_cam.panel import SettingsPanel as CamSettingsPanel
 
 
@@ -71,9 +71,11 @@ class VoltageCamModule(ModuleAdapter):
         config.save_settings("voltage_cam", asdict(self.panel.get_config()))
 
     def _push_rate(self, *_a) -> None:
-        """Feed the acquisition data rate to the Save tab's capacity estimate."""
+        """Feed the acquisition rate, and the writer's ceiling, to the Save tab.
+        The camera is the only module that knows both."""
         cfg = self.panel.get_config()
-        self.win.set_expected_rate(cfg.frame_bytes * cfg.expected_fps / (1 << 20))
+        self.win.set_expected_rate(
+            cfg.frame_bytes * cfg.expected_fps / (1 << 20), WRITER_MBPS)
 
     def _on_exposure(self, us: float) -> None:
         if self.worker is not None:

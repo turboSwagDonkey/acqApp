@@ -1,4 +1,4 @@
-"""Pupil camera â€” the Qt settings panel. The model is in `settings.py`."""
+"""Pupil camera — the Qt settings panel. The model is in `settings.py`."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -34,14 +34,14 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # â”€â”€ Camera â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Camera ──────────────────────────────────────────────────────────────
         cam = QGroupBox("Camera")
         cl = QFormLayout(cam)
         cl.setSpacing(4)
         self._spn_exp = QDoubleSpinBox()
         self._spn_exp.setRange(50.0, 100_000.0)
         self._spn_exp.setDecimals(0)
-        self._spn_exp.setSuffix(" Âµs")
+        self._spn_exp.setSuffix(" µs")
         self._spn_exp.setValue(self._s.exposure_us)
         self._spn_exp.valueChanged.connect(self.exposure_changed)
         cl.addRow("Exposure:", self._spn_exp)
@@ -52,17 +52,17 @@ class SettingsPanel(QWidget):
         self._spn_fps.setValue(self._s.fps)
         cl.addRow("Frame rate:", self._spn_fps)
 
-        # â”€â”€ Frame source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Frame source ────────────────────────────────────────────────────
         # Replaying a clip is how the tracker gets tuned against a real eye
         # without an animal: the mock's clean disc cannot show whether a
         # setting survives fur, lashes and the glint.
         self._lbl_vid = QLabel()
         self._lbl_vid.setWordWrap(True)
-        btn_vid = QPushButton("Sample videoâ€¦")
+        btn_vid = QPushButton("Sample video…")
         btn_vid.setToolTip(
             "Replay a recorded clip instead of the camera, to tune tracking on "
             "real footage.\nUncompressed AVI only (IYUV/I420/YV12, Y800 or "
-            "BI_RGB) â€” this venv has no video decoder.\n"
+            "BI_RGB) — this venv has no video decoder.\n"
             "Takes effect on the next Live view; a session recorded from a clip "
             "is flagged in the file's metadata.")
         btn_vid.clicked.connect(self._pick_video)
@@ -78,7 +78,7 @@ class SettingsPanel(QWidget):
         self._show_video()
         root.addWidget(cam)
 
-        # â”€â”€ Pupil tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Pupil tracking ──────────────────────────────────────────────────────
         trk = QGroupBox("Pupil tracking")
         tl = QFormLayout(trk)
         tl.setSpacing(4)
@@ -99,7 +99,7 @@ class SettingsPanel(QWidget):
         self._spn_max.setValue(self._s.max_r)
         tl.addRow("Max radius:", self._spn_max)
 
-        # â”€â”€ annulus edge search (the IMAQ Find Circular Edge controls) â”€â”€
+        # ── annulus edge search (the IMAQ Find Circular Edge controls) ──
         self._spn_rays = QSpinBox()
         self._spn_rays.setRange(8, 360)
         self._spn_rays.setValue(self._s.n_rays)
@@ -113,9 +113,9 @@ class SettingsPanel(QWidget):
         self._cmb_pol.setCurrentText(self._s.polarity)
         self._cmb_pol.setToolTip(
             "Edge polarity scanning outward.\n"
-            "rising  â€” dark pupil on a brighter iris (the usual IR setup)\n"
-            "falling â€” bright pupil (retro-illumination)\n"
-            "any     â€” strongest transition either way")
+            "rising  — dark pupil on a brighter iris (the usual IR setup)\n"
+            "falling — bright pupil (retro-illumination)\n"
+            "any     — strongest transition either way")
         tl.addRow("Edge polarity:", self._cmb_pol)
 
         self._spn_str = QDoubleSpinBox()
@@ -134,10 +134,10 @@ class SettingsPanel(QWidget):
         self._cmb_edge.setCurrentText(self._s.edge_select)
         self._cmb_edge.setToolTip(
             "Which edge along each ray is taken as the pupil boundary.\n"
-            "first     â€” the innermost sustained edge. Correct by construction: "
+            "first     — the innermost sustained edge. Correct by construction: "
             "scanning outward from inside the pupil, its rim is what you meet "
             "first.\n"
-            "strongest â€” the largest gradient on the ray. Only safe when the "
+            "strongest — the largest gradient on the ray. Only safe when the "
             "pupil edge is the highest-contrast thing around; on real IR "
             "footage the eyelid/fur margin is a ~200 grey-level step against "
             "the pupil's ~30, so the fit lands on the eyelid.")
@@ -164,8 +164,8 @@ class SettingsPanel(QWidget):
         self._spn_conf.setToolTip(
             "Confidence below which the frame counts as lost.\n"
             "confidence = (rays kept / rays cast) x exp(-rms / 2). Only about "
-            "half the rays ever find an edge on a real eye â€” lashes, lids, the "
-            "glint â€” so a good real fit peaks near 0.28 and the old 0.25 "
+            "half the rays ever find an edge on a real eye — lashes, lids, the "
+            "glint — so a good real fit peaks near 0.28 and the old 0.25 "
             "discarded frames whose rms was 1.3 px. Raise it towards 0.3 for a "
             "clean synthetic disc.")
         tl.addRow("Min confidence:", self._spn_conf)
@@ -215,18 +215,26 @@ class SettingsPanel(QWidget):
             "moved takes too long to be found again.")
         tl.addRow("Re-seed after:", self._spn_reseed)
 
-        self._chk_search = QCheckBox("Show search overlay")
+        # Naming click-to-seed in the LABEL, not just the tooltip: on this rig
+        # the auto-seed cannot work — at threshold 60 the dark mask exceeds half
+        # the sensor and `coarse_seed` bails — so seeding by hand IS the
+        # operating procedure, and this checkbox is the only way to reach it.
+        self._chk_search = QCheckBox("Show search overlay — click the preview "
+                                     "to place the pupil")
         self._chk_search.setChecked(self._s.show_search)
         self._chk_search.setToolTip(
-            "Draw the annulus the rays sweep and every edge point they found â€” "
-            "green kept, red rejected as an outlier â€” over the pupil preview.\n"
+            "Draw the annulus the rays sweep and every edge point they found — "
+            "green kept, red rejected as an outlier — over the pupil preview.\n"
             "A wrong radius usually shows as rays latching onto an eyelash or a "
             "glint, which the fitted circle alone cannot tell you.\n"
-            "While it is on, clicking the preview places the annulus by hand.")
+            "While it is on, clicking the preview places the annulus by hand. "
+            "On this rig's framing that is the normal way to start tracking: "
+            "the automatic seed gives up when the dark region covers more than "
+            "half the frame.")
         tl.addRow(self._chk_search)
         root.addWidget(trk)
 
-        # â”€â”€ Illumination â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Illumination ────────────────────────────────────────────────────────
         led = QGroupBox("Illumination")
         ll = QVBoxLayout(led)
         self._chk_led = QCheckBox("Eye-tracking LED")
@@ -247,7 +255,7 @@ class SettingsPanel(QWidget):
     def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)
 
-    # â”€â”€ frame source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── frame source ─────────────────────────────────────────────────────────
     def _pick_video(self) -> None:
         start = str(Path(self._video).parent) if self._video else ""
         path, _ = QFileDialog.getOpenFileName(
@@ -268,7 +276,7 @@ class SettingsPanel(QWidget):
 
     @property
     def track_params(self) -> tuple[int, int, int]:
-        """(threshold, min_r, max_r) for tracking.detect â€” cheap per-frame read."""
+        """(threshold, min_r, max_r) for tracking.detect — cheap per-frame read."""
         return (self._spn_thr.value(), self._spn_min.value(), self._spn_max.value())
 
     @property

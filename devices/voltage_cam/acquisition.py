@@ -18,7 +18,7 @@ import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
 from acqApp.acq.worker import PullWorker
-from .presets import AcqConfig
+from .presets import AcqConfig, WRITER_MBPS
 
 # UI trigger label → pylablib's high-level trigger mode.
 _TRIGGER_MODE: dict[str, str] = {
@@ -52,11 +52,8 @@ class OrcaFireWorker(PullWorker):
     _BUFFER_BYTES   = 768 << 20
     _BUFFER_MIN     = 16
     _BUFFER_MAX     = 4096
-    # Sustained end-to-end write rate, to warn before a recording that cannot
-    # physically be written. Measured 2026-08-17 through the real path (worker →
-    # Recorder → HDF5Writer → D:), NOT the bench: 1004 MB/s over a 10 s full-frame
-    # run against 1165 benched. The old 1200 advised a 60 fps cap; the truth is 48.
-    _WRITER_MBPS    = 1000.0
+    # One number, shared with the settings panel — see presets.WRITER_MBPS.
+    _WRITER_MBPS    = WRITER_MBPS
 
     def __init__(self, device_index: int = 0, config: AcqConfig | None = None,
                  cam=None):

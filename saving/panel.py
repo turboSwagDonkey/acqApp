@@ -28,6 +28,7 @@ class SavePanel(QWidget):
         if not self._cfg.folder.strip():
             self._cfg.folder = str(default_folder())
         self._rate_mbps: float = 0.0        # set by the owner from the cam config
+        self._writer_mbps: float = 0.0      # …and what the writer sustains
         self._build()
         self._refresh()
 
@@ -163,9 +164,16 @@ class SavePanel(QWidget):
                 unique: bool = False) -> Path:
         return self._cfg.resolve(when, unique=unique)
 
-    def set_expected_rate(self, mbps: float) -> None:
-        """Data rate of the current acquisition config, for the capacity estimate."""
+    def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
+        """Data rate of the current acquisition config, for the capacity estimate.
+
+        `writer_mbps` is what the write path can actually sustain. Passed in
+        rather than imported: it is a camera-side measurement, and `saving/`
+        does not depend on `devices/` (see docs/STRUCTURE.md). 0 means unknown,
+        and the estimate then assumes everything offered is written.
+        """
         self._rate_mbps = max(0.0, float(mbps))
+        self._writer_mbps = max(0.0, float(writer_mbps))
         self._refresh()
 
     def writable_error(self) -> str | None:
@@ -201,9 +209,20 @@ class SavePanel(QWidget):
         txt = f"{_gb(free)} free"
         warn = free < (10 << 30)          # under 10 GB is not a usable target
         if self._rate_mbps > 0:
-            secs = free / (self._rate_mbps * (1 << 20))
-            txt += (f" — about {secs / 60:.1f} min at "
-                    f"{self._rate_mbps:.0f} MB/s")
+            # The disk fills at what is WRITTEN, not what the camera offers, and
+            # those differ: full frame at bin 1 acquires ~2200 MB/s against a
+            # writer that sustains ~1000. Estimating from the offered rate both
+            # halved the time and — worse — showed a configuration that sheds
+            # half its frames in the same green as a healthy one.
+            cap = self._writer_mbps or self._rate_mbps
+            written = min(self._rate_mbps, cap)
+            secs = free / (written * (1 << 20))
+            txt += f" — about {secs / 60:.1f} min at {written:.0f} MB/s"
+            if self._rate_mbps > cap:
+                txt += (f"; the camera offers {self._rate_mbps:.0f} MB/s, so "
+                        f"~{100 * (1 - written / self._rate_mbps):.0f}% of "
+                        f"frames cannot be written — see the Voltage cam tab")
+                warn = True
             warn = warn or secs < 120     # under 2 minutes of headroom
         self._lbl_space.setText(txt)
         self._lbl_space.setStyleSheet(

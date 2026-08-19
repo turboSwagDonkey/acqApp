@@ -112,6 +112,49 @@ def main() -> int:
     r.check(chars.returncode == 0 and "DONE" in chars.stdout,
             "every offending character prints without raising")
 
+    # ── the other half of the same problem: text written THROUGH cp1252 ──────
+    # The console guard stops a print from raising. It cannot stop a file being
+    # SAVED through the wrong codec, which is how `devices/pupil_cam/panel.py`
+    # came to render its exposure suffix and its "Sample video" button as
+    # mojibake — visible to the operator in the pupil tab (§7 (u) and (ab)).
+    # Mojibake is UTF-8 bytes once decoded as cp1252 and re-encoded, so the
+    # inverse round trip identifies it exactly: correct text cannot survive
+    # encode('cp1252').decode('utf-8').
+    #
+    # The damaged forms below are written as escapes on purpose — spelling them
+    # literally would make this file fail its own check.
+    import re
+    runs = re.compile(r"[^\x00-\x7f]+")
+    damaged: list[str] = []
+    scanned = 0
+    for path in sorted(APP_DIR.rglob("*.py")):
+        if ".venv" in path.parts or "__pycache__" in path.parts:
+            continue
+        scanned += 1
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            damaged.append(f"{path.name}: not valid UTF-8")
+            continue
+        for m in runs.finditer(text):
+            try:
+                back = m.group().encode("cp1252").decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue                       # correct text — cannot round-trip
+            if back != m.group():
+                ln = text[:m.start()].count("\n") + 1
+                damaged.append(f"{path.name}:{ln} {m.group()[:16]!r} "
+                               f"should be {back[:16]!r}")
+    r.check(not damaged,
+            f"no source file is doubly-encoded ({scanned} scanned)"
+            + ("" if not damaged else f" — {damaged[:3]}"))
+    # CONTROL: the detector must actually fire on the real thing, or the check
+    # above passes by being blind.
+    micro = chr(0xB5)                       # µ
+    broken = chr(0xC3 - 1) + micro + "s"    # what "µs" turns into: U+00C2 U+00B5
+    r.check(broken.encode("cp1252").decode("utf-8") == micro + "s",
+            "control: the round trip really does identify mojibake")
+
     return r.finish()
 
 
