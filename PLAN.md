@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-18 |
+| **Last updated** | 2026-08-19 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **663 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0): the pupil tracker now works on real footage and is **3.5× faster**, the DMD registration and ROI editor exist offline and no longer need **11.4 GB** to run at camera scale, **boot 13.4 s → 8.1 s**, the config file survives a crash mid-write, and the UI stopped calling a frame-dropping setup healthy. Suite **670 checks, 22 files** — **3 red, all one unanswered question** (`_SIGN`). §5b **A3 triggered** and is the one open architecture item. Next: §6's top three. |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **663 checks, 22 files, ~48 s** (three currently red — see the
+the contract: **670 checks, 22 files, ~48 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -81,12 +81,22 @@ convention. **The seven encoder failures are pure sign inversions: −706.9 vs
 disagreeing with another, not a maths error, and it is one character to fix
 **once someone says which way the rig's encoder ramps on forward rotation**
 (§7 (u)). Don't guess: a green suite with the sign backwards is worse than a
-red one. Everything else is committed; **nothing is pushed** (5 commits).
+red one. Everything else is committed **and pushed** — the working tree is clean.
 
-**PICK UP HERE — §6 item 2, the trim/optimise pass.** It is mid-way through an
-ordered file list; that item names exactly where it stopped and what is queued
-behind it. §6 item 1 (DMD ROI photostimulation) is the next *feature*, and it
-needs the rig.
+**PICK UP HERE — §6's "THE NEXT THREE THINGS".** In order: settle `_SIGN` (one
+question for the operator, three red tests), the DMD ROI work at the rig (asks
+first — it projects light), and finish the trim/optimise pass (§6 item 5 names
+the file it stopped at).
+
+**A method that earned its keep over 2026-08-18/19 and is worth reusing.** Every
+real defect found in those sessions was in code that had only ever run at *toy*
+scale, and every one was found by **driving the real workload and measuring**,
+not by reading. Profiling the tracker against the rig clip found a 2× win and
+pointed at an AVI bug; sizing the DMD calibration at the actual camera found
+11.4 GB where 1.6 was needed; **rendering the UI offscreen and looking at it**
+found the Save tab calling a frame-dropping setup healthy. Do that to the next
+feature before trusting it. Rendering recipe: `QT_QPA_PLATFORM=offscreen` plus
+`QT_QPA_FONTDIR=C:/Windows/Fonts` — without the second, all text draws as boxes.
 
 **§6 item 1: DMD ROI photostimulation.** Image with the DMD
 all-on, draw ROIs on that frame, project the mask back. Read that item first:
@@ -398,6 +408,23 @@ because two of them are how a future wrong-data bug gets in.
 
 ## 6. Next actions
 
+**THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
+kept for its reasoning, not a queue.
+
+1. **Settle `_SIGN`** — one fact, one character, three red tests. Which way does
+   the encoder voltage ramp when the wheel turns *forwards*? Nothing else in the
+   suite is red, and nobody should guess: the sign decides whether recorded
+   distance is positive. If the operator's `+1.0` is right, change `sim()`'s
+   `(-rev_s * t)` in `test_encoder_derive.py` and `MockEncoderWorker`'s
+   descending sawtooth with it. Detail in §0 and §7 (u); the failures are pure
+   sign inversions with exact magnitudes, so the maths on both sides is right.
+2. **DMD ROI photostimulation, the rig half** (item 4 below). The offline half
+   is built, verified and now sized for a real camera. What is left needs
+   someone in front of the hardware and **projects light**, so it is an ask:
+   run the sweep, check the fields overlap, wire `RoiEditor` into the adapter.
+3. **Finish the trim/optimise pass** (item 5 below) — it carries its own ordered
+   file list and stops where it stops.
+
 **Closed — kept for the reasoning, not the tick:**
 
 0. ~~Group the root modules.~~ **Done 2026-08-14** — option (a), plus the
@@ -431,7 +458,7 @@ because two of them are how a future wrong-data bug gets in.
 
 **Open, in order:**
 
-1. **DMD ROI photostimulation: image → draw ROIs → project the mask.** The
+4. **DMD ROI photostimulation: image → draw ROIs → project the mask.** The
    operator's stated next big addition (2026-08-18). The workflow is: put the
    DMD in **all-on** (full mirror) mode, grab a frame with the imaging camera,
    **draw ROIs on that frame**, turn them into a DMD mask, and re-image with
@@ -492,7 +519,7 @@ because two of them are how a future wrong-data bug gets in.
    - Still open for the operator: whether ROIs persist across sessions, and
      whether a mask is one static pattern or a sequence.
 
-2. **Comment-verbosity trim + optimisation pass** (operator, 2026-08-18).
+5. **Comment-verbosity trim + optimisation pass** (operator, 2026-08-18).
    Two jobs in one sweep over the tree, worst-first by comment+docstring ratio.
    **Started; resume from the list below.** Tree total **23.2 % → 22.5 %**
    (4107 → 3951 of ~17.6k lines) with no fact lost — only prose.
@@ -591,7 +618,7 @@ because two of them are how a future wrong-data bug gets in.
      (92 % of the link, 1004 MB/s measured), so neither is an optimisation
      target — §6 item 4 is about fitting *within* the writer, not speeding it.
 
-3. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
+6. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
    found a real bug, not a tuning problem.** See §7 (u). Kept because the three
    findings underneath it are the durable part:
    - **No decoder was needed after all.** The rig's clip
@@ -614,7 +641,7 @@ because two of them are how a future wrong-data bug gets in.
      overlay** → click) is the operating procedure, not a fallback.
    - `../rig_captures/` holds **encoder CSVs only** — no pupil footage there.
 
-4. **Make full-frame recording fit the writer.** This is the real constraint and
+7. **Make full-frame recording fit the writer.** This is the real constraint and
    it is now the only one: ~2223 MB/s acquired against ~1165–1200 written, so
    about half the frames cannot be stored. The levers, and the one measurement
    that picks between them:
@@ -648,7 +675,7 @@ because two of them are how a future wrong-data bug gets in.
      `test_readout_fps` hold that line apart, one of them the control that the
      table still carries what the dropdown does not.
 
-5. **Project through the full app.** *Half of this closed on 2026-08-12, on
+8. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
    **app's** path (the adapter and panel, not just the standalone script of
    §5 #5): the real ALP opens as `ALP-4.2 1024x768` with the API resolved from
@@ -665,7 +692,7 @@ because two of them are how a future wrong-data bug gets in.
    overrides scale, rotation and offset** by design, so a sweep with `fit` on
    measures nothing. The panel is honest about the second: it greys those
    spinboxes out.
-6. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
+9. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
    never seen an animal, and the one number it needs cannot be guessed here:
    **what wheel speed counts as "running"** for this rig's V/rev and diameter.
    The tab is designed for finding it — disarmed, the rule still evaluates and
@@ -673,7 +700,7 @@ because two of them are how a future wrong-data bug gets in.
    against a live animal without actuating anything. Arm only after that reads
    sensibly. Start with the puffer (a puff is recoverable; a stimulus train
    mid-experiment is not), `retrigger` off, and a `max_fires` ceiling.
-7. **Decide which wheel speed a rule should watch.** The panel offers both and
+10. **Decide which wheel speed a rule should watch.** The panel offers both and
    the file records the choice, but the default is `wheel_speed_live` on the
    grounds that a closed loop should act while the animal runs. Measured this
    session: the recorded speed crosses the same threshold **1.15 s** after the
@@ -719,6 +746,29 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-19 (ac) — the three UI changes the operator asked for
+- **Record is now the largest control on the status bar**, red while armed, and
+  reads `● Record` / `■ Stop rec`. It was the same size as Emulate — the one
+  button whose wrong state costs an experiment, sized like a dev toggle.
+  `style.record_btn()`.
+- **A live recording readout**: `● REC  m:ss   N.NN GB`, green, turning red with
+  `⚠ N samples shed` the moment the ring or the writer loses anything. **The
+  size is read off the file on disk**, not from a running total of what was
+  enqueued — those two differ exactly when it matters, and the number worth
+  trusting is the one that survived. It is a *permanent* status-bar widget
+  because `showMessage` is transient: the tick overwrites it and any module
+  calling `status()` wipes it, so a recording indicator could not live there.
+- **The pupil tab is 12 rows → 4.** Threshold, both radii and the overlay stay;
+  the ten tuning controls moved into a collapsible **Advanced tracking** group.
+  It **auto-expands, and names what changed in its title**, whenever any of them
+  differs from the shipped default — a tuned value hidden behind a closed group
+  would make an unusual rig look stock. Seven checks, including that the split
+  is by *parentage* (the right widgets really are inside the collapsible half)
+  and that a collapsed group still reports its settings.
+- Suite **663 → 670**. Verified by re-rendering the window and the status bar
+  offscreen and reading them, as in (ab) — that is now the way to check UI work
+  here, and it costs about a minute.
 
 ### 2026-08-18 (ab) — looked at the UI, and it was telling the operator wrong
 - **Rendered the real window and every settings tab to PNG and read them.**

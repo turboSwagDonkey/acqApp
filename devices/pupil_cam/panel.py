@@ -99,6 +99,25 @@ class SettingsPanel(QWidget):
         self._spn_max.setValue(self._s.max_r)
         tl.addRow("Max radius:", self._spn_max)
 
+        # Everything below is TUNING. On a working rig the operator touches
+        # threshold, the two radii and the overlay; these ten were found once
+        # against real footage and then left alone. Collapsed by default so
+        # the tab shows the four controls that are actually used — and
+        # auto-expanded below if any of them differs from its default, so a
+        # non-standard setting can never hide behind a closed group.
+        self._adv = QGroupBox("Advanced tracking")
+        self._adv.setCheckable(True)
+        self._adv.setToolTip("Edge search, fitting and temporal smoothing. "
+                             "Defaults are tuned to this rig's IR footage.")
+        _advbox = QVBoxLayout(self._adv)
+        _advbox.setContentsMargins(6, 4, 6, 4)
+        self._adv_host = QWidget()
+        al = QFormLayout(self._adv_host)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(4)
+        _advbox.addWidget(self._adv_host)
+        self._adv.toggled.connect(self._adv_host.setVisible)
+
         # ── annulus edge search (the IMAQ Find Circular Edge controls) ──
         self._spn_rays = QSpinBox()
         self._spn_rays.setRange(8, 360)
@@ -106,7 +125,7 @@ class SettingsPanel(QWidget):
         self._spn_rays.setToolTip(
             "Search lines cast outward through the annulus. More rays give a "
             "steadier fit and cost time roughly linearly.")
-        tl.addRow("Search lines:", self._spn_rays)
+        al.addRow("Search lines:", self._spn_rays)
 
         self._cmb_pol = QComboBox()
         self._cmb_pol.addItems(["rising", "falling", "any"])
@@ -116,7 +135,7 @@ class SettingsPanel(QWidget):
             "rising  — dark pupil on a brighter iris (the usual IR setup)\n"
             "falling — bright pupil (retro-illumination)\n"
             "any     — strongest transition either way")
-        tl.addRow("Edge polarity:", self._cmb_pol)
+        al.addRow("Edge polarity:", self._cmb_pol)
 
         self._spn_str = QDoubleSpinBox()
         self._spn_str.setRange(0.0, 100.0)
@@ -127,7 +146,7 @@ class SettingsPanel(QWidget):
             "Minimum intensity gradient (grey levels per px) for a ray to "
             "count as having found the pupil edge. Raise it if eyelashes or "
             "noise are being accepted; lower it if the pupil is low-contrast.")
-        tl.addRow("Min edge strength:", self._spn_str)
+        al.addRow("Min edge strength:", self._spn_str)
 
         self._cmb_edge = QComboBox()
         self._cmb_edge.addItems(["first", "strongest"])
@@ -141,7 +160,7 @@ class SettingsPanel(QWidget):
             "pupil edge is the highest-contrast thing around; on real IR "
             "footage the eyelid/fur margin is a ~200 grey-level step against "
             "the pupil's ~30, so the fit lands on the eyelid.")
-        tl.addRow("Edge choice:", self._cmb_edge)
+        al.addRow("Edge choice:", self._cmb_edge)
 
         self._spn_sigma = QDoubleSpinBox()
         self._spn_sigma.setRange(0.0, 50.0)
@@ -154,7 +173,7 @@ class SettingsPanel(QWidget):
             "if fur or lash texture is being taken for the pupil edge, lower it "
             "if a small pupil's edge is being smoothed away. 1.5 tracks the "
             "rig's full-frame footage as it stands.")
-        tl.addRow("Edge smoothing:", self._spn_sigma)
+        al.addRow("Edge smoothing:", self._spn_sigma)
 
         self._spn_conf = QDoubleSpinBox()
         self._spn_conf.setRange(0.0, 1.0)
@@ -168,7 +187,7 @@ class SettingsPanel(QWidget):
             "glint — so a good real fit peaks near 0.28 and the old 0.25 "
             "discarded frames whose rms was 1.3 px. Raise it towards 0.3 for a "
             "clean synthetic disc.")
-        tl.addRow("Min confidence:", self._spn_conf)
+        al.addRow("Min confidence:", self._spn_conf)
 
         self._cmb_fit = QComboBox()
         self._cmb_fit.addItems(["circle", "ellipse"])
@@ -176,7 +195,7 @@ class SettingsPanel(QWidget):
         self._cmb_fit.setToolTip(
             "Shape least-squares-fitted to the edge points. Ellipse handles an "
             "off-axis eye; radius is then the mean of the semi-axes.")
-        tl.addRow("Fit shape:", self._cmb_fit)
+        al.addRow("Fit shape:", self._cmb_fit)
 
         self._spn_smed = QSpinBox()
         self._spn_smed.setRange(1, 31)
@@ -189,7 +208,7 @@ class SettingsPanel(QWidget):
             "of 3 removes outright.\n"
             "It never runs across a blink — lost frames stay lost, so a blink "
             "still shows in the trace instead of being smoothed away.")
-        tl.addRow("Smoothing window:", self._spn_smed)
+        al.addRow("Smoothing window:", self._spn_smed)
 
         self._spn_sema = QDoubleSpinBox()
         self._spn_sema.setRange(0.05, 1.0)
@@ -200,7 +219,7 @@ class SettingsPanel(QWidget):
             "Weight given to the newest frame after the median. 1.0 disables "
             "the EMA; lower is smoother but lags real dilation. 0.5 settles "
             "within about three frames.")
-        tl.addRow("Smoothing weight:", self._spn_sema)
+        al.addRow("Smoothing weight:", self._spn_sema)
 
         self._spn_reseed = QSpinBox()
         self._spn_reseed.setRange(1, 600)
@@ -213,7 +232,7 @@ class SettingsPanel(QWidget):
             "nothing, so a reopening eye is picked up where it left off. Raise "
             "it if long blinks cost the lock; lower it if a pupil that really "
             "moved takes too long to be found again.")
-        tl.addRow("Re-seed after:", self._spn_reseed)
+        al.addRow("Re-seed after:", self._spn_reseed)
 
         # Naming click-to-seed in the LABEL, not just the tooltip: on this rig
         # the auto-seed cannot work — at threshold 60 the dark mask exceeds half
@@ -233,6 +252,7 @@ class SettingsPanel(QWidget):
             "half the frame.")
         tl.addRow(self._chk_search)
         root.addWidget(trk)
+        root.addWidget(self._adv)
 
         # ── Illumination ────────────────────────────────────────────────────────
         led = QGroupBox("Illumination")
@@ -251,6 +271,26 @@ class SettingsPanel(QWidget):
         for c in (self._cmb_pol, self._cmb_fit, self._cmb_edge):
             c.currentTextChanged.connect(self._emit)
         self._chk_search.toggled.connect(self._emit)
+
+        # Start collapsed, unless this rig is running something non-default —
+        # a tuned value hidden behind a closed group is worse than a long tab.
+        tuned = self._non_default_advanced()
+        self._adv.setChecked(bool(tuned))
+        self._adv_host.setVisible(bool(tuned))
+        if tuned:
+            self._adv.setTitle(f"Advanced tracking — {len(tuned)} changed "
+                               f"({', '.join(tuned[:3])}"
+                               f"{', …' if len(tuned) > 3 else ''})")
+
+    _ADVANCED = ("n_rays", "polarity", "min_strength", "edge_select",
+                 "smooth_sigma", "min_confidence", "fit", "smooth_median",
+                 "smooth_ema", "reseed_after")
+
+    def _non_default_advanced(self) -> list[str]:
+        """Which advanced settings differ from the shipped defaults."""
+        base = PupilSettings()
+        return [k for k in self._ADVANCED
+                if getattr(self._s, k) != getattr(base, k)]
 
     def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)

@@ -208,6 +208,34 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
     r.check((d.smooth_sigma, d.min_confidence) != (12.0, 0.04),
             f"control: the defaults ({d.smooth_sigma}, {d.min_confidence}) are "
             f"not the overridden values")
+
+    # The Advanced group hides ten tuning controls. It must never hide a value
+    # that is NOT the shipped default, or a rig running something unusual looks
+    # identical to one running stock settings.
+    from acqApp.devices.pupil_cam.panel import SettingsPanel as PupilPanel
+    # isHidden(), not isVisible(): nothing here is shown, so isVisible() is
+    # False for every widget regardless of the collapse state.
+    plain = PupilPanel(PupilSettings())
+    r.check(not plain._adv.isChecked() and plain._adv_host.isHidden(),
+            "Advanced tracking starts collapsed on stock settings")
+    advanced = {plain._spn_rays, plain._cmb_pol, plain._spn_sigma,
+                plain._spn_conf, plain._spn_smed, plain._spn_reseed}
+    basic = {plain._spn_thr, plain._spn_min, plain._spn_max, plain._chk_search}
+    r.check(all(w.parent() is plain._adv_host for w in advanced),
+            "…with the tuning controls inside the collapsible half")
+    r.check(not any(w.parent() is plain._adv_host for w in basic),
+            "…and threshold, both radii and the overlay outside it")
+    tuned = PupilPanel(s)                       # smooth_sigma / min_confidence
+    r.check(tuned._adv.isChecked() and not tuned._adv_host.isHidden(),
+            "…and auto-expands when any advanced value differs from default")
+    r.check(set(tuned._non_default_advanced()) == {"smooth_sigma",
+                                                   "min_confidence"},
+            f"…naming exactly which ({tuned._non_default_advanced()})")
+    r.check("2 changed" in tuned._adv.title(),
+            f"…and saying so in the title ({tuned._adv.title()!r})")
+    # Collapsed or not, the values still reach the tracker.
+    r.check(track_params(plain.settings)["n_rays"] == d.n_rays,
+            "a collapsed group still reports its settings")
     r.check(d.edge_select == "first",
             f"the default edge choice is the innermost edge, not the strongest "
             f"(got {d.edge_select!r})")

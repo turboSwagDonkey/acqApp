@@ -37,6 +37,22 @@ def toggle_btn(key: str) -> str:
     )
 
 
+def record_btn(key: str) -> str:
+    """Like `toggle_btn`, but sized and weighted for the one control whose
+    accidental state costs an experiment. Bigger hit area, a red ring while
+    armed, so "am I recording?" is answerable from across the rig."""
+    c = HEX[key]
+    tint = QColor(c).lighter(185).name()
+    return (
+        "QPushButton{"
+        f"background:{tint};color:#333;border:2px solid {c};"
+        "border-radius:5px;padding:6px 22px;font-weight:bold;font-size:11pt}"
+        f"QPushButton:checked{{background:#c62828;color:white;"
+        "border:2px solid #ff5252}"
+        "QPushButton:disabled{background:#3a3a3a;color:#777;border:2px solid #555}"
+    )
+
+
 def solid_btn(key: str) -> str:
     """Always-on accent-coloured button."""
     c = HEX[key]

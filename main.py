@@ -420,14 +420,24 @@ class MainWindow(QMainWindow):
         self._btn_free.toggled.connect(self._on_free_toggled)
 
         # Record: live view + save to HDF5 (auto-starts live view if needed).
-        self._btn_rec = QPushButton("Record")
+        # Deliberately the largest control here — it is the only one whose wrong
+        # state costs an experiment, and it used to be the same size as Emulate.
+        self._btn_rec = QPushButton("● Record")
         self._btn_rec.setCheckable(True)
-        self._btn_rec.setStyleSheet(style.toggle_btn("puffer"))
+        self._btn_rec.setStyleSheet(style.record_btn("puffer"))
         self._btn_rec.setToolTip("Live view and save every stream to disk")
         self._btn_rec.toggled.connect(self._on_record_toggled)
 
+        # How the recording is actually going: elapsed, size on disk, drops.
+        # The status message is transient — every tick overwrites it, and any
+        # module calling `status()` wipes it — so a recording readout cannot
+        # live there. This one is permanent and updated on the tick.
+        self._lbl_rec = QLabel("")
+        self._lbl_rec.setStyleSheet("color:#9aa0a6;")
+
         sb = QStatusBar()
         self.setStatusBar(sb)
+        sb.addPermanentWidget(self._lbl_rec)
         sb.addPermanentWidget(self._btn_emulate)
         sb.addPermanentWidget(self._btn_free)
         sb.addPermanentWidget(self._btn_run)
@@ -696,7 +706,7 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             m.attach_sink(self._recorder)
 
-        self._btn_rec.setText("Stop rec")
+        self._btn_rec.setText("■ Stop rec")
         self.status(f"Recording → {path}")
 
     def _stop_recording(self) -> None:
@@ -729,15 +739,40 @@ class MainWindow(QMainWindow):
             if lost:
                 msg += "  — see the file's recorder_* attributes"
             self.status(msg)
-        self._btn_rec.setText("Record")
+        self._btn_rec.setText("● Record")
+        self._lbl_rec.setText("")
 
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 
     def _on_tick(self, elapsed: float) -> None:
-        msg = f"t = {elapsed:.1f} s"
-        if self._recorder is not None:
-            msg += f"   REC   drops: {self._recorder.drop_count}"
-        self.status(msg)
+        self.status(f"t = {elapsed:.1f} s")
+        self._refresh_rec_readout(elapsed)
+
+    def _refresh_rec_readout(self, elapsed: float) -> None:
+        """Elapsed / size on disk / drops, while recording.
+
+        The size comes from the file itself rather than from a running total of
+        what was enqueued: those differ exactly when it matters — a ring that is
+        shedding, or a writer that has fallen behind — and the number worth
+        trusting is the one on the disk. HDF5 grows in blocks, so it steps.
+        """
+        if self._recorder is None or self._rec_path is None:
+            self._lbl_rec.setText("")
+            return
+        mins, secs = divmod(int(elapsed), 60)
+        txt = f"● REC  {mins:d}:{secs:02d}"
+        try:
+            mb = self._rec_path.stat().st_size / (1 << 20)
+            txt += f"   {mb / 1024:.2f} GB" if mb >= 1024 else f"   {mb:.0f} MB"
+        except OSError:
+            pass                          # not created yet, or on a flaky share
+        dropped = self._recorder.drop_count + self._recorder.late_count
+        if dropped:
+            txt += f"   ⚠ {dropped} samples shed"
+            self._lbl_rec.setStyleSheet("color:#c62828; font-weight:bold;")
+        else:
+            self._lbl_rec.setStyleSheet("color:#2e7d32; font-weight:bold;")
+        self._lbl_rec.setText(txt)
 
     def _on_trigger(self, name: str, duration: float) -> None:
         for m in self._modules:
