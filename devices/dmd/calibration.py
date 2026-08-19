@@ -169,29 +169,42 @@ def decode(on_stack, off_stack, n_bits_x: int, n_bits_y: int, *,
     modulated it: one ambiguous bit is a wrong mirror coordinate, and a
     confidently wrong correspondence is worse than a missing one.
     """
-    on = np.asarray(on_stack, dtype=np.float64)
-    off = np.asarray(off_stack, dtype=np.float64)
-    if on.shape != off.shape:
-        raise ValueError(f"stack shapes differ: {on.shape} vs {off.shape}")
-    if on.shape[0] != n_bits_x + n_bits_y:
-        raise ValueError(f"expected {n_bits_x + n_bits_y} planes, got {on.shape[0]}")
+    n = len(on_stack)
+    if len(off_stack) != n:
+        raise ValueError(f"stack lengths differ: {n} vs {len(off_stack)}")
+    if n != n_bits_x + n_bits_y:
+        raise ValueError(f"expected {n_bits_x + n_bits_y} planes, got {n}")
 
-    m = (on - off) / np.maximum(on + off, 1e-9)
-    bits = m > 0.0
-    valid = np.abs(m).min(axis=0) >= min_modulation
+    # ONE PLANE AT A TIME, in float32. Materialising both stacks as float64 cost
+    # 7.8 GB at ORCA full frame (40 frames x 10.5 Mpx, plus the temporaries of
+    # `abs(m).min(axis=0)`) — enough to fail on the rig box, which already pins
+    # GB of camera buffers. Gray decoding is a running XOR and the validity test
+    # a running min, so nothing needs the whole stack at once. float32 is exact
+    # for uint16 sums and differences; only the ratio rounds, ~1e-7, against
+    # thresholds of 0 and 0.15.
+    shape = np.asarray(on_stack[0]).shape
+    worst = np.full(shape, np.inf, np.float32)      # min |m| over the planes
+    x = np.zeros(shape, np.int64)
+    y = np.zeros(shape, np.int64)
+    run_x = run_y = None
 
-    def to_int(stack: np.ndarray) -> np.ndarray:
+    for i in range(n):
+        a = np.asarray(on_stack[i], dtype=np.float32)
+        b = np.asarray(off_stack[i], dtype=np.float32)
+        if a.shape != shape or b.shape != shape:
+            raise ValueError(f"plane {i} shape {a.shape}/{b.shape} != {shape}")
+        m = (a - b) / np.maximum(a + b, np.float32(1e-9))
+        np.minimum(worst, np.abs(m), out=worst)
+        bit = m > 0.0
         # Gray → binary, MSB first: b[msb] = g[msb], then b[i] = b[i+1] ^ g[i].
-        run = stack[0].astype(np.int64)
-        out = run.copy()
-        for i in range(1, len(stack)):
-            run = run ^ stack[i].astype(np.int64)
-            out = (out << 1) | run
-        return out
+        if i < n_bits_x:
+            run_x = bit if run_x is None else (run_x ^ bit)
+            x = (x << 1) | run_x
+        else:
+            run_y = bit if run_y is None else (run_y ^ bit)
+            y = (y << 1) | run_y
 
-    x = to_int(bits[:n_bits_x])
-    y = to_int(bits[n_bits_x:n_bits_x + n_bits_y])
-    return x, y, valid
+    return x, y, worst >= min_modulation
 
 
 def correspondences(dmd_x, dmd_y, valid, *, step: int = 8):
@@ -317,6 +330,11 @@ class DmdCalibration:
     created:    str = ""
     notes:      str = ""
 
+    def __post_init__(self) -> None:
+        # Keyed by camera shape. Safe because a calibration is a measurement:
+        # a new registration is a new object, never an edit to this one.
+        self._mask_cache: dict[tuple[int, int], np.ndarray] = {}
+
     @property
     def dmd_to_cam(self) -> np.ndarray:
         return np.linalg.inv(self.cam_to_dmd)
@@ -334,12 +352,40 @@ class DmdCalibration:
         return ((d[:, 0] >= 0) & (d[:, 0] <= w - 1)
                 & (d[:, 1] >= 0) & (d[:, 1] <= h - 1))
 
+    _MASK_ROWS = 256            # rows per band; caps the transform's temporaries
+
     def accessible_mask(self, shape: tuple[int, int]) -> np.ndarray:
-        """(H, W) bool: the camera pixels an ROI may legally cover."""
-        h, w = shape
-        yy, xx = np.mgrid[:h, :w]
-        flat = self.accessible(np.column_stack((xx.ravel(), yy.ravel())))
-        return flat.reshape(h, w)
+        """(H, W) bool: the camera pixels an ROI may legally cover.
+
+        Read-only, cached per shape, and built in row bands. The ROI editor asks
+        for this on **every drag** (`_refresh_status` → `clipped_mask`), and the
+        whole-grid version cost 798 ms and ~1 GB per call at ORCA full frame —
+        it would have made the editor unusable the first time it met a real
+        camera. Banding keeps the temporaries at a few MB; the cache means a
+        drag pays nothing at all.
+        """
+        h, w = int(shape[0]), int(shape[1])
+        hit = self._mask_cache.get((h, w))
+        if hit is not None:
+            return hit
+
+        M = np.asarray(self.cam_to_dmd, dtype=np.float64)
+        dw, dh = self.dmd_size
+        x = np.arange(w, dtype=np.float64)
+        out = np.empty((h, w), dtype=bool)
+        for y0 in range(0, h, self._MASK_ROWS):
+            y = np.arange(y0, min(y0 + self._MASK_ROWS, h),
+                          dtype=np.float64)[:, None]
+            den = M[2, 0] * x + M[2, 1] * y + M[2, 2]
+            den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+            dx = (M[0, 0] * x + M[0, 1] * y + M[0, 2]) / den
+            dy = (M[1, 0] * x + M[1, 1] * y + M[1, 2]) / den
+            out[y0:y0 + y.shape[0]] = ((dx >= 0) & (dx <= dw - 1)
+                                       & (dy >= 0) & (dy <= dh - 1))
+        # Shared, so nobody may edit it in place.
+        out.flags.writeable = False
+        self._mask_cache[(h, w)] = out
+        return out
 
     def accessible_corners(self) -> np.ndarray:
         """The DMD field's four corners in camera px, for drawing its outline."""
@@ -409,7 +455,12 @@ def run_calibration(project: Callable[[np.ndarray], None],
 
     def shot(frame: np.ndarray) -> np.ndarray:
         project(frame)
-        return np.asarray(grab(), dtype=np.float64)
+        # COPY, in the camera's own dtype. The copy is not optional: `grab()`
+        # may hand back a view into a driver buffer that the next exposure
+        # overwrites, and all 40 shots are held until the decode. Promoting to
+        # float64 here — as this used to — made that 3.4 GB instead of 0.8 GB at
+        # ORCA full frame, and `decode`/`modulation` convert per plane anyway.
+        return np.array(grab())
 
     # 1. one complementary pair: does the projector reach the camera at all?
     log("[dmd-calib] field extent (1 pair)")

@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **645 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **652 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **645 checks, 22 files, ~48 s** (three currently red — see the
+the contract: **652 checks, 22 files, ~48 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -719,6 +719,41 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (x) — the DMD calibration would have died on the rig
+- **Measuring the NEXT feature at real scale, before running it, was the whole
+  value of this pass.** Every DMD number so far came from small synthetic
+  frames. Driven at ORCA full frame (4432×2368) the offline half needed
+  **11.4 GB** for one sweep, on a box with 11.1 GB free on C: and GB of camera
+  buffers already pinned. It would have failed — or paged for minutes — the
+  first time it was run for real, and the obvious suspect would have been the
+  hardware. **1.60 GB now**, same registration (rms 0.40 px over 276 points).
+- **Three separate causes, each the same mistake — full-size intermediates:**
+  - `decode` promoted both stacks to float64 (40 frames × 10.5 Mpx) and then
+    called `abs(m).min(axis=0)` on top. **7.8 GB → 0.50 GB** by streaming one
+    plane at a time in float32: Gray decoding is a running XOR and validity a
+    running min, so the stack never has to exist. Bit-identical to the float64
+    version on 40 randomised cases.
+  - `run_calibration.shot()` converted **every grab to float64** and held all
+    40 — 3.4 GB where the camera's own uint16 is 0.8 GB. The copy it was
+    accidentally getting *is* needed (a grab may alias a driver buffer), so it
+    is now an explicit `np.array(grab())`.
+  - `accessible_mask` built a full `mgrid` and transformed 10.5 M points **on
+    every ROI drag** — 798 ms and 961 MB each. Now banded and cached per shape:
+    **321 ms / 53 MB** first call, **0 ms** thereafter, handed out read-only.
+    `RectRoi.mask`/`CircleRoi.mask` had the same `mgrid` habit: 308 ms/420 MB →
+    8 ms/10 MB, and unrotated rectangles stay separable. Identical output on
+    400 randomised ROIs and 60 randomised calibrations, keystone included.
+- **Four new guards, each verified to FAIL against the old code**, and each
+  paired with a control that stays green either way. The `accessible_mask` one
+  is worth copying: rather than a magic MB budget it doubles the image height
+  and asserts the peak grows by **only the extra output** — which is the
+  property, and is scale-free. Suite **645 → 652 checks**.
+- **A `decode` shape mismatch now names the plane** (`plane 15 shape …`) instead
+  of numpy's "inhomogeneous shape after 1 dimensions". Mid-sweep that is the
+  difference between a two-minute fix and re-running 40 exposures blind.
+- **None of this changes what §6 item 1 still needs at the rig** — it removes a
+  wall that was waiting there. Nothing has been projected.
 
 ### 2026-08-18 (w) — a survey pass: profile first, and it found a real bug
 - **Asked to "find other areas of improvement", and the lesson is the method.**

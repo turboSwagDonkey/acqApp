@@ -17,6 +17,7 @@ of those is there because the complementary-pair method claims to cancel it.
 from __future__ import annotations
 
 import sys
+import tracemalloc
 
 import numpy as np
 
@@ -150,6 +151,42 @@ def main() -> int:
     r.check(np.median(err) <= 1.5,
             f"decoded mirror coords are right (median {np.median(err):.2f} px, "
             f"p95 {np.percentile(err, 95):.2f})")
+
+    # decode must stream the planes, not stack them. At ORCA full frame the
+    # float64 stack version peaked at 7.8 GB — 40 frames x 10.5 Mpx plus the
+    # temporaries of abs(m).min(axis=0) — which the rig box cannot spare while
+    # it is pinning camera buffers. Measure the peak against what holding both
+    # stacks as float64 would cost on its own.
+    stack_f64 = 2 * len(planes) * CH * CW * 8
+    tracemalloc.start()
+    decode(on, off, nbx, nby)
+    _cur, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    r.check(peak < 0.5 * stack_f64,
+            f"decode streams the planes: peak {peak / 2**20:.1f} MB against "
+            f"{stack_f64 / 2**20:.1f} MB for the float64 stacks alone")
+    # CONTROL: that budget is not vacuous — the old approach really does exceed
+    # it, so this check can fail.
+    tracemalloc.start()
+    _m = (np.asarray(on, dtype=np.float64) - np.asarray(off, dtype=np.float64))
+    _cur, peak_old = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    del _m
+    r.check(peak_old >= 0.5 * stack_f64,
+            f"control: materialising the stacks alone already costs "
+            f"{peak_old / 2**20:.1f} MB, over the budget above")
+
+    # A list of frames is what run_calibration collects, so it must not need a
+    # 3-D array, and a ragged one must be named rather than broadcast.
+    try:
+        decode(on[:-1] + [np.zeros((CH + 2, CW), np.uint16)], off, nbx, nby)
+        r.check(False, "a mis-shaped plane raises")
+    except ValueError as e:
+        # "plane 15", not numpy's "inhomogeneous shape after 1 dimensions" —
+        # naming which exposure is wrong is the difference between a two-minute
+        # fix and re-running the whole sweep blind.
+        r.check(f"plane {len(planes) - 1}" in str(e),
+                f"a mis-shaped plane is refused BY INDEX ({e})")
 
     # ── 4. the fit, and what its residual is for ─────────────────────────────
     cam, dmd = correspondences(dx, dy, valid, step=4)

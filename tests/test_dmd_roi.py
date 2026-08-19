@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -96,6 +97,56 @@ def main() -> int:
     r.check(0.2 < reach.mean() < 0.95,
             f"the DMD reaches part but not all of the camera "
             f"({100 * reach.mean():.0f}%)")
+    # The editor rebuilds all of this on EVERY drag (_refresh_status →
+    # clipped_mask), so it has to be cheap at camera scale, not just correct at
+    # test scale. Whole-grid versions cost ~800 ms and ~1 GB per drag at ORCA
+    # full frame. Budget: a coordinate grid the old code materialised outright.
+    BH, BW = 1200, 1600
+    grid = 2 * BH * BW * 8                      # what np.mgrid alone would cost
+
+    def mask_peak(rows: int) -> int:
+        """Peak allocation for one accessible_mask, on a fresh calibration so
+        the cache cannot hide the work."""
+        cal = DmdCalibration(cam_to_dmd=c.cam_to_dmd, dmd_size=(DW, DH),
+                             cam_size=(BW, rows), model="homography")
+        tracemalloc.start()
+        cal.accessible_mask((rows, BW))
+        _cur, pk = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        return pk
+
+    # The property that matters is not an absolute figure but that the working
+    # set is BANDED: doubling the height must add only the extra output rows,
+    # not double the temporaries. A whole-grid version adds 2 int64 grids.
+    grew = mask_peak(2 * BH) - mask_peak(BH)
+    r.check(grew < 4 * BH * BW,
+            f"accessible_mask is banded: doubling the height added "
+            f"{grew / 2**20:.1f} MB, against {BH * BW / 2**20:.1f} MB of extra "
+            f"output (a coordinate grid would add {grid / 2**20:.1f})")
+
+    big = DmdCalibration(cam_to_dmd=c.cam_to_dmd, dmd_size=(DW, DH),
+                         cam_size=(BW, BH), model="homography")
+    m1 = big.accessible_mask((BH, BW))
+    r.check(big.accessible_mask((BH, BW)) is m1 and not m1.flags.writeable,
+            "…and is cached per shape, handed out read-only")
+
+    tracemalloc.start()
+    RectRoi(x=800, y=600, w=200, h=150).mask((BH, BW))
+    _cur, peak_roi = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    r.check(peak_roi < 0.5 * grid,
+            f"an ROI mask broadcasts rather than gridding: peak "
+            f"{peak_roi / 2**20:.1f} MB")
+    # CONTROL: the budget is not vacuous — a grid really does exceed it.
+    tracemalloc.start()
+    _yy, _xx = np.mgrid[:BH, :BW]
+    _cur, peak_grid = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    del _yy, _xx
+    r.check(peak_grid >= 0.5 * grid,
+            f"control: np.mgrid alone costs {peak_grid / 2**20:.1f} MB, over "
+            f"the budget both checks above pass")
+
     corners = c.accessible_corners()
     # Nudged 2 px toward the centroid: the exact corner is the boundary, and
     # whether it rounds in or out is not what this is checking.

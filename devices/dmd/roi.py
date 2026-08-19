@@ -50,9 +50,13 @@ class RectRoi(_Roi):
     kind: str = "rect"
 
     def mask(self, shape: tuple[int, int]) -> np.ndarray:
+        # Broadcast rather than np.mgrid: the editor rebuilds every ROI's mask
+        # on every drag, and at ORCA full frame mgrid alone is two 84 MB int64
+        # grids per ROI. Unrotated, the two conditions stay separable and only
+        # the (H, W) bool is ever materialised.
         h, w = shape
-        yy, xx = np.mgrid[:h, :w]
-        dx, dy = xx - self.x, yy - self.y
+        dx = np.arange(w, dtype=np.float64)[None, :] - self.x
+        dy = np.arange(h, dtype=np.float64)[:, None] - self.y
         if self.angle_deg:
             t = np.radians(self.angle_deg)
             c, s = np.cos(t), np.sin(t)
@@ -75,9 +79,10 @@ class CircleRoi(_Roi):
     kind: str = "circle"
 
     def mask(self, shape: tuple[int, int]) -> np.ndarray:
-        h, w = shape
-        yy, xx = np.mgrid[:h, :w]
-        return (xx - self.x) ** 2 + (yy - self.y) ** 2 <= self.r ** 2
+        h, w = shape                        # broadcast — see RectRoi.mask
+        dx2 = (np.arange(w, dtype=np.float64) - self.x) ** 2
+        dy2 = (np.arange(h, dtype=np.float64) - self.y) ** 2
+        return dx2[None, :] + dy2[:, None] <= self.r ** 2
 
     def to_dict(self) -> dict[str, Any]:
         return {"kind": "circle", "name": self.name, "enabled": self.enabled,
