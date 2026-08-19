@@ -39,7 +39,7 @@ def main() -> int:
 
     sys.argv = ["main.py", "--mock"]
     app = qt_app()
-    from acqApp import config
+    from acqApp import config, probe
     import acqApp.main as M
 
     for subset in SUBSETS + [list(config.MODULES)]:
@@ -60,7 +60,13 @@ def main() -> int:
             win._btn_emulate.setChecked(True)
 
             # The Devices monitor collects probe arguments from every adapter.
-            assert isinstance(win._probe_kwargs(), dict)
+            kw = win._probe_kwargs()
+            assert isinstance(kw, dict)
+            # Every kwarg an adapter offers must be one probe_all accepts —
+            # otherwise the Devices window dies with a TypeError the moment a
+            # particular subset of modules is loaded, which is exactly the
+            # failure this test exists to find.
+            probe.probe_all(subset, **kw)
 
             win.close()
             pump(app, 0.1)

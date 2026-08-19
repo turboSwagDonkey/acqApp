@@ -28,7 +28,15 @@ class ProbeResult:
     detail: str
 
 
-def _voltage_cam() -> ProbeResult:
+def _voltage_cam(cam_open: bool = False) -> ProbeResult:
+    """`cam_open` short-circuits the enumeration when the app already holds the
+    camera. That is both faster and *truer*: `DCAM.get_cameras_number()` costs
+    ~6.5 s and does so on every call (it re-enumerates; it is not one-time DLL
+    init), and this runs on the GUI thread when the Devices window refreshes —
+    while the handle we hold is the one a session will actually use.
+    """
+    if cam_open:
+        return ProbeResult("ok", "open and held by this app")
     try:
         from pylablib.devices import DCAM
         n = DCAM.get_cameras_number()
@@ -110,11 +118,12 @@ def _closed_loop() -> ProbeResult:
 
 
 def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
-          stage_port: str = DEFAULT_STAGE_PORT) -> ProbeResult:
+          stage_port: str = DEFAULT_STAGE_PORT,
+          cam_open: bool = False) -> ProbeResult:
     """Probe one module by key. Never raises."""
     try:
         if module == "voltage_cam":
-            return _voltage_cam()
+            return _voltage_cam(cam_open)
         if module == "pupil_cam":
             return _pupil_cam()
         if module in ("wheel", "puffer"):
@@ -131,5 +140,7 @@ def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
 
 
 def probe_all(modules, *, ni_device: str = DEFAULT_NI_DEVICE,
-              stage_port: str = DEFAULT_STAGE_PORT) -> dict[str, ProbeResult]:
-    return {m: probe(m, ni_device=ni_device, stage_port=stage_port) for m in modules}
+              stage_port: str = DEFAULT_STAGE_PORT,
+              cam_open: bool = False) -> dict[str, ProbeResult]:
+    return {m: probe(m, ni_device=ni_device, stage_port=stage_port,
+                     cam_open=cam_open) for m in modules}

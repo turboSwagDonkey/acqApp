@@ -15,8 +15,9 @@ from __future__ import annotations
 from PyQt6.QtCore import QSettings, QSize, Qt
 from PyQt6.QtGui import QColor, QGuiApplication
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QGridLayout,
+    QHBoxLayout, QLabel, QPushButton, QScrollArea, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
 from acqApp import config, probe, style
@@ -194,10 +195,27 @@ class ConnectionMonitor(QDialog):
         self.refresh()
 
     def refresh(self) -> None:
-        results = probe.probe_all(self._modules, **self._probe_kwargs())
-        for key, (status, detail) in self._rows.items():
-            res = results[key]
-            status.setText(f"● {self._WORD.get(res.status, res.status)}")
-            status.setStyleSheet(f"color:{self._DOT.get(res.status, '#ccc')}; "
-                                 "font-weight:bold;")
-            detail.setText(res.detail)
+        """Probe one module at a time, painting each row as it lands.
+
+        `probe_all` in one go left every row on "…" until the last probe
+        returned, because the GUI thread was inside it the whole time — and a
+        driver enumeration is not fast. Refresh is disabled meanwhile: these
+        touch hardware, and re-entering through a second click is not something
+        to find out about on a rig.
+        """
+        kwargs = self._probe_kwargs()
+        self._btn_refresh.setEnabled(False)
+        try:
+            for key, (status, detail) in self._rows.items():
+                status.setText("● checking…")
+                status.setStyleSheet("color:#9aa0a6; font-weight:bold;")
+                detail.setText("")
+                QApplication.processEvents()
+                res = probe.probe(key, **kwargs)
+                status.setText(f"● {self._WORD.get(res.status, res.status)}")
+                status.setStyleSheet(f"color:{self._DOT.get(res.status, '#ccc')}; "
+                                     "font-weight:bold;")
+                detail.setText(res.detail)
+                QApplication.processEvents()
+        finally:
+            self._btn_refresh.setEnabled(True)

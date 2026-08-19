@@ -160,6 +160,12 @@ class VoltageCamModule(ModuleAdapter):
                 # app dies mid-recording.
                 "cam_timestamp_source": self._timestamp_source()}
 
+    def probe_kwargs(self) -> dict[str, Any]:
+        # The window opened the camera once at startup and holds the handle, so
+        # the Devices window need not re-enumerate — which costs ~6.5 s on the
+        # GUI thread, every refresh.
+        return {"cam_open": self.win.cam_handle is not None}
+
     def _timestamp_source(self) -> str:
         """Off the worker — both twins declare it (`TimestampedWorker`).
         "unknown" means *no worker*, a different fact from one that

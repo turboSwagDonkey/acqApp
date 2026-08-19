@@ -23,6 +23,8 @@ import argparse
 import faulthandler
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 # A segfault deep in the DCAM SDK can't be caught by try/except — the process
@@ -97,25 +99,70 @@ _bootstrap()
 from datetime import datetime
 from typing import Any
 
-# ── Hardware pre-init (must precede any Qt / scipy import) ────────────────────
+# ── Hardware pre-init ─────────────────────────────────────────────────────────
 # Open the camera ONCE and keep the handle — the worker reuses it. Re-opening a
-# just-closed DCAM device crashes the driver natively, and a fresh open costs
-# ~7 s. Closed in MainWindow.closeEvent.
+# just-closed DCAM device crashes the driver natively (docs/HANDOFF.md), and a
+# fresh open costs ~6.7 s. Closed in MainWindow.closeEvent.
 _cam_info = None
 _cam_handle = None
+_cam_thread = None
 _mock = "--mock" in sys.argv     # start in Emulate mode; real hardware otherwise
-if not _mock:
+
+
+def _open_camera() -> None:
+    """The startup open. Runs on a worker thread; never raises out of it."""
+    global _cam_handle, _cam_info
+    t0 = time.perf_counter()
+    dcam = None
     try:
-        from pylablib.devices import DCAM as _DCAM
-        if _DCAM.get_cameras_number() > 0:
-            _cam_handle = _DCAM.DCAMCamera(idx=0)
-            _cam_info = _cam_handle.get_device_info()
-            print(f"Voltage cam: {_cam_info}")
-        else:
+        from pylablib.devices import DCAM as dcam
+        # Open OPTIMISTICALLY. `get_cameras_number()` costs ~6.5 s on this SDK
+        # and does so on EVERY call — it re-enumerates, it is not one-time DLL
+        # init (measured: three consecutive calls, 6.5/5.3/5.3 s). Asking it
+        # before opening added ~5.3 s to every launch. If the open fails we ask
+        # then, where a few seconds is free and the answer is what the operator
+        # needs.
+        handle = dcam.DCAMCamera(idx=0)
+        _cam_info = handle.get_device_info()
+        _cam_handle = handle
+        print(f"Voltage cam: {_cam_info} "
+              f"(opened in {time.perf_counter() - t0:.1f} s)")
+    except Exception as e:                        # noqa: BLE001
+        _cam_handle = None
+        n = -1
+        if dcam is not None:
+            try:
+                n = dcam.get_cameras_number()
+            except Exception:
+                pass
+        if n == 0:
             # No silent fallback to fake data — real is the default.
             print("No DCAM camera detected — use Emulate to run without hardware")
-    except Exception as _e:
-        print(f"Camera detect failed ({_e}) — use Emulate to run without hardware")
+        else:
+            print(f"Camera unavailable ({type(e).__name__}: {e}) — if HCImage "
+                  f"or another app has it open, close that first. Use Emulate "
+                  f"to run without it.")
+
+
+if not _mock:
+    # On a thread, so the ~7.9 s open overlaps the Qt/pyqtgraph import below and
+    # the module picker the operator is reading. Verified on the real camera:
+    # opening on a worker and then driving the handle from the GUI thread — the
+    # way MainWindow and OrcaFireWorker already do — works and closes cleanly.
+    # The load-bearing rule is unchanged and is about lifetime, not threads:
+    # open ONCE and keep the handle, because re-opening a just-closed DCAM
+    # device segfaults below Python (docs/HANDOFF.md).
+    _cam_thread = threading.Thread(target=_open_camera, name="cam-open")
+    _cam_thread.start()
+
+
+def _await_camera() -> None:
+    """Block until the startup open has finished. Safe to call more than once,
+    and a no-op under --mock."""
+    if _cam_thread is not None and _cam_thread.is_alive():
+        print("Waiting for the camera to finish opening…")
+    if _cam_thread is not None:
+        _cam_thread.join()
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Force pyqtgraph onto PyQt6 (both bindings may be installed in the venv).
@@ -739,13 +786,24 @@ def main() -> None:
     app = QApplication(sys.argv)
     style.apply_theme(app, config.get_theme())     # dark by default
 
-    # Startup module picker, pre-checked from the last-used selection.
+    # Startup module picker, pre-checked from the last-used selection. The
+    # camera is opening on its thread while this is up.
     dlg = ModuleSelectDialog(config.load_enabled_modules())
-    if dlg.exec() != QDialog.DialogCode.Accepted:
+    accepted = dlg.exec() == QDialog.DialogCode.Accepted
+    if not accepted:
+        # Still join, and release: a half-open camera outliving the process is
+        # the double-open crash waiting for the next launch.
+        _await_camera()
+        if _cam_handle is not None:
+            try:
+                _cam_handle.close()
+            except Exception:
+                pass
         return
     enabled = dlg.selected()
     config.save_enabled_modules(enabled)
 
+    _await_camera()          # the handle must exist before any adapter asks
     win = MainWindow(cam_info=_cam_info, mock=_mock, enabled=set(enabled),
                      cam_handle=_cam_handle)
     win.show()

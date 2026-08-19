@@ -720,6 +720,41 @@ because two of them are how a future wrong-data bug gets in.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-18 (aa) — boot: 13.4 s → 8.1 s, and the Devices window 8.6 s → 0.3 s
+- **Imports are not the problem and never were: 350 ms for all of
+  `acqApp.main`** (pyqtgraph 256 of it), and a full mock start to a visible
+  window is **848 ms**. Don't go looking there again.
+- **`DCAM.get_cameras_number()` costs ~6.5 s and does so on EVERY call.** It
+  re-enumerates; it is not one-time DLL init — three consecutive calls measured
+  6.5 / 5.3 / 5.3 s. It was being called *before* the open, purely to decide
+  whether to try, which added ~5.3 s to every launch. Now the open is
+  **optimistic** and the enumeration happens only if it fails, where a few
+  seconds is free and the answer ("no camera" vs "something else holds it") is
+  what the operator needs. The failure message names HCImage, which is what it
+  actually is. **13.36 → 8.11 s**, measured on the real camera.
+- **The same call was freezing the Devices window for ~8.6 s**, on the GUI
+  thread, every refresh. The app already holds the camera open, so the answer is
+  known — and truer than an enumeration, since it is the handle a session will
+  use. Passed through the existing `probe_kwargs` seam (`cam_open`), so
+  `probe.py` still imports nothing upward. **8.6 s → 277 ms.**
+- **`ConnectionMonitor.refresh` probed everything in one blocking call**, so its
+  "…" placeholders could never paint. Now one module at a time with the row
+  updated as it lands, Refresh disabled meanwhile — these touch hardware and
+  re-entering through a second click is not a thing to discover on a rig.
+- **The remaining ~8 s is the open itself, now on a thread** so it overlaps the
+  Qt import and the module picker. Verified on the real camera end to end:
+  opened on a worker, driven from the GUI thread (`get_detector_size`,
+  `set_exposure`), window built, closed cleanly. With 3 s spent in the picker
+  the wait after it drops to 4.6 s. **The load-bearing rule is untouched and is
+  about lifetime, not threads** — open ONCE and keep the handle, because
+  re-opening a just-closed device segfaults (docs/HANDOFF.md). Cancelling the
+  picker now joins and closes rather than leaving a half-open camera behind.
+- **`COM54 open` succeeded in 205 ms**, which contradicts §6's standing note
+  that the stage "still fails to open here". Left as a flag for whoever next
+  works on the stage; nothing else was changed on the strength of one open.
+- Nothing was projected: `project()` is reachable only from `display()`, and the
+  DMD lines in these runs are `load_pattern` composing a frame in memory.
+
 ### 2026-08-18 (z) — `acqapp_local.json` could be lost by a crash mid-write
 - **Looked for GUI-thread disk I/O and mostly found none**, which is worth
   recording so nobody re-audits it: the Save tab uses `editingFinished`, not
