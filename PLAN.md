@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **652 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **657 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **652 checks, 22 files, ~48 s** (three currently red — see the
+the contract: **657 checks, 22 files, ~48 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -719,6 +719,43 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (y) — the ROI editor at real camera size: 272 ms → 2.2 ms a drag
+- **Driving the editor at 4432×2368 was the test that mattered**, and it still
+  failed after (x)'s fixes: **272 ms per drag event**, i.e. unusable. Caching
+  `accessible_mask` was necessary but nowhere near sufficient, because
+  `_refresh_status` rasterised full-camera masks *per ROI* twice over —
+  `outside()` once each and `clipped_mask` once more. **2.2 ms now.**
+- **The fix was a design call, not a micro-optimisation.** A status line showing
+  a whole-number percentage does not need a per-pixel raster of a 10.5 Mpx
+  camera. So the exact call is kept for the path that needs it and two cheap
+  ones stand in for the display:
+  - `outside()` is now **geometric**: a projective map takes straight lines to
+    straight lines, so a rectangle is inside the (convex) field exactly when its
+    four corners are, and a circle's rim is sampled. `_Roi.boundary()`.
+  - `RoiSet.reach_fraction()` estimates on a grid capped at 512 px a side and
+    only at pixels an ROI covers — so it costs the ROI's area, not the camera's.
+    Worst gap from the exact figure over 250 randomised cases: **0.5 points.**
+  - `clipped_mask` is untouched and still exact. `dmd_frame`, the path that
+    actually projects, never uses an estimate.
+- **The geometric `outside()` is also SAFER, which was not the goal.** Across
+  250 randomised cases it disagreed with the raster version 3 times and **all
+  three in the safe direction** — zero cases where the raster flagged something
+  geometry missed. The three are ROIs hanging off the *image* edge, where the
+  raster had no pixels to judge and so called them fine. Pinned by a test.
+- `_Roi.mask_at(xs, ys)` takes coordinates rather than a shape, which is what
+  lets a caller ask coarsely; `mask(shape)` is a thin wrapper on it.
+- Suite **652 → 657**. Also measured and **deliberately left alone**: the 30 Hz
+  display tick is 0.92 ms at full frame (2.8 % of a core) and the obvious
+  "improvement" of copying to a contiguous buffer makes it *worse*.
+- `coarse_seed` had the same shape of bug as (x): the decimation that exists to
+  bound the EDT sat *after* `binary_fill_holes`, so the fill ran unbounded —
+  a third of an 87 ms call on a real 1928×1208 frame. Decimating first: **87 →
+  41.8 ms**, ground truth still 15/15 and the real-clip lock rate unchanged at
+  92.7 %. Seeds shift by ≤6 px at extreme thresholds, which is inside the
+  decimation's own quantisation and far inside the annulus band it feeds. No
+  test added: the property is a timing bound, and timing assertions in this
+  suite would be fragile across machines.
 
 ### 2026-08-18 (x) — the DMD calibration would have died on the rig
 - **Measuring the NEXT feature at real scale, before running it, was the whole

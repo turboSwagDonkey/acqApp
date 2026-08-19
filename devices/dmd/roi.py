@@ -27,7 +27,21 @@ class _Roi:
 
     kind: str = "roi"
 
+    def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        """Coverage at the given camera x and y coordinates → (len(ys), len(xs)).
+
+        Explicit coordinates rather than a shape, so a caller that only wants a
+        percentage can evaluate on a coarse grid instead of every pixel.
+        """
+        raise NotImplementedError
+
     def mask(self, shape: tuple[int, int]) -> np.ndarray:
+        h, w = shape
+        return self.mask_at(np.arange(w, dtype=np.float64),
+                            np.arange(h, dtype=np.float64))
+
+    def boundary(self, n: int = 64) -> np.ndarray:
+        """Points on the outline, for containment tests without rasterising."""
         raise NotImplementedError
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,19 +63,30 @@ class RectRoi(_Roi):
 
     kind: str = "rect"
 
-    def mask(self, shape: tuple[int, int]) -> np.ndarray:
+    def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
         # Broadcast rather than np.mgrid: the editor rebuilds every ROI's mask
         # on every drag, and at ORCA full frame mgrid alone is two 84 MB int64
         # grids per ROI. Unrotated, the two conditions stay separable and only
         # the (H, W) bool is ever materialised.
-        h, w = shape
-        dx = np.arange(w, dtype=np.float64)[None, :] - self.x
-        dy = np.arange(h, dtype=np.float64)[:, None] - self.y
+        dx = np.asarray(xs, dtype=np.float64)[None, :] - self.x
+        dy = np.asarray(ys, dtype=np.float64)[:, None] - self.y
         if self.angle_deg:
             t = np.radians(self.angle_deg)
             c, s = np.cos(t), np.sin(t)
             dx, dy = c * dx + s * dy, -s * dx + c * dy
         return (np.abs(dx) <= self.w / 2.0) & (np.abs(dy) <= self.h / 2.0)
+
+    def boundary(self, n: int = 64) -> np.ndarray:
+        """The four corners — and they are exact. A projective map takes
+        straight lines to straight lines, so if the corners land inside the
+        field, so does every edge between them."""
+        t = np.radians(self.angle_deg)
+        c, s = np.cos(t), np.sin(t)
+        hw, hh = self.w / 2.0, self.h / 2.0
+        loc = np.array([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]])
+        return np.column_stack((
+            self.x + c * loc[:, 0] - s * loc[:, 1],
+            self.y + s * loc[:, 0] + c * loc[:, 1]))
 
     def to_dict(self) -> dict[str, Any]:
         return {"kind": "rect", "name": self.name, "enabled": self.enabled,
@@ -78,11 +103,18 @@ class CircleRoi(_Roi):
 
     kind: str = "circle"
 
-    def mask(self, shape: tuple[int, int]) -> np.ndarray:
-        h, w = shape                        # broadcast — see RectRoi.mask
-        dx2 = (np.arange(w, dtype=np.float64) - self.x) ** 2
-        dy2 = (np.arange(h, dtype=np.float64) - self.y) ** 2
+    def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        dx2 = (np.asarray(xs, dtype=np.float64) - self.x) ** 2   # see RectRoi
+        dy2 = (np.asarray(ys, dtype=np.float64) - self.y) ** 2
         return dx2[None, :] + dy2[:, None] <= self.r ** 2
+
+    def boundary(self, n: int = 64) -> np.ndarray:
+        """`n` points around the rim. Sampled, not exact: a circle's image under
+        a projective map is a conic, so there is no finite exact set — but the
+        rim is what can leave the field, and 64 points resolve it to 0.1 % of r."""
+        t = np.linspace(0.0, 2.0 * np.pi, max(8, n), endpoint=False)
+        return np.column_stack((self.x + self.r * np.cos(t),
+                                self.y + self.r * np.sin(t)))
 
     def to_dict(self) -> dict[str, Any]:
         return {"kind": "circle", "name": self.name, "enabled": self.enabled,
@@ -157,18 +189,37 @@ class RoiSet:
         n = int(want.sum())
         return ok, (float(ok.sum()) / n if n else 1.0)
 
-    def outside(self, calib: DmdCalibration) -> list[str]:
-        """Names of ROIs that are not wholly inside the DMD's field."""
-        shape = (calib.cam_size[1], calib.cam_size[0])
-        reach = calib.accessible_mask(shape)
-        out = []
+    def reach_fraction(self, calib: DmdCalibration, *,
+                       max_side: int = 512) -> float:
+        """Share of the drawn area the DMD can illuminate — an ESTIMATE.
+
+        For the status line, which shows a whole-number percentage. Evaluated on
+        a grid capped at `max_side`, and only at the pixels an ROI actually
+        covers, so it costs the ROI's area rather than the camera's. Use
+        `clipped_mask` when the actual mask is wanted; the projection path does.
+        """
+        w, h = calib.cam_size
+        step = max(1, int(np.ceil(max(int(w), int(h)) / max(1, max_side))))
+        xs = np.arange(0, int(w), step, dtype=np.float64)
+        ys = np.arange(0, int(h), step, dtype=np.float64)
+        want = np.zeros((ys.size, xs.size), bool)
         for r in self.rois:
-            if not r.enabled:
-                continue
-            m = r.mask(shape)
-            if m.any() and not m[reach].sum() == m.sum():
-                out.append(r.name)
-        return out
+            if r.enabled:
+                want |= r.mask_at(xs, ys)
+        iy, ix = np.nonzero(want)
+        if not iy.size:
+            return 1.0
+        return float(calib.accessible(np.column_stack((xs[ix], ys[iy]))).mean())
+
+    def outside(self, calib: DmdCalibration) -> list[str]:
+        """Names of ROIs that are not wholly inside the DMD's field.
+
+        Geometric, not rasterised. This used to build a full-camera mask **per
+        ROI** and index it with another — ~90 ms each at ORCA full frame, on
+        every drag — and pixel quantisation made it less accurate, not more.
+        """
+        return [r.name for r in self.rois
+                if r.enabled and not calib.accessible(r.boundary()).all()]
 
     def dmd_frame(self, calib: DmdCalibration) -> np.ndarray:
         """The device-sized binary frame that illuminates these ROIs."""

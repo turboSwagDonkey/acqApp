@@ -288,17 +288,19 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
         sl = slices[li - 1]
         if sl is None:
             continue
-        # Fill holes first: the IR corneal glint punches one inside the pupil
-        # that would otherwise shrink the inscribed circle.
-        comp = ndimage.binary_fill_holes(lab[sl] == li)
-
-        # Bound the EDT: it scales with the bounding box, which for a degenerate
-        # mask is the whole sensor (~200 ms per re-seed). Decimating is safe —
-        # find_circular_edge re-centres from wherever this lands.
-        step = max(1, int(np.ceil(max(comp.shape) / _SEED_MAX_PX)))
+        sub = lab[sl] == li
+        # Decimate FIRST. Both the hole fill and the EDT scale with the bounding
+        # box, which for a degenerate mask is the whole sensor. This bound used
+        # to sit *between* them, so binary_fill_holes ran unbounded — a third of
+        # an 87 ms call on a real 1928x1208 frame. Decimating is safe: the seed
+        # only has to land inside the pupil, and find_circular_edge re-centres.
+        step = max(1, int(np.ceil(max(sub.shape) / _SEED_MAX_PX)))
         if step > 1:
-            comp = comp[::step, ::step]
+            sub = sub[::step, ::step]
 
+        # Then fill holes: the IR corneal glint punches one inside the pupil
+        # that would otherwise shrink the inscribed circle.
+        comp = ndimage.binary_fill_holes(sub)
         edt = ndimage.distance_transform_edt(np.pad(comp, 1))[1:-1, 1:-1]
         iy, ix = np.unravel_index(int(np.argmax(edt)), edt.shape)
         r_dec = float(edt[iy, ix])

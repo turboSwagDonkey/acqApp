@@ -168,6 +168,30 @@ def main() -> int:
             f"an ROI off the DMD field is reported ({far.outside(c)})")
     _, kept = far.clipped_mask(c)
     r.check(kept < 0.9, f"…and its unreachable part is not counted ({kept:.2f})")
+
+    # outside() is geometric, which is not just cheaper than rasterising — it is
+    # safer. An ROI hanging off the IMAGE edge has no pixels there to raster, so
+    # the old mask-based test judged only the visible part and called it fine.
+    off = RoiSet()
+    off.add(CircleRoi(x=float(corners[:, 0].mean()), y=-6.0, r=30))
+    r.check(off.outside(c) == ["circle1"],
+            f"an ROI hanging off the image edge is reported, not judged on the "
+            f"part that happens to be visible ({off.outside(c)})")
+    # CONTROL: the same circle moved fully into the field must not be flagged,
+    # so this is about position and not about circles.
+    inn = RoiSet()
+    inn.add(CircleRoi(x=float(corners[:, 0].mean()),
+                      y=float(corners[:, 1].mean()), r=30))
+    r.check(inn.outside(c) == [],
+            f"control: the same circle inside the field is not flagged "
+            f"({inn.outside(c)})")
+
+    # The status line's estimate has to track the exact figure it stands in for.
+    for st in (far, off, inn):
+        _, exact = st.clipped_mask(c)
+        r.check(abs(st.reach_fraction(c) - exact) < 0.05,
+                f"reach_fraction tracks clipped_mask "
+                f"({st.reach_fraction(c):.3f} vs {exact:.3f})")
     # CONTROL: an ROI well inside must NOT be flagged, or the check is vacuous.
     near = RoiSet()
     near.add(CircleRoi(x=float(corners[:, 0].mean()),

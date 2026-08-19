@@ -211,8 +211,11 @@ class RoiEditor(QWidget):
             self._status.setText(f"{self._calib.describe()} — no ROIs yet")
             return
         self._sync_from_items()
+        # Both are estimates on purpose — this runs on every drag, and the line
+        # shows a whole-number percentage. `clipped_mask` is the exact one and
+        # belongs on the projection path, not in a status bar.
         outside = self._set.outside(self._calib)
-        _, kept = self._set.clipped_mask(self._calib)
+        kept = self._set.reach_fraction(self._calib)
         msg = f"{len(self._set)} ROI(s); {100 * kept:.0f}% of the drawn area is "
         msg += "reachable by the DMD"
         if outside:
