@@ -55,12 +55,19 @@ class AviReader:
         self._ybytes = self.width * self.height
         if self.fourcc in _PLANAR_Y:
             self._kind = "planar"
+            self._need = self._ybytes          # Y first; chroma follows, ignored
         elif self.fourcc in _GRAY or self.fourcc == _BI_RGB:
             if bits not in (8, 24, 32):
                 raise ValueError(f"{self.path.name}: uncompressed {bits}-bit "
                                  f"is not supported")
             self._kind = "dib"
             self._px = bits // 8
+            # DIB rows are padded up to a 4-byte boundary, so the stride equals
+            # width*px only when that is already aligned. Assuming it always is
+            # shears the image progressively — invisible at a width like 96,
+            # wrong at 97.
+            self._stride = ((self.width * self._px + 3) // 4) * 4
+            self._need = self._stride * self.height
         else:
             raise ValueError(
                 f"{self.path.name}: compressed video ({self.fourcc.decode(errors='replace')})"
@@ -90,7 +97,7 @@ class AviReader:
         if movi is None:
             raise ValueError(f"{self.path.name}: no movi list")
 
-        need = self._ybytes if self._kind == "planar" else self._ybytes * self._px
+        need = self._need
         offs: list[int] = []
         pos, stop = movi
         while pos + 8 <= stop:
@@ -110,11 +117,12 @@ class AviReader:
         if self._kind == "planar":
             return self._buf[o:o + self._ybytes].reshape(self.height, self.width)
 
-        raw = self._buf[o:o + self._ybytes * self._px]
+        rows = self._buf[o:o + self._need].reshape(self.height, self._stride)
         if self._px == 1:
-            f = raw.reshape(self.height, self.width)
+            f = rows[:, :self.width]                    # drop the row padding
         else:
-            bgr = raw.reshape(self.height, self.width, self._px)[:, :, :3]
+            bgr = rows[:, :self.width * self._px].reshape(
+                self.height, self.width, self._px)[:, :, :3]
             # Rec.601 luma in uint8, integer weights to stay off floats.
             f = ((bgr[:, :, 0].astype(np.uint16) * 29
                   + bgr[:, :, 1].astype(np.uint16) * 150

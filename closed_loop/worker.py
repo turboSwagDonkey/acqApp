@@ -60,11 +60,16 @@ class ClosedLoopWorker(PullWorker):
 
     @property
     def recorded_fires(self) -> int:
-        """Fires that reached the sink, i.e. that are in `/closed_loop`.
+        """Fires handed to the sink, i.e. that should be in `/closed_loop`.
 
         Separate from `n_fires` because they genuinely differ — the rule runs all
         session but the sink is attached only while recording. Filing `n_fires`
         would leave an attribute disagreeing with the stream beside it.
+
+        "Should be": this counts the handover, and `Recorder.put` can still shed
+        it (ring overflow, or a straggler arriving after the file closed). Those
+        are counted in the file's own `recorder_*` attributes, so a mismatch is
+        explainable — but do not read this as a guarantee of `len(/closed_loop)`.
         """
         return self._recorded
 

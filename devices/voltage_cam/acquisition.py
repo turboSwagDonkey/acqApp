@@ -70,6 +70,7 @@ class OrcaFireWorker(PullWorker):
         self._pending_exp: float | None = None
         self._achievable_fps: float = 0.0
         self._skipped: int = 0
+        self._last_exp_error: str | None = None
         # Camera-clock → perf_counter offset, anchored on the session's first
         # frame (see _frame_time). None until it arrives.
         self._t_offset: float | None = None
@@ -375,8 +376,17 @@ class OrcaFireWorker(PullWorker):
                         try:
                             cam.set_exposure(pending * 1e-6)
                             self._query_timings(cam, cfg, verbose=False)
-                        except Exception:
-                            pass
+                        except Exception as e:      # noqa: BLE001
+                            # Say it once per distinct reason: this is the
+                            # capture loop, and the operator dragging a slider
+                            # that silently does nothing is worse than a line
+                            # of console. Printing every tick would be its own
+                            # kind of failure.
+                            why = f"{type(e).__name__}: {e}"
+                            if why != self._last_exp_error:
+                                self._last_exp_error = why
+                                print(f"[voltage_cam] exposure change to "
+                                      f"{pending:.0f} us refused ({why})")
 
                     t_wait = time.perf_counter()
                     try:

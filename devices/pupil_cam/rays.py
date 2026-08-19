@@ -101,6 +101,23 @@ def _smooth_rows(a: np.ndarray, sigma: float) -> np.ndarray:
     return np.divide(num, den, out=np.full_like(num, np.nan), where=den > 0.35)
 
 
+def _nanmedian_rows(a: np.ndarray) -> np.ndarray:
+    """Row-wise nanmedian, keepdims. Same answer as `np.nanmedian(a, axis=1)`.
+
+    Not that function: for rows shorter than ~600 numpy falls back to
+    `_nanmedian_small`, which builds a **masked array** per call. Profiled on
+    the rig clip that was ~30 % of the whole tracker. `np.sort` puts NaN last,
+    so the valid count indexes straight to the middle.
+    """
+    s = np.sort(a, axis=1)
+    n = np.count_nonzero(~np.isnan(a), axis=1)
+    rows = np.arange(a.shape[0])
+    # Even counts average the two middle values, as a median must. n == 0 hits
+    # a trailing NaN and yields NaN, which is what nanmedian does too.
+    med = 0.5 * (s[rows, (n - 1) // 2] + s[rows, n // 2])
+    return med[:, None]
+
+
 def _sustained(score: np.ndarray, width: int) -> np.ndarray:
     """Lowest score within `width` samples *after* each column.
 
@@ -168,8 +185,8 @@ def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma,
         # A ray wholly off-image is all-NaN; zero it so nanmedian has something
         # to chew on (`hit` rejects the row anyway).
         sfin = np.where(np.isfinite(sfin).any(axis=1, keepdims=True), sfin, 0.0)
-        med = np.nanmedian(sfin, axis=1, keepdims=True)
-        mad = 1.4826 * np.nanmedian(np.abs(sfin - med), axis=1, keepdims=True)
+        med = _nanmedian_rows(sfin)
+        mad = 1.4826 * _nanmedian_rows(np.abs(sfin - med))
         floor = np.maximum(min_strength, _NOISE_K * np.nan_to_num(mad))
 
         # Local maxima at or above that floor…

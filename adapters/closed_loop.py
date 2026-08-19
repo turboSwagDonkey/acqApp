@@ -159,8 +159,9 @@ class ClosedLoopModule(ModuleAdapter):
         if self.worker is None:
             return {"loop_fires": 0, "loop_fires_session": 0}
         return {
-            # Always equal to len(/closed_loop), so the attribute and the stream
-            # beside it cannot disagree.
+            # Fires handed to the sink — normally len(/closed_loop). Not a
+            # guarantee: the Recorder can still shed one, and says so in the
+            # recorder_* attributes. See ClosedLoopWorker.recorded_fires.
             "loop_fires":         self.worker.recorded_fires,
             # Larger when the rule was armed during Live view and fired before
             # Record: those actuated the hardware but are in no file.

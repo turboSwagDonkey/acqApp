@@ -64,6 +64,17 @@ def i420(y: np.ndarray) -> bytes:
     return y.tobytes() + uv.tobytes() + uv.tobytes()
 
 
+def dib_rows(img: np.ndarray, px: int) -> bytes:
+    """`img` as DIB scanlines — each padded up to a 4-byte boundary, as the
+    format requires. `write_avi` alone would pack them, which is the one case a
+    reader that ignores the stride still gets right."""
+    h, w = img.shape[:2]
+    stride = ((w * px + 3) // 4) * 4
+    row = img.reshape(h, w * px) if img.ndim == 3 else img
+    pad = b"\0" * (stride - w * px)
+    return b"".join(bytes(row[y]) + pad for y in range(h))
+
+
 def eye_frame(h: int, w: int, cx: int, cy: int, r: int) -> np.ndarray:
     """A dark disc on a bright field, with a glint — the mock's shape."""
     Y, X = np.ogrid[:h, :w]
@@ -113,6 +124,27 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
     # CONTROL: without the flip the top row would be the source's bottom row.
     r.check(not np.array_equal(got, bgr[:, :, 0]),
             "control: the BI_RGB flip actually happened")
+
+    # A width whose row bytes are NOT 4-aligned. DIB pads every scanline up to
+    # the boundary; a reader that assumes width*px shears the image a little
+    # further on each row. W=96 above cannot show this — 96*3 is already
+    # aligned — which is exactly how it went unnoticed.
+    W2 = 97
+    r.check((W2 * 3) % 4 != 0 and (W2 * 1) % 4 != 0,
+            f"control: {W2}px rows are unaligned at both 8- and 24-bit, so "
+            f"these two cases can actually fail")
+    y2 = eye_frame(H, W2, 44, 30, 12)
+    p = write_avi(tmp / "pad8.avi", [dib_rows(y2[::-1], 1)], W2, H,
+                  b"\0\0\0\0", 8)
+    r.check(np.array_equal(AviReader(p).luma(0), y2),
+            "BI_RGB 8-bit: padded scanlines read back unsheared")
+    bgr2 = np.repeat(y2[:, :, None], 3, axis=2)[::-1]
+    p = write_avi(tmp / "pad24.avi", [dib_rows(bgr2, 3)], W2, H,
+                  b"\0\0\0\0", 24)
+    got2 = AviReader(p).luma(0)
+    r.check(got2.shape == (H, W2) and int(np.abs(got2.astype(int)
+                                                 - y2.astype(int)).max()) <= 1,
+            "BI_RGB 24-bit: ditto, and still flipped upright")
 
     # ── 2. a compressed clip must say so, not guess ──────────────────────────
     p = write_avi(tmp / "mjpg.avi", [b"\xff\xd8" + b"\0" * (W * H)], W, H,

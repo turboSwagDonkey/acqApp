@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **2.3× faster**, the homography fit **233×**. Suite **642 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **3.5× faster**, the homography fit **233×**. Suite **645 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **642 checks, 22 files, ~54 s** (three currently red — see the
+the contract: **645 checks, 22 files, ~48 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -554,6 +554,43 @@ because two of them are how a future wrong-data bug gets in.
    maths against ground truth, and an optimisation that quietly changed a fit
    would show there first.
 
+   **A survey pass followed (2026-08-18, §7 (w)), and it is where the real
+   findings came from.** Guessing at hot spots was worth less than one profile
+   of the tracker against the actual rig clip. What it turned up:
+   - **`np.nanmedian` was ~30 % of the tracker** — numpy falls back to
+     `_nanmedian_small`, which builds a **masked array per call**, for rows
+     shorter than ~600. `rays._nanmedian_rows` sorts instead (NaN sorts last,
+     the valid count indexes the middle). Real clip **3.49 → 1.78 ms/frame**;
+     checked against `np.nanmedian` on 3000 random NaN patterns.
+   - **`avi.py` ignored the DIB row stride** — a real latent bug, not a
+     slowdown. Scanlines are padded to a 4-byte boundary, so any BI_RGB clip
+     whose `width × bytes-per-pixel` is not 4-aligned decoded **progressively
+     sheared**. Invisible in the old test because it used W=96, where 96×3
+     already is aligned. Fixed, with a W=97 case that fails without the fix.
+   - **Two docstrings asserted safety properties the code does not have**, which
+     is worse than no comment: `saving/config.resolve` said the writer "opens
+     for truncation" (it is mode `"x"` and refuses), and
+     `ClosedLoopWorker.recorded_fires` promised it always equals
+     `len(/closed_loop)` when a ring-buffer drop or a late put can break it.
+     Both now say what is true.
+   - **A silently swallowed exposure change** in the camera loop
+     (`except Exception: pass`): the operator drags the slider, nothing happens,
+     nothing is said. Now printed once per distinct reason — not per tick, which
+     would put console I/O in the capture path.
+
+   **Known and deliberately NOT fixed, with the reasoning:**
+   - `_smooth_rows` loops over its ~11 Gaussian taps in Python, and
+     `fit_circle_taubin` makes ~13 separate `.mean()` passes. Both are now small
+     next to everything else, and the tracker is at **1.78 ms/frame on a
+     1928×1208 clip — under 3 % of a core at the rig's 15 fps.** Optimising
+     further buys nothing real.
+   - `_EncoderBase._report` still builds two arrays per sample with
+     `np.fromiter`. Removing that needs a preallocated ring in place of the
+     deque; not worth the complexity in load-bearing code at 120 Hz.
+   - The **camera read path and the writer are already at hardware limits**
+     (92 % of the link, 1004 MB/s measured), so neither is an optimisation
+     target — §6 item 4 is about fitting *within* the writer, not speeding it.
+
 3. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
    found a real bug, not a tuning problem.** See §7 (u). Kept because the three
    findings underneath it are the durable part:
@@ -682,6 +719,37 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (w) — a survey pass: profile first, and it found a real bug
+- **Asked to "find other areas of improvement", and the lesson is the method.**
+  Grepping for suspicious patterns produced nothing worth doing; **one profile
+  of the tracker against the actual rig clip** produced a 2× speedup and pointed
+  at the file where a genuine correctness bug was hiding. Profile the real
+  workload, don't reason about it.
+- **`np.nanmedian` was ~30 % of the tracker**, because numpy silently falls back
+  to `_nanmedian_small` — which allocates a **masked array per call** — for rows
+  shorter than ~600. Ours are ~100. `rays._nanmedian_rows` sorts instead.
+  **Real clip 3.49 → 1.78 ms/frame**, lock rate and radii unchanged, and the
+  replacement checked against `np.nanmedian` over 3000 random NaN patterns.
+  Session total on the synthetic bench: **9.27 → 2.68 ms/frame, 3.5×.**
+- **`avi.py` ignored the DIB row stride — a latent correctness bug.** Scanlines
+  are padded up to a 4-byte boundary; any BI_RGB clip whose row bytes are not
+  4-aligned decoded **progressively sheared**. The existing test could not see
+  it: W=96, and 96×3 is already aligned. Fixed, and `test_pupil_video` now has a
+  **W=97** case (verified to fail without the fix) plus a control asserting that
+  97 really is unaligned at both 8- and 24-bit.
+- **Two docstrings claimed safety properties the code does not have.** That is
+  worse than no comment, because it is what someone checks instead of the code.
+  `saving/config.resolve` said the writer "opens for truncation" — it is mode
+  `"x"` and refuses; `ClosedLoopWorker.recorded_fires` promised it always equals
+  `len(/closed_loop)`, which a ring drop or a late put can break.
+- **A swallowed exposure change** (`except Exception: pass`) in the camera's
+  capture loop now reports once per distinct reason. A slider that silently does
+  nothing is a support call; a print per tick would be console I/O in the
+  capture path.
+- **What was deliberately left**, with reasons, is in §6 item 2 — chiefly that
+  the tracker is now under 3 % of a core and the camera and writer paths are
+  already at hardware limits. Suite **642 → 645 checks**.
 
 ### 2026-08-18 (v) — a trim pass, and two numpy defaults that cost 200×
 - **Operator's instruction: reduce comment verbosity, and optimise.** Both done
