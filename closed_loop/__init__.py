@@ -1,30 +1,20 @@
-"""Closed loop — fire an output from what an instrument is measuring.
+"""Closed loop (phase 5) — fire an output from what an instrument is measuring.
 
-Phase 5. `acq/sync.py`'s bus fires named events at a *time*; this is the other kind,
-depending on what the animal is doing.
+`acq/sync.py`'s bus fires events at a *time*; this fires on what the animal is
+doing. `settings.py` is the decision (Qt-free), `worker.py` its thread at
+POLL_HZ, `panel.py` the widgets and the arming switch.
 
-    settings.py   `SignalSource`, `LoopSettings`, `LoopRule` — the decision,
-                  pure and Qt-free
-    worker.py     `ClosedLoopWorker`, its own thread at POLL_HZ
-    panel.py      the rule's widgets and the arming switch
+- **Its own thread**, because a rule on the 30 Hz display tick inherits every
+  preview stall. It polls a non-consuming snapshot — `get_latest()` hands each
+  sample out once, and the display is already that consumer.
+- **The actuation is not on this thread**: the worker emits `fired`, the adapter
+  re-emits it on the trigger bus, so a rule-driven puff takes the same path as a
+  scheduled one.
+- **Arming is deliberately not in `LoopSettings`**, so it cannot be persisted —
+  as with the LED in audit #4, a restored "armed" fires the puffer at launch.
 
-**Why a thread.** A rule on the 30 Hz display tick inherits every stall the
-camera previews have. It *polls* rather than consumes: `get_latest()` hands each
-sample out once and the display is already that consumer, so the loop reads a
-non-consuming snapshot.
-
-**The decision is on the loop thread; the actuation is not.** The worker emits
-`fired` and the adapter re-emits it on the trigger bus, so a rule-driven puff
-takes the identical path to a scheduled one.
-
-**Arming is deliberately absent from `LoopSettings`** so it cannot be persisted
-— as with the LED in audit #4, restoring "armed" means a rule that fires the
-puffer at next launch, before anyone checked the threshold.
-
-Re-exported lazily (PEP 562) so `from acqApp.closed_loop import LoopRule` keeps
-working, while `acqApp.closed_loop.settings` stays importable without Qt —
-eager re-exports here would run `panel.py` and pull PyQt6 in through the parent
-package, which is exactly what splitting the rule out was for.
+Re-exported lazily (PEP 562) so `acqApp.closed_loop.settings` stays importable
+without Qt; eager re-exports would pull PyQt6 in through the parent package.
 """
 from __future__ import annotations
 

@@ -1,17 +1,15 @@
 """Per-subsystem wiring for the main window.
 
-Each instrument is one `ModuleAdapter` subclass owning its whole lifecycle, and
-`MainWindow` just iterates — replacing six near-identical `if "foo" in enabled:`
-branches in each of four methods, which had already drifted apart.
+Each instrument is one `ModuleAdapter` subclass owning its whole lifecycle and
+`MainWindow` just iterates, replacing six near-identical `if "foo" in enabled:`
+branches in each of four methods.
 
-Adapters reach the window only through `devices.ModuleHost`. That surface is
-written down there, not listed here: this docstring used to list it and was
-already wrong (seven members named, nine used). `test_device_contracts` checks
-every `self.win.X` in this package against it.
+Adapters reach the window only through `devices.ModuleHost` — the surface is
+written down *there*, since this docstring once listed it and was already wrong.
+`test_device_contracts` checks every `self.win.X` in this package against it.
 
-One file per instrument — the unit people actually work in, and adapters share
-only `base.py` and never import each other. `base.py` holds `ModuleAdapter`, the
-two shared widget builders and the plot constants.
+One file per instrument; adapters share only `base.py` and never import each
+other.
 
 Lifecycle, in call order:
 

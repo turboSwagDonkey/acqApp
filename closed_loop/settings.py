@@ -25,11 +25,10 @@ class SignalSource:
     """A live scalar a rule can watch.
 
     `read()` -> `(value, acquired_at)`, or None while the signal isn't running
-    yet (normal, not an error). `acquired_at` is the `perf_counter()` instant
-    the sample was ACQUIRED — the domain `Recorder.put(at=)` wants — so a fire
-    lands in the file at its cause, not at the GUI hop after it.
-
-    Called from the loop's thread, and must not consume.
+    (normal, not an error). `acquired_at` is the `perf_counter()` instant of
+    ACQUISITION — `Recorder.put(at=)`'s domain — so a fire lands in the file at
+    its cause, not at the GUI hop after. Called from the loop thread; must not
+    consume.
     """
     key:   str                                       # stable id: config + file
     label: str                                       # what the combo shows
@@ -39,9 +38,8 @@ class SignalSource:
 
 @dataclass
 class LoopSettings:
-    """The rule, as persisted — note what is *not* here: `armed`. All of this
-    reaches `acqapp_local.json` and the session file, so arming lives on the
-    panel and no code path can restore a rig into an armed state."""
+    """The rule, as persisted. All of this reaches `acqapp_local.json` and the
+    session file — hence no `armed`: nothing can restore a rig into it."""
     source:       str   = ""          # SignalSource.key; "" = first on offer
     comparison:   str   = "above"     # one of COMPARISONS
     threshold:    float = 50.0        # in the source's units
@@ -59,17 +57,16 @@ class LoopRule:
     One `update()` per sample, True on exactly the samples that should actuate.
     Each gate covers a way a bare threshold misbehaves on a real signal:
 
-      `hold_s`       noise crosses a threshold many times a second; holding
-                     turns a crossing into an event
-      `refractory_s` without it a condition that stays true fires on every
-                     sample — 200 puffs a second
+      `hold_s`       noise crosses a threshold many times a second
+      `refractory_s` a condition that stays true would fire on every sample —
+                     200 puffs a second
       `retrigger`    True: re-fire each refractory while it holds. False: one
                      fire per bout, the signal must fall back first
-      `max_fires`    session ceiling, so a wrong rule is wrong a bounded number
-                     of times
+      `max_fires`    session ceiling: a wrong rule is wrong a bounded number of
+                     times
 
-    `update(None, t)` is "no signal yet" and never fires — which matters for
-    `below`: a source that isn't running must not read as zero and satisfy it.
+    `update(None, t)` never fires — which matters for `below`, where a source
+    that isn't running must not read as zero and satisfy it.
     """
 
     def __init__(self, settings: LoopSettings | None = None) -> None:
@@ -85,16 +82,16 @@ class LoopRule:
         self.n_fires = 0
 
     def configure(self, settings: LoopSettings) -> None:
-        """Adopt new settings mid-session, keeping the fire history — nudging a
-        threshold must not hand back a fresh `max_fires` budget, nor let the next
-        sample fire inside the refractory window."""
+        """Adopt new settings mid-session, keeping the fire history: nudging a
+        threshold must not hand back a fresh `max_fires` budget or bypass the
+        refractory window."""
         self._s = settings
         self._since = None
 
     def idle(self) -> None:
-        """Called while disarmed. Forgets the in-progress hold, so the timer
-        starts at the moment of arming rather than from whenever the animal
-        began running. Count and refractory survive."""
+        """Called while disarmed. Drops the in-progress hold, so `hold_s` starts
+        at arming and not from whenever the animal began running. Count and
+        refractory survive."""
         self._since = None
         self._cleared = True
 
@@ -103,8 +100,8 @@ class LoopRule:
         return self._s
 
     def satisfied(self, value: float | None) -> bool:
-        """Is the condition true right now? Ignores every gate — it is what the
-        panel shows, so a threshold can be set against a live animal disarmed."""
+        """Is the condition true right now? Ignores every gate — the panel shows
+        it, so a threshold can be set against a live animal while disarmed."""
         if value is None:
             return False
         return (value > self._s.threshold if self._s.comparison == "above"

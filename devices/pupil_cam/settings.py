@@ -1,8 +1,4 @@
-"""Pupil camera — the settings model. No Qt (the widgets are in `panel.py`).
-
-Bundles the camera (exposure, frame rate), the tracking parameters fed to
-`tracking.detect`, and the eye-tracking LED toggle.
-"""
+"""Pupil camera settings model — camera, tracking, LED. No Qt (see `panel.py`)."""
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -19,39 +15,25 @@ class PupilSettings:
     polarity:     str   = "rising"  # dark pupil → bright iris, scanning outward
     min_strength: float = 4.0       # min |gradient| (grey levels/px) per ray
     fit:          str   = "circle"  # "circle" or "ellipse"
-    # Which qualifying edge on a ray is the pupil — see rays._edges_along_rays.
-    # "first" (innermost) is right by construction; "strongest" locks onto the
-    # eyelid margin whenever it out-contrasts the pupil edge, which on real IR
-    # footage is always.
+    # "first" = innermost edge, right by construction; "strongest" locks the
+    # eyelid margin, which out-contrasts the pupil on real IR footage.
     edge_select:    str   = "first"
-    # Smoothing along each ray, px. Raise it if the pupil edge is being lost in
-    # fur or lash texture; 1.5 tracks the rig's full-frame footage as it stands.
-    smooth_sigma:   float = 1.5
-    # Confidence floor below which PupilTracker calls the frame lost.
-    # conf = (rays kept / rays cast) * exp(-rms/2). Only ~half the rays ever
-    # find an edge on a real eye (lashes, lids, the glint), which caps a *good*
-    # real fit around 0.28 — so the old 0.25 threw away frames whose rms was
-    # 1.3 px. Measured on rig footage: 0.10 keeps them and still rejects the
-    # blinks. Raise it towards 0.3 for a clean synthetic disc.
+    smooth_sigma:   float = 1.5     # px along each ray; raise if fur/lash noise wins
+    # conf = (rays kept / cast) * exp(-rms/2). Half the rays miss on a real eye,
+    # capping a *good* fit near 0.28. Raise towards 0.3 for a synthetic disc.
     min_confidence: float = 0.10
     # ── temporal filtering (PupilTracker) ──
-    # Smoothing runs over CONSECUTIVE tracked frames only, so a blink still
-    # reads as lost frames rather than being interpolated over. The median
-    # removes the one-or-two-frame excursions a half-closed lid causes; the EMA
-    # takes out the residual jitter. 1 / 1.0 disables each.
+    # Runs over CONSECUTIVE tracked frames only, so a blink stays lost frames
+    # rather than being interpolated across. 1 / 1.0 disables each.
     smooth_median:  int   = 3        # frames in the median window
     smooth_ema:     float = 0.5      # EMA weight on the newest frame
-    # Consecutive losses before the tracker re-thresholds. It still keeps the
-    # pre-blink estimate if that finds nothing, so a reopening eye resumes
-    # where it left off instead of being hunted for from scratch.
+    # Losses before re-thresholding; the pre-blink estimate is kept if that
+    # finds nothing, so a reopening eye resumes instead of being hunted for.
     reseed_after:   int   = 30
-    # Replay a recorded clip instead of the camera — "" = use the camera (or the
-    # mock when emulating). For tuning the tracker on real footage; a session
-    # recorded from it is not rig data, and the metadata says so.
+    # Replay a clip instead of the camera; "" = camera/mock. Recorded in the
+    # session metadata — replayed frames must never read as rig data.
     video_path:   str   = ""
-    # Display-only: draw the annulus and per-ray edge points over the preview,
-    # and allow click-to-seed. Persisted (it is a working preference, not
-    # runtime state like the LED) but deliberately absent from the session
-    # metadata — how the operator was looking at the fit is not a property of
-    # the recording.
+    # Draw the annulus and per-ray edges, and allow click-to-seed. Persisted but
+    # kept out of the metadata: how the operator looked at the fit is not a
+    # property of the recording.
     show_search:  bool  = False

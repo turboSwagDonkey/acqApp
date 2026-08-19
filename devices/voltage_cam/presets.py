@@ -15,13 +15,12 @@ ROWS: fewer rows → proportionally higher fps. Datasheet maxima (fps):
          8      15200          2360                5260
          4      19500          3960                7200
 
-Labels show the **USB3.1 Gen1 16-bit** rate; CoaXPress is ~7× higher. Actual
-fps = min(readout max, 1/exposure), and vertical binning multiplies it further.
-ROI sizes and positions are multiples of 4, as DCAM-API requires.
+Actual fps = min(readout max, 1/exposure); vertical binning multiplies it
+further. ROI sizes and positions are multiples of 4, as DCAM-API requires.
 
 The whole table is the sensor's physics and stays complete; only rows ≥
-MIN_PRESET_ROWS are OFFERED as presets. Those are separate questions — see the
-note there before deleting a row.
+MIN_PRESET_ROWS are OFFERED as presets. Separate questions — see the note there
+before deleting a row.
 """
 from __future__ import annotations
 import math
@@ -61,15 +60,14 @@ def _band(label: str, rows: int) -> ResolutionPreset:
 
 # (rows, USB3.1 Gen1 16-bit fps, CoaXPress fps), datasheet, slowest → fastest.
 #
-# WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both interfaces. This rig is
-# cabled over **CoaXPress** (Active Silicon FireBird 4xCXP6-2PE8), so
-# DEFAULT_LINK is CXP and full frame should run ~8.7 ms → 115 fps. An earlier
-# 2026-07-29 measurement of 15.8 fps was USB3 bandwidth with USB enumerated, and
-# does not apply here. Nothing in software picks the link — DCAM enumerates it;
-# this constant only chooses which datasheet column the label shows.
+# WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both. This rig is cabled over
+# **CoaXPress** (Active Silicon FireBird 4xCXP6-2PE8) — full frame ~8.7 ms →
+# 115 fps. The 2026-07-29 measurement of 15.8 fps was USB3 and does not apply.
+# Nothing in software picks the link; DCAM enumerates it, and DEFAULT_LINK only
+# chooses which column the label shows.
 #
-# ESTIMATES, for UI and buffer sizing. At run time get_frame_timings() is
-# authoritative, and the panel shows that measured rate once capture starts.
+# ESTIMATES, for UI and buffer sizing. get_frame_timings() is authoritative at
+# run time, and the panel shows that measured rate once capture starts.
 _ROWS_FPS_BOTH: List[tuple[int, float, float]] = [
     (2368, 15.7,  115.0),
     (2304, 16.2,  118.0),
@@ -93,9 +91,8 @@ DEFAULT_LINK: str = CXP
 _ROWS_FPS: List[tuple[int, float]] = [(r, u) for r, u, _c in _ROWS_FPS_BOTH]
 _ROWS_FPS_CXP: List[tuple[int, float]] = [(r, c) for r, _u, c in _ROWS_FPS_BOTH]
 
-
-def _table(link: str) -> List[tuple[int, float]]:
-    return _ROWS_FPS_CXP if link == CXP else _ROWS_FPS
+# Sorted once: readout_fps() is called on every panel update.
+_SORTED = {USB: sorted(_ROWS_FPS), CXP: sorted(_ROWS_FPS_CXP)}
 
 
 def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
@@ -105,11 +102,10 @@ def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
     return f"{tag} · {fps_usb:g} USB / {fps_cxp:g} CXP fps"
 
 
-# Smallest band the UI offers. Below 512 rows the sensor outruns the writer by
-# so much that the preset can only produce an unrecordable configuration.
-# The table above deliberately keeps its smaller entries: readout_fps()
-# interpolates them for BINNED ROIs — 512 rows at bin 4 reads out like 128 — so
-# trimming the table would corrupt the estimate it exists to make.
+# Smallest band the UI offers: below 512 rows the sensor outruns the writer so
+# far that the preset can only make an unrecordable session. The table keeps its
+# smaller entries on purpose — readout_fps() interpolates them for BINNED ROIs
+# (512 rows at bin 4 reads out like 128).
 MIN_PRESET_ROWS: int = 512
 
 PRESETS: Dict[str, ResolutionPreset] = {}
@@ -128,19 +124,15 @@ DEFAULT_PRESET: str = f"{SENSOR_W}x{SENSOR_H}"    # full frame
 
 
 def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
-    """
-    Datasheet 16-bit readout ceiling for an ROI of `rows` rows on `link`.
+    """Datasheet 16-bit readout ceiling for an ROI of `rows` rows on `link`.
 
-    Readout is row-by-row, so fps ≈ const / rows over most of the range
-    (2368·15.7 ≈ 1024·36.4 ≈ 512·72.3 ≈ 37 000); below ~128 rows fixed per-frame
-    overhead dominates and the datasheet numbers fall off that line, so we
-    interpolate the table rather than extrapolate the 1/rows law.
-
-    Vertical binning reads out `rows/binning` lines, so it scales the ceiling
-    the same way a smaller ROI does.
+    fps ≈ const / rows over most of the range (2368·15.7 ≈ 1024·36.4 ≈ 37 000),
+    but below ~128 rows fixed per-frame overhead dominates and the datasheet
+    falls off that line — hence interpolating the table, not extrapolating 1/rows.
+    Vertical binning reads out `rows/binning` lines, so it scales the same way.
     """
     eff = max(1.0, rows / max(binning, 1))
-    tbl = sorted(_table(link))                    # ascending rows
+    tbl = _SORTED[CXP if link == CXP else USB]    # ascending rows
     if eff <= tbl[0][0]:
         return tbl[0][1]
     if eff >= tbl[-1][0]:
@@ -165,8 +157,8 @@ class AcqConfig:
     binning:      int   = DEFAULT_BINNING
     exposure_us:  float = 10_000.0      # µs; 10 ms default for voltage imaging
     trigger_mode: str   = DEFAULT_TRIGGER
-    # Physical link used for the datasheet ESTIMATE only. The worker replaces
-    # this estimate with the camera's own get_frame_timings() at start.
+    # Datasheet ESTIMATE only; the worker replaces it with the camera's own
+    # get_frame_timings() at start.
     link:         str   = DEFAULT_LINK
 
     @property
@@ -186,9 +178,8 @@ class AcqConfig:
         return max(int(h) * int(w) * 2, 1)
 
     # ── Frame-rate budget ────────────────────────────────────────────────────
-    # Actual fps = min(sensor readout ceiling, 1/exposure). Both limits are
-    # surfaced so the UI can say *which* one is binding — an exposure longer
-    # than the readout period silently throws away the preset's speed.
+    # fps = min(readout ceiling, 1/exposure). Both are surfaced so the UI can
+    # say *which* binds: an over-long exposure silently throws away the preset.
 
     @property
     def readout_fps(self) -> float:

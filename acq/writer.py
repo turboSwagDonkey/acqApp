@@ -30,12 +30,9 @@ import numpy as np
 def attr_value(v: Any) -> Any:
     """Coerce one metadata value into something HDF5 stores in its own type.
 
-    Everything used to go through `str()`, so `wheel_volts_per_rev` landed as
-    `"4.912"` and `emulated` as `"False"` — which is truthy.
-
-    `None` becomes `""`: HDF5 has no null, and an empty string reads as "not
-    set" without pretending to be a number, where 0.0 for an unset
-    volts-per-rev would be indistinguishable from a measured zero.
+    Everything used to go through `str()`, so `emulated` landed as `"False"` —
+    truthy. `None` becomes `""`: HDF5 has no null, and 0.0 for an unset
+    volts-per-rev is indistinguishable from a measured zero.
     """
     if v is None:
         return ""
@@ -58,11 +55,11 @@ class Writer(ABC):
         ...
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
-        """Add or overwrite file metadata after open().
+        """Add or overwrite file metadata after open(). Optional.
 
-        Some facts are known only once the recording is over — which timebase
-        the camera gave us, how much was shed — and belong in the file rather
-        than a status message that scrolls away. Optional.
+        Some facts are known only once the recording is over — the camera's
+        timebase, how much was shed — and belong in the file rather than in a
+        status message that scrolls away.
         """
 
     @abstractmethod
@@ -73,16 +70,12 @@ class HDF5Writer(Writer):
     """Streams any number of named image/scalar channels into one HDF5 file.
 
     Images are UNCOMPRESSED by default: single-threaded gzip manages a fraction
-    of the rate on noisy 16-bit data, so compressing stalls the writer, backs up
-    the ring buffer and drops frames.
+    of the rate on noisy 16-bit data, so it stalls the writer, backs up the ring
+    and drops frames. Pass `compression="gzip"` only for slow streams.
 
     Measured end to end 2026-08-17 (ORCA → Recorder → here → NVMe): **1004 MB/s
-    sustained**. Full frame offers ~2100 MB/s, so a bin-1 recording keeps ~53 %
-    of its frames; 2×2 binning keeps 100 %. The earlier "~330 MB/s at full
-    frame" in this docstring was the USB3-era camera rate, not a writer figure.
-
-    Pass `compression="gzip"` only for slow streams, or when disk space matters
-    more than keeping up.
+    sustained**, against ~2100 MB/s offered at full frame — so bin 1 keeps ~53 %
+    of its frames and 2×2 binning keeps 100 %.
     """
 
     _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
@@ -101,10 +94,8 @@ class HDF5Writer(Writer):
     def open(self, path: Path, metadata: dict[str, Any]) -> None:
         """Create the session file. Raises FileExistsError if `path` is taken.
 
-        Mode "x", not "w": an existing session file is hours of animal time and
-        there is no undo. Callers pick a free name (`SaveConfig.resolve(
-        unique=True)`); this is the backstop for any that don't. Pass
-        `overwrite=True` to the constructor for the rare deliberate clobber.
+        Mode "x", not "w": an existing session file is hours of animal time with
+        no undo. `overwrite=True` for the rare deliberate clobber.
         """
         import h5py
         path.parent.mkdir(parents=True, exist_ok=True)

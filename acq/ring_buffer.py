@@ -1,23 +1,16 @@
 """
 Bounded ring buffer for acquisition samples.
 
-Producer (acquisition thread) puts items; consumer (writer thread) gets them.
-When full, the oldest item is dropped and drop_count is incremented — the GUI
-can poll drop_count to show a warning. Thread-safe via a single Lock.
+Producer (acquisition thread) puts, consumer (writer thread) gets. On overflow
+the oldest item goes and `drop_count` rises, which the GUI polls for a warning.
 
-Two independent bounds:
-  • maxlen   — item count (protects scalar-dominated streams).
-  • maxbytes — total buffered payload bytes (protects against full-frame images
-               ballooning RAM: a handful of 20 MB frames would blow past any
-               sane count long before maxlen). Requires `sizeof` to measure an
-               item's payload.
+Two independent bounds: `maxlen` (item count) and `maxbytes` (buffered payload,
+so a handful of 20 MB frames cannot balloon RAM inside any sane item count).
 
-Under EITHER overload the buffer sheds the oldest *sized* item (an image frame)
-in preference to a zero-byte one (a scalar/event sample). Frames are redundant
-with the live preview and plentiful; a sparse stimulus/behaviour event is
-critical to keep, so events survive a frame backlog. A zero-byte item is only
-dropped once nothing sized remains. At least one item is always kept, so a
-single item larger than maxbytes is buffered rather than dropped on arrival.
+Under EITHER, the buffer sheds the oldest *sized* item — a frame — before a
+zero-byte one. Frames are plentiful and redundant with the preview; a sparse
+stimulus/behaviour event is not, so events survive a frame backlog. One item is
+always kept, so an item larger than `maxbytes` is buffered rather than dropped.
 """
 from __future__ import annotations
 
@@ -49,17 +42,14 @@ class RingBuffer:
         with self._lock:
             self._q.append((item, size))
             self._bytes += size
-            # Count cap: shed frames first, same rule as the byte cap below.
-            # Dropping the oldest item outright would discard exactly the
-            # zero-byte event samples the byte cap exists to protect — and it
-            # is the cap that bites first, since 512 items is about a second
-            # of writer stall at full frame rate.
+            # Count cap: frames first, same rule as the byte cap. Dropping the
+            # oldest outright would discard exactly the events the byte cap
+            # protects — and this cap bites first, 512 items being about a
+            # second of writer stall at full frame rate.
             while len(self._q) > self._maxlen and len(self._q) > 1:
                 if self._evict_oldest_sized():
                     continue
-                # Nothing sized left: the backlog really is events, so the
-                # oldest one has to go.
-                _old, osize = self._q.popleft()
+                _old, osize = self._q.popleft()     # backlog really is events
                 self._bytes -= osize
                 self.drop_count += 1
             # Byte cap: shed the oldest *sized* item (a frame); leave scalar

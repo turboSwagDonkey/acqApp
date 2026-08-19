@@ -1,23 +1,16 @@
 """
 Master synchronisation controller.
 
-Owns the single session-wide SessionClock, drives a QTimer for periodic ticks,
-and schedules named trigger events (e.g. fire the puffer at t+5 s). Every
-device timestamps its data against this same clock (via the Recorder), so all
-streams share one time origin.
+Owns the session-wide SessionClock, drives a QTimer for periodic ticks, and
+schedules named trigger events (fire the puffer at t+5 s). Every device
+timestamps against this same clock via the Recorder, so all streams share one
+time origin.
 
-Usage
------
-    clock = SessionClock()
-    sync  = SyncController(clock)
-
-    sync.tick.connect(lambda t: status_bar.showMessage(f"{t:.1f} s"))
-    sync.trigger_fired.connect(puffer.fire)
-
+    sync = SyncController(SessionClock())
+    sync.tick.connect(...); sync.trigger_fired.connect(puffer.fire)
     sync.schedule_trigger("puffer", delay_s=5.0, duration_s=0.2)
-    sync.start_all()      # starts the clock (t=0) and the tick timer
-    ...
-    sync.stop_all()       # stops the tick timer and the clock
+    sync.start_all()      # clock to t=0, tick timer on
+    sync.stop_all()
 """
 
 from __future__ import annotations
@@ -37,12 +30,9 @@ class _TriggerSpec:
 
 
 class SyncController(QObject):
-    """Central timing and trigger bus for all acquisition devices.
-
-    Owns the shared SessionClock and a periodic tick; schedules named triggers
-    (e.g. fire the puffer at t+5 s). Device workers are started/stopped by the
-    owner (MainWindow) around start_all()/stop_all(), which bracket the clock.
-    """
+    """Central timing and trigger bus. Device workers are started and stopped by
+    the owner (MainWindow) around start_all()/stop_all(), which bracket the
+    clock."""
 
     tick           = pyqtSignal(float)      # elapsed seconds, fires every tick_ms
     trigger_fired  = pyqtSignal(str, float) # (trigger_name, duration_s)
@@ -69,11 +59,8 @@ class SyncController(QObject):
     def schedule_trigger(self, name: str,
                          delay_s: float,
                          duration_s: float = 0.0) -> None:
-        """
-        Fire trigger `name` at `delay_s` seconds after start_all().
-        `duration_s` is passed along in the signal for devices that need it
-        (e.g. the puffer needs to know how long to stay open).
-        """
+        """Fire trigger `name` at `delay_s` after start_all(). `duration_s`
+        rides along in the signal for devices that need it."""
         self._triggers.append(_TriggerSpec(name, delay_s, duration_s))
 
     def clear_triggers(self) -> None:
@@ -82,12 +69,9 @@ class SyncController(QObject):
     def fire(self, name: str, duration_s: float = 0.0) -> None:
         """Fire trigger `name` NOW, on the same bus as the scheduled ones.
 
-        This is the closed loop's way in (`closed_loop.py`): the rule decides
-        on its own thread, hands the decision to the GUI thread, and it arrives
-        here. Routing it through the bus rather than calling the target device
-        directly keeps every actuation in the app leaving from one place, and
-        makes a rule-driven puff indistinguishable downstream from a scheduled
-        one — including in the session file.
+        The closed loop's way in. Routing it through the bus rather than calling
+        the device keeps every actuation leaving from one place, and makes a
+        rule-driven puff indistinguishable downstream — session file included.
         """
         self.trigger_fired.emit(name, duration_s)
 

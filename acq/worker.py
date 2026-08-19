@@ -1,11 +1,10 @@
 """
 PullWorker — shared scaffolding for pull-based acquisition workers.
 
-Every device worker (camera, encoder, pupil cam, stage poller) runs on its own
-QThread, keeps only the newest sample for a ~30 Hz GUI preview, and optionally
-feeds every sample to a recording sink. That boilerplate — the lock-guarded
-latest-value snapshot, the thread-safe sink handle, and the stop()/wait() — lives
-here so each worker only has to implement run() and declare its own rate signal.
+Every device worker runs on its own QThread, keeps only the newest sample for a
+~30 Hz GUI preview, and optionally feeds every sample to a recording sink. The
+lock-guarded snapshot, the sink handle and stop()/wait() live here, so a worker
+implements only _run().
 
 Subclass contract:
     class FooWorker(PullWorker):
@@ -29,10 +28,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 
 class PullWorker(QThread):
-    # Emitted (with "TypeName: message") if _run() raises. A Python exception
-    # that escapes QThread.run() makes PyQt6 call qFatal()/abort() and take the
-    # WHOLE process down — so we catch everything here and surface it as a signal
-    # the GUI can show, instead of the app vanishing.
+    # "TypeName: message" if _run() raises. An exception escaping QThread.run()
+    # makes PyQt6 qFatal() and take the WHOLE process down, so catch everything
+    # here and surface it as a signal the GUI can show.
     error = pyqtSignal(str)
 
     _STOP_WAIT_MS = 3000        # subclasses may override

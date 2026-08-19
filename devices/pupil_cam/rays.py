@@ -14,9 +14,9 @@ from typing import Sequence
 
 import numpy as np
 
-# "first" edge mode only: how many robust sigmas of a ray's own gradient noise
-# an edge must clear, on top of `min_strength`. 4 keeps the pupil edge on real
-# footage while rejecting speckle inside the pupil at high noise.
+# "first" mode only: robust sigmas of a ray's own gradient noise an edge must
+# clear on top of `min_strength`. Sensitive — 4.0 killed 19 of 64 good rays and
+# broke the synthetic eyelid case; 1.5 satisfies that suite and the rig clip.
 _NOISE_K = 1.5
 
 # Minimum span, in px, over which an edge must not reverse to count as a step
@@ -33,16 +33,18 @@ def _bilinear(img: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
 
     x0c = np.clip(x0, 0, w - 2)
     y0c = np.clip(y0, 0, h - 2)
+    x1c, y1c = x0c + 1, y0c + 1
     fx = (xs - x0c).astype(np.float32)
     fy = (ys - y0c).astype(np.float32)
 
-    im = img.astype(np.float32, copy=False)
-    v00 = im[y0c,     x0c]
-    v01 = im[y0c,     x0c + 1]
-    v10 = im[y0c + 1, x0c]
-    v11 = im[y0c + 1, x0c + 1]
-    out = (v00 * (1 - fx) * (1 - fy) + v01 * fx * (1 - fy)
-           + v10 * (1 - fx) * fy + v11 * fx * fy)
+    # Gather, then cast. Casting the frame would copy megabytes per call to read
+    # a few thousand points, and this runs once per refinement pass per frame.
+    v00 = img[y0c, x0c].astype(np.float32)
+    v01 = img[y0c, x1c].astype(np.float32)
+    v10 = img[y1c, x0c].astype(np.float32)
+    v11 = img[y1c, x1c].astype(np.float32)
+    gx, gy = 1.0 - fx, 1.0 - fy
+    out = (v00 * gx + v01 * fx) * gy + (v10 * gx + v11 * fx) * fy
     return np.where(inside, out, np.nan)
 
 
@@ -62,13 +64,18 @@ def _ray_angles(n_rays: int, exclude_deg: Sequence[tuple[float, float]]) -> np.n
     return ang[keep]
 
 
-def _sample_annulus(frame, cx, cy, r_in, r_out, angles, samples_per_px):
-    """Unwrap the annulus → (values[n_rays, n_samples], r0, step)."""
+def _sample_annulus(frame, cx, cy, r_in, r_out, dirs, samples_per_px):
+    """Unwrap the annulus → (values[n_rays, n_samples], r0, step).
+
+    `dirs` is (cos, sin) per ray, precomputed by the caller — the annulus is
+    re-sampled once per refinement pass and the angles never change.
+    """
+    ca, sa = dirs
     n_samples = max(5, int(round((r_out - r_in) * samples_per_px)) + 1)
     radii = np.linspace(r_in, r_out, n_samples)
     step = float(radii[1] - radii[0])
-    xs = cx + radii[None, :] * np.cos(angles)[:, None]
-    ys = cy + radii[None, :] * np.sin(angles)[:, None]
+    xs = cx + radii[None, :] * ca[:, None]
+    ys = cy + radii[None, :] * sa[:, None]
     return _bilinear(frame, xs, ys), float(radii[0]), step
 
 
@@ -121,15 +128,14 @@ def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma,
       "any"     strongest transition either way
 
     `edge_select` decides *which* qualifying edge on the ray is the pupil:
-      "first"      the innermost sustained one — the default, and the only
-                   choice that is right by construction: scanning outward from
-                   inside the pupil, the boundary is whatever you meet first.
-      "strongest"  the largest gradient anywhere on the ray. Fine on a
-                   synthetic disc or a well-exposed eye, and wrong as soon as
-                   anything outside the pupil has more contrast than the pupil
-                   edge itself — on real IR footage the orbit→fur margin is a
-                   ~200 grey-level step against the pupil's ~30, so it wins
-                   every ray and the fit lands on the eyelid.
+      "first"      the innermost sustained one — right by construction, since
+                   scanning outward from inside the pupil its rim is what you
+                   meet first. The default.
+      "strongest"  the largest gradient on the ray. Fine on a synthetic disc,
+                   wrong as soon as anything outside the pupil out-contrasts its
+                   edge: on real IR footage the orbit→fur margin is ~200 grey
+                   levels against the pupil's ~30, so it wins every ray and the
+                   fit lands on the eyelid.
     """
     prof = _smooth_rows(values, smooth_sigma)
     grad = np.gradient(prof, step, axis=1)
@@ -154,14 +160,13 @@ def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma,
         k = np.argmax(score, axis=1)
         hit_row = np.ones(score.shape[0], dtype=bool)
     elif edge_select == "first":
-        # Taking the innermost edge means noise gets the first vote, so the
-        # strength floor has to rise with each ray's own noise — a fixed
-        # `min_strength` that suits a clean profile lets a speckle inside the
-        # pupil pass, and the fit then collapses inward. Robust scale (MAD of
-        # the gradient) rather than an sd, which the true edge would inflate.
+        # Innermost means noise gets the first vote, so the floor has to rise
+        # with each ray's own noise: a fixed `min_strength` lets a speckle
+        # inside the pupil pass and the fit collapses inward. MAD, not sd — the
+        # true edge would inflate an sd.
         sfin = np.where(np.isfinite(score), score, np.nan)
-        # A ray entirely outside the image is all-NaN; zero it so nanmedian has
-        # something to chew on (`hit` rejects the row anyway).
+        # A ray wholly off-image is all-NaN; zero it so nanmedian has something
+        # to chew on (`hit` rejects the row anyway).
         sfin = np.where(np.isfinite(sfin).any(axis=1, keepdims=True), sfin, 0.0)
         med = np.nanmedian(sfin, axis=1, keepdims=True)
         mad = 1.4826 * np.nanmedian(np.abs(sfin - med), axis=1, keepdims=True)
@@ -187,9 +192,9 @@ def _edges_along_rays(values, r0, step, polarity, min_strength, smooth_sigma,
     peak = score[rows, k]
     hit = hit_row & np.isfinite(peak) & (peak >= min_strength)
 
-    # parabola through (k-1, k, k+1) for the sub-pixel peak. Rows that never
-    # hit carry -inf neighbours, so zero them first rather than doing inf
-    # arithmetic — delta is discarded for those rows anyway.
+    # Parabola through (k-1, k, k+1) for the sub-pixel peak. Rows that never hit
+    # carry -inf neighbours, so zero them rather than do inf arithmetic; their
+    # delta is discarded anyway.
     kc = np.clip(k, 1, score.shape[1] - 2)
     fin = hit & np.isfinite(score[rows, kc - 1]) & np.isfinite(score[rows, kc + 1])
     sm = np.where(fin, score[rows, kc - 1], 0.0)
