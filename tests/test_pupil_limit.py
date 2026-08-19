@@ -109,7 +109,12 @@ def main() -> int:
     r.check(coarse_seed(f, THR, 10, 80, limit=(0.0, 0.0, 0.0)) is None,
             "a zero-radius circle contains nothing")
 
-    # ── 4. the crop is also why it is affordable ─────────────────────────────
+    # ── 4. the crop, when the whole-frame path actually does the work ────────
+    # Only when it does: a whole-frame call that bails at the >50 %-dark guard
+    # is cheaper than any limited one, because it gives up before labelling
+    # anything. Measured on the rig clip, 1.96 ms bailing vs 5.67 ms limited —
+    # so this is not "the limit is faster", it is "the limit does not cost the
+    # labelling of a sensor-sized frame".
     big = np.full((1208, 1928), BG, dtype=np.uint8)
     disc(big, 1400, 600, 200, DARK)     # a large dark region: real labelling work
     disc(big, 1400, 600, 30, BG)

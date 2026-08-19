@@ -237,10 +237,9 @@ class SettingsPanel(QWidget):
             "moved takes too long to be found again.")
         al.addRow("Re-seed after:", self._spn_reseed)
 
-        # Naming click-to-seed in the LABEL, not just the tooltip: on this rig
-        # the auto-seed cannot work — at threshold 60 the dark mask exceeds half
-        # the sensor and `coarse_seed` bails — so seeding by hand IS the
-        # operating procedure, and this checkbox is the only way to reach it.
+        # Click-to-seed named in the LABEL, not just the tooltip: without a
+        # search limit it is the only way to start tracking here (measured on
+        # the rig clip — auto-seed 0/151 frames at the shipped threshold).
         self._chk_search = QCheckBox("Show search overlay — click the preview "
                                      "to place the pupil")
         self._chk_search.setChecked(self._s.show_search)
@@ -250,9 +249,9 @@ class SettingsPanel(QWidget):
             "A wrong radius usually shows as rays latching onto an eyelash or a "
             "glint, which the fitted circle alone cannot tell you.\n"
             "While it is on, clicking the preview places the annulus by hand. "
-            "On this rig's framing that is the normal way to start tracking: "
-            "the automatic seed gives up when the dark region covers more than "
-            "half the frame.")
+            "Set a Search limit below and the tracker finds the eye on its own "
+            "instead; without one it gives up at this framing, because more "
+            "than half the frame is below threshold.")
         tl.addRow(self._chk_search)
         root.addWidget(trk)
         root.addWidget(self._build_limit())
@@ -298,8 +297,10 @@ class SettingsPanel(QWidget):
             "The eye only ever appears in one part of the frame on a head-fixed "
             "animal. Restricting the search to that circle stops the tracker "
             "latching onto the other dark regions — fur, the orbit, the "
-            "headplate — and is what lets the automatic seed work at this "
-            "framing at all.\nRadius 0 = search the whole frame.")
+            "headplate — and is what lets it find the eye on its own.\n"
+            "Measured on the rig clip: with no limit the automatic seed only "
+            "works for thresholds 30-45 and fails at the shipped 60; with one "
+            "it works from 25 to 80.\nRadius 0 = search the whole frame.")
         fl = QFormLayout(box)
         fl.setSpacing(4)
 

@@ -259,11 +259,13 @@ def coarse_seed(frame: np.ndarray, threshold: int = 60,
     merge into the pupil's component, and a centroid of that lands off the pupil
     while the inscribed-circle centre stays put (and its radius beats √(area/π)).
 
-    `limit` restricts the search to one disc of the frame. On this rig that is
-    the difference between working and not: unrestricted, the dark mask covers
-    more than half the sensor and this bails at its own guard (below), so
-    auto-seeding never fires. Cropping to the disc also drops the labelling and
-    distance transform from sensor-sized to ROI-sized.
+    `limit` restricts the search to one disc of the frame. Measured on the rig
+    clip: unrestricted this seeds 0/151 frames at the shipped threshold 60 (the
+    dark mask is 53 % of the sensor, so it bails at the guard below) and only
+    works at all between 30 and 45; limited it seeds 151/151 and works from 25
+    to 80. Cropping also drops the labelling and distance transform to
+    ROI-sized — though a *bailing* whole-frame call is still the cheaper one,
+    since it gives up before labelling anything.
 
     Only places the annulus — it just has to land inside the pupil.
     """
