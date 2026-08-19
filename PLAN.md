@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** — it was locking the eyelid, and the cause was in the algorithm, not the settings. Suite **642 checks, 22 files**. §5b **A3 has now triggered** (a third pupil frame source) and is the one open item. Next big piece is **DMD ROI photostimulation** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** (the eyelid lock was an algorithm bug, not a setting), the **DMD↔camera registration and ROI editor exist offline**, and a trim/optimise pass is **half done** — tracker **2.3× faster**, the homography fit **233×**. Suite **642 checks, 22 files**. §5b **A3 has triggered** and is the one open item. Next: finish §6 item 2, then **DMD ROI photostimulation at the rig** (§6 item 1). |
 
 ---
 
@@ -80,7 +80,12 @@ falling ramp and documents the opposite convention. Don't "fix" either side
 without settling which way the rig's encoder actually ramps (§7 (u)). The
 2026-08-18 pupil work is committed; nothing is pushed.
 
-**PICK UP HERE — §6 item 1: DMD ROI photostimulation.** Image with the DMD
+**PICK UP HERE — §6 item 2, the trim/optimise pass.** It is mid-way through an
+ordered file list; that item names exactly where it stopped and what is queued
+behind it. §6 item 1 (DMD ROI photostimulation) is the next *feature*, and it
+needs the rig.
+
+**§6 item 1: DMD ROI photostimulation.** Image with the DMD
 all-on, draw ROIs on that frame, project the mask back. Read that item first:
 the headline is that **the blocker is registration, not drawing** — an ROI is in
 camera pixels, a mask is in DMD mirrors, and acqApp has no measured transform
@@ -108,8 +113,9 @@ called it "superseded"; it was only optimistic by the benchmark-vs-path gap.
 
 **Two standing instructions from the operator:**
 - **Write comments terser than the surrounding style.** This codebase's prose is
-  considered too long; state the non-obvious *why* in a line and stop. A trim
-  pass took it 25 % → 23 % of the tree (§7, 2026-08-13 (p) and (q)).
+  considered too long; state the non-obvious *why* in a line and stop. Two trim
+  passes have taken it 25 % → 23 % (§7, 2026-08-13 (p), (q)) → **22.5 %**
+  (2026-08-18 (v)). The second is **unfinished** — §6 item 2 names where.
 - **Commit freely, but batch the pushes** — one at the end of a chunk of work,
   not after every commit.
 
@@ -483,7 +489,63 @@ because two of them are how a future wrong-data bug gets in.
    - Still open for the operator: whether ROIs persist across sessions, and
      whether a mask is one static pattern or a sequence.
 
-2. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
+2. **Comment-verbosity trim + optimisation pass** (operator, 2026-08-18).
+   Two jobs in one sweep over the tree, worst-first by comment+docstring ratio.
+   **Started; resume from the list below.** Tree total **23.2 % → 22.5 %**
+   (4107 → 3951 of ~17.6k lines) with no fact lost — only prose.
+
+   **Rule for the trim:** state the non-obvious *why* in a line and stop. Keep
+   every measured number, every "this cost a session" note, every
+   why-not-the-obvious-thing. Drop restatements of the code, second explanations
+   of the same point, and adjectives.
+
+   **Done** (commits `9131017`, `7b40bb9`, and the third of the session):
+   `pupil_cam/settings.py` `console.py` `closed_loop/{__init__,settings}.py`
+   `adapters/{__init__,base,dmd,closed_loop,voltage_cam}.py`
+   `pupil_cam/{track_worker,rays,tracking,fits,video}.py`
+   `acq/{worker,ring_buffer,sync,writer}.py`
+   `voltage_cam/{presets,acquisition}.py` `dmd/{alp,calibration}.py`
+   `tests/_harness.py`
+
+   **Not done, in order** — highest ratio first, which is where the prose is:
+   `voltage_cam/_check_link.py`, `acq/{devices,recorder}.py`,
+   `adapters/{wheel,pupil_cam,stage}.py`, `tests/test_encoder_derive.py`,
+   `tests/test_device_contracts.py`, `stage/{settings,control,driver}.py`,
+   `dialogs.py`, `saving/config.py`, `probe.py`, `config.py`,
+   `pupil_cam/{acquisition,avi}.py`, `closed_loop/worker.py`,
+   `dmd/{control,roi,roi_panel}.py`, `puffer/control.py`, the remaining tests.
+
+   **Two files are deliberately excluded, and stay excluded until told:**
+   - `devices/wheel/acquisition.py` — carries the operator's uncommitted `_SIGN`
+     flip. Trimming it would make that change impossible to commit on its own.
+   - `main.py` — the operator's active file (§0). 122 comment lines, the single
+     biggest remaining block, and untouched on purpose.
+
+   **Optimisations found so far, all behaviour-identical and all measured:**
+   - `calibration._homography` called `np.linalg.svd(A)` with the default
+     `full_matrices=True` on a (2n, 9) matrix, building and discarding a
+     (2n, 2n) U. **1633 ms → 7 ms** over 3169 points, rms identical. This is in
+     the path the rig calibration will run.
+   - `rays._bilinear` cast the **whole frame** to float32 per call to read a few
+     thousand annulus points. Gather first, cast after.
+   - `find_circular_edge` hoists cos/sin out of the refinement loop;
+     `coarse_seed` uses `argpartition` for its top-4 blobs; `fits._ransac_circle`
+     does all 48 circumcircles and their residuals in one broadcast.
+     Together with the above: tracker **9.27 → 4.00 ms/frame** (108 → 250 fps)
+     on a 1600×1200 synthetic eye, same radius to 2 dp.
+   - `presets.readout_fps` sorted its datasheet table on every call.
+
+   **Queued, blocked on the `_SIGN` question** (§7 (u)): `_EncoderBase._report`
+   runs `np.polyfit` **per sample** — 120 Hz × an SVD-backed lstsq over ~60
+   points. A closed-form slope (`cov(t,p)/var(t)`) is ~10× cheaper and exact.
+   Cannot be done without touching the excluded file above.
+
+   **How to verify anything in this item:** `tests/run_all.py` **and**
+   `devices/pupil_cam/_test_tracking.py` — the second is what covers the pupil
+   maths against ground truth, and an optimisation that quietly changed a fit
+   would show there first.
+
+3. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
    found a real bug, not a tuning problem.** See §7 (u). Kept because the three
    findings underneath it are the durable part:
    - **No decoder was needed after all.** The rig's clip
@@ -506,7 +568,7 @@ because two of them are how a future wrong-data bug gets in.
      overlay** → click) is the operating procedure, not a fallback.
    - `../rig_captures/` holds **encoder CSVs only** — no pupil footage there.
 
-3. **Make full-frame recording fit the writer.** This is the real constraint and
+4. **Make full-frame recording fit the writer.** This is the real constraint and
    it is now the only one: ~2223 MB/s acquired against ~1165–1200 written, so
    about half the frames cannot be stored. The levers, and the one measurement
    that picks between them:
@@ -540,7 +602,7 @@ because two of them are how a future wrong-data bug gets in.
      `test_readout_fps` hold that line apart, one of them the control that the
      table still carries what the dropdown does not.
 
-4. **Project through the full app.** *Half of this closed on 2026-08-12, on
+5. **Project through the full app.** *Half of this closed on 2026-08-12, on
    this machine* — everything short of emitting light now runs through the
    **app's** path (the adapter and panel, not just the standalone script of
    §5 #5): the real ALP opens as `ALP-4.2 1024x768` with the API resolved from
@@ -557,7 +619,7 @@ because two of them are how a future wrong-data bug gets in.
    overrides scale, rotation and offset** by design, so a sweep with `fit` on
    measures nothing. The panel is honest about the second: it greys those
    spinboxes out.
-5. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
+6. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
    never seen an animal, and the one number it needs cannot be guessed here:
    **what wheel speed counts as "running"** for this rig's V/rev and diameter.
    The tab is designed for finding it — disarmed, the rule still evaluates and
@@ -565,7 +627,7 @@ because two of them are how a future wrong-data bug gets in.
    against a live animal without actuating anything. Arm only after that reads
    sensibly. Start with the puffer (a puff is recoverable; a stimulus train
    mid-experiment is not), `retrigger` off, and a `max_fires` ceiling.
-6. **Decide which wheel speed a rule should watch.** The panel offers both and
+7. **Decide which wheel speed a rule should watch.** The panel offers both and
    the file records the choice, but the default is `wheel_speed_live` on the
    grounds that a closed loop should act while the animal runs. Measured this
    session: the recorded speed crosses the same threshold **1.15 s** after the
@@ -611,6 +673,36 @@ because two of them are how a future wrong-data bug gets in.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-18 (v) — a trim pass, and two numpy defaults that cost 200×
+- **Operator's instruction: reduce comment verbosity, and optimise.** Both done
+  in one sweep, worst-first by comment+docstring ratio. Tree **23.2 % → 22.5 %**
+  so far and the pass is **not finished** — §6 item 2 carries the ordered list of
+  what is left, so it resumes without re-deriving anything.
+- **The big one: `calibration._homography` called `np.linalg.svd(A)` with the
+  default `full_matrices=True`.** Only the 9×9 `Vh` is ever used, but on a
+  (2n, 9) design matrix the default also builds a (2n, 2n) `U` — at 3169
+  correspondences that is 6338², ~320 MB, computed and thrown away. **1633 ms →
+  7 ms**, rms 0.422 px identical to 3 dp. It sits in the calibration path the
+  rig sweep will run, re-fitting per rejection iteration; it would have made the
+  sweep feel broken and been blamed on the hardware.
+- **The same shape of mistake in `rays._bilinear`**, which cast the **whole
+  frame** to float32 on every call to read a few thousand annulus points — a
+  ~7 MB copy per refinement pass, 2–3 per frame. Gather first, cast after.
+  With cos/sin hoisted out of the refinement loop, `argpartition` for
+  `coarse_seed`'s top-4 blobs, and `_ransac_circle`'s 48 circumcircles done in
+  one broadcast: **9.27 → 4.00 ms/frame, 108 → 250 fps**, same radius to 2 dp.
+  **The lesson is one lesson twice: a numpy default sized for the *whole* array
+  when only a corner of the result is wanted.** Worth looking for elsewhere.
+- **Nothing changed behaviour.** Every optimisation was checked against both
+  suites — `run_all.py` at 642 checks and `_test_tracking.py` 15/15 — and the
+  two benchmarks report identical fits, not merely passing ones.
+- **Two files were left alone on purpose and both are named in §6 item 2:**
+  `wheel/acquisition.py` (holds the uncommitted `_SIGN` flip — trimming it would
+  make that impossible to commit alone) and `main.py` (the operator's file).
+  The wheel one also hides a live optimisation: `_report` runs `np.polyfit`
+  **per sample** at 120 Hz where a closed-form slope is exact and ~10× cheaper.
+- Commits `9131017`, `7b40bb9` and this session's third. Still nothing pushed.
 
 ### 2026-08-18 (u) — the pupil tracker was locking the eyelid; a real bug, not a setting
 - **The tracker never worked on a real eye, and no parameter could have fixed

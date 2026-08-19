@@ -137,11 +137,10 @@ class VoltageCamModule(ModuleAdapter):
         def sink(item) -> None:
             """The worker sends (frame, acquired_at, index).
 
-            `acquired_at` is when the CAMERA says the frame was taken, which is
-            not when this batch reached us — passing it through is what keeps
-            the recorded frame times at the true frame rate. The index is the
-            camera's own counter, recorded as its own stream so a dropped frame
-            shows up as a jump rather than silently closing the gap.
+            `acquired_at` is when the CAMERA says it was taken, not when the
+            batch reached us — that is what keeps recorded frame times at the
+            true rate. The index is the camera's own counter, its own stream so
+            a dropped frame shows as a jump rather than closing the gap.
             """
             frame, at, index = item
             rec.put("voltage_cam", frame, at=at)
@@ -156,26 +155,25 @@ class VoltageCamModule(ModuleAdapter):
                 "cam_binning":     cfg.binning,
                 "cam_exposure_us": cfg.exposure_us,
                 "cam_trigger":     cfg.trigger_mode,
-                # Placeholder: no frame has arrived yet to settle it. Overwritten
-                # by final_metadata(), and left here so the attribute still
-                # exists if the app dies mid-recording.
+                # Placeholder — no frame has settled it yet. Overwritten by
+                # final_metadata(); here so the attribute exists at all if the
+                # app dies mid-recording.
                 "cam_timestamp_source": self._timestamp_source()}
 
     def _timestamp_source(self) -> str:
-        """Read straight off the worker — both twins declare it
-        (`TimestampedWorker`). "unknown" is reserved for *no worker at all*,
-        which is a different fact from a worker that failed to say."""
+        """Off the worker — both twins declare it (`TimestampedWorker`).
+        "unknown" means *no worker*, a different fact from one that
+        failed to say."""
         return "unknown" if self.worker is None else self.worker.timestamp_source
 
     def final_metadata(self) -> dict[str, Any]:
         if self.worker is None:
             return {"cam_timestamp_source": "unknown"}
         return {
-            # Whether voltage_cam/timestamps are the camera's own per-frame
-            # stamps ("camera") or the times we read them ("arrival") — the
-            # difference decides how much the frame timing can be trusted.
+            # "camera" = the camera's own per-frame stamps, "arrival" = the
+            # times we read them; decides how far the frame timing is trusted.
             "cam_timestamp_source": self.worker.timestamp_source,
-            # Frames the CAMERA discarded because we read too slowly. These are
-            # gone from the file; the gap is visible in voltage_cam_index.
+            # Discarded by the CAMERA because we read too slowly — gone from the
+            # file, visible as a gap in voltage_cam_index.
             "cam_dropped_frames": self.worker.skipped_frames,
         }

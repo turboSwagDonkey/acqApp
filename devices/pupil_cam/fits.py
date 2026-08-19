@@ -3,13 +3,12 @@ Circle and ellipse fits — the bottom of the pupil pipeline.
 
 Pure functions over edge points: no image, no state, no Qt. Kept apart from
 `tracking.py` because they are separately testable and separately wrong — a fit
-that is 3 px out still draws a plausible circle on the preview and only shows
-up as noise in an analysis months later. `tests/test_pupil_fits.py` pins each
-one against the property it was chosen for.
+3 px out still draws a plausible circle on the preview and shows up as noise in
+an analysis months later. `tests/test_pupil_fits.py` pins each one against the
+property it was chosen for.
 
 Taubin is the algebraic fit; `fit_circle_robust` wraps it in RANSAC plus
-iterative outlier rejection, which is what drops eyelashes, corneal glints and
-eyelid crossings.
+iterative outlier rejection, which drops lashes, glints and lid crossings.
 """
 from __future__ import annotations
 
@@ -69,42 +68,45 @@ def fit_circle_taubin(x: np.ndarray, y: np.ndarray):
     return float(ux + mx), float(uy + my), r
 
 
-def _circle_through_3(x, y):
-    """Circumcircle of three points → (cx, cy, r), or None if collinear."""
-    ax, ay, bx, by, cx, cy = x[0], y[0], x[1], y[1], x[2], y[2]
-    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    if abs(d) < 1e-9:
-        return None
-    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
-    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
-    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
-    return ux, uy, float(np.hypot(ax - ux, ay - uy))
-
-
 def _ransac_circle(x, y, tol: float, trials: int = 48):
     """Largest inlier set over random 3-point circumcircles, or None.
 
-    Deterministically seeded — the same frame must always give the same fit,
-    or a re-analysis of a recorded session won't reproduce.
+    Deterministically seeded — the same frame must always give the same fit, or
+    a re-analysis of a recorded session won't reproduce. All `trials`
+    circumcircles and their (trials, n) residuals are computed at once: at 48
+    trials over 64 rays, per-trial numpy calls cost more than the arithmetic.
+    Ties go to the earliest trial, as the loop this replaced did.
     """
     n = x.size
     if n < 4:
         return None
     rng = np.random.default_rng(20250730)
     tri = rng.integers(0, n, size=(trials, 3))
-    best_keep, best_n = None, 0
-    for t in tri:
-        if t[0] == t[1] or t[1] == t[2] or t[0] == t[2]:
-            continue
-        f = _circle_through_3(x[t], y[t])
-        if f is None:
-            continue
-        cx, cy, r = f
-        inl = np.abs(np.hypot(x - cx, y - cy) - r) <= tol
-        c = int(inl.sum())
-        if c > best_n:
-            best_n, best_keep = c, inl
-    return best_keep
+    tri = tri[(tri[:, 0] != tri[:, 1]) & (tri[:, 1] != tri[:, 2])
+              & (tri[:, 0] != tri[:, 2])]
+    if not len(tri):
+        return None
+
+    ax, ay = x[tri[:, 0]], y[tri[:, 0]]
+    bx, by = x[tri[:, 1]], y[tri[:, 1]]
+    px, py = x[tri[:, 2]], y[tri[:, 2]]
+    den = 2.0 * (ax * (by - py) + bx * (py - ay) + px * (ay - by))
+    ok = np.abs(den) >= 1e-9                      # collinear triples
+    if not ok.any():
+        return None
+    ax, ay, bx, by, px, py, den = (v[ok] for v in
+                                   (ax, ay, bx, by, px, py, den))
+
+    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, px * px + py * py
+    ux = (a2 * (by - py) + b2 * (py - ay) + c2 * (ay - by)) / den
+    uy = (a2 * (px - bx) + b2 * (ax - px) + c2 * (bx - ax)) / den
+    r = np.hypot(ax - ux, ay - uy)
+
+    inl = np.abs(np.hypot(x - ux[:, None], y - uy[:, None])
+                 - r[:, None]) <= tol
+    counts = inl.sum(axis=1)
+    best = int(np.argmax(counts))
+    return inl[best] if counts[best] else None
 
 
 def fit_circle_robust(x, y, sigma_k: float = 2.5, iters: int = 4,
@@ -113,23 +115,19 @@ def fit_circle_robust(x, y, sigma_k: float = 2.5, iters: int = 4,
     """
     Circle fit with iterative MAD-based outlier rejection → (cx, cy, r, keep).
 
-    Cheaper and more stable here than RANSAC: the edge points are already
-    ordered by ray and mostly correct, so a few reweighting passes converge —
-    eyelashes and eyelid crossings fall outside 2.5·MAD within one or two.
-
-    `tol_floor` keeps a near-perfect fit from rejecting good points on its own
-    numerical noise; raise it when the shape is only approximately a circle
-    (see the ellipse pre-pass in find_circular_edge).
+    The edge points are ordered by ray and mostly correct, so a few reweighting
+    passes converge — lashes and lid crossings fall outside 2.5·MAD in one or
+    two. `tol_floor` stops a near-perfect fit rejecting good points on its own
+    numerical noise; raise it when the shape is only approximately a circle.
     """
     n = x.size
     keep = np.ones(n, dtype=bool)
     best = None
 
-    # Pass A — RANSAC. A single Taubin fit is badly dragged by gross outliers
-    # (an eyelash arc, an eyelid crossing), and MAD rejection started from that
-    # biased fit happily settles on the wrong circle. Consensus over random
-    # 3-point circumcircles is indifferent to how far the outliers are, so
-    # pass B gets a starting estimate worth refining.
+    # Pass A — RANSAC. A single Taubin fit is dragged by gross outliers (a lash
+    # arc, a lid crossing) and MAD rejection started from that biased fit
+    # settles on the wrong circle. Consensus over random circumcircles is
+    # indifferent to how far the outliers are.
     cons = _ransac_circle(x, y, tol=max(2.0 * tol_floor, ransac_tol))
     if cons is not None and cons.sum() >= min_points:
         keep = cons
@@ -183,11 +181,10 @@ def fit_ellipse_robust(x, y, sigma_k: float = 2.5, iters: int = 4,
     keep = np.ones(n, dtype=bool)
     best = None
 
-    # Warm-up: peel the worst residuals before trusting a MAD. Rays that latch
-    # onto a corneal glint instead of the pupil rim are few but far out, and
-    # measured against the fit they themselves contaminated they inflate the
-    # MAD enough to mask their own rejection — the fit then quietly shrinks
-    # with every point still marked an inlier.
+    # Warm-up: peel the worst residuals before trusting a MAD. Rays latched
+    # onto a glint are few but far out, and measured against the fit they
+    # contaminated they inflate the MAD enough to mask their own rejection —
+    # the fit then quietly shrinks with every point still an inlier.
     frac = 1.0
     for _ in range(2):
         ell = fit_ellipse(x[keep], y[keep])
@@ -266,12 +263,11 @@ def fit_ellipse(x: np.ndarray, y: np.ndarray):
     x0 = (c * d2 - b2 * e2) / den
     y0 = (a * e2 - b2 * d2) / den
 
-    # Axes and orientation from the eigendecomposition of the centred quadratic
-    # form. Branching on which root of the discriminant is the major axis is
-    # easy to get backwards — this pairs each semi-axis with its own
-    # eigenvector by construction, so the angle can't drift 90° out of phase.
-    #   centred conic:  a·u² + 2b2·u·v + c·v² + Fp = 0
-    #   in eigen-coords: semi-axis along eigenvector i is sqrt(-Fp / lambda_i)
+    # Axes and orientation from the eigendecomposition of the centred conic
+    # (a·u² + 2b2·u·v + c·v² + Fp = 0; the semi-axis along eigenvector i is
+    # sqrt(-Fp/lambda_i)). Pairing each semi-axis with its own eigenvector by
+    # construction is what stops the angle drifting 90° out of phase — picking
+    # the major axis off the discriminant's roots is easy to get backwards.
     Fp = f + d2 * x0 + e2 * y0
     evals, vecs = np.linalg.eigh(np.array([[a, b2], [b2, c]], dtype=float))
     if np.any(np.abs(evals) < 1e-12):

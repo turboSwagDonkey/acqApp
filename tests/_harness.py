@@ -4,10 +4,10 @@ Plain scripts, not pytest — the rig installs only `requirements.txt`. Each tes
 runs on its own; `run_all.py` runs the set.
 
 The important part is `isolate_user_state()`. The GUI tests drive the REAL
-MainWindow, which persists as a side effect of ordinary use: the Save tab writes
-`acqapp_local.json` on every field change, and closing writes the dock layout to
-QSettings. Without isolation the tests overwrite the operator's save folder,
-subject ID and panel layout. Every test that builds a window must call it.
+MainWindow, which persists as a side effect of ordinary use — the Save tab
+writes `acqapp_local.json` on every field change, closing writes the dock layout
+to QSettings — so without it the tests overwrite the operator's save folder,
+subject ID and panel layout. Every test that builds a window calls it.
 """
 from __future__ import annotations
 
@@ -80,12 +80,9 @@ def block_real_devices(*names: str) -> None:
     """Stand refusing stubs in front of the vendor drivers.
 
     `test_module_subsets` toggles **Emulate off**, rebuilding the real output
-    controllers. That never mattered on a laptop with nothing attached — but the
-    DMD is plugged into this machine and the suite really was opening it, and on
-    the rig it would open a DO task on the puffer's line with an animal in front
-    of it. A test must not reach hardware by accident.
-
-    Tests that deliberately drive a fake device install their own module instead.
+    controllers — the suite really was opening the DMD attached to this machine,
+    and on the rig that is a DO task on the puffer's line with an animal in
+    front of it. Tests that drive a fake device install their own module.
     """
     for name in (names or ("ALP4", "nidaqmx", "pylablib", "pypylon")):
         sys.modules[name] = _BlockedDriver(name)
@@ -94,11 +91,10 @@ def block_real_devices(*names: str) -> None:
 def isolate_user_state() -> Path:
     """Redirect every persistent store the app writes, and return the temp dir.
 
-    Covers `acqapp_local.json` (theme, enabled modules, panel settings — the
-    Save tab rewrites it on every edit), QSettings (the dock layout, substituted
-    wholesale since on Windows it is the registry), and the vendor drivers.
-
-    Call BEFORE importing `acqApp.main`: it binds `QSettings` at import time.
+    `acqapp_local.json` (theme, modules, panel settings), QSettings (the dock
+    layout — substituted wholesale, since on Windows it is the registry), and
+    the vendor drivers. Call BEFORE importing `acqApp.main`, which binds
+    `QSettings` at import time.
     """
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_test_"))
     block_real_devices()
@@ -109,10 +105,9 @@ def isolate_user_state() -> Path:
     MemorySettings.store = {}
     import PyQt6.QtCore
     PyQt6.QtCore.QSettings = MemorySettings
-    # Modules that did `from PyQt6.QtCore import QSettings` hold their own
-    # reference, so patching the source is not enough for any of them already
-    # imported. Both are listed because both write: `main` the dock layout,
-    # `dialogs` the settings window's geometry.
+    # `from PyQt6.QtCore import QSettings` binds its own reference, so patching
+    # the source misses anything already imported. Both write: `main` the dock
+    # layout, `dialogs` the settings window's geometry.
     for name in ("acqApp.main", "acqApp.dialogs"):
         mod = sys.modules.get(name)
         if mod is not None and hasattr(mod, "QSettings"):
