@@ -39,6 +39,8 @@ TESTS = [
     ("enc-timing", "test_encoder_timing.py"),
     ("contracts", "test_device_contracts.py"),
     ("dmd",       "test_dmd.py"),
+    ("dmd-calib", "test_dmd_calibration.py"),
+    ("dmd-roi",   "test_dmd_roi.py"),
     ("closed-loop", "test_closed_loop.py"),
     ("save-paths", "test_save_paths.py"),
     ("stage-state", "test_stage_state.py"),

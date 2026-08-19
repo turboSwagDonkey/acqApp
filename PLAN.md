@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-18 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** — it was locking the eyelid, and the cause was in the algorithm, not the settings. Suite **598 checks, 20 files**. §5b **A3 has now triggered** (a third pupil frame source) and is the one open item. Next big piece is **DMD ROI photostimulation** (§6 item 1). |
+| **Progress** | Roadmap phases 0–5 done. Phase 0 closed 2026-08-17 (**105.9 fps / 2223 MB/s**); audit remediation 100 % (22 of 22). **2026-08-18: the pupil tracker works on real footage** — it was locking the eyelid, and the cause was in the algorithm, not the settings. Suite **642 checks, 22 files**. §5b **A3 has now triggered** (a third pupil frame source) and is the one open item. Next big piece is **DMD ROI photostimulation** (§6 item 1). |
 
 ---
 
@@ -28,7 +28,7 @@ file precisely so nobody reads 300 lines of finished work to start.
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **598 checks, 20 files, ~47 s** (three currently red — see the
+the contract: **642 checks, 22 files, ~54 s** (three currently red — see the
 `_SIGN` note below). Run it before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -445,15 +445,43 @@ because two of them are how a future wrong-data bug gets in.
    - **Actuation applies at two points** (§2): the calibration projection *and*
      every stimulation. Verify open → render → upload → release first, which
      projects nothing, then ask.
+   - **The offline half is built and verified (2026-08-18).** Nothing in it
+     projects or grabs, which is the point — the whole pipeline is held to a
+     transform *we chose* before any light is emitted.
+     `devices/dmd/calibration.py`: complementary checkerboards with corner marks
+     that carry 1/2/3/4 dots (mutually distinguishable, so a **mirror flip
+     cannot pass as a valid registration** — four identical marks could not
+     reveal one), Gray-coded bit planes, the decode, and an affine/homography
+     fit with outlier rejection. `run_calibration(project, grab, …)` takes the
+     two hardware operations **as callables**, so the sweep is repeatable, and
+     `DmdCalibration` saves to JSON with its rms and point count — a transform
+     with no provenance cannot be judged later.
+     `devices/dmd/roi.py` + `roi_panel.py`: rectangular (rotatable) and circular
+     ROIs in camera px, drawn and edited over a snapshot, with the DMD's
+     reachable field outlined and ROIs outside it named rather than silently
+     clipped.
+     Measured on the simulated rig: decode median **0.40 px**, homography
+     **rms 0.41 px** over 3169 points, and the ROI round trip lands **100 %** on
+     target with 0 % spill. 51 checks in `test_dmd_calibration.py` and
+     `test_dmd_roi.py`, each paired with a control — including that an affine
+     model *must* show the keystone in its residual, and that a 40 px
+     registration error *must* miss.
+   - **What is left needs the rig**, in this order: (a) run the sweep and see
+     whether the fields overlap — the operator expects "about the same size" and
+     the first complementary pair answers it; (b) wire `RoiEditor` into the DMD
+     adapter (grab a snapshot with `all_on`, edit, project the mask); (c) decide
+     whether the ORCA snapshot is a single frame or an average.
    - **What already exists**, so none of it gets rewritten: `devices/dmd/alp.py`
      (open/upload/display, a port of `dmdCommandLine.py`), the DMD panel's
-     `all_on` and permanent static hold, `build_frame`'s geometry, and — for the
-     drawing half — pyqtgraph's ROI items over `adapters/base._image_view`,
-     which the pupil tab already uses for click-to-seed.
-   - Open questions for the operator: **which camera** provides the image (the
-     ORCA is the imaging path, but the pupil cam also exists), whether ROIs need
-     to persist across sessions, and whether a mask is one static pattern or a
-     sequence.
+     `all_on` and permanent static hold. Note `alp.project()` uploads **one**
+     frame (`SeqAlloc(nbImg=1)`), so the sweep is software-timed, project→grab
+     per plane; a hardware-timed version would need `project_sequence()`.
+   - **Calibration patterns must bypass `build_frame`.** They are already at the
+     device's size, and its scale/rotation/offset — and `fit`, which overrides
+     all three — would transform the very geometry being measured. `fit=True` is
+     the current default, so this is a live trap for the projection step too.
+   - Still open for the operator: whether ROIs persist across sessions, and
+     whether a mask is one static pattern or a sequence.
 
 2. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18 — and it
    found a real bug, not a tuning problem.** See §7 (u). Kept because the three
@@ -643,6 +671,21 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   `p.write_text()` then doubled every line ending to `\r\r\n`. **Edit files with
   the editor, not with a generated patch script** — and if you must, write bytes
   with an explicit `encoding="utf-8", newline=""`.
+- **DMD ROI photostimulation started — the offline half only** (§6 item 1). The
+  operator's calibration idea was **complementary checkerboards with corner
+  symbols**, and it is better than this file's old "a checkerboard cannot show a
+  geometry error" note allows: differencing a pattern with its inverse *cancels
+  the sample* (structure, background, vignetting divide out), and the corner
+  marks break the symmetry the note was about. Two things were added to it —
+  marks carrying **1/2/3/4 dots** so a mirror flip cannot pass as valid, and a
+  **Gray-code sweep**, because four corner points fit a homography exactly and
+  therefore report zero residual whether the fit is right or wrong. Verified
+  against a chosen transform: decode median 0.40 px, homography rms 0.41 px over
+  3169 points, ROI round trip 100 % on target. **Nothing has been projected.**
+- **The registration is now on the critical path**, which retires a deferral:
+  "where the pattern lands on the sample" was in "Needs the rig" since
+  2026-08-12 and could be ignored while the DMD only held static patterns. You
+  cannot aim at an ROI with a projector you have not registered to the camera.
 - **Not from this session but noticed by it:** the operator flipped
   `wheel/acquisition.py:_SIGN` −1 → +1. `test_encoder_derive.sim()` generates a
   *falling* ramp and documents "the rig's forward direction is the falling one",

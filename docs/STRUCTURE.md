@@ -96,8 +96,12 @@ devices/                one package per instrument
   dmd/
     alp.py              all Vialux ALP knowledge, Qt-free; build_frame is the
                         one a mispositioned stimulus would come from
+    calibration.py      DMD↔camera registration: patterns, decode, fit. Pure,
+                        so the pipeline is testable before any light is emitted
     control.py          panel-facing controller + mock twin
     panel.py
+    roi.py              stimulation ROIs in camera px (no Qt); rect and circle
+    roi_panel.py        draw and edit ROIs over a snapshot
   puffer/
     control.py
   pupil_cam/
@@ -153,6 +157,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_console_safety.py
   test_device_contracts.py    the Protocols in acq/devices.py, both directions
   test_dmd.py
+  test_dmd_calibration.py
+  test_dmd_roi.py
   test_encoder_derive.py
   test_encoder_timing.py
   test_module_subsets.py
