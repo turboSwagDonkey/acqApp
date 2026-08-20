@@ -9,7 +9,8 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+                             QWidget)
 
 from acqApp import config, style
 from acqApp.acq.devices import ExposureControl
@@ -36,9 +37,16 @@ class PupilCamModule(ModuleAdapter):
         # Empty until build_views: the pupil module can be loaded without ever
         # building its dock, and _on_settings fires from the panel before then.
         self._search_items: tuple = ()
-        self._limit_curve = None
-        self._limit_roi = None
+        self._limit_curve = None        # the circle in force
+        self._limit_ghost = None        # rubber band while it is being placed
+        self._limit_centre: tuple[float, float] | None = None   # first click
+        self._last_fit: tuple[float, float, float] | None = None
         self._vb = None
+        self._gv = None
+        # Built with the dock, which the module can be loaded without.
+        self._btn_limit = None
+        self._btn_limit_fit = None
+        self._lbl_limit = None
         self._curve = None
         self._y: list[float] = []
         # Tracking runs on its own thread (see devices/pupil_cam/track_worker.py): it is
@@ -54,7 +62,6 @@ class PupilCamModule(ModuleAdapter):
         self.panel.exposure_changed.connect(self._on_exposure)
         self.panel.led_toggled.connect(self._on_led)
         self.panel.settings_changed.connect(self._on_settings)
-        self.panel.limit_edit_toggled.connect(self._on_limit_edit)
         return self.panel
 
     def _on_settings(self, s) -> None:
@@ -62,6 +69,7 @@ class PupilCamModule(ModuleAdapter):
         if self._search_items:
             self._set_search_visible(s.show_search)
         self._draw_limit(s)
+        self._refresh_limit_bar()
         if self._track is not None:
             # Queued, not written: the tracker belongs to its own thread.
             self._track.configure(**track_params(s))
@@ -101,20 +109,32 @@ class PupilCamModule(ModuleAdapter):
         # visible whenever it is in force.
         self._limit_curve = pg.PlotCurveItem(
             pen=pg.mkPen("#00e5ff", width=2, style=Qt.PenStyle.DashLine))
+        self._limit_ghost = pg.PlotCurveItem(
+            pen=pg.mkPen("#00e5ff", width=1, style=Qt.PenStyle.DotLine))
         # Outline last so it draws on top of the points.
         for item in (self._ann_in, self._ann_out, self._pts_out, self._pts_in,
-                     self._limit_curve, self._overlay):
+                     self._limit_curve, self._limit_ghost, self._overlay):
             vb.addItem(item)
         self._search_items = (self._ann_in, self._ann_out,
                               self._pts_in, self._pts_out)
-        self._vb = vb
+        self._vb, self._gv = vb, gv
         vb.scene().sigMouseClicked.connect(self._on_click)
+        vb.scene().sigMouseMoved.connect(self._on_move)
         self._set_search_visible(self.panel.settings.show_search
                                  if self.panel is not None else False)
         if self.panel is not None:
             self._draw_limit(self.panel.settings)
 
-        self.win.add_dock("Pupil cam", row, Qt.DockWidgetArea.RightDockWidgetArea,
+        # The eye-region controls live over the image, not in the settings
+        # window: picking a region of the frame means looking at the frame, and
+        # the settings are a separate floating window.
+        host = QWidget()
+        col = QVBoxLayout(host)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(3)
+        col.addWidget(self._build_limit_bar())
+        col.addWidget(row, 1)
+        self.win.add_dock("Pupil cam", host, Qt.DockWidgetArea.RightDockWidgetArea,
                           accent=self.key)
 
     def _set_search_visible(self, on: bool) -> None:
@@ -122,37 +142,164 @@ class PupilCamModule(ModuleAdapter):
             item.setVisible(on)
 
     def _on_click(self, ev) -> None:
-        """Place the annulus by hand — the LabVIEW operator workflow.
+        """One click handler, two jobs — placing the eye region wins.
 
-        For when the auto-seed picks the wrong dark region and no threshold
-        fixes it. Only while the search overlay is on: a stray click on the
-        preview should not silently move the tracker's annulus.
+        A pan drag never gets here: pyqtgraph only emits `sigMouseClicked` for a
+        press+release that did not turn into a drag, so panning and zooming stay
+        available while the region is being placed.
         """
-        if self._track is None or self.panel is None:
-            return
-        if not self.panel.settings.show_search:
+        if self.panel is None or self._vb is None:
             return
         if not self._vb.sceneBoundingRect().contains(ev.scenePos()):
             return
         p = self._vb.mapSceneToView(ev.scenePos())
+        if self._btn_limit.isChecked():
+            self._place_limit(p.x(), p.y())
+            return
+        self._seed_here(p.x(), p.y())
+
+    def _seed_here(self, x: float, y: float) -> None:
+        """Place the annulus by hand — the LabVIEW operator workflow, for when
+        the auto-seed picks the wrong dark region and no threshold fixes it.
+
+        Only while the search overlay is on: a stray click on the preview should
+        not silently move the tracker's annulus.
+        """
+        if self._track is None or not self.panel.settings.show_search:
+            return
         s = self.panel.settings
         lim = s.search_limit()
-        if lim is not None and np.hypot(p.x() - lim[0], p.y() - lim[1]) > lim[2]:
+        if lim is not None and np.hypot(x - lim[0], y - lim[1]) > lim[2]:
             # The tracker would reject every fit made from this seed, so say so
             # rather than queue a seed that silently does nothing.
-            self.win.status("click is outside the pupil search limit — move the "
-                            "limit circle or clear it")
+            self.win.status("click is outside the eye region — move the region "
+                            "or clear it")
             return
         r = 0.5 * (s.min_r + s.max_r)
-        self._track.seed(p.x(), p.y(), r)      # queued onto the tracker's thread
-        self.win.status(f"pupil annulus seeded at ({p.x():.0f}, {p.y():.0f}) "
+        self._track.seed(x, y, r)              # queued onto the tracker's thread
+        self.win.status(f"pupil annulus seeded at ({x:.0f}, {y:.0f}) "
                         f"r={r:.0f} px")
 
-    # ── search limit ──
+    # ── the eye region (search limit) ──
+    # Placed by two clicks — centre, then edge — with the circle following the
+    # cursor in between. Not a press-drag: the viewbox owns dragging for
+    # pan/zoom, and taking that over to draw would cost the ability to look
+    # around the frame while placing the region.
+    _FIT_MARGIN = 4.0          # region radius as a multiple of the fitted pupil
+
+    def _build_limit_bar(self) -> QWidget:
+        bar = QWidget()
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(6)
+
+        self._btn_limit = QPushButton("Set eye region")
+        self._btn_limit.setCheckable(True)
+        self._btn_limit.setToolTip(
+            "Click the centre of the eye, then click again further out to set "
+            "how far the tracker may look. Panning and zooming still work.\n"
+            "Draw it generously — a couple of pupil radii of margin. The "
+            "automatic seed gives up when more than half of what it searches is "
+            "dark, and that is now this circle rather than the whole sensor.")
+        self._btn_limit.toggled.connect(self._arm_limit)
+
+        self._btn_limit_fit = QPushButton("From fit")
+        self._btn_limit_fit.setToolTip(
+            "Put the region around the pupil the tracker is currently on, with "
+            f"{self._FIT_MARGIN:.0f}x its radius of margin. The quickest way in "
+            "once anything is tracking at all.")
+        self._btn_limit_fit.clicked.connect(self._limit_from_fit)
+
+        self._btn_limit_off = QPushButton("Clear")
+        self._btn_limit_off.setToolTip("Search the whole frame again.")
+        self._btn_limit_off.clicked.connect(self._clear_limit)
+
+        self._lbl_limit = QLabel()
+        self._lbl_limit.setStyleSheet("color:#9aa0a6;")
+        # Let it be clipped rather than hold the dock open at its own width —
+        # the preview is what the dock is for.
+        self._lbl_limit.setMinimumWidth(1)
+        for w in (self._btn_limit, self._btn_limit_fit, self._btn_limit_off):
+            lay.addWidget(w)
+        lay.addWidget(self._lbl_limit, 1)
+        self._refresh_limit_bar()
+        return bar
+
+    def _arm_limit(self, on: bool) -> None:
+        self._limit_centre = None
+        if self._limit_ghost is not None:
+            self._limit_ghost.setData([], [])
+        if self._gv is not None:
+            self._gv.setCursor(Qt.CursorShape.CrossCursor if on
+                               else Qt.CursorShape.ArrowCursor)
+        self._refresh_limit_bar()
+
+    def _place_limit(self, x: float, y: float) -> None:
+        if self._limit_centre is None:
+            self._limit_centre = (x, y)
+            self._refresh_limit_bar()
+            return
+        cx, cy = self._limit_centre
+        r = float(np.hypot(x - cx, y - cy))
+        if r < 1.0:                 # a double-click on the centre: keep waiting
+            return
+        self.panel.set_limit(cx, cy, r)
+        self._limit_centre = None
+        self._btn_limit.setChecked(False)       # done — no toggle to remember
+        self.win.status(f"eye region set at ({cx:.0f}, {cy:.0f}) r={r:.0f} px")
+
+    def _limit_from_fit(self) -> None:
+        """The region from whatever the tracker is currently on."""
+        if self._last_fit is None:
+            self.win.status("no pupil is being tracked — place the region by "
+                            "hand, or seed the tracker first")
+            return
+        cx, cy, r = self._last_fit
+        # Floor at the largest pupil the operator allows, so a fit taken on a
+        # constricted pupil still leaves room for it to dilate.
+        s = self.panel.settings
+        rr = max(self._FIT_MARGIN * r, 2.5 * s.max_r)
+        self.panel.set_limit(cx, cy, rr)
+        self.win.status(f"eye region set from the current fit: "
+                        f"({cx:.0f}, {cy:.0f}) r={rr:.0f} px")
+
+    def _clear_limit(self) -> None:
+        self._btn_limit.setChecked(False)
+        self.panel.clear_limit()
+        self.win.status("eye region cleared — searching the whole frame")
+
+    def _refresh_limit_bar(self) -> None:
+        if self.panel is None or self._lbl_limit is None:
+            return
+        lim = self.panel.settings.search_limit()
+        if self._btn_limit.isChecked():
+            self._lbl_limit.setText("click the centre of the eye"
+                                    if self._limit_centre is None
+                                    else "now click the outer edge")
+        elif lim is None:
+            self._lbl_limit.setText("whole frame")
+        else:
+            self._lbl_limit.setText(f"({lim[0]:.0f}, {lim[1]:.0f}) "
+                                    f"r {lim[2]:.0f}")
+        self._btn_limit_off.setEnabled(lim is not None)
+        self._btn_limit_fit.setEnabled(self._last_fit is not None)
+
+    def _on_move(self, pos) -> None:
+        """Follow the cursor between the two clicks, so the region is placed by
+        looking at it rather than by reading back three numbers."""
+        if self._limit_centre is None or self._vb is None:
+            return
+        p = self._vb.mapSceneToView(pos)
+        cx, cy = self._limit_centre
+        r = float(np.hypot(p.x() - cx, p.y() - cy))
+        th = self._theta
+        self._limit_ghost.setData(cx + r * np.cos(th), cy + r * np.sin(th))
+
     def _draw_limit(self, s) -> None:
-        """Outline the limit circle, or clear it when there is none."""
+        """Outline the region in force, or clear it when there is none."""
         if self._limit_curve is None:
             return
+        self._limit_ghost.setData([], [])
         lim = s.search_limit()
         if lim is None:
             self._limit_curve.setData([], [])
@@ -160,40 +307,6 @@ class PupilCamModule(ModuleAdapter):
         cx, cy, r = lim
         th = self._theta
         self._limit_curve.setData(cx + r * np.cos(th), cy + r * np.sin(th))
-
-    def _on_limit_edit(self, on: bool) -> None:
-        """Show/hide the draggable circle that sets the limit."""
-        if self._vb is None or self.panel is None:
-            return
-        if not on:
-            if self._limit_roi is not None:
-                self._vb.removeItem(self._limit_roi)
-                self._limit_roi = None
-            return
-        if self._limit_roi is not None:
-            return
-        lim = self.panel.settings.search_limit() or self._default_limit()
-        cx, cy, r = lim
-        self._limit_roi = pg.CircleROI(
-            pos=(cx - r, cy - r), radius=r, movable=True, removable=False,
-            pen=pg.mkPen("#00e5ff", width=2))
-        # ChangeFinished, not Changed: `limit` is in the tracker's _RESEED_ON,
-        # so writing it back mid-drag would re-seed on every mouse move.
-        self._limit_roi.sigRegionChangeFinished.connect(self._limit_dragged)
-        self._vb.addItem(self._limit_roi)
-        self._limit_dragged(self._limit_roi)    # a first drag is not required
-
-    def _default_limit(self) -> tuple[float, float, float]:
-        """Where the circle starts when none has ever been set: the middle of
-        the frame, a quarter of its short side."""
-        img = getattr(self._img, "image", None)
-        h, w = img.shape[:2] if img is not None else (480, 640)
-        return (w / 2.0, h / 2.0, min(w, h) / 4.0)
-
-    def _limit_dragged(self, roi) -> None:
-        p, sz = roi.pos(), roi.size()
-        r = float(sz[0]) / 2.0
-        self.panel.set_limit(float(p[0]) + r, float(p[1]) + r, r)
 
     # ── controllers ──
     def build_controller(self, emulate: bool) -> None:
@@ -278,6 +391,13 @@ class PupilCamModule(ModuleAdapter):
         # No `levels=` here: the LUT bar owns the levels, so forcing them every
         # frame would undo any contrast the user drags.
         self._img.setImage(frame, autoLevels=False)
+        # Kept so "From fit" can put the region around whatever is being
+        # tracked; only a good fit updates it, so a blink does not move it.
+        if res.found:
+            self._last_fit = (float(res.center_x), float(res.center_y),
+                              float(res.radius))
+            if self._btn_limit_fit is not None and not self._btn_limit_fit.isEnabled():
+                self._btn_limit_fit.setEnabled(True)
         self._draw_outline(res)
 
     def _draw_outline(self, res) -> None:

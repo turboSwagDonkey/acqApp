@@ -21,9 +21,6 @@ class SettingsPanel(QWidget):
     # runtime state, and restoring it at launch would turn the illumination on
     # in an empty rig.
     settings_changed = pyqtSignal(object)  # emits PupilSettings
-    # Drag-the-circle mode for the search limit. Transient like the LED, so it
-    # is not a PupilSettings field: the limit persists, editing it does not.
-    limit_edit_toggled = pyqtSignal(bool)
 
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
@@ -287,10 +284,13 @@ class SettingsPanel(QWidget):
 
     # ── search limit ─────────────────────────────────────────────────────────
     def _build_limit(self) -> QGroupBox:
-        """The disc the pupil is allowed to be in.
+        """The disc the pupil is allowed to be in — the numbers only.
 
-        Its own group, not under Advanced: on a head-fixed animal this is set
-        once per prep and it is what makes auto-seeding work at all here.
+        **It is placed on the preview, not here** (see the buttons over the
+        pupil image): a region of the frame is picked by looking at the frame.
+        These three exist for typing an exact circle and for reading back the
+        one that is in force; they are what persists and what the session file
+        records.
         """
         box = QGroupBox("Search limit")
         box.setToolTip(
@@ -301,32 +301,32 @@ class SettingsPanel(QWidget):
             "Measured on the rig clip: with no limit the automatic seed only "
             "works for thresholds 30-45 and fails at the shipped 60; with one "
             "it works from 25 to 80.\nRadius 0 = search the whole frame.")
-        fl = QFormLayout(box)
-        fl.setSpacing(4)
+        vb = QVBoxLayout(box)
+        vb.setSpacing(4)
 
-        self._chk_limit = QCheckBox("Set on preview — drag the circle to the eye")
-        self._chk_limit.setToolTip(
-            "Show a draggable, resizable circle over the pupil preview. Move "
-            "and scale it to cover everywhere the eye goes, then untick.\n"
-            "Draw it generously — a couple of pupil radii of margin. The "
-            "automatic seed gives up when more than half of what it searches is "
-            "dark, and that is now this circle rather than the whole sensor.\n"
-            "With no limit set yet this starts as a circle in the middle of the "
-            "frame.")
-        self._chk_limit.toggled.connect(self.limit_edit_toggled)
-        fl.addRow(self._chk_limit)
+        hint = QLabel("Set it on the pupil preview — the buttons above the "
+                      "image. These are for typing an exact circle.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#9aa0a6;")
+        vb.addWidget(hint)
 
         self._spn_lx, self._spn_ly, self._spn_lr = (self._px_spin(v) for v in
                                                     (self._s.limit_x,
                                                      self._s.limit_y,
                                                      self._s.limit_r))
-        fl.addRow("Centre X:", self._spn_lx)
-        fl.addRow("Centre Y:", self._spn_ly)
-        fl.addRow("Radius:", self._spn_lr)
-
-        self._btn_limit_clear = QPushButton("No limit (whole frame)")
-        self._btn_limit_clear.clicked.connect(lambda: self.set_limit(0.0, 0.0, 0.0))
-        fl.addRow("", self._btn_limit_clear)
+        # One row, not three form rows: it is a single circle, and three labelled
+        # rows made a numeric-entry form out of something spatial.
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        for label, w in (("X", self._spn_lx), ("Y", self._spn_ly),
+                         ("R", self._spn_lr)):
+            row.addWidget(QLabel(label))
+            row.addWidget(w, 1)
+        self._btn_limit_clear = QPushButton("Clear")
+        self._btn_limit_clear.setToolTip("Search the whole frame again.")
+        self._btn_limit_clear.clicked.connect(self.clear_limit)
+        row.addWidget(self._btn_limit_clear)
+        vb.addLayout(row)
 
         for w in (self._spn_lx, self._spn_ly, self._spn_lr):
             w.valueChanged.connect(self._limit_edited)
@@ -339,6 +339,10 @@ class SettingsPanel(QWidget):
         s.setRange(0.0, 20_000.0)       # any sensor, and 0 = off for the radius
         s.setDecimals(0)
         s.setSuffix(" px")
+        # Typing "150" would otherwise emit at 1, 15 and 150 — three saves and
+        # three tracker re-seeds (`limit` is in _RESEED_ON) for one edit, with
+        # the circle jumping across the frame on the way.
+        s.setKeyboardTracking(False)
         s.setValue(value)
         return s
 
@@ -350,7 +354,7 @@ class SettingsPanel(QWidget):
         """Write the circle in from the preview, as ONE settings change.
 
         Setting three spinboxes fires three `valueChanged`s, and each would
-        re-seed the tracker (`limit` is in `_RESEED_ON`) — so a single drag
+        re-seed the tracker (`limit` is in `_RESEED_ON`) — so one placement
         would throw the annulus lock away three times.
         """
         for w, v in ((self._spn_lx, cx), (self._spn_ly, cy), (self._spn_lr, r)):
@@ -359,9 +363,8 @@ class SettingsPanel(QWidget):
             w.blockSignals(False)
         self._limit_edited()
 
-    @property
-    def limit_edit(self) -> bool:
-        return self._chk_limit.isChecked()
+    def clear_limit(self) -> None:
+        self.set_limit(0.0, 0.0, 0.0)
 
     _ADVANCED = ("n_rays", "polarity", "min_strength", "edge_select",
                  "smooth_sigma", "min_confidence", "fit", "smooth_median",

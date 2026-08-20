@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from acqApp import config, probe, style
+from acqApp import config, probe, style, widgets
 
 
 class ModuleSelectDialog(QDialog):
@@ -127,10 +127,16 @@ class SettingsDialog(QDialog):
         super().showEvent(event)
 
     def add_panel(self, panel: QWidget, label: str, key: str) -> None:
-        """Add a settings tab wearing its subsystem accent (tab + group box)."""
+        """Add a settings tab wearing its subsystem accent (tab + group box).
+
+        Every group box is made collapsible here rather than in the panels, so
+        a new instrument gets it for free and the panels stay about their
+        instrument. Which are shut is remembered per tab.
+        """
         idx = self.tabs.addTab(panel, label)
         self.tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
         panel.setStyleSheet(style.accent_panel(key))
+        widgets.collapsible_groups(panel, key)
 
     def save_geometry(self) -> None:
         QSettings("acqApp", "acqApp").setValue(self._GEOM_KEY, self.saveGeometry())

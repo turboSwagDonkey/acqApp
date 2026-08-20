@@ -28,6 +28,7 @@ import sys
 import time
 
 import numpy as np
+from PyQt6.QtCore import QPointF
 
 from _harness import Report, isolate_user_state, pump, qt_app
 
@@ -223,13 +224,13 @@ def main() -> int:
             f"the session metadata records the limit ({md.get('pupil_limit_x')}, "
             f"{md.get('pupil_limit_y')}, {md.get('pupil_limit_r')})")
 
-    # ── 9. one settings change per drag, not three ───────────────────────────
+    # ── 9. one settings change per placement, not three ──────────────────────
     # `limit` is in PupilTracker._RESEED_ON, so three separate emissions would
-    # throw the annulus lock away three times for one movement of the mouse.
+    # throw the annulus lock away three times for one placement.
     seen: list = []
     panel.settings_changed.connect(lambda s: seen.append(s))
     panel.set_limit(500.0, 250.0, 80.0)
-    r.check(len(seen) == 1, f"a drag writes back as one settings change "
+    r.check(len(seen) == 1, f"a placement writes back as one settings change "
                             f"({len(seen)})")
     seen.clear()
     # CONTROL: the same three values typed into the spinboxes really do emit
@@ -240,69 +241,146 @@ def main() -> int:
     r.check(len(seen) == 3, f"control: three typed edits are three changes "
                             f"({len(seen)})")
 
-    # ── 10. clearing ─────────────────────────────────────────────────────────
-    r.check(panel._btn_limit_clear.isEnabled(), "Clear is live while a limit is set")
-    panel._btn_limit_clear.click()
+    # ── 10. clearing, from either place ──────────────────────────────────────
+    r.check(panel._btn_limit_clear.isEnabled(), "Clear is live while a region is set")
+    r.check(mod._btn_limit_off.isEnabled(), "…on the preview bar too")
+    mod._btn_limit_off.click()
     pump(app, 0.05)
     r.check(panel.settings.search_limit() is None, "…and clearing removes it")
     r.check(npoints(mod._limit_curve) == 0, "…and un-draws the circle")
-    r.check(not panel._btn_limit_clear.isEnabled(),
-            "control: with no limit there is nothing to clear")
+    r.check(not panel._btn_limit_clear.isEnabled() and
+            not mod._btn_limit_off.isEnabled(),
+            "control: with no region there is nothing to clear")
 
-    # ── 11. drag-to-set on the preview ───────────────────────────────────────
-    r.check(mod._limit_roi is None, "no draggable circle until it is asked for")
-    panel._chk_limit.setChecked(True)
+    # ── 11. typing a number must move the drawn circle ───────────────────────
+    # The bug the operator hit: the drawn circle did not follow the spinboxes.
+    # A second circle (a draggable pg.CircleROI) was painted over the top in the
+    # same colour and did NOT follow, so the one you looked at never moved. It
+    # is gone; this holds the property it was breaking.
+    panel.set_limit(300.0, 200.0, 60.0)
     pump(app, 0.05)
-    if not r.check(mod._limit_roi is not None,
-                   "ticking 'Set on preview' adds the draggable circle"):
-        return r.finish()
-    # With nothing set it starts in the middle of the frame, so it is on screen
-    # rather than at (0, 0) waiting to be found.
-    s0 = panel.settings
-    r.check(s0.limit_r > 0 and s0.limit_x > 0 and s0.limit_y > 0,
-            f"…seeded at the middle of the frame ({s0.limit_x:.0f}, "
-            f"{s0.limit_y:.0f}, r={s0.limit_r:.0f})")
+    panel._spn_lx.setValue(150.0)
+    pump(app, 0.05)
+    xs = mod._limit_curve.getData()[0]
+    r.check(xs is not None and abs(0.5 * (xs.min() + xs.max()) - 150.0) < 1.0,
+            f"typing a new centre X moves the drawn circle "
+            f"({0.5 * (xs.min() + xs.max()):.0f})")
+    panel._spn_lr.setValue(120.0)
+    pump(app, 0.05)
+    xs = mod._limit_curve.getData()[0]
+    r.check(abs(0.5 * (xs.max() - xs.min()) - 120.0) < 1.0,
+            f"…and a new radius resizes it "
+            f"({0.5 * (xs.max() - xs.min()):.0f})")
+    r.check("120" in mod._lbl_limit.text() and "150" in mod._lbl_limit.text(),
+            f"…and the preview bar reads it back ({mod._lbl_limit.text()!r})")
+    # Only ONE circle item can be drawn now, so there is nothing left to go
+    # stale behind it.
+    r.check(not hasattr(mod, "_limit_roi"),
+            "control: the second, non-following circle is gone entirely")
+    panel.clear_limit()
+    pump(app, 0.05)
 
-    mod._limit_roi.setSize((200.0, 200.0), finish=False)
-    mod._limit_roi.setPos((300.0, 100.0), finish=True)   # emits the real signal
+    # ── 12. placing it on the preview: two clicks, no toggle to remember ─────
+    # The controls are over the image, the circle follows the cursor between the
+    # clicks, and the second click commits AND disarms.
+    win._btn_run.setChecked(True)
+    pump(app, 1.0)                       # frames flow and the tracker locks
+
+    # The window is never shown, so the view has no size and never auto-ranges:
+    # every scene point would map to the default 0-1 view range and the two
+    # clicks would land 0 px apart. Give it both explicitly.
+    mod._gv.resize(400, 300)
+    mod._vb.setRange(xRange=(0, 320), yRange=(0, 240), padding=0)
+    pump(app, 0.05)
+
+    rect = mod._vb.sceneBoundingRect()
+    centre = rect.center()
+    edge = QPointF(centre.x(), centre.y() + 0.25 * rect.height())
+    c_view = mod._vb.mapSceneToView(centre)
+    e_view = mod._vb.mapSceneToView(edge)
+    want_r = float(np.hypot(e_view.x() - c_view.x(), e_view.y() - c_view.y()))
+    if not r.check(want_r > 5.0,
+                   f"fixture: the two clicks are {want_r:.1f} px apart in the "
+                   f"frame — without this the placement checks are vacuous"):
+        return r.finish()
+
+    class _Ev:                          # the scene hands the handler one of these
+        def __init__(self, pt): self._p = pt
+        def scenePos(self): return self._p
+
+    r.check(not mod._btn_limit.isChecked(), "the region tool starts off")
+    mod._btn_limit.setChecked(True)
+    pump(app, 0.05)
+    r.check("centre of the eye" in mod._lbl_limit.text(),
+            f"arming says what to do next ({mod._lbl_limit.text()!r})")
+
+    mod._on_click(_Ev(centre))
+    r.check(mod._limit_centre is not None,
+            f"the first click takes the centre ({mod._limit_centre})")
+    r.check(panel.settings.search_limit() is None,
+            "…and commits nothing yet — one click is not a region")
+    r.check("outer edge" in mod._lbl_limit.text(),
+            f"…and the prompt moves on ({mod._lbl_limit.text()!r})")
+
+    mod._on_move(edge)                  # the rubber band follows the cursor
+    r.check(npoints(mod._limit_ghost) > 8,
+            f"the circle follows the cursor before it is committed "
+            f"({npoints(mod._limit_ghost)} points)")
+
+    mod._on_click(_Ev(edge))
     pump(app, 0.05)
     s1 = panel.settings
-    r.check((s1.limit_x, s1.limit_y, s1.limit_r) == (400.0, 200.0, 100.0),
-            f"moving it writes centre and radius back to the panel "
-            f"({s1.limit_x}, {s1.limit_y}, {s1.limit_r})")
+    r.check(abs(s1.limit_x - c_view.x()) < 1 and abs(s1.limit_y - c_view.y()) < 1
+            and abs(s1.limit_r - want_r) < 1,
+            f"the second click sets centre and radius ({s1.limit_x:.0f}, "
+            f"{s1.limit_y:.0f}, r={s1.limit_r:.0f}; wanted {c_view.x():.0f}, "
+            f"{c_view.y():.0f}, r={want_r:.0f})")
+    r.check(not mod._btn_limit.isChecked(),
+            "…and disarms itself — no mode left switched on")
+    r.check(npoints(mod._limit_ghost) == 0, "…and the rubber band is cleared")
 
-    panel._chk_limit.setChecked(False)
-    pump(app, 0.05)
-    r.check(mod._limit_roi is None, "unticking takes the handle away again")
-    r.check(panel.settings.limit_r == 100.0, "…and leaves the limit it set")
+    # CONTROL: with the tool off, the same two clicks must NOT place a region.
+    before = panel.settings.search_limit()
+    mod._on_click(_Ev(centre))
+    mod._on_click(_Ev(edge))
+    r.check(panel.settings.search_limit() == before,
+            "control: with the tool off, clicks do not place a region")
 
-    # ── 12. a click outside the limit must not seed ──────────────────────────
-    win._btn_run.setChecked(True)
-    pump(app, 0.3)
+    # ── 13. "From fit" — one click, once anything is tracking ────────────────
+    if r.check(mod._last_fit is not None,
+               f"the adapter remembers the current fit ({mod._last_fit})"):
+        fcx, fcy, fr = mod._last_fit
+        r.check(mod._btn_limit_fit.isEnabled(), "…so From fit is live")
+        mod._btn_limit_fit.click()
+        pump(app, 0.05)
+        s2 = panel.settings
+        r.check(abs(s2.limit_x - fcx) < 1 and abs(s2.limit_y - fcy) < 1,
+                f"From fit centres the region on the pupil ({s2.limit_x:.0f}, "
+                f"{s2.limit_y:.0f} vs {fcx:.0f}, {fcy:.0f})")
+        # Generous by construction — the >50 %-dark guard applies inside the
+        # circle, and the pupil must still be able to dilate to max_r.
+        r.check(s2.limit_r >= mod._FIT_MARGIN * fr - 0.5
+                and s2.limit_r >= 2.5 * s2.max_r - 0.5,
+                f"…with margin: r {s2.limit_r:.0f} for a {fr:.0f} px pupil "
+                f"(max_r {s2.max_r})")
+
+    # ── 14. a click outside the region must not seed ─────────────────────────
     panel._chk_search.setChecked(True)
     pump(app, 0.05)
     seeded: list = []
     mod._track.seed = lambda cx, cy, rr: seeded.append((cx, cy, rr))
 
-    class _Ev:
-        def __init__(self, pt): self._p = pt
-        def scenePos(self): return self._p
-
-    rect = mod._vb.sceneBoundingRect()
-    # Put the limit on the view point we are about to click, then well away
-    # from it, and check the same click is accepted then refused.
-    p = mod._vb.mapSceneToView(rect.center())
-    panel.set_limit(p.x(), p.y(), 50.0)
+    panel.set_limit(c_view.x(), c_view.y(), 50.0)
     pump(app, 0.05)
-    mod._on_click(_Ev(rect.center()))
+    mod._on_click(_Ev(centre))
     r.check(len(seeded) == 1,
-            f"control: a click inside the limit still seeds {seeded}")
+            f"control: a click inside the region still seeds {seeded}")
 
-    panel.set_limit(p.x() + 4000.0, p.y() + 4000.0, 50.0)
+    panel.set_limit(c_view.x() + 4000.0, c_view.y() + 4000.0, 50.0)
     pump(app, 0.05)
-    mod._on_click(_Ev(rect.center()))
+    mod._on_click(_Ev(centre))
     r.check(len(seeded) == 1,
-            "a click outside the limit is refused — every fit from it would be")
+            "a click outside the region is refused — every fit from it would be")
 
     win._btn_run.setChecked(False)
     pump(app, 0.2)

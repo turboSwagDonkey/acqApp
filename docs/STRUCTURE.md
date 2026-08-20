@@ -26,6 +26,7 @@ flowchart TD
     config["config.py"]
     style["style.py"]
     console["console.py"]
+    widgets["widgets.py<br/><i>shared panel widgets</i>"]
 
     main --> adapters
     main --> saving
@@ -47,6 +48,7 @@ flowchart TD
     dialogs --> config
     dialogs --> probe
     dialogs --> style
+    dialogs --> widgets
     probe --> devices
 ```
 
@@ -183,6 +185,7 @@ console.py              enable_safe_console() — every entry point calls it fir
 dialogs.py              startup module picker, device monitor, settings dialog
 probe.py                presence checks; enumeration only, never opens a device
 style.py                the theme and the per-module HEX colours
+widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here
 PLAN.md                 the living plan — read first
 README.md               the authoritative description

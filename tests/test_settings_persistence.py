@@ -125,6 +125,50 @@ def main() -> int:
             "…and un-checks ⚙ Settings, so the next click re-opens it")
 
     panels = {m.key: m.panel for m in win._modules}
+
+    # ── every settings box folds away, and stays folded ──────────────────────
+    # Applied in add_panel(), not in each panel, so a new instrument gets it
+    # without doing anything — which is why this checks across every tab.
+    from PyQt6.QtWidgets import QGroupBox, QWidget as _QW
+    tabs = {dlg.tabs.tabText(i): dlg.tabs.widget(i).findChildren(QGroupBox)
+            for i in range(dlg.tabs.count())}
+    flat = [b for v in tabs.values() for b in v]
+    r.check(len(flat) >= 10, f"{len(flat)} group boxes across {len(tabs)} tabs")
+    r.check(all(b.isCheckable() for b in flat),
+            "every settings box has a fold toggle in its title")
+
+    p = panels["pupil_cam"]
+    box = next(b for b in flat if b.title() == "Search limit")
+    tall = box.sizeHint().height()
+    box.setChecked(False)
+    pump(app, 0.05)
+    short = box.sizeHint().height()
+    r.check(short < tall, f"folding shrinks the box ({tall} → {short} px)")
+    # isVisibleTo, not isVisible: the settings window is closed at this point,
+    # so isVisible() is False for every widget in it and would pass vacuously.
+    r.check(not any(c.isVisibleTo(box) for c in box.findChildren(_QW)),
+            "…and its contents are hidden, not merely greyed out")
+
+    # A control the panel had deliberately disabled must not come back enabled.
+    # Qt disables the children of an unticked checkable group box, and this
+    # leans on it restoring each child's own state rather than enabling all.
+    r.check(not p._btn_limit_clear.isEnabled(),
+            "control: Clear is disabled while no region is set")
+    box.setChecked(True)
+    pump(app, 0.05)
+    r.check(not p._btn_limit_clear.isEnabled(),
+            "…and unfolding does not wrongly re-enable it")
+    r.check(all(c.isVisibleTo(box) for c in (p._spn_lx, p._spn_ly, p._spn_lr)),
+            "…while the rest of the box comes back")
+
+    # The pupil tab's Advanced group folds itself and renames its own title, so
+    # it is skipped — taking its tick over would fight it.
+    adv = next(b for b in flat if b.title().startswith("Advanced tracking"))
+    r.check(not adv.isChecked(),
+            "the panel's own collapsible group is left as the panel set it")
+
+    box.setChecked(False)       # left folded, read back after the restart below
+    pump(app, 0.05)
     for key, label, setter, reader, expected in EDITS:
         setter(panels[key])
         r.check(same(reader(panels[key]), expected),
@@ -205,6 +249,16 @@ def main() -> int:
 
     r.check(not panels2["pupil_cam"]._chk_led.isChecked(),
             "the LED came back OFF, not restored on")
+
+    # Which boxes were folded is remembered too — collapsing the ones a rig
+    # never touches is worth nothing if it has to be redone every launch.
+    dlg2 = win2._settings_dialog
+    flat2 = [b for i in range(dlg2.tabs.count())
+             for b in dlg2.tabs.widget(i).findChildren(QGroupBox)]
+    got = next(b for b in flat2 if b.title() == "Search limit")
+    r.check(not got.isChecked(), "a folded settings box comes back folded")
+    r.check(next(b for b in flat2 if b.title() == "Camera").isChecked(),
+            "control: a box that was left open comes back open")
 
     # A session must actually run on the restored values.
     win2._btn_run.setChecked(True)
