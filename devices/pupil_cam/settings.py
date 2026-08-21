@@ -38,6 +38,13 @@ class PupilSettings:
     limit_x:      float = 0.0
     limit_y:      float = 0.0
     limit_r:      float = 0.0
+    # ── ignored directions ──
+    # Angular sectors the edge search skips, as (from, to) degrees. 0 = +x and
+    # the angle increases toward +y, which is image DOWN — so 90 is the image
+    # bottom. This is for the eyelids: where a lid crosses the pupil the rays
+    # find the LID's edge, and those points go into the fit like any other.
+    # Measured on the rig clip, the lids occupy about 60-160 and 235-290.
+    exclude_deg:  tuple = ()
     # Replay a clip instead of the camera; "" = camera/mock. Recorded in the
     # session metadata — replayed frames must never read as rig data.
     video_path:   str   = ""
@@ -55,3 +62,20 @@ class PupilSettings:
         if self.limit_r <= 0.0:
             return None
         return (float(self.limit_x), float(self.limit_y), float(self.limit_r))
+
+    def excluded(self) -> tuple[tuple[float, float], ...]:
+        """`exclude_deg` as pairs, whatever the JSON round trip made of it.
+
+        Saved as a tuple of tuples and read back as a list of lists, and a
+        hand-edited config can hold anything at all — a malformed entry is
+        dropped rather than raised on, since the cost of ignoring one is a
+        noisier fit and the cost of raising is an app that will not start.
+        """
+        out: list[tuple[float, float]] = []
+        for item in self.exclude_deg or ():
+            try:
+                lo, hi = item
+                out.append((float(lo), float(hi)))
+            except (TypeError, ValueError):
+                continue
+        return tuple(out)

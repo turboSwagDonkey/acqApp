@@ -25,9 +25,10 @@ class SettingsPanel(QWidget):
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or PupilSettings()
-        # Held as plain state, not a widget value: it is a path, and the label is
-        # only its basename.
+        # Held as plain state, not widget values: a path shown by its basename,
+        # and a list of angle pairs that is measured rather than typed.
         self._video = self._s.video_path
+        self._exclude = self._s.excluded()
         self._build()
 
     def _build(self) -> None:
@@ -328,10 +329,34 @@ class SettingsPanel(QWidget):
         row.addWidget(self._btn_limit_clear)
         vb.addLayout(row)
 
+        # Read-only: the sectors are measured from the preview ("Find lids"),
+        # not typed. Shown because a tracker quietly ignoring a third of the
+        # ring is exactly the sort of state that should never be invisible.
+        self._lbl_excl = QLabel()
+        self._lbl_excl.setWordWrap(True)
+        self._lbl_excl.setToolTip(
+            "Directions the edge search skips, where an eyelid crosses the "
+            "pupil. 0° is to the right and angles increase downward, so 90° is "
+            "the image bottom.")
+        vb.addWidget(self._lbl_excl)
+        self._show_exclusion()
+
         for w in (self._spn_lx, self._spn_ly, self._spn_lr):
             w.valueChanged.connect(self._limit_edited)
         self._limit_edited()
         return box
+
+    def _show_exclusion(self) -> None:
+        named = ", ".join(f"{lo:.0f}–{hi:.0f}°" for lo, hi in self._exclude)
+        self._lbl_excl.setText(f"Ignoring: {named}" if named
+                               else "Ignoring: nothing — all directions searched")
+        self._lbl_excl.setStyleSheet("color:#9aa0a6;")
+
+    def set_exclusion(self, sectors) -> None:
+        """Write measured lid sectors in from the preview, as one change."""
+        self._exclude = tuple((float(a), float(b)) for a, b in sectors)
+        self._show_exclusion()
+        self._emit()
 
     @staticmethod
     def _px_spin(value: float) -> QDoubleSpinBox:
@@ -445,5 +470,6 @@ class SettingsPanel(QWidget):
             limit_x=self._spn_lx.value(),
             limit_y=self._spn_ly.value(),
             limit_r=self._spn_lr.value(),
+            exclude_deg=self._exclude,
             video_path=self._video,
         )

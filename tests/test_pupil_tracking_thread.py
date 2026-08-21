@@ -62,13 +62,15 @@ def main() -> int:
                                    polarity="falling", min_strength=2.5,
                                    fit="ellipse", edge_select="strongest",
                                    smooth_sigma=9.0, min_confidence=0.05,
-                                   limit_x=300.0, limit_y=200.0, limit_r=90.0))
+                                   limit_x=300.0, limit_y=200.0, limit_r=90.0,
+                                   exclude_deg=((60, 160),)))
     r.check(p == {"threshold": 42, "min_r": 7, "max_r": 99, "n_rays": 32,
                   "polarity": "falling", "min_strength": 2.5, "fit": "ellipse",
                   "edge_select": "strongest", "smooth_sigma": 9.0,
                   "min_confidence": 0.05, "smooth_median": 3,
                   "smooth_ema": 0.5, "reseed_after": 30,
-                  "limit": (300.0, 200.0, 90.0)},
+                  "limit": (300.0, 200.0, 90.0),
+                  "exclude_deg": ((60.0, 160.0),)},
             f"track_params carries every panel-owned option (got {p})")
     # The three limit fields collapse to one tracker option, so "no limit" has
     # a single representation rather than a radius the tracker has to test.

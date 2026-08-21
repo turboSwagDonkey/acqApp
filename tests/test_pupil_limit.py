@@ -1,5 +1,8 @@
 """
-The pupil search limit: the disc of the frame the eye is allowed to be in.
+Where the tracker is allowed to look: the region, and the directions.
+
+Two halves of one idea, and between them they are what makes tracking work on
+this rig's framing at all.
 
 The animal is head-fixed, so the eye occupies one fixed part of the frame while
 the rest of it — fur, the orbit, the headplate, shadow — is dark in IR and much
@@ -18,7 +21,16 @@ fails without it:
     the limit drops the annulus lock;
 
 plus the panel/adapter half: the circle is drawn whenever it is in force, a
-drag writes back as ONE settings change, and a click outside it does not seed.
+placement writes back as ONE settings change, and a click outside it does not
+seed.
+
+**The directions** are the second half. Where an eyelid crosses the pupil the
+rays find the LID's edge, and those points go into the fit like any other —
+measured on the rig clip, that is two thirds of the ray failures and it caps
+confidence at 0.26. `find_circular_edge` has always taken `exclude_deg` and its
+docstring gives the eyelid example; nothing exposed it. `lid_sectors()` measures
+the sectors from a run of fits rather than asking the operator to know that the
+lower lid is at 70-155 degrees.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_pupil_limit.py
 """
@@ -185,6 +197,59 @@ def main() -> int:
     s = PupilSettings(limit_x=640.0, limit_y=300.0, limit_r=110.0)
     r.check(s.search_limit() == (640.0, 300.0, 110.0),
             "a set limit reaches the tracker as one tuple")
+    r.check(PupilSettings().excluded() == (),
+            "shipped default ignores no directions")
+    # The JSON round trip turns tuples into lists, and a hand-edited config can
+    # hold anything: a bad entry must cost a noisier fit, never a dead app.
+    r.check(PupilSettings(exclude_deg=[[60, 160], [240, 300]]).excluded()
+            == ((60.0, 160.0), (240.0, 300.0)),
+            "lists of lists (what JSON gives back) normalise to pairs")
+    r.check(PupilSettings(exclude_deg=[[60, 160], "junk", [1, 2, 3]]).excluded()
+            == ((60.0, 160.0),),
+            "…and a malformed entry is dropped, not raised on")
+
+    # ── 7b. finding the lids: where the rays stop surviving ──────────────────
+    # The real defect behind "tracking is awful": where a lid crosses the pupil
+    # the rays find the LID's edge, and those points go into the fit like any
+    # other. `find_circular_edge` has always taken `exclude_deg` — nothing
+    # exposed it.
+    from acqApp.devices.pupil_cam.tracking import PupilResult, lid_sectors
+
+    def ring(occluded=(), n=64, frames=40):
+        """Fits on a clean ring, with `occluded` sectors yielding no inlier."""
+        out = []
+        a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        deg = np.degrees(a)
+        keep = np.ones(n, dtype=bool)
+        for lo, hi in occluded:
+            keep &= ~((deg >= lo) & (deg <= hi))
+        for _ in range(frames):
+            out.append(PupilResult(100.0, 100.0, 30.0, 0.9,
+                                   edge_x=100 + 30 * np.cos(a[keep]),
+                                   edge_y=100 + 30 * np.sin(a[keep]),
+                                   inliers=np.ones(int(keep.sum()), bool)))
+        return out
+
+    got = lid_sectors(ring(occluded=[(70, 150)]))
+    r.check(len(got) == 1 and got[0][0] <= 70 and got[0][1] >= 150,
+            f"an occluded sector is found, with margin ({got})")
+    got2 = lid_sectors(ring(occluded=[(70, 150), (250, 290)]))
+    r.check(len(got2) == 2, f"…and both lids when both occlude ({got2})")
+    # CONTROL: a clean ring must not invent lids. Without this the detector
+    # could "work" by always excluding something.
+    r.check(lid_sectors(ring()) == (),
+            "control: an evenly-tracked ring yields no sectors at all")
+    r.check(lid_sectors(ring(occluded=[(70, 150)], frames=5)) == (),
+            "too few frames yields () — leave it alone, not exclude nothing")
+    r.check(lid_sectors([]) == (), "…and so does no data at all")
+    # A sector spanning 0° must come back as one range, not two.
+    wrap = lid_sectors(ring(occluded=[(0, 30)]) )
+    r.check(len(wrap) == 1, f"a sector touching 0° stays one range ({wrap})")
+
+    # It really changes the search: the excluded rays are not cast.
+    from acqApp.devices.pupil_cam.rays import _ray_angles
+    r.check(len(_ray_angles(64, ((70, 150),))) < 64,
+            "control: the sectors reach _ray_angles and drop rays")
 
     # ══ the app half ═════════════════════════════════════════════════════════
     app = qt_app()
@@ -363,6 +428,42 @@ def main() -> int:
                 and s2.limit_r >= 2.5 * s2.max_r - 0.5,
                 f"…with margin: r {s2.limit_r:.0f} for a {fr:.0f} px pupil "
                 f"(max_r {s2.max_r})")
+
+    # ── 13b. the lid controls on the preview bar ─────────────────────────────
+    r.check(mod._btn_lids.isEnabled(), "Find lids is live once something tracks")
+    r.check(not mod._btn_lids_off.isEnabled(),
+            "control: nothing to reset while no sector is ignored")
+    # The mock pupil is a clean disc, so the detector must decline rather than
+    # invent lids — the same control as above, but through the button.
+    mod._recent.clear()
+    for _ in range(40):
+        mod._recent.append(ring()[0])
+    mod._btn_lids.click()
+    pump(app, 0.05)
+    r.check(panel.settings.excluded() == (),
+            "clicking Find lids on an evenly-tracked eye ignores nothing")
+
+    mod._recent.clear()
+    for res_ in ring(occluded=[(70, 150)]):
+        mod._recent.append(res_)
+    mod._btn_lids.click()
+    pump(app, 0.05)
+    ex = panel.settings.excluded()
+    r.check(len(ex) == 1, f"…and finds the lid when there is one ({ex})")
+    r.check(mod._track.tracker.exclude_deg == ex,
+            "…which reaches the tracker on its own thread")
+    r.check(npoints(mod._excl_curve) > 8,
+            f"…and is drawn on the preview, not left invisible "
+            f"({npoints(mod._excl_curve)} points)")
+    md2 = mod.metadata()
+    r.check(md2.get("pupil_exclude_deg") == [ex[0][0], ex[0][1]],
+            f"…and recorded in the session metadata "
+            f"({md2.get('pupil_exclude_deg')})")
+    r.check(mod._btn_lids_off.isEnabled(), "Reset goes live")
+    mod._btn_lids_off.click()
+    pump(app, 0.05)
+    r.check(panel.settings.excluded() == (), "…and clears the sectors")
+    r.check(npoints(mod._excl_curve) == 0, "…and un-draws them")
 
     # ── 14. a click outside the region must not seed ─────────────────────────
     panel._chk_search.setChecked(True)

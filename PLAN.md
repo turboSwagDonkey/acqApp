@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-20 |
+| **Last updated** | 2026-08-21 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0). The newest of those: the pupil tracker has a **user-set search-limit circle**, and on the rig's own clip it takes auto-tracking from **0/151 frames to 149/151** — the head-fixed eye lives in one part of the frame, and bounding the search there is what lets the tracker find it unaided. Suite **732 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three, two of which need the operator (§6). |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0). The newest of those: the pupil tracker learned **where it may look** — a user-set eye region and measured lid sectors — taking the rig's own clip from **0/151 frames to 151/151** with no click, and its fit confidence from 0.26 to 0.34. Suite **776 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three, two of which need the operator (§6). |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **732 checks, 23 files, ~51 s**, and it is ALL GREEN. Run it
+the contract: **776 checks, 23 files, ~52 s**, and it is ALL GREEN. Run it
 before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
@@ -82,15 +82,26 @@ asserted in a docstring that "the rig's forward direction is the falling one".
 **The rig fact to remember: forward = rising voltage = positive speed and
 distance.**
 
-**The pupil tracker now takes a search limit** (2026-08-19, §7 (ae)): a circle
-in camera px, set by the operator, inside which the eye is known to stay. It
-bounds the seed search and refuses a fit centred outside. On the rig's own clip
-that is **0/151 → 149/151 frames tracked with no click**, because the frame is
-53 % below threshold and `coarse_seed` was bailing at its >50 % guard. Two
-things to know before touching it: **draw the circle generously**, since that
-same guard now applies inside it; and the old claim that auto-seeding *cannot*
-work here is too strong — unlimited it works over thresholds 30–45, a 15-level
-window with the shipped 60 outside it, against 25–80 with a limit.
+**The pupil tracker now has two controls for where it looks** (§7 (ae), (af)),
+and on the rig's own clip they take it from **0/151 frames to 151/151** with no
+click anywhere:
+
+- **The eye region** — a circle in camera px, set on the preview. It bounds the
+  seed and refuses a fit centred outside. Without it `coarse_seed` bails at its
+  >50 %-dark guard, because the frame is 53 % below threshold. **Draw it
+  generously**: that same guard now applies *inside* the circle.
+- **Ignored directions** (`exclude_deg`) — where a lid crosses the pupil, the
+  rays find the *lid's* edge and those points go into the fit like any other.
+  `find_circular_edge` had always taken this argument; nothing exposed it.
+  "Find lids" measures the sectors (`tracking.lid_sectors`) instead of asking
+  the operator to know the angles. Worth **conf 0.26 → 0.34, rms 1.16 → 0.98,
+  and half the worst-case frame-to-frame radius jump.**
+
+Two claims this file used to make, both corrected by measurement: auto-seeding
+*can* work unlimited, but only over thresholds 30–45 — a 15-level window with
+the shipped 60 outside it, against 25–80 with a region. And the dark region is
+**not** elliptical: measured directly it sits at 50–57 px over ~200° of arc, and
+the low points are lid occlusion, not shape. Fitting a circle is right.
 
 **PICK UP HERE — §6's "THE NEXT THREE THINGS".** Two of the three are questions
 for the operator, not code: the DMD ROI work needs someone at the rig (it
@@ -516,6 +527,41 @@ Item 5 keeps the reasoning and the numbers.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-21 (af) — "tracking is still awful": it was the eyelids
+- **The operator was right, and the region was only half of it.** The region
+  fixed *finding* the eye; it does nothing to the fit. Rendering the fit over
+  the clip and reading it: only **29 of 64 rays** survived, confidence averaged
+  **0.26** against a 0.10 floor, and the circle's bottom arc ran out into fur.
+- **The cause, from two independent measurements that agree.** Binning ray
+  survival by angle puts the failures in 60–160° and ~235–290°; sweeping the
+  boundary intensity directly puts the occlusion in the same places. Where a
+  lid crosses, the rays find the **lid's** edge and those points enter the fit
+  like any other, for the robust rejection to fight every frame.
+- **`find_circular_edge` has taken `exclude_deg` all along** — its docstring
+  even gives the eyelid example — and **nothing exposed it.** Now
+  `PupilSettings.exclude_deg`, with **"Find lids"** on the preview bar:
+  `tracking.lid_sectors()` measures the sectors from a run of fits rather than
+  asking the operator to know that the lower lid is at 70–155° (and the
+  convention, 90° = image *bottom*, is a trap). Drawn on the preview in red,
+  and recorded in the session file — a radius trace fitted from two thirds of
+  the ring cannot be compared with one fitted from all of it.
+- **Measured, auto-seed only, no click:** frames **149/151 → 151/151**,
+  confidence **0.260 → 0.338**, rms **1.16 → 0.98 px**, p95 frame-to-frame
+  radius jump **0.98 → 0.48 px**. The visible win is the second half of the
+  clip, where the old trace sawtooths ±1.5 px and drops out and the new one
+  does not. Stable across how long it watches: 30, 60 and 120 frames all give
+  a sector in the same place and all beat the baseline.
+- **A hypothesis of mine that the data killed, recorded so it is not retried:**
+  the boundary radius varies 38→60 px by direction, which looked like an
+  off-axis *ellipse*. It is not. Fitted to the directly-measured boundary a
+  circle beats an ellipse (1.88 vs 3.63 px rms) — the variation is occlusion,
+  and the app's r=53 already matches the unoccluded arc. Separately: **ellipse
+  mode is broken on real footage** (8/151 frames), because `_BAND_ELLIPSE`
+  sweeps r×0.35–2.9 = 18–154 px, far out into fur. Not fixed — this rig fits
+  circles — but it passes `_test_tracking.py` on synthetic eyes, which is the
+  same synthetic-suite blind spot as §6 item 6.
+- Suite **756 → 776, 23/23**; `_test_tracking.py` 15/15.
 
 ### 2026-08-19/20 (ae) — a search limit for the pupil: 0/151 → 149/151 on the rig's clip
 - **The operator's ask: a limiting circle, because the animal is head-fixed and

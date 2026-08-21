@@ -36,8 +36,10 @@ TRACK_KEYS = ("threshold", "min_r", "max_r",
 def track_params(settings) -> dict[str, Any]:
     """The tracker kwargs carried by a `PupilSettings`."""
     p = {k: getattr(settings, k) for k in TRACK_KEYS}
-    # Not in TRACK_KEYS: three settings fields collapse to one tracker option.
+    # Not in TRACK_KEYS: these are normalised on the way through rather than
+    # read straight off the dataclass.
     p["limit"] = settings.search_limit()
+    p["exclude_deg"] = settings.excluded()
     return p
 
 

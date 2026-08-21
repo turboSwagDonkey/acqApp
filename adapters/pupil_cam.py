@@ -3,6 +3,7 @@ The pupil camera's adapter: preview dock, LED, and the tracking thread.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict
 from typing import Any
 
@@ -39,13 +40,19 @@ class PupilCamModule(ModuleAdapter):
         self._search_items: tuple = ()
         self._limit_curve = None        # the circle in force
         self._limit_ghost = None        # rubber band while it is being placed
+        self._excl_curve = None         # the ignored (lid) sectors
         self._limit_centre: tuple[float, float] | None = None   # first click
         self._last_fit: tuple[float, float, float] | None = None
+        # Recent fits, for measuring which directions the lids occlude. Only
+        # the display tick feeds it, so it is a few seconds of frames, not all.
+        self._recent: deque = deque(maxlen=120)
         self._vb = None
         self._gv = None
         # Built with the dock, which the module can be loaded without.
         self._btn_limit = None
         self._btn_limit_fit = None
+        self._btn_lids = None
+        self._btn_lids_off = None
         self._lbl_limit = None
         self._curve = None
         self._y: list[float] = []
@@ -69,6 +76,7 @@ class PupilCamModule(ModuleAdapter):
         if self._search_items:
             self._set_search_visible(s.show_search)
         self._draw_limit(s)
+        self._draw_exclusion()
         self._refresh_limit_bar()
         if self._track is not None:
             # Queued, not written: the tracker belongs to its own thread.
@@ -111,9 +119,14 @@ class PupilCamModule(ModuleAdapter):
             pen=pg.mkPen("#00e5ff", width=2, style=Qt.PenStyle.DashLine))
         self._limit_ghost = pg.PlotCurveItem(
             pen=pg.mkPen("#00e5ff", width=1, style=Qt.PenStyle.DotLine))
+        # The directions the search skips. Drawn because "the tracker ignores
+        # a third of the ring" is not something to leave as invisible state.
+        self._excl_curve = pg.PlotCurveItem(
+            pen=pg.mkPen("#ff5252", width=4), connect="finite")
         # Outline last so it draws on top of the points.
         for item in (self._ann_in, self._ann_out, self._pts_out, self._pts_in,
-                     self._limit_curve, self._limit_ghost, self._overlay):
+                     self._limit_curve, self._limit_ghost, self._excl_curve,
+                     self._overlay):
             vb.addItem(item)
         self._search_items = (self._ann_in, self._ann_out,
                               self._pts_in, self._pts_out)
@@ -214,16 +227,82 @@ class PupilCamModule(ModuleAdapter):
         self._btn_limit_off.setToolTip("Search the whole frame again.")
         self._btn_limit_off.clicked.connect(self._clear_limit)
 
+        self._btn_lids = QPushButton("Find lids")
+        self._btn_lids.setToolTip(
+            "Watch the last few seconds of tracking and stop searching the "
+            "directions where a lid crosses the pupil.\n"
+            "Where a lid cuts across, the rays find the LID's edge and those "
+            "points go into the fit like any other. Measured rather than "
+            "typed, because the angle convention (90° = image bottom) is a "
+            "trap and the sectors are different on every prep.\n"
+            "Needs the tracker to be running and holding the pupil.")
+        self._btn_lids.clicked.connect(self._find_lids)
+        self._btn_lids_off = QPushButton("Reset")
+        self._btn_lids_off.setToolTip("Search every direction again.")
+        self._btn_lids_off.clicked.connect(self._clear_lids)
+
         self._lbl_limit = QLabel()
         self._lbl_limit.setStyleSheet("color:#9aa0a6;")
         # Let it be clipped rather than hold the dock open at its own width —
         # the preview is what the dock is for.
         self._lbl_limit.setMinimumWidth(1)
+        lay.addWidget(QLabel("Eye:"))
         for w in (self._btn_limit, self._btn_limit_fit, self._btn_limit_off):
+            lay.addWidget(w)
+        sep = QLabel("Lids:")
+        sep.setContentsMargins(8, 0, 0, 0)
+        lay.addWidget(sep)
+        for w in (self._btn_lids, self._btn_lids_off):
             lay.addWidget(w)
         lay.addWidget(self._lbl_limit, 1)
         self._refresh_limit_bar()
         return bar
+
+    # ── ignored directions (the eyelids) ──
+    def _find_lids(self) -> None:
+        """Measure which directions the lids occlude, from what just happened."""
+        from acqApp.devices.pupil_cam.tracking import lid_sectors
+        sectors = lid_sectors(list(self._recent))
+        if not sectors:
+            self.win.status("not enough tracked frames to find the lids — let "
+                            "it track the pupil for a few seconds first")
+            return
+        self._apply_exclusion(sectors)
+        named = ", ".join(f"{lo:.0f}–{hi:.0f}°" for lo, hi in sectors)
+        self.win.status(f"ignoring {named} — the directions a lid crosses")
+
+    def _clear_lids(self) -> None:
+        self._apply_exclusion(())
+        self.win.status("searching every direction again")
+
+    def _apply_exclusion(self, sectors) -> None:
+        self.panel.set_exclusion(sectors)
+        self._recent.clear()        # measured under the old sectors
+
+    def _draw_exclusion(self) -> None:
+        """Red arcs over the directions the search skips.
+
+        Drawn at the fitted circle, so there is nothing to draw before the
+        first fit — which is also when the sectors cannot have been measured.
+        """
+        if self._excl_curve is None or self.panel is None:
+            return
+        sectors = self.panel.settings.excluded()
+        if not sectors or self._last_fit is None:
+            self._excl_curve.setData([], [])
+            return
+        cx, cy, r = self._last_fit
+        rr = 1.28 * r
+        xs: list[float] = []
+        ys: list[float] = []
+        for lo, hi in sectors:
+            span = (hi - lo) % 360.0 or 360.0
+            th = np.radians(lo + np.linspace(0.0, span, 24))
+            xs.extend(cx + rr * np.cos(th))
+            ys.extend(cy + rr * np.sin(th))
+            xs.append(np.nan)       # `connect="finite"` breaks the line here
+            ys.append(np.nan)
+        self._excl_curve.setData(np.array(xs), np.array(ys))
 
     def _arm_limit(self, on: bool) -> None:
         self._limit_centre = None
@@ -279,10 +358,14 @@ class PupilCamModule(ModuleAdapter):
         elif lim is None:
             self._lbl_limit.setText("whole frame")
         else:
-            self._lbl_limit.setText(f"({lim[0]:.0f}, {lim[1]:.0f}) "
-                                    f"r {lim[2]:.0f}")
+            n = len(self.panel.settings.excluded())
+            self._lbl_limit.setText(
+                f"({lim[0]:.0f}, {lim[1]:.0f}) r {lim[2]:.0f}"
+                + (f", ignoring {n} sector{'s' * (n != 1)}" if n else ""))
         self._btn_limit_off.setEnabled(lim is not None)
         self._btn_limit_fit.setEnabled(self._last_fit is not None)
+        self._btn_lids.setEnabled(self._last_fit is not None)
+        self._btn_lids_off.setEnabled(bool(self.panel.settings.excluded()))
 
     def _on_move(self, pos) -> None:
         """Follow the cursor between the two clicks, so the region is placed by
@@ -396,9 +479,12 @@ class PupilCamModule(ModuleAdapter):
         if res.found:
             self._last_fit = (float(res.center_x), float(res.center_y),
                               float(res.radius))
+            self._recent.append(res)
             if self._btn_limit_fit is not None and not self._btn_limit_fit.isEnabled():
                 self._btn_limit_fit.setEnabled(True)
+                self._refresh_limit_bar()
         self._draw_outline(res)
+        self._draw_exclusion()
 
     def _draw_outline(self, res) -> None:
         self._draw_search(res)
@@ -468,6 +554,10 @@ class PupilCamModule(ModuleAdapter):
                 "pupil_limit_x":       s.limit_x,
                 "pupil_limit_y":       s.limit_y,
                 "pupil_limit_r":       s.limit_r,
+                # Which directions were skipped, flattened to [lo, hi, lo, hi…]
+                # for HDF5. A radius trace fitted from two thirds of the ring
+                # cannot be compared with one fitted from all of it.
+                "pupil_exclude_deg":   [v for pair in s.excluded() for v in pair],
                 # "" for the camera. Recorded because frames replayed from a
                 # clip are not this session's data, and nothing else in the file
                 # would show it.

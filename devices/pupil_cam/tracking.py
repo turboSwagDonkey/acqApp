@@ -57,6 +57,7 @@ _MAX_BAND_GROWTH = 2.5
 __all__ = [
     "PupilResult", "detect", "find_circular_edge", "PupilTracker",
     "coarse_seed", "fit_circle_taubin", "fit_circle_robust", "fit_ellipse",
+    "lid_sectors",
 ]
 
 # A search limit is (cx, cy, r) in frame px, or None for the whole frame — the
@@ -243,6 +244,77 @@ def find_circular_edge(frame: np.ndarray,
             break
 
     return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Which directions are worth searching
+# ══════════════════════════════════════════════════════════════════════════════
+
+def lid_sectors(results, *, n_bins: int = 24, keep_frac: float = 0.6,
+                smooth: int = 3, pad_deg: float = 5.0, min_frames: int = 20
+                ) -> tuple[tuple[float, float], ...]:
+    """Angles whose rays rarely survive the fit — i.e. where a lid crosses.
+
+    Measured rather than typed: the operator cannot be expected to know that
+    "the lower lid is at 60-160°", and the convention (90° = image *bottom*) is
+    a trap. Feed this a run of `PupilResult`s and it reports sectors for
+    `exclude_deg`.
+
+    Scored as **surviving edge points per frame**, not as a hit rate. Rays are
+    cast evenly, so a direction that yields nothing at all contributes no point
+    to divide by — score it per ray *found* and the worst directions, the ones
+    worth excluding, are judged on their two or three lucky frames. That
+    inverted the answer when it was written that way.
+
+    Then smoothed around the circle (a lid is contiguous, single bins are
+    noise) and cut at `keep_frac` of the median bin — relative, because half
+    the rays miss even on a good frame, so an absolute floor catches everything
+    or nothing. Returns () for "not enough evidence", which the caller must
+    treat as leave-it-alone rather than exclude-nothing.
+    """
+    kept = np.zeros(n_bins)
+    used = 0
+    for res in results:
+        if res.edge_x is None or not len(res.edge_x) or res.center_x is None:
+            continue
+        used += 1
+        ang = np.degrees(np.arctan2(res.edge_y - res.center_y,
+                                    res.edge_x - res.center_x)) % 360.0
+        b = (ang / (360.0 / n_bins)).astype(int) % n_bins
+        inl = (res.inliers if res.inliers is not None
+               else np.ones(len(ang), dtype=bool))
+        np.add.at(kept, b, inl.astype(float))
+    if used < min_frames:
+        return ()
+
+    rate = kept / used
+    if smooth > 1:
+        k = np.ones(smooth) / smooth
+        pad = smooth // 2
+        rate = np.convolve(np.r_[rate[-pad:], rate, rate[:pad]], k,
+                           mode="valid")[:n_bins]
+    ref = float(np.median(rate))
+    if ref <= 0.0:
+        return ()
+    bad = rate < keep_frac * ref
+    if bad.all() or not bad.any():
+        return ()               # every direction equally good or equally poor
+
+    # Contiguous runs of bad bins, wrapping at 360.
+    width = 360.0 / n_bins
+    runs: list[list[int]] = []
+    for i in range(n_bins):
+        if not bad[i]:
+            continue
+        if runs and runs[-1][-1] == i - 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    if len(runs) > 1 and bad[0] and bad[-1]:     # joins across 0°
+        runs[0] = runs.pop() + runs[0]
+    return tuple((round((r[0] * width - pad_deg) % 360.0, 1),
+                  round(((r[-1] + 1) * width + pad_deg) % 360.0, 1))
+                 for r in runs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
