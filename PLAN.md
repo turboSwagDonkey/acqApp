@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-21 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0). The newest of those: the pupil tracker learned **where it may look** — a user-set eye region and measured lid sectors — taking the rig's own clip from **0/151 frames to 151/151** with no click, and its fit confidence from 0.26 to 0.34. Suite **776 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three, two of which need the operator (§6). |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0). The newest of those: the pupil tracker learned **where it may look** — a user-set eye region and measured lid sectors — taking the rig's own clip from **0/151 frames to 151/151** with no click. **The operator's verdict is still "not good"**, so §6 item 1 is a rework, not a tick: draw a rectangular ROI, and try a lighter algorithm than the 64-ray IMAQ port. Suite **776 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three, two of which need the operator (§6). |
 
 ---
 
@@ -316,37 +316,65 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-**Both of the first two are asks, not code.** They have been the top of this
-list for two sessions and neither can advance without the operator, so they are
-stated here as the questions they actually are.
+1. **Pupil tracking — the operator's live complaint, and it is not resolved.**
+   Two sessions of work took it from *not finding the eye at all* to finding it
+   every frame, but **the operator's verdict on 2026-08-21 is still "not
+   good"**, and that is the number that counts, not the confidence figure.
+   The direction they asked for, and the state of it:
+   - **Let the operator draw an ROI around the eye.** Today's region is a
+     *circle*, placed by two clicks. An eye is an almond, so a circle round it
+     necessarily takes in a lot of fur. A rectangle is what "ROI" normally
+     means and would fit the eye far better. **Not started.**
+   - **Try a lighter algorithm.** The current one is a port of LabVIEW's IMAQ
+     *Find Circular Edge* — an annulus, 64 rays, per-ray sub-pixel edges, a
+     robust circle fit and a refinement loop, with a dozen knobs. Against
+     footage whose interior is grey 23 and whose surround is grey 61, that is
+     a great deal of machinery for a bimodal threshold.
+     **Prototyped and NOT yet settled — see §7 (af) for the numbers.** The
+     first attempt (threshold → largest component → moments/boundary fit) came
+     out *worse* on every measure, but with a threshold of 60, which is the
+     **surround's** grey level, so the blob was leaking into the orbit. The
+     threshold sweep that would settle it was not run. **Do that before
+     concluding anything**; the honest state is "untested at the right
+     threshold", not "tried and failed".
+   - Worth knowing before touching it: an Otsu threshold inside a drawn ROI
+     would remove the threshold knob entirely, which is the *operator*-facing
+     kind of lightweight. And a blob method is not automatically cheaper —
+     `scipy.label` + `binary_fill_holes` on a 330×240 crop measured **3.2 ms**
+     against the ray tracker's **2.1 ms**.
 
-1. **DMD ROI photostimulation, the rig half** (item 4 below). The offline half
-   is built, verified and sized for a real camera. What is left **projects
-   light** at an in-vivo rig, so it is an ask — and it carries three design
-   calls only the operator can make, which is why "wire `RoiEditor` in" has not
-   simply been done:
-   - **The snapshot has to cross modules.** An ROI is drawn on an *imaging
-     camera* frame while the *DMD* is all-on, so the DMD adapter needs a frame
-     from `voltage_cam`. Nothing in `ModuleHost` provides one, and §5b A4 says
-     widening that surface is a deliberate line in `acq/devices.py`, not
-     something to help yourself to. Which module owns the snapshot decides the
-     shape of the wiring.
+2. **Wire `RoiEditor` into the DMD settings tab.** The operator went looking
+   for it there on 2026-08-21 and it is not there — correctly: `RoiEditor` is
+   imported by `tests/test_dmd_roi.py` and by nothing else, so it has never
+   appeared in the UI.
+   **Two operator calls from 2026-08-21, and they are about different things:**
+   - **The editor lives in the DMD settings tab.** That is where they went
+     looking, and that is where it belongs.
+   - **The DMD images through the VOLTAGE camera, not the pupil camera.** That
+     is the optical path the DMD projects into, so the frame the ROIs are drawn
+     on is an ORCA frame.
+   So the cross-module snapshot is real and still has to be arranged: a panel
+   in the **DMD** tab needs a frame from **`voltage_cam`**. Nothing in
+   `ModuleHost` provides one, and §5b A4 makes widening that surface a
+   deliberate line in `acq/devices.py` rather than something to help yourself
+   to — this is the case it was written for. Still to decide:
    - **Single frame or an average?** (item 4 (c), still open.)
    - **Do ROIs persist across sessions, and is a mask one static pattern or a
      sequence?** (item 4, still open.) The second decides whether
      `alp.project()` is enough or `project_sequence()` is needed.
-2. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
+   Note the editor itself needs **no light** — it draws over a snapshot. Only
+   the calibration sweep and the stimulation do, so the wiring can be built and
+   mock-verified before anyone stands at the rig.
+
+3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
    answers it. Until it is set the app reports rev/s and rev instead of mm/s and
    mm, and the closed loop's threshold has to be set in revolutions.
    `volts_per_rev` is a measured 4.912 and the sign is settled, so this is the
    only thing between the wheel and fully physical units.
-3. **Set a search limit on the pupil camera at the rig and check it holds** —
-   the one new thing that can be done without either of the above. §7 (ae)
-   validates it on a 151-frame clip from one prep; a live animal moves, blinks
-   and is re-mounted. Draw the circle, watch whether the tracker keeps the eye
-   across a session, and record whether the limit needs redrawing between
-   animals (which is what decides if it should live in the config or in the
-   session setup).
+
+~~Set a search limit on the pupil camera at the rig and check it holds.~~
+**Done 2026-08-21, and it is item 1 above now** — the operator tried it and the
+answer was "still not good".
 
 ~~Settle `_SIGN`.~~ **Done 2026-08-19** — the operator answered it; see §0 and
 §7 (ad).
@@ -562,6 +590,31 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   circles — but it passes `_test_tracking.py` on synthetic eyes, which is the
   same synthetic-suite blind spot as §6 item 6.
 - Suite **756 → 776, 23/23**; `_test_tracking.py` 15/15.
+- **The operator's verdict at the end of the session was still "not good".**
+  That outranks every number above, and §6 item 1 is now that complaint rather
+  than a tick. What they asked for: **draw an ROI** (a rectangle round the eye,
+  not a circle — an eye is an almond and a circle round it takes in fur) and a
+  **lighter algorithm** than a 64-ray IMAQ port.
+- **The lightweight prototype is UNFINISHED, not disproved.** Threshold →
+  largest component → moments/boundary fit measured *worse* than the ray
+  tracker (r 66–86 px against 53.7, jitter 2–14× higher) — but at threshold
+  **60, which is the surround's grey level**, so the blob was leaking into the
+  orbit. The interior is 23. The threshold sweep that decides it was written
+  and not run. Anyone resuming: run it before concluding, and try an **Otsu
+  threshold inside the ROI**, which removes the knob altogether. Also note a
+  blob method is not automatically cheaper — `scipy.label` +
+  `binary_fill_holes` on a 330×240 crop was **3.2 ms/frame** against the ray
+  tracker's **2.1 ms**.
+- **`RoiEditor` has never been in the UI**, which the operator found by going
+  to look for it in the DMD tab. It is imported by `tests/test_dmd_roi.py` and
+  by nothing else. Promoted to §6 item 2 — and worth knowing that the editor
+  itself emits no light, so the wiring is buildable and mock-verifiable now.
+- **Two operator calls, about different things — do not merge them.** The
+  **editor belongs in the DMD settings tab** (that is where they went looking).
+  And **the DMD images through the voltage camera, not the pupil camera** — so
+  the frame it draws on is an ORCA frame. Written down because the obvious
+  reading of the second ("put the editor on the voltage cam") is wrong, and
+  this session made that mistake once already.
 
 ### 2026-08-19/20 (ae) — a search limit for the pupil: 0/151 → 149/151 on the rig's clip
 - **The operator's ask: a limiting circle, because the animal is head-fixed and
