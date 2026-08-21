@@ -316,7 +316,26 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Pupil tracking — the operator's live complaint, and it is not resolved.**
+1. **Pupil tracking — still the operator's complaint, now with the symptoms
+   named: JITTER and DROPOUTS** (2026-08-21). Not a mis-placed outline. Two
+   things unblock it, in this order:
+   - **Mark ground truth and score against it.** The tool exists —
+     `devices/pupil_cam/_mark_truth.py mark --clip … --out truth.json`, then
+     `… score --clip … --truth truth.json`. Everything measured so far is a
+     proxy: jitter says how *steady* a fit is and nothing about whether it is
+     right, and both automatic accuracy metrics tried on 2026-08-21 failed
+     (§7 (ag)). **Do this before tuning anything else.**
+   - **Get a clip that actually shows a dropout.** The 151-frame clip never
+     drops out (151/151), so the failure the operator sees is not in it and the
+     simulated version is non-monotonic (§7 (ag)). Without such a clip, work on
+     dropouts is guesswork.
+   **The "lighter algorithm" branch is closed: it was tried properly and is
+   four times worse** on both jitter and centre wander, and no faster (§7 (ag)).
+   Do not re-open it without new evidence.
+
+~~Pupil tracking — draw an ROI and try a lighter algorithm.~~ **Superseded
+2026-08-21 by the above.** The original framing is kept because its reasoning
+still stands:
    Two sessions of work took it from *not finding the eye at all* to finding it
    every frame, but **the operator's verdict on 2026-08-21 is still "not
    good"**, and that is the number that counts, not the confidence figure.
@@ -330,18 +349,9 @@ kept for its reasoning, not a queue.
      robust circle fit and a refinement loop, with a dozen knobs. Against
      footage whose interior is grey 23 and whose surround is grey 61, that is
      a great deal of machinery for a bimodal threshold.
-     **Prototyped and NOT yet settled — see §7 (af) for the numbers.** The
-     first attempt (threshold → largest component → moments/boundary fit) came
-     out *worse* on every measure, but with a threshold of 60, which is the
-     **surround's** grey level, so the blob was leaking into the orbit. The
-     threshold sweep that would settle it was not run. **Do that before
-     concluding anything**; the honest state is "untested at the right
-     threshold", not "tried and failed".
-   - Worth knowing before touching it: an Otsu threshold inside a drawn ROI
-     would remove the threshold knob entirely, which is the *operator*-facing
-     kind of lightweight. And a blob method is not automatically cheaper —
-     `scipy.label` + `binary_fill_holes` on a 330×240 crop measured **3.2 ms**
-     against the ray tracker's **2.1 ms**.
+     **Settled 2026-08-21 (§7 (ag)): tried at the right threshold, and it
+     loses** — 4× the jitter and 4× the centre wander, no faster. Otsu inside
+     the ROI is unusable too (picks ~135, r = 94 px). Closed.
 
 2. **Wire `RoiEditor` into the DMD settings tab.** The operator went looking
    for it there on 2026-08-21 and it is not there — correctly: `RoiEditor` is
@@ -555,6 +565,51 @@ Item 5 keeps the reasoning and the numbers.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-21 (ag) — the lightweight tracker is measurably worse; ground truth built
+- **The operator named the symptoms: jitter and dropouts** (not a mis-placed
+  outline, which is what I had been chasing). And chose hand-marked frames as
+  the way to settle correctness. Both change what is worth doing.
+- **"Try a more lightweight algorithm" — done properly, and it loses.** With
+  the threshold swept rather than left at the 60 that broke the first attempt:
+
+  | | frames | r | \|dr\| med | p95 | cx sd | cost |
+  |---|---|---|---|---|---|---|
+  | rays + region + lids | 151/151 | 53.7 | **0.153** | **0.48** | **0.31** | **2.1 ms** |
+  | blob, threshold 40, moments | 151/151 | 55.0 | 0.253 | 2.07 | 1.39 | 2.7 ms |
+  | blob → boundary → robust circle | 151/151 | 61.7 | 0.804 | 16.7 | 4.06 | 4.5 ms |
+
+  **Four times the jitter and four times the centre wander, and no faster.**
+  Boundary-fit variants are far worse still: the lid chord is not a small
+  minority of the boundary, so robust rejection cannot drop it.
+- **Otsu inside the ROI is unusable** — it picks ~135, because the ROI's bright
+  fur dominates the histogram and the split it finds is fur-vs-rest, not
+  pupil-vs-iris. r = 94 px against a true ~53. So much for removing the knob.
+- **What the montage showed that no number did: the fitted circle sits
+  down-left of the pupil**, its lower-left arc running through fur. Excluding
+  115° of the ring leaves a *partial arc*, and a circle fitted to one trades
+  centre against radius. The lids bought stability and cost accuracy. **Not the
+  operator's complaint, so not fixed — but it is real, and it is the thing to
+  watch if the exclusion is ever widened.**
+- **Two attempts at an automatic accuracy metric both failed**, which is why
+  ground truth is now a tool and not a proxy: scoring the boundary by the first
+  *bright* crossing fires on the corneal glint (r ≈ 10), and by the last *dark*
+  sample runs out into dark fur (r ≈ 80). Stability can be measured without
+  ground truth; correctness cannot.
+- **`devices/pupil_cam/_mark_truth.py`** — `mark` clicks the pupil edge on a
+  spread of frames (robust circle fitted live; one badly-placed click moves the
+  answer **0.00 px**, checked) and `score` runs the tracker over the whole clip
+  and reports centre and radius error at each marked frame. Scoring runs the
+  *whole* clip so the tracker is in the state it would really be in — a fresh
+  tracker on frame 120 measures something the operator never sees.
+- **The dropout half is NOT settled, and I did not change a default on it.**
+  Simulated occlusions say `reseed_after` is non-monotonic: at a 40-frame gap
+  30 recovers in 22 frames against 2, but at 15 and 90 frames it recovers in 0
+  and the short settings take 2–7. The reason is real — a short re-seed latches
+  onto the lid *during* the occlusion and then has to recover from a wrong
+  position — but a grey rectangle is not a blink. **This needs footage of a
+  real dropout**; changing the default on this evidence would file exactly the
+  plausible-wrong-value the §5 audit spent twenty items removing.
 
 ### 2026-08-21 (af) — "tracking is still awful": it was the eyelids
 - **The operator was right, and the region was only half of it.** The region

@@ -108,6 +108,8 @@ devices/                one package per instrument
   puffer/
     control.py
   pupil_cam/
+    _mark_truth.py      script: mark the pupil edge by hand, then score the
+                        tracker against it — the only real ground truth there is
     _test_tracking.py   script: tracker vs synthetic ground truth, no hardware
     acquisition.py      Basler worker + mock twin
     avi.py              uncompressed-AVI reader (no Qt); there is no decoder here
