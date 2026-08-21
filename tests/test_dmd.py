@@ -324,7 +324,64 @@ def main() -> int:
 
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
+
+    check_roi_wiring(r)
     return r.finish()
+
+
+def check_roi_wiring(r) -> None:
+    """The ROI editor reaches the DMD tab, and gets a VOLTAGE-camera frame.
+
+    The DMD images through the voltage camera, so an ROI drawn for it is in
+    ORCA pixels. Two things could silently break that: the frame arriving at
+    display scale (every ROI then out by DISP_DS), or `latest_frame` consuming
+    the frame and starving the camera's own preview.
+    """
+    import sys as _s
+    from _harness import isolate_user_state, pump, qt_app
+    isolate_user_state()
+    app = qt_app()
+    import acqApp.main as M
+    _s.argv = ["main.py", "--mock"]
+    win = M.MainWindow(cam_info=None, mock=True,
+                       enabled={"voltage_cam", "dmd"}, cam_handle=None)
+    dmd = next(m for m in win._modules if m.key == "dmd")
+    cam = next(m for m in win._modules if m.key == "voltage_cam")
+
+    r.check(win.latest_frame("voltage_cam") is None,
+            "no frame before the camera has run")
+    win._btn_run.setChecked(True)
+    pump(app, 1.2)
+
+    f = win.latest_frame("voltage_cam")
+    if r.check(f is not None, "the DMD can reach a voltage-camera frame"):
+        from acqApp.adapters.base import DISP_DS
+        want = cam.panel.get_config().frame_shape
+        r.check(f.shape == want,
+                f"…at FULL camera resolution {f.shape} (want {want}), not the "
+                f"preview's 1/{DISP_DS} — ROIs are in camera px, so a "
+                f"downsampled frame would put every one of them out by {DISP_DS}x")
+    # CONTROL: reading it must not consume. The camera's own preview pulls from
+    # the same worker, and a stolen frame is a dropped one.
+    again = win.latest_frame("voltage_cam")
+    r.check(again is not None and again.shape == f.shape,
+            "control: reading it twice still returns a frame (non-consuming)")
+    r.check(win.latest_frame("nope") is None, "an unloaded module gives None")
+
+    # The panel round-trips what the editor produces.
+    dmd.panel.set_rois(({"kind": "rect", "name": "r1", "cx": 100.0, "cy": 80.0,
+                         "w": 40.0, "h": 30.0, "angle": 0.0, "enabled": True},))
+    r.check(len(dmd.panel.settings.rois) == 1, "ROIs land in DmdSettings")
+    md = dmd.metadata()
+    r.check(md["dmd_n_rois"] == 1 and "r1" in md["dmd_rois"],
+            f"…and into the session metadata ({md['dmd_n_rois']} rois)")
+    r.check(md["dmd_calibration"] == "",
+            "…recording that no calibration was in force")
+
+    win._btn_run.setChecked(False)
+    pump(app, 0.3)
+    win.close()
+    pump(app, 0.1)
 
 
 if __name__ == "__main__":

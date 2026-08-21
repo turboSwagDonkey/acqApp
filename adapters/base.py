@@ -128,6 +128,17 @@ class ModuleAdapter:
     def update_display(self) -> None:
         """Pull the newest sample and paint it. Only called while running."""
 
+    def last_frame(self):
+        """The last frame this module displayed, or None if it has none.
+
+        Cached by the adapter rather than re-read from the worker, because
+        `get_latest()` *consumes*: asking the worker would usually return None
+        (the display tick got there first) and would otherwise steal a frame
+        from this module's own preview. Cameras override; everything else has
+        no frame to give.
+        """
+        return None
+
     # ── recording ─────────────────────────────────────────────────────────────
     def attach_sink(self, rec) -> None:
         """Route samples to the Recorder, which stamps them on the shared clock."""

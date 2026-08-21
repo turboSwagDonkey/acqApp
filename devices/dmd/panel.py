@@ -30,6 +30,9 @@ class SettingsPanel(QWidget):
     load_requested   = pyqtSignal(object)   # emits Path
     display_requested = pyqtSignal()
     stop_requested    = pyqtSignal()
+    # The adapter opens the editor: it is the only side that can reach the
+    # voltage camera's frame (`ModuleHost.latest_frame`).
+    rois_edit_requested = pyqtSignal()
 
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
@@ -37,6 +40,9 @@ class SettingsPanel(QWidget):
         self._res: tuple[int, int] = (DEFAULT_W, DEFAULT_H)
         self._pattern_path: Path | None = (
             Path(self._s.pattern_path) if self._s.pattern_path else None)
+        # Plain state, not widget values: a list of ROI dicts and a path.
+        self._rois: tuple = tuple(self._s.rois or ())
+        self._calib_path: str = self._s.calib_path or ""
         self._shortcuts: list[QShortcut] = []
         self._build()
         self._init_shortcuts()
@@ -198,6 +204,7 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(grp)
+        root.addWidget(self._build_rois())
         root.addStretch(1)
 
         self._on_all_on_toggled(self._chk_all_on.isChecked())
@@ -208,6 +215,77 @@ class SettingsPanel(QWidget):
         for c in (self._chk_fit, self._chk_invert, self._chk_all_on):
             c.toggled.connect(self._emit)
         self._cmb_trig.currentTextChanged.connect(self._emit)
+
+    # ── photostimulation ROIs ────────────────────────────────────────────────
+    def _build_rois(self) -> QGroupBox:
+        """Draw ROIs on a camera frame and project only those mirrors.
+
+        The editor is a separate window (`roi_panel.RoiEditor`) rather than a
+        row here: it is an image view, and this tab lives in a scroll area.
+        """
+        box = QGroupBox("Photostimulation ROIs")
+        box.setToolTip(
+            "Draw regions on a snapshot from the VOLTAGE camera — that is the "
+            "imaging path the DMD projects into — and turn them into a mirror "
+            "mask.\nTurning them into a mask needs a measured camera↔DMD "
+            "registration; without one they can still be drawn and saved.")
+        v = QVBoxLayout(box)
+        v.setSpacing(4)
+
+        self._lbl_rois = QLabel()
+        v.addWidget(self._lbl_rois)
+        btn = QPushButton("Edit ROIs…")
+        btn.setToolTip(
+            "Open the editor on the voltage camera's newest frame.\n"
+            "Put the DMD in all-on and press Display first if you want to see "
+            "the projected field in the snapshot — this button never commands "
+            "the camera or the projector itself.")
+        btn.clicked.connect(self.rois_edit_requested)
+        v.addWidget(btn)
+
+        self._lbl_calib = QLabel()
+        self._lbl_calib.setWordWrap(True)
+        self._lbl_calib.setStyleSheet("color:#9aa0a6;")
+        v.addWidget(self._lbl_calib)
+        crow = QHBoxLayout()
+        crow.setContentsMargins(0, 0, 0, 0)
+        b_load = QPushButton("Load calibration…")
+        b_load.setToolTip("A DmdCalibration JSON written by run_calibration().")
+        b_load.clicked.connect(self._pick_calib)
+        self._btn_calib_clear = QPushButton("Clear")
+        self._btn_calib_clear.clicked.connect(lambda: self._set_calib(""))
+        crow.addWidget(b_load)
+        crow.addWidget(self._btn_calib_clear)
+        v.addLayout(crow)
+        self._show_rois()
+        return box
+
+    def _pick_calib(self) -> None:
+        start = str(Path(self._calib_path).parent) if self._calib_path else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "DMD calibration", start, "Calibration (*.json);;All files (*)")
+        if path:                        # empty = cancelled, which must not clear
+            self._set_calib(path)
+
+    def _set_calib(self, path: str) -> None:
+        self._calib_path = path
+        self._show_rois()
+        self._emit()
+
+    def set_rois(self, rois) -> None:
+        """Store what the editor produced. Called by the adapter, not the user."""
+        self._rois = tuple(rois)
+        self._show_rois()
+        self._emit()
+
+    def _show_rois(self) -> None:
+        n = len(self._rois)
+        self._lbl_rois.setText(f"{n} ROI{'' if n == 1 else 's'} defined"
+                               if n else "No ROIs yet")
+        self._lbl_calib.setText(
+            f"Calibration: {Path(self._calib_path).name}" if self._calib_path
+            else "No calibration — ROIs can be drawn but not projected")
+        self._btn_calib_clear.setEnabled(bool(self._calib_path))
 
     def _init_shortcuts(self) -> None:
         """Configures keyboard shortcuts for alignment nudging."""
@@ -390,4 +468,14 @@ class SettingsPanel(QWidget):
             all_on=self._chk_all_on.isChecked(),
             fit=self._chk_fit.isChecked(),
             lib_dir=self._s.lib_dir,
+            rois=self._rois,
+            calib_path=self._calib_path,
         )
+
+    @property
+    def calib_path(self) -> str:
+        return self._calib_path
+
+    @property
+    def rois(self) -> tuple:
+        return self._rois

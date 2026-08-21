@@ -72,6 +72,11 @@ def accent_panel(key: str) -> str:
         "padding-top:6px;font-weight:bold}"
         "QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;"
         f"color:{c}}}"
+        # A collapsible section is a disclosure, not an on/off switch. Qt's
+        # checkable group box draws a tick box, which reads as "enable this" —
+        # so the box is hidden and `widgets.collapsible` puts a ▾/▸ in the
+        # title instead. The whole title stays clickable either way.
+        "QGroupBox::indicator{width:0px;height:0px;margin:0px}"
     )
 
 

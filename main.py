@@ -285,6 +285,28 @@ class MainWindow(QMainWindow):
             out.extend(m.signal_sources())
         return out
 
+    def latest_frame(self, key: str):
+        """The newest frame from module `key`'s camera, or None.
+
+        For the DMD's ROI editor, which draws on an ORCA frame because the
+        voltage camera is the imaging path the DMD projects into. Reading it
+        here keeps `adapters/dmd.py` and `adapters/voltage_cam.py` from
+        importing each other (§5b A4).
+
+        Never commands the camera — it hands back the frame that module last
+        displayed. Grabbing on demand would mean deciding when the DMD is
+        all-on, and that is the operator's call, not this method's.
+
+        Reads the adapter's cached frame, never the worker: `get_latest()`
+        *consumes*, so asking the worker would usually return None (the display
+        tick got there first) and would otherwise steal a frame from that
+        module's own preview.
+        """
+        for m in self._modules:
+            if m.key == key:
+                return m.last_frame()
+        return None
+
     def register_pg_view(self, view) -> None:
         """Track a pyqtgraph view so the theme toggle can recolour it."""
         self._pg_views.append(view)

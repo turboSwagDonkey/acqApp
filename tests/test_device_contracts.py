@@ -258,6 +258,7 @@ def main() -> int:
         def set_expected_rate(self, mbps): ...
         def on_worker_error(self, m): ...
         def module_keys(self): return []
+        def latest_frame(self, key): return None
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

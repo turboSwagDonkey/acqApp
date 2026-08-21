@@ -130,15 +130,29 @@ def main() -> int:
     # Applied in add_panel(), not in each panel, so a new instrument gets it
     # without doing anything — which is why this checks across every tab.
     from PyQt6.QtWidgets import QGroupBox, QWidget as _QW
+    from acqApp import widgets as W
     tabs = {dlg.tabs.tabText(i): dlg.tabs.widget(i).findChildren(QGroupBox)
             for i in range(dlg.tabs.count())}
     flat = [b for v in tabs.values() for b in v]
     r.check(len(flat) >= 10, f"{len(flat)} group boxes across {len(tabs)} tabs")
     r.check(all(b.isCheckable() for b in flat),
             "every settings box has a fold toggle in its title")
+    # The affordance is a disclosure arrow, not a tick box: a tick reads as
+    # "enable this section". Every title carries one, and the base title is
+    # kept so toggling cannot accumulate them.
+    r.check(all(b.title().startswith((W.OPEN, W.SHUT)) for b in flat),
+            "…drawn as a ▾/▸ dropdown arrow")
+
+    def find(title):
+        return next(b for b in flat if getattr(b, "_base_title", "") == title)
 
     p = panels["pupil_cam"]
-    box = next(b for b in flat if b.title() == "Search limit")
+    box = find("Search limit")
+    box.setChecked(False); box.setChecked(True); box.setChecked(False)
+    r.check(box.title().count(W.SHUT) == 1 and "Search limit" in box.title(),
+            f"control: toggling three times leaves one arrow ({box.title()!r})")
+    box.setChecked(True)            # back open, so the height below is the
+    pump(app, 0.05)                 # expanded one
     tall = box.sizeHint().height()
     box.setChecked(False)
     pump(app, 0.05)
@@ -163,7 +177,8 @@ def main() -> int:
 
     # The pupil tab's Advanced group folds itself and renames its own title, so
     # it is skipped — taking its tick over would fight it.
-    adv = next(b for b in flat if b.title().startswith("Advanced tracking"))
+    adv = next(b for b in flat
+               if getattr(b, "_base_title", "").startswith("Advanced tracking"))
     r.check(not adv.isChecked(),
             "the panel's own collapsible group is left as the panel set it")
 
@@ -255,9 +270,15 @@ def main() -> int:
     dlg2 = win2._settings_dialog
     flat2 = [b for i in range(dlg2.tabs.count())
              for b in dlg2.tabs.widget(i).findChildren(QGroupBox)]
-    got = next(b for b in flat2 if b.title() == "Search limit")
-    r.check(not got.isChecked(), "a folded settings box comes back folded")
-    r.check(next(b for b in flat2 if b.title() == "Camera").isChecked(),
+    r.check(all(b.title().startswith((W.OPEN, W.SHUT)) for b in flat2),
+            "…and the arrows are there on the rebuilt window too")
+    def find2(title):
+        return next(b for b in flat2
+                    if getattr(b, "_base_title", "") == title)
+
+    r.check(not find2("Search limit").isChecked(),
+            "a folded settings box comes back folded")
+    r.check(find2("Camera").isChecked(),
             "control: a box that was left open comes back open")
 
     # A session must actually run on the restored values.

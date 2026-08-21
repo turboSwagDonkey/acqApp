@@ -48,6 +48,13 @@ class DmdSettings:
     all_on:        bool        = False  # turn all mirrors on
     fit:           bool        = False  # scale to fit and centre
     lib_dir:       str         = ""     # ALP API location
+    # ── photostimulation ROIs ──
+    # Drawn on a VOLTAGE-camera frame (that is the imaging path the DMD
+    # projects into) and stored as `RoiSet.to_list()` so they survive JSON.
+    # `calib_path` is the measured camera↔DMD registration; without one the
+    # ROIs can be drawn and saved but not turned into a mask.
+    rois:          tuple       = ()
+    calib_path:    str         = ""
 
 
 class DmdController(QObject):

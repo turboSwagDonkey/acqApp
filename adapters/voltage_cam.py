@@ -34,6 +34,10 @@ class VoltageCamModule(ModuleAdapter):
         self._f0: float | None = None
         self._levels: tuple[float, float] | None = None
         self._level_ctr = 0
+        self._last_frame = None         # full-res, for the DMD's ROI editor
+
+    def last_frame(self):
+        return self._last_frame
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -114,6 +118,10 @@ class VoltageCamModule(ModuleAdapter):
         f = self.worker.get_latest() if self.worker is not None else None
         if f is None:
             return
+        # Kept at FULL resolution for the DMD's ROI editor: ROIs are in camera
+        # px and the registration is measured in camera px, so handing over the
+        # display's ¼-scale copy would put every ROI out by a factor of DISP_DS.
+        self._last_frame = f
         small = f[::DISP_DS, ::DISP_DS]              # strided view, no copy
         # The percentile is the costly part, so refresh contrast a couple of
         # times a second rather than every frame.

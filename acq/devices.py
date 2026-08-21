@@ -144,3 +144,17 @@ class ModuleHost(Protocol):
     def signal_sources(self) -> list[Any]:
         """Every module's `SignalSource`s, pooled for the closed loop."""
         ...
+
+    def latest_frame(self, key: str) -> Any:
+        """The newest frame from another module's camera, or None.
+
+        Added deliberately (§5b A4 is the rule this is the case for): the DMD's
+        ROI editor draws on an **ORCA** frame, because the voltage camera is the
+        imaging path the DMD projects into — so a panel in the DMD tab needs a
+        frame owned by `voltage_cam`. Reading it through the host keeps the two
+        modules from importing each other.
+
+        Only the newest frame, never a grab: this must not command a camera,
+        because the operator decides when the DMD is all-on.
+        """
+        ...

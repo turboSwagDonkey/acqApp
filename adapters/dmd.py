@@ -3,6 +3,7 @@ The DMD projector's adapter: an output that also answers to the trigger bus.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -33,7 +34,77 @@ class DmdModule(ModuleAdapter):
         self.panel.display_requested.connect(self.display)
         self.panel.stop_requested.connect(self.stop_display)
         self.panel.settings_changed.connect(self._save)
+        self.panel.rois_edit_requested.connect(self.edit_rois)
         return self.panel
+
+    # ── photostimulation ROIs ──
+    def edit_rois(self) -> None:
+        """Open `RoiEditor` on the voltage camera's newest frame.
+
+        Here rather than in the panel because only the adapter can reach
+        another module (`ModuleHost.latest_frame`), and the DMD images through
+        the **voltage** camera — that is the optical path it projects into.
+
+        Nothing in this path commands a camera or the projector: it draws on
+        the frame that already exists. Putting the DMD all-on first is the
+        operator's step, and it is the one that emits light.
+        """
+        from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
+                                     QVBoxLayout)
+
+        from acqApp.devices.dmd.roi import RoiSet
+        from acqApp.devices.dmd.roi_panel import RoiEditor
+
+        frame = self.win.latest_frame("voltage_cam")
+        if frame is None:
+            QMessageBox.information(
+                self.panel, "No camera frame",
+                "The ROI editor draws on a voltage-camera frame, and none has "
+                "arrived yet.\n\nLoad the voltage camera and press Free run "
+                "(or Record), then try again.\n\nTo see the projected field in "
+                "the snapshot, put the DMD in all-on and press Display first.")
+            return
+
+        calib, why = self._calibration()
+        dlg = QDialog(self.panel)
+        dlg.setWindowTitle("Photostimulation ROIs")
+        dlg.resize(1000, 760)
+        lay = QVBoxLayout(dlg)
+        ed = RoiEditor(calib)
+        ed.set_image(frame)
+        if self.panel.rois:
+            ed.load(RoiSet.from_list(list(self.panel.rois)))
+        lay.addWidget(ed, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
+                              | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if why:
+            self.win.status(why)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            rois = ed.roi_set.to_list()
+            self.panel.set_rois(tuple(rois))
+            self.win.status(f"{len(rois)} photostimulation ROI(s) saved")
+
+    def _calibration(self):
+        """The saved camera↔DMD registration -> (calib | None, complaint).
+
+        A missing or unreadable one is not fatal: ROIs can still be drawn and
+        saved, and the editor says so itself. What must not happen is a
+        *silently* absent calibration, because the field outline is then simply
+        not drawn and everything looks fine.
+        """
+        path = self.panel.calib_path if self.panel is not None else ""
+        if not path:
+            return None, ""
+        try:
+            from acqApp.devices.dmd.calibration import DmdCalibration
+            return DmdCalibration.load(path), ""
+        except Exception as e:      # noqa: BLE001 — missing, corrupt, or stale
+            return None, (f"DMD calibration {Path(path).name} could not be "
+                          f"read ({type(e).__name__}) — ROIs can be drawn but "
+                          f"not projected")
 
     def _settings(self) -> DmdSettings:
         """Saved settings, defaulting to the standalone DMD app's alignment.
@@ -55,6 +126,7 @@ class DmdModule(ModuleAdapter):
     def _save(self, s) -> None:
         d = asdict(s)
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
+        d["rois"] = list(s.rois or ())      # JSON has no tuples
         config.save_settings(self.key, d)
 
     def build_controller(self, emulate: bool) -> None:
@@ -149,4 +221,10 @@ class DmdModule(ModuleAdapter):
             # 0 mirrors on is a dark panel — a Display that "worked" and
             # projected nothing looks identical in every other field here.
             "dmd_on_pixels":   c.on_pixels if c is not None else 0,
+            # Photostimulation targets. Recorded as a count plus the JSON,
+            # because "where was the light aimed" cannot be recovered later
+            # from anything else in the file.
+            "dmd_n_rois":      len(s.rois or ()),
+            "dmd_rois":        json.dumps(list(s.rois or ())),
+            "dmd_calibration": Path(s.calib_path).name if s.calib_path else "",
         }
