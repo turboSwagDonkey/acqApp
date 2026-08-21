@@ -96,6 +96,7 @@ closed_loop/            phase 5: watch one module's signal, fire another's outpu
   worker.py
 devices/                one package per instrument
   dmd/
+    _roi_editor.py      script: open roi_panel's editor alone, no rig, no light
     alp.py              all Vialux ALP knowledge, Qt-free; build_frame is the
                         one a mispositioned stimulus would come from
     calibration.py      DMD↔camera registration: patterns, decode, fit. Pure,
