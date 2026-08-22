@@ -63,6 +63,19 @@ class PupilSettings:
             return None
         return (float(self.limit_x), float(self.limit_y), float(self.limit_r))
 
+    def risky(self) -> list[tuple[str, str]]:
+        """(field, cost) for values measured to break real footage. Warns only.
+
+        Needs a measured number to qualify. smooth_sigma is out: its best value
+        is 0.5 on one rig clip and 1.5-3.0 on another, so any cutoff is invented.
+        """
+        out: list[tuple[str, str]] = []
+        if self.edge_select == "strongest":
+            out.append(("edge_select",
+                        "takes the eyelid margin instead of the pupil rim; on "
+                        "the rig clips 151/151 frames becomes 44/151"))
+        return out
+
     def excluded(self) -> tuple[tuple[float, float], ...]:
         """`exclude_deg` as pairs, whatever the JSON round trip made of it.
 

@@ -4,6 +4,52 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-19 (ad) — `_SIGN` answered; the suite is green for the first time
+- **The operator settled it: a mouse running forward reads positive, and the
+  voltage ramps UP as it does.** So `_SIGN = +1.0` was right all along and the
+  code under test was never wrong — **three fixtures were**, each independently
+  encoding a falling ramp:
+  `test_encoder_derive.sim()` (`frac = (-rev_s * t) % 1.0`, with a docstring
+  asserting "the rig's forward direction is the falling one"),
+  `test_encoder_timing`'s fake DAQ task, and `MockEncoderWorker`.
+- **A fourth thing had to move with them**: `sim()` finds each reset with
+  `np.diff(frac) > 0.5`, which only detects a *falling* ramp's wrap. Flipping
+  the ramp alone would have found no wraps, silently stopped smearing them, and
+  turned the test that exists for smeared resets into one that never sees one.
+  Now `< -0.5`.
+- **19/22 → 22/22, 670 → 688 checks.** Verified beyond the suite: driving
+  `_EncoderBase` with a rising ramp gives **+188.5 mm/s** forward, −188.5 mm/s
+  backward and exactly 0 at rest, against an expected 0.4 × π × 150 = 188.5.
+- **The durable fact, now written where §0 will be read: forward = rising
+  voltage = positive speed and distance.** The old note claimed the opposite in
+  a docstring, which is how it survived three sessions — a fixture that asserts
+  a hardware fact is a claim, and this one was never checked against the rig.
+- Nothing else changed. The wheel diameter is now the last unmeasured constant
+  and has been promoted into §6's top three.
+
+### 2026-08-19 (ac) — the three UI changes the operator asked for
+- **Record is now the largest control on the status bar**, red while armed, and
+  reads `● Record` / `■ Stop rec`. It was the same size as Emulate — the one
+  button whose wrong state costs an experiment, sized like a dev toggle.
+  `style.record_btn()`.
+- **A live recording readout**: `● REC  m:ss   N.NN GB`, green, turning red with
+  `⚠ N samples shed` the moment the ring or the writer loses anything. **The
+  size is read off the file on disk**, not from a running total of what was
+  enqueued — those two differ exactly when it matters, and the number worth
+  trusting is the one that survived. It is a *permanent* status-bar widget
+  because `showMessage` is transient: the tick overwrites it and any module
+  calling `status()` wipes it, so a recording indicator could not live there.
+- **The pupil tab is 12 rows → 4.** Threshold, both radii and the overlay stay;
+  the ten tuning controls moved into a collapsible **Advanced tracking** group.
+  It **auto-expands, and names what changed in its title**, whenever any of them
+  differs from the shipped default — a tuned value hidden behind a closed group
+  would make an unusual rig look stock. Seven checks, including that the split
+  is by *parentage* (the right widgets really are inside the collapsible half)
+  and that a collapsed group still reports its settings.
+- Suite **663 → 670**. Verified by re-rendering the window and the status bar
+  offscreen and reading them, as in (ab) — that is now the way to check UI work
+  here, and it costs about a minute.
+
 ### 2026-08-18 (ab) — looked at the UI, and it was telling the operator wrong
 - **Rendered the real window and every settings tab to PNG and read them.**
   `QT_QPA_PLATFORM=offscreen` plus `QT_QPA_FONTDIR=C:/Windows/Fonts` (without the

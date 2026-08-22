@@ -240,6 +240,38 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
             f"the default edge choice is the innermost edge, not the strongest "
             f"(got {d.edge_select!r})")
 
+    # ── 4b. naming the values measured to break tracking ─────────────────────
+    # The operator ran edge_select="strongest" and reported jitter and dropouts;
+    # on the rig clips that one value takes 151/151 to 44/151.
+    r.check(d.risky() == [],
+            f"control: the shipped defaults warn about nothing ({d.risky()})")
+    risky = PupilSettings(edge_select="strongest").risky()
+    r.check([k for k, _ in risky] == ["edge_select"],
+            f"'strongest' is named as measured-harmful ({risky})")
+    r.check(risky and "eyelid" in risky[0][1] and "44/151" in risky[0][1],
+            f"…with the mechanism and the number, not just a scold ({risky})")
+    r.check(PupilSettings(smooth_sigma=12.0).risky() == [],
+            "control: smooth_sigma is not warned about — it has no safe value "
+            "to compare against")
+
+    warned = PupilPanel(PupilSettings(edge_select="strongest"))
+    r.check(warned._warn.isVisible() or not warned._warn.isHidden(),
+            "the panel shows the warning when a harmful value is loaded")
+    r.check("edge_select" in warned._warn.text(),
+            f"…naming the setting ({warned._warn.text()!r})")
+    r.check(plain._warn.text() == "" and plain._warn.isHidden(),
+            "control: stock settings show no warning at all")
+    r.check(warned._warn.parent() is not warned._adv_host
+            and warned._warn.parent() is warned._adv,
+            "the warning is outside the collapsible half, so it survives a fold")
+    live = PupilPanel(PupilSettings())
+    r.check(live._warn.text() == "", "control: a stock panel starts unwarned")
+    live._cmb_edge.setCurrentText("strongest")
+    r.check("edge_select" in live._warn.text(),
+            f"…and the warning appears on the edit ({live._warn.text()!r})")
+    live._cmb_edge.setCurrentText("first")
+    r.check(live._warn.text() == "", "…and clears again when it is put back")
+
     # ── 5. the eyelid lock, which is why edge_select exists ──────────────────
     # The rig's own footage, in miniature: a low-contrast pupil edge (25→55)
     # with a far higher-contrast orbit→fur margin outside it (30→240). That is

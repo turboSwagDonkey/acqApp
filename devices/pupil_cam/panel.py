@@ -116,6 +116,13 @@ class SettingsPanel(QWidget):
         al = QFormLayout(self._adv_host)
         al.setContentsMargins(0, 0, 0, 0)
         al.setSpacing(4)
+        # "N changed" doesn't separate a harmless knob from a ruinous one.
+        # Built before _build_limit(), which emits as it constructs.
+        self._warn = QLabel()
+        self._warn.setWordWrap(True)
+        self._warn.setStyleSheet("color:#c47f00; font-weight:bold;")
+        self._warn.hide()
+        _advbox.addWidget(self._warn)      # outside _adv_host: a fold can't hide it
         _advbox.addWidget(self._adv_host)
         self._adv.toggled.connect(self._adv_host.setVisible)
 
@@ -273,6 +280,12 @@ class SettingsPanel(QWidget):
             c.currentTextChanged.connect(self._emit)
         self._chk_search.toggled.connect(self._emit)
 
+        # "N changed" does not separate a harmless knob from a ruinous one, and
+        # that gap cost a rig session: the operator ran edge_select="strongest",
+        # whose tooltip already described this exact failure, and reported the
+        # result as jitter and dropouts. Named values get their own line.
+        self._refresh_warning()
+
         # Start collapsed, unless this rig is running something non-default —
         # a tuned value hidden behind a closed group is worse than a long tab.
         tuned = self._non_default_advanced()
@@ -282,6 +295,12 @@ class SettingsPanel(QWidget):
             self._adv.setTitle(f"Advanced tracking — {len(tuned)} changed "
                                f"({', '.join(tuned[:3])}"
                                f"{', …' if len(tuned) > 3 else ''})")
+
+    def _refresh_warning(self) -> None:
+        """What the current widget values are measured to cost, if anything."""
+        risky = self.settings.risky()
+        self._warn.setText("\n".join(f"⚠ {k}: {why}" for k, why in risky))
+        self._warn.setVisible(bool(risky))
 
     # ── search limit ─────────────────────────────────────────────────────────
     def _build_limit(self) -> QGroupBox:
@@ -402,6 +421,7 @@ class SettingsPanel(QWidget):
                 if getattr(self._s, k) != getattr(base, k)]
 
     def _emit(self, *_a) -> None:
+        self._refresh_warning()        # the warning tracks the edit, not the launch
         self.settings_changed.emit(self.settings)
 
     # ── frame source ─────────────────────────────────────────────────────────

@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-21 |
+| **Last updated** | 2026-08-22 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-18/19** were a correctness-and-speed sweep, all of it found by driving real workloads rather than reading code (§0). The newest of those: the pupil tracker learned **where it may look** — a user-set eye region and measured lid sectors — taking the rig's own clip from **0/151 frames to 151/151** with no click. **The operator's verdict is still "not good"**, so §6 item 1 is a rework, not a tick: draw a rectangular ROI, and try a lighter algorithm than the 64-ray IMAQ port. Suite **776 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three, two of which need the operator (§6). |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-22 closed the pupil complaint**: the jitter and dropouts are **two settings, not the algorithm** — `edge_select="strongest"` alone takes a 151/151 clip to 44/151, and the operator was running it (§0, §7 (ah)). Found by reading their saved `acqapp_local.json` and replaying **all six** rig clips, five of which this file never knew existed. Suite **798 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three — item 1 is now "tell the operator and re-run", item 2 landed on 2026-08-21. |
 
 ---
 
@@ -28,14 +28,24 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **776 checks, 23 files, ~52 s**, and it is ALL GREEN. Run it
+the contract: **798 checks, 23 files, ~54 s**, and it is ALL GREEN. Run it
 before and after anything. For pupil work also run
 `devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
 suite and that script cover different failures, and 2026-08-18 showed the
 script passing 15/15 while the tracker could not follow a real eye at all.
-**Better still, replay the rig's own clip** — it is on this machine at
-`E:\pAce\VF203.2R\20260701\FOV1_T1\FOV1_T1_Pupil.avi`, and 2026-08-19 (ae)
-shows what it catches that neither of the other two can.
+**Better still, replay the rig's own clips.**
+
+**There are SIX clips on `E:`, not one** (found 2026-08-22 — four sessions
+measured the first and generalised from it):
+
+    E:\pAce\VF203.2R\20260701\{FOV1_T1,FOV1_T2,FOV1_T3,FOV2_T1,FOV2_T2}\*_Pupil.avi
+    E:\State\VF182.6B\20260709\FOV1_T1\FOV1_T1_Pupil.avi
+
+All 1928x1208 IYUV, 151 frames, 15 fps, and **not equivalent**. `pAce` FOV1_T1
+is the easy one every earlier number came from (frame median 49). `State`
+FOV1_T1 is the **operator's** — median 37, 61 % below threshold 60, the eye a
+low-contrast almond whose pupil barely separates from the iris. **Measure any
+pupil change on both.** No clip contains a blink.
 
 ```
 c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
@@ -56,6 +66,10 @@ writing a device path from scratch: `devices/dmd/alp.py` is a port of
 `dmdCommandLine.py`, and it is why #5 took one session instead of several.
 
 **Practical gotchas that have each cost real time:**
+- **Read `acqapp_local.json` before debugging any "it doesn't work".** It is
+  what the app loads at launch and it is gitignored, so it never appears in a
+  diff — and on 2026-08-22 it held the whole answer to four sessions of pupil
+  work. The operator's live settings are not the shipped defaults.
 - **PowerShell 5.1 mangles quotes** passed to native executables. Write commit
   messages to a scratch file and use `git commit -F <file>` — a `-m` with an
   apostrophe or an embedded quote gets re-tokenised and git sees a bogus
@@ -103,11 +117,37 @@ the shipped 60 outside it, against 25–80 with a region. And the dark region is
 **not** elliptical: measured directly it sits at 50–57 px over ~200° of arc, and
 the low points are lid occlusion, not shape. Fitting a circle is right.
 
-**PICK UP HERE — §6's "THE NEXT THREE THINGS".** Two of the three are questions
-for the operator, not code: the DMD ROI work needs someone at the rig (it
-projects light) and has three open design calls named in §6 item 4, and the
-wheel diameter needs a ruler. Everything is committed and pushed; the working
-tree is clean.
+**THE PUPIL COMPLAINT IS SETTLED, AND IT WAS NEVER THE ALGORITHM** (2026-08-22).
+Read the operator's saved `acqapp_local.json` — it is what the app loads at
+launch, and on 2026-08-21 it held `edge_select="strongest"`, `smooth_sigma=12`,
+`min_confidence=0.01`, `min_strength=0.5`, `threshold=23`, `n_rays=200`,
+`reseed_after=100`. Flipping **one knob at a time** on the pAce clip, which
+tracks 151/151 stock:
+
+| knob at the operator's value | tracked | lost runs | cx sd |
+|---|---|---|---|
+| *(none — the stock config)* | 151/151 | 0 | 0.87 |
+| `edge_select="strongest"` | **44/151** | 23 | **28.7** |
+| `smooth_sigma=12.0` | **46/151** | 24 | **20.0** |
+| `min_confidence=0.01` | 151/151 | 0 | 0.87 |
+| `min_strength=0.5` | 150/151 | 1 | 0.54 |
+| `reseed_after=100` | 151/151 | 0 | 0.87 |
+
+Three of the five are harmless alone. **Two are ruinous, and each independently
+produces exactly the reported symptoms.** On the operator's own clip, restoring
+`edge_select="first"` and changing nothing else goes **5/151 → 145/151**,
+|dr| median 1.394 → 0.269, confidence 0.010 → 0.205. `reseed_after=100` is the
+amplifier: one bad frame costs 100 blind ones, which is where their 102-frame
+dropout comes from.
+
+**`smooth_sigma` has no safe default and must not be given one.** Best is 0.5 on
+the State clip (141/151, against 86 at 1.5) and 1.5–3.0 on the pAce clip. From
+4.0 the radius silently inflates 53.6 → 70 px while the frame count stays high.
+
+**PICK UP HERE — §6's "THE NEXT THREE THINGS".** Item 1 is now a message to the
+operator, not code. The DMD ROI work needs someone at the rig (it projects
+light) and has three open design calls named in §6 item 4; the wheel diameter
+needs a ruler.
 
 **The method that earned its keep over 2026-08-18/19, and the one to reuse.**
 Every real defect in those sessions was in code that had only ever run at *toy*
@@ -316,22 +356,20 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Pupil tracking — still the operator's complaint, now with the symptoms
-   named: JITTER and DROPOUTS** (2026-08-21). Not a mis-placed outline. Two
-   things unblock it, in this order:
-   - **Mark ground truth and score against it.** The tool exists —
-     `devices/pupil_cam/_mark_truth.py mark --clip … --out truth.json`, then
-     `… score --clip … --truth truth.json`. Everything measured so far is a
-     proxy: jitter says how *steady* a fit is and nothing about whether it is
-     right, and both automatic accuracy metrics tried on 2026-08-21 failed
-     (§7 (ag)). **Do this before tuning anything else.**
-   - **Get a clip that actually shows a dropout.** The 151-frame clip never
-     drops out (151/151), so the failure the operator sees is not in it and the
-     simulated version is non-monotonic (§7 (ag)). Without such a clip, work on
-     dropouts is guesswork.
-   **The "lighter algorithm" branch is closed: it was tried properly and is
-   four times worse** on both jitter and centre wander, and no faster (§7 (ag)).
-   Do not re-open it without new evidence.
+1. **Tell the operator their two settings, and have them re-run.** The
+   diagnosis is done (§0, §7 (ah)) and no further tracker work is justified
+   until they have. What to say:
+   - **Set Edge choice back to `first`.** On their own clip that alone is
+     5/151 → 145/151 frames.
+   - **Set Edge smoothing back to ~1.5, or 0.5 for footage as dark as
+     `State/VF182.6B`.** Their 12.0 is bad on every clip measured.
+   - Then re-run and say whether it is acceptable. **If it still is not**, the
+     next step is ground truth, not tuning: `_mark_truth.py mark --clip … --out
+     truth.json` then `… score`. Both automatic accuracy metrics failed
+     (§7 (ag)), and jitter measures steadiness, not correctness.
+   **Two branches stay closed.** The lighter algorithm is 4× worse (§7 (ag)).
+   And a hand-placed first seed is worth ~5 frames, not a rescue — with
+   `"strongest"` still set, a *perfect* seed gives 18/151 (§7 (ah)).
 
 ~~Pupil tracking — draw an ROI and try a lighter algorithm.~~ **Superseded
 2026-08-21 by the above.** The original framing is kept because its reasoning
@@ -353,21 +391,14 @@ still stands:
      loses** — 4× the jitter and 4× the centre wander, no faster. Otsu inside
      the ROI is unusable too (picks ~135, r = 94 px). Closed.
 
-2. **Wire `RoiEditor` into the DMD settings tab.** The operator went looking
-   for it there on 2026-08-21 and it is not there — correctly: `RoiEditor` is
-   imported by `tests/test_dmd_roi.py` and by nothing else, so it has never
-   appeared in the UI.
-   **Two operator calls from 2026-08-21, and they are about different things:**
-   - **The editor lives in the DMD settings tab.** That is where they went
-     looking, and that is where it belongs.
-   - **The DMD images through the VOLTAGE camera, not the pupil camera.** That
-     is the optical path the DMD projects into, so the frame the ROIs are drawn
-     on is an ORCA frame.
-   So the cross-module snapshot is real and still has to be arranged: a panel
-   in the **DMD** tab needs a frame from **`voltage_cam`**. Nothing in
-   `ModuleHost` provides one, and §5b A4 makes widening that surface a
-   deliberate line in `acq/devices.py` rather than something to help yourself
-   to — this is the case it was written for. Still to decide:
+2. ~~**Wire `RoiEditor` into the DMD settings tab.**~~ **Done 2026-08-21**
+   (commit `720a1b6`), and this entry was stale for a session. A
+   "Photostimulation ROIs" group in the DMD tab opens the editor as a dialog,
+   drawing on a **voltage-camera** frame via a deliberate `ModuleHost`
+   widening (`latest_frame`) — the §5b A4 case. Two traps it hit: `get_latest()`
+   *consumes*, so the adapter caches a frame instead; and the cache is kept at
+   full resolution, since ROIs and the registration are both in camera px.
+   **What is still open is the design, not the wiring:**
    - **Single frame or an average?** (item 4 (c), still open.)
    - **Do ROIs persist across sessions, and is a mask one static pattern or a
      sequence?** (item 4, still open.) The second decides whether
@@ -566,6 +597,45 @@ Item 5 keeps the reasoning and the numbers.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-22 (ah) — the pupil complaint was two settings, not the algorithm
+- **Both of §6 item 1's blockers dissolved on inspection, and neither needed the
+  operator.** "Get a clip that shows a dropout" — there are **six** clips on
+  `E:`, not one, and the operator's own (`E:\State\VF182.6B\…`) drops out
+  constantly. Four sessions had measured the first clip and generalised.
+- **Read `acqapp_local.json` first next time.** It is what the app loads at
+  launch, it is gitignored so it never shows in a diff, and it held the answer:
+  their `video_path` pointed at the State clip (not the one every measurement
+  used) and their tuning had `edge_select="strongest"` — the one value whose own
+  tooltip and `settings.py` comment say it "locks the eyelid margin, which
+  out-contrasts the pupil on real IR footage".
+- **One knob at a time, on the clip that tracks 151/151 stock:** `strongest`
+  → 44/151 with cx sd 28.7 px; `smooth_sigma=12` → 46/151, cx sd 20.0. The other
+  three of their five knobs are harmless alone (151, 150, 151). Table in §0.
+  On their own clip, `edge_select="first"` alone is **5/151 → 145/151**.
+- **`reseed_after=100` is the amplifier, not a cause** — it turns one bad frame
+  into 100 blind ones. Their three lost runs were 2, **102** and 42 frames.
+- **No clip contains a blink.** Every LOST frame in the montage is a wide-open,
+  clearly visible eye, so the dropouts were never the animal. That also means
+  §7 (ag)'s simulated-occlusion work still has no real footage behind it.
+- **A hand-placed first seed is not the fix**, though it helps once
+  `edge_select` is right: 145 → 150/151. With `"strongest"` still set a
+  *perfect* seed gives 18/151. **Caveat, and it matters: no human clicked
+  anything** — the "seed" was the tracker's own first fit fed back in, an
+  idealised click. The sensitivity is why: ±20 px horizontally is fine, but
+  +20 px vertically gives 46/151 and −20 px gives 3/151, because the lids are
+  above and below. Seed radius is one-sided too — half the true radius still
+  gives 106/151, 1.5× gives 27/151.
+- **`smooth_sigma` must not be given a default.** Best is 0.5 on the State clip
+  (141/151, vs 86 at 1.5) and 1.5–3.0 on pAce. From 4.0 the radius inflates
+  53.6 → 70 px *silently*, with the frame count still high — the dangerous mode.
+- **Shipped: `PupilSettings.risky()` and a warning line in the pupil tab**, in
+  the group box but outside the collapsible half so a fold cannot hide it. Only
+  `edge_select` qualifies; `smooth_sigma` is deliberately excluded, since a
+  cutoff would be invented. The tooltip already said all this and was not
+  enough — "8 changed" does not separate a harmless knob from a ruinous one.
+- Suite **787 → 798, 23/23**. §6 item 2 was found already **done** (`720a1b6`)
+  and its entry stale.
+
 ### 2026-08-21 (ag) — the lightweight tracker is measurably worse; ground truth built
 - **The operator named the symptoms: jitter and dropouts** (not a mis-placed
   outline, which is what I had been chasing). And chose hand-marked frames as
@@ -711,53 +781,7 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   ~400 is not reachable without losing something — the next real reduction is
   §6 items 8–10 and "Needs the rig", once that rig session happens.
 
-### 2026-08-19 (ad) — `_SIGN` answered; the suite is green for the first time
-- **The operator settled it: a mouse running forward reads positive, and the
-  voltage ramps UP as it does.** So `_SIGN = +1.0` was right all along and the
-  code under test was never wrong — **three fixtures were**, each independently
-  encoding a falling ramp:
-  `test_encoder_derive.sim()` (`frac = (-rev_s * t) % 1.0`, with a docstring
-  asserting "the rig's forward direction is the falling one"),
-  `test_encoder_timing`'s fake DAQ task, and `MockEncoderWorker`.
-- **A fourth thing had to move with them**: `sim()` finds each reset with
-  `np.diff(frac) > 0.5`, which only detects a *falling* ramp's wrap. Flipping
-  the ramp alone would have found no wraps, silently stopped smearing them, and
-  turned the test that exists for smeared resets into one that never sees one.
-  Now `< -0.5`.
-- **19/22 → 22/22, 670 → 688 checks.** Verified beyond the suite: driving
-  `_EncoderBase` with a rising ramp gives **+188.5 mm/s** forward, −188.5 mm/s
-  backward and exactly 0 at rest, against an expected 0.4 × π × 150 = 188.5.
-- **The durable fact, now written where §0 will be read: forward = rising
-  voltage = positive speed and distance.** The old note claimed the opposite in
-  a docstring, which is how it survived three sessions — a fixture that asserts
-  a hardware fact is a claim, and this one was never checked against the rig.
-- Nothing else changed. The wheel diameter is now the last unmeasured constant
-  and has been promoted into §6's top three.
-
-### 2026-08-19 (ac) — the three UI changes the operator asked for
-- **Record is now the largest control on the status bar**, red while armed, and
-  reads `● Record` / `■ Stop rec`. It was the same size as Emulate — the one
-  button whose wrong state costs an experiment, sized like a dev toggle.
-  `style.record_btn()`.
-- **A live recording readout**: `● REC  m:ss   N.NN GB`, green, turning red with
-  `⚠ N samples shed` the moment the ring or the writer loses anything. **The
-  size is read off the file on disk**, not from a running total of what was
-  enqueued — those two differ exactly when it matters, and the number worth
-  trusting is the one that survived. It is a *permanent* status-bar widget
-  because `showMessage` is transient: the tick overwrites it and any module
-  calling `status()` wipes it, so a recording indicator could not live there.
-- **The pupil tab is 12 rows → 4.** Threshold, both radii and the overlay stay;
-  the ten tuning controls moved into a collapsible **Advanced tracking** group.
-  It **auto-expands, and names what changed in its title**, whenever any of them
-  differs from the shipped default — a tuned value hidden behind a closed group
-  would make an unusual rig look stock. Seven checks, including that the split
-  is by *parentage* (the right widgets really are inside the collapsible half)
-  and that a collapsed group still reports its settings.
-- Suite **663 → 670**. Verified by re-rendering the window and the status bar
-  offscreen and reading them, as in (ab) — that is now the way to check UI work
-  here, and it costs about a minute.
-
-Entries before 2026-08-18 (ab) are in
+Entries before 2026-08-19/20 (ae) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file
 small enough to read at the start of every session.
 
