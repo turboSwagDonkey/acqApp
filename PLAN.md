@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-24 (ak) |
+| **Last updated** | 2026-08-24 (al) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept (§7 (ai)). **2026-08-24 (aj): the app can now PRODUCE a DMD calibration** — `run_calibration` is wired to a dialog, led by a per-axis centre-out probe, and had never been executed by anything before (§7 (aj)). Suite **706 checks, 22 files — all green**. §5b **A3 triggered** and is the one open architecture item. **First rig sweep ran 2026-08-24 (ak): the probe worked, Gray coding did not — use COARSE.** Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept (§7 (ai)). **2026-08-24 (al): the app can PRODUCE a DMD calibration, and it ran at the rig.** One method — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted: this relay scatters enough to erase any periodic pattern (§7 (al)). Suite **676 checks, 22 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **706 checks, 22 files, ~53 s**, and it is ALL GREEN. Run it
+the contract: **676 checks, 22 files, ~52 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -111,59 +111,28 @@ settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose t
 retire it anyway rather than re-tune. **The numbers are in
 `archive/pupil_tracking/README.md`**, not here.
 
-**PICK UP HERE — the sweep HAS run, and the rig is now measured.** First real
-run 2026-08-24 (ak). The probe worked; the Gray sweep did not. **Use the
-Calibrate… dialog's COARSE button** — it registers from the rectangles alone and
-is the right tool for this relay. §7 (ak) has the reasoning.
+**PICK UP HERE — calibration works and has run at the rig.** DMD tab →
+Photostimulation ROIs → **Calibrate…** → one button, 19 exposures, ~9 s. It
+steps a narrow stripe across each axis, fits a line to where each lands, and
+writes an affine. Then draw an ROI and check optically where the light falls —
+no residual replaces that.
 
 **The rig's measured optical facts** — the first ones this project has:
 
 | | |
 |---|---|
-| DMD centre in camera | **(2362, 1406)** of a 4432x2368 frame (bin 1) |
-| scale | **4.560 px/mirror in x, 5.525 in y** — 17 % anisotropic |
+| DMD centre in camera | **(2364, 1407)** of a 4432x2368 frame (bin 1) |
+| scale | **~4.36 px/mirror in x, ~5.45 in y** — 20 % anisotropic |
 | rotation | **+1.1°** of DMD-x to camera-x |
-| field | the DMD **overfills the camera ~1.9x in area** — 4670x4243 px against 4432x2368, so the camera sees roughly the middle half of the panel's height |
-| resolving power | **the relay does not resolve single mirrors.** A 1-mirror Gray stripe is 4.6 px and modulated nothing |
+| field | the DMD **overfills the camera ~1.9x in area**, so the camera sees roughly the middle half of the panel's height |
+| **fine patterns do not survive** | a solid bar images cleanly; a 280 px checkerboard modulates **13 %** of the frame and a 70 px stripe pattern **9 %** |
 
-**Two of those change what is worth building.** The DMD overfilling the camera
-means most large probe bars run off the frame and are discarded, and it means
-ROIs can be aimed anywhere in the FOV. The relay not resolving single mirrors
-means Gray coding is the *wrong instrument here* unless it is coarsened, which
-is now measured rather than assumed (`resolve_gray_step`).
-
-**Two facts that were wrong in this file and are now checked:**
-- **acqApp is NOT running with `fit=True`.** `acqapp_local.json` has
-  `fit: false, scale_pct: 104.0, offset_x: -7` — the operator hand-aligned it at
-  some point. The old text below ("the DMD runs with `fit = True`") described
-  the shipped default, not the live config. It changes nothing about needing a
-  calibration — a hand alignment is not a measured transform — but do not go
-  looking for a `fit` that is not set.
-- **`run_calibration` was imported by nothing at all**, including its own test:
-  `test_dmd_calibration.py` imports the *pieces*. The one function the feature
-  turns on had zero coverage. `tests/test_dmd_sweep.py` now runs it end to end.
-
-**`gray_planes` returns `nbx + nby` planes, not twice that.** A 1024x768 panel
-gives 20 planes = 40 exposures, so the full sweep is **54**, not the ~94 this
-file's arithmetic implied. `sweep_exposures()` is the authority and a test pins
-it, because that number is what the operator is shown before light is emitted.
-
-**The method that earned its keep over 2026-08-18/19, and the one to reuse.**
-Every real defect in those sessions was in code that had only ever run at *toy*
-scale, and every one was found by **driving the real workload and measuring**,
-not by reading. Profiling the tracker on the rig clip found a 2× win and an AVI
-bug; sizing the DMD calibration at the real camera found 11.4 GB where 1.6 was
-needed; **rendering the UI offscreen and looking at it** found the Save tab
-calling a frame-dropping setup healthy; replaying the clip found the search
-limit taking tracking from 0/151 to 149/151. Do that to the next feature before
-trusting it. Rendering recipe: `QT_QPA_PLATFORM=offscreen` plus
-`QT_QPA_FONTDIR=C:/Windows/Fonts` — without the second, all text draws as boxes.
-
-**DMD ROI photostimulation** — image with the DMD all-on, draw ROIs on that
-frame, project the mask back. **The blocker was registration, not drawing:** an
-ROI is in camera pixels, a mask is in DMD mirrors. The machinery to measure that
-transform now exists and is wired (§7 (aj)); what is missing is a sweep actually
-run on the rig.
+**That last row is the important one and it is why the code looks the way it
+does.** It is scattering in the sample and relay, not defocus — it does not
+improve with a coarser code. Gray coding, checkerboards, homography fitting and
+the decode were all built, run at the rig, failed, and **deleted** (§7 (al)).
+Do not rebuild them for this rig without new evidence that fine patterns survive.
+`calibration.py` is 379 lines and has one entry point, `calibrate()`.
 
 The rest of this section is context; nothing below is blocking.
 
@@ -356,30 +325,24 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Run COARSE and save the calibration.** 21 exposures, rectangles only, and
-   it produces a real `DmdCalibration` the ROI editor can use. This is the path
-   that suits this rig; the probe half of it already ran successfully on
-   2026-08-24. It actuates — §2 still applies.
-   - **Preconditions**: the voltage camera *running* (Free run or Record — the
-     sweep images each pattern with it), `dmdGUI_project` **closed** (one
-     process owns the USB), and the illumination on.
-   - The ALP refused to open once and opened on the retry with identical
-     arguments. **A single "not found or not ready" is not proof the DMD is
-     absent** — retry before concluding anything.
-   - **Then check it optically**, which is the step no residual replaces: draw
-     one ROI on a landmark, project the mask, and see whether the light lands on
-     it. A coarse affine has no keystone term, so expect it to be best near the
-     centre and worst at the edges.
+1. **Save a calibration and check it optically.** The sweep runs; what has not
+   happened is anyone confirming where the light actually lands. Run
+   Calibrate…, save the JSON (the panel adopts it at once), then draw one ROI on
+   a landmark, project the mask, and look. **An affine has no keystone term**,
+   so expect it best near the centre and worst at the edges — that is the
+   measurement worth making, and the residual cannot substitute for it.
+   - **Preconditions**: voltage camera *running* (Free run or Record),
+     `dmdGUI_project` **closed** (one process owns the USB), illumination on.
+   - **Read the residual first.** It is the scatter of stripe centroids about a
+     straight line, in camera px. Single digits is good; tens means an affine
+     does not describe this relay and the log will name the odd stripe.
+   - The ALP refused to open once and opened on an identical retry. **A single
+     "not found or not ready" is not proof the DMD is absent.**
 
-2. **Only then consider the full sweep.** It is worth trying once now that the
-   Gray step is measured rather than assumed — if it decodes, the homography
-   adds the keystone term the coarse affine cannot have, and a residual over
-   thousands of points instead of sixteen bar measurements. **If it fails
-   again, read the per-plane coverage table it now prints** rather than
-   re-running: a collapse in the last planes is unresolved stripes, a steady
-   slide from the first is a field that was never modulating. Then decide
-   **(c) single frame or an average** for the ROI snapshot, still open from
-   item 4.
+2. **Then the ROI → mask → project path end to end.** `mask_from_roi` is tested
+   offline and has never driven the device. That is the last untested link
+   between drawing an ROI and light landing on it. Decide **(c) single frame or
+   an average** for the ROI snapshot at the same time, still open from item 4.
 
 3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
    answers it. Until it is set the app reports rev/s and rev instead of mm/s and
@@ -428,11 +391,9 @@ Item 5 keeps the reasoning and the numbers.
    - **The offline half is built and verified (2026-08-18), and nothing in it
      projects or grabs** — the point being that the pipeline is held to a
      transform *we chose* before any light is emitted.
-     `devices/dmd/calibration.py` (complementary checkerboards with 1/2/3/4-dot
-     corner marks, so a **mirror flip cannot pass as a valid registration**;
-     Gray-coded planes; affine/homography fit with outlier rejection;
-     `run_calibration(project, grab, …)` takes the two hardware operations **as
-     callables**) and `devices/dmd/roi.py` + `roi_panel.py` (rect and circle ROIs
+     `devices/dmd/calibration.py` (`calibrate(project, grab, …)` takes the two
+     hardware operations **as callables**; signed stripe offsets, so a **mirror
+     flip cannot pass as a valid registration**) and `devices/dmd/roi.py` + `roi_panel.py` (rect and circle ROIs
      in camera px, the reachable field outlined, ROIs outside it named rather
      than silently clipped). Measured on the simulated rig: decode median
      **0.40 px**, homography **rms 0.41 px** over 3169 points, ROI round trip
@@ -569,6 +530,40 @@ Item 5 keeps the reasoning and the numbers.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-24 (al) — one calibration method, because the rig supports one
+
+- **The operator's verdict, right on both counts:** *"All this is meant to do is
+  define where in the DMD plane the accessible camera field lies. Your
+  methodology seems far too complex."*
+- **The rig's second run settled it with three numbers.** A solid 38-mirror disc
+  images cleanly (112 480 px, coherent). A 280 px checkerboard modulates
+  **13.1 %** of the frame. A 70 px stripe pattern modulates **9.4 %**. Large
+  uniform regions survive, periodic structure does not — **at any pitch**:
+  `resolve_gray_step` escalated to 16 mirrors per code and the finest plane
+  still failed. That is **scattering in the sample and relay, not defocus**, so
+  coarsening cannot rescue it.
+- **So Gray coding is deleted, not kept as a switch.** With it went `decode`,
+  `checkerboard`, `corner_marks`, `correspondences`, `fit_transform`, the
+  homography, `run_calibration`, the centre-out bar probe, and the three-button
+  dialog that offered two paths this rig cannot use. **`calibration.py`
+  1172 → 379 lines, one entry point.**
+- **What survives is the whole method:** a narrow stripe at nine *signed*
+  offsets per axis, a straight-line fit to where each lands, and the two lines
+  ARE the affine — position, scale, rotation, shear, with direction's sign
+  carried by the offsets. One button, 19 exposures, ~9 s.
+- **The failed first attempt is worth remembering.** Growing a *centred* bar and
+  reading its second moments scored rms **65.83 px** at the rig, and the log said
+  why: the centroid drifted 2368 → 2895 as the bar grew. A centred bar's image
+  must not move; the frame clips one side while vignetting eats the other, and a
+  lopsided region's moments measure the lopsidedness. **A narrow stripe's
+  centroid is local**, and one that runs off the frame is dropped.
+- **The tests now carry the rig's hazards, not an idealised camera** — a field
+  larger than the frame and heavy vignetting. Against those: rms **0.19 px**,
+  panel placed to **0.04 px**.
+- **`visible_mirrors()`** answers the question actually being asked, on
+  `DmdCalibration` and in the log: the mirror rectangle the camera can see.
+- Suite **709 → 676 checks**, all green — the 33 went with the code they covered.
 
 ### 2026-08-24 (ak) — the first real sweep: the probe worked, Gray coding did not
 - **The rig is measured for the first time** — centre, scale, rotation, field
