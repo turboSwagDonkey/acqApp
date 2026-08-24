@@ -4,6 +4,51 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-21 (ag) — the lightweight tracker is measurably worse; ground truth built
+- **The operator named the symptoms: jitter and dropouts** (not a mis-placed
+  outline, which is what I had been chasing). And chose hand-marked frames as
+  the way to settle correctness. Both change what is worth doing.
+- **"Try a more lightweight algorithm" — done properly, and it loses.** With
+  the threshold swept rather than left at the 60 that broke the first attempt:
+
+  | | frames | r | \|dr\| med | p95 | cx sd | cost |
+  |---|---|---|---|---|---|---|
+  | rays + region + lids | 151/151 | 53.7 | **0.153** | **0.48** | **0.31** | **2.1 ms** |
+  | blob, threshold 40, moments | 151/151 | 55.0 | 0.253 | 2.07 | 1.39 | 2.7 ms |
+  | blob → boundary → robust circle | 151/151 | 61.7 | 0.804 | 16.7 | 4.06 | 4.5 ms |
+
+  **Four times the jitter and four times the centre wander, and no faster.**
+  Boundary-fit variants are far worse still: the lid chord is not a small
+  minority of the boundary, so robust rejection cannot drop it.
+- **Otsu inside the ROI is unusable** — it picks ~135, because the ROI's bright
+  fur dominates the histogram and the split it finds is fur-vs-rest, not
+  pupil-vs-iris. r = 94 px against a true ~53. So much for removing the knob.
+- **What the montage showed that no number did: the fitted circle sits
+  down-left of the pupil**, its lower-left arc running through fur. Excluding
+  115° of the ring leaves a *partial arc*, and a circle fitted to one trades
+  centre against radius. The lids bought stability and cost accuracy. **Not the
+  operator's complaint, so not fixed — but it is real, and it is the thing to
+  watch if the exclusion is ever widened.**
+- **Two attempts at an automatic accuracy metric both failed**, which is why
+  ground truth is now a tool and not a proxy: scoring the boundary by the first
+  *bright* crossing fires on the corneal glint (r ≈ 10), and by the last *dark*
+  sample runs out into dark fur (r ≈ 80). Stability can be measured without
+  ground truth; correctness cannot.
+- **`devices/pupil_cam/_mark_truth.py`** — `mark` clicks the pupil edge on a
+  spread of frames (robust circle fitted live; one badly-placed click moves the
+  answer **0.00 px**, checked) and `score` runs the tracker over the whole clip
+  and reports centre and radius error at each marked frame. Scoring runs the
+  *whole* clip so the tracker is in the state it would really be in — a fresh
+  tracker on frame 120 measures something the operator never sees.
+- **The dropout half is NOT settled, and I did not change a default on it.**
+  Simulated occlusions say `reseed_after` is non-monotonic: at a 40-frame gap
+  30 recovers in 22 frames against 2, but at 15 and 90 frames it recovers in 0
+  and the short settings take 2–7. The reason is real — a short re-seed latches
+  onto the lid *during* the occlusion and then has to recover from a wrong
+  position — but a grey rectangle is not a blink. **This needs footage of a
+  real dropout**; changing the default on this evidence would file exactly the
+  plausible-wrong-value the §5 audit spent twenty items removing.
+
 ### 2026-08-21 (af) — "tracking is still awful": it was the eyelids
 - **The operator was right, and the region was only half of it.** The region
   fixed *finding* the eye; it does nothing to the fit. Rendering the fit over

@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-24 |
+| **Last updated** | 2026-08-24 (aj) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-22** settled the pupil complaint — jitter and dropouts were two mis-set knobs, not the algorithm (§7 (ah)) — and on **2026-08-24 the operator retired the tracker anyway**: it is in `archive/pupil_tracking/`, out of the live code, with the eye region kept (§7 (ai)). The pupil camera still previews and records. Suite **660 checks, 21 files — all green**. §5b **A3 triggered** and is the one open architecture item. **Next focus: DMD calibration and ROI drawing** — §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept (§7 (ai)). **2026-08-24 (aj): the app can now PRODUCE a DMD calibration** — `run_calibration` is wired to a dialog, led by a per-axis centre-out probe, and had never been executed by anything before (§7 (aj)). Suite **692 checks, 22 files — all green**. §5b **A3 triggered** and is the one open architecture item. **Next: run the sweep at the rig** — §6. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **660 checks, 21 files, ~46 s**, and it is ALL GREEN. Run it
+the contract: **692 checks, 22 files, ~51 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -105,11 +105,29 @@ settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose t
 retire it anyway rather than re-tune. **The numbers are in
 `archive/pupil_tracking/README.md`**, not here.
 
-**PICK UP HERE — DMD calibration and ROI drawing** (operator, 2026-08-24). That
-is the focus now; §6 leads with it. The offline half is built and tested and the
-editor is in the DMD tab; what is missing is a way to *produce* a calibration —
-`run_calibration()` exists and nothing in the UI calls it. Note it projects
-light, so §2's actuation rule applies.
+**PICK UP HERE — the sweep is built and has never been run.** As of
+2026-08-24 (aj) the DMD tab has a **Calibrate…** button opening a dialog with
+two runs: **Probe** (12 dim exposures, measures where the DMD field lands, its
+per-axis scale and its rotation, saves nothing) and **Full calibration** (54,
+produces the transform). Everything is verified against a simulated rig and,
+short of `Run()`, against the real ALP. **What has not happened is the light.**
+§6 item 1 is doing it.
+
+**Two facts that were wrong in this file and are now checked:**
+- **acqApp is NOT running with `fit=True`.** `acqapp_local.json` has
+  `fit: false, scale_pct: 104.0, offset_x: -7` — the operator hand-aligned it at
+  some point. The old text below ("the DMD runs with `fit = True`") described
+  the shipped default, not the live config. It changes nothing about needing a
+  calibration — a hand alignment is not a measured transform — but do not go
+  looking for a `fit` that is not set.
+- **`run_calibration` was imported by nothing at all**, including its own test:
+  `test_dmd_calibration.py` imports the *pieces*. The one function the feature
+  turns on had zero coverage. `tests/test_dmd_sweep.py` now runs it end to end.
+
+**`gray_planes` returns `nbx + nby` planes, not twice that.** A 1024x768 panel
+gives 20 planes = 40 exposures, so the full sweep is **54**, not the ~94 this
+file's arithmetic implied. `sweep_exposures()` is the authority and a test pins
+it, because that number is what the operator is shown before light is emitted.
 
 **The method that earned its keep over 2026-08-18/19, and the one to reuse.**
 Every real defect in those sessions was in code that had only ever run at *toy*
@@ -122,10 +140,11 @@ limit taking tracking from 0/151 to 149/151. Do that to the next feature before
 trusting it. Rendering recipe: `QT_QPA_PLATFORM=offscreen` plus
 `QT_QPA_FONTDIR=C:/Windows/Fonts` — without the second, all text draws as boxes.
 
-**§6 item 1: DMD ROI photostimulation** — image with the DMD all-on, draw ROIs
-on that frame, project the mask back. **The blocker is registration, not
-drawing:** an ROI is in camera pixels, a mask is in DMD mirrors, and acqApp has
-no measured transform between them, because the DMD runs with `fit=True`.
+**DMD ROI photostimulation** — image with the DMD all-on, draw ROIs on that
+frame, project the mask back. **The blocker was registration, not drawing:** an
+ROI is in camera pixels, a mask is in DMD mirrors. The machinery to measure that
+transform now exists and is wired (§7 (aj)); what is missing is a sweep actually
+run on the rig.
 
 The rest of this section is context; nothing below is blocking.
 
@@ -318,28 +337,26 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Give the app a way to PRODUCE a DMD calibration.** Everything else in the
-   chain exists: `devices/dmd/calibration.py` builds the patterns, decodes them
-   and fits the transform (`run_calibration(project, grab, …)`, 51 checks, decode
-   median 0.40 px / homography rms 0.41 px on a simulated rig), and the DMD tab
-   can **load** a `DmdCalibration` JSON and draw ROIs against it. Nothing writes
-   one. **`run_calibration` is imported by its test and by nothing else.**
-   - It takes `project` and `grab` as callables, deliberately, so the wiring is
-     small: `project` → the DMD controller, `grab` → the **voltage camera**
-     (`ModuleHost.latest_frame`, already widened for the ROI editor).
-   - **Patterns must bypass `build_frame`** — they are already at the device's
-     size, and its scale/rotation/offset, plus `fit` which overrides all three,
-     would transform the very geometry being measured.
-   - **`alp.project()` uploads ONE frame** (`SeqAlloc(nbImg=1)`), so the sweep is
-     software-timed, project→grab per plane. ~40 planes.
-   - **This actuates.** Verify the whole path short of the projecting call, then
-     ask (§2). Close `dmdGUI_project` first — one process owns the USB.
+1. **Run the PROBE at the rig.** 12 exposures, none larger than the panel, and
+   it answers the question this file has deferred three times: where the DMD
+   field lands in the camera, at what scale per axis, and at what rotation.
+   Saves nothing, so it commits to nothing.
+   - **Preconditions**: the voltage camera *running* (Free run or Record — the
+     sweep images each pattern with it), `dmdGUI_project` **closed** (one
+     process owns the USB), and the illumination on.
+   - **It actuates.** Ask first (§2). Everything short of light is verified:
+     the ALP opens 1024x768, all 33 sweep patterns render binary and
+     device-sized, and the upload path takes them — see §7 (aj).
+   - The ALP refused to open once and opened on the retry with identical
+     arguments. **A single "not found or not ready" is not proof the DMD is
+     absent** — retry before concluding anything.
 
-2. **Run the sweep at the rig and check the fields overlap.** The operator
-   expects the DMD and camera fields to be "about the same size", and the first
-   complementary pair answers it before any Gray coding. `run_calibration`
-   raises with a diagnosis if the projector does not modulate the camera at all.
-   Then decide **(c) single frame or an average** for the ROI snapshot, which is
+2. **Then the full calibration, and check the residual.** 54 exposures. Read
+   `rms_px` before trusting it: on the simulated rig a homography gives 0.41 px
+   and an affine 2x worse *because that rig has keystone* — a real affine rms of
+   several px means the optics are not affine, not that the sweep was noisy.
+   Save it; the panel adopts it at once and the ROI editor draws the measured
+   field. Then decide **(c) single frame or an average** for the ROI snapshot,
    still open from item 4.
 
 3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
@@ -377,12 +394,12 @@ Item 5 keeps the reasoning and the numbers.
    only those mirrors on.
    - **The blocker is registration, not drawing.** An ROI is drawn in *camera*
      pixels; a mask is in *DMD mirror* coordinates (1024×768). Converting one to
-     the other needs a measured camera↔DMD transform, and **acqApp has none**:
-     the DMD runs with `fit = True`, which computes its own scale to fill the
-     panel and **ignores scale, rotation and offset entirely** (decided
-     2026-08-12, see "Needs the rig" below). So the optical-alignment question
-     this file has deferred twice is now on the critical path — you cannot aim
-     at an ROI with a projector you have not registered to the camera.
+     the other needs a measured camera↔DMD transform. **Closed 2026-08-24 (aj)
+     as far as it can be closed off the rig**: the sweep is built, wired to a
+     Calibrate… button and tested end to end, and it emits light, so items 1
+     and 2 above are the rest of it. The hand alignment in
+     `acqapp_local.json` (104 %, −7 px, `fit` off) is not a substitute — it was
+     set by eye, and nothing measured where it lands.
    - **Actuation applies at two points** (§2): the calibration projection *and*
      every stimulation. Verify open → render → upload → release first, which
      projects nothing, then ask.
@@ -398,16 +415,16 @@ Item 5 keeps the reasoning and the numbers.
      than silently clipped). Measured on the simulated rig: decode median
      **0.40 px**, homography **rms 0.41 px** over 3169 points, ROI round trip
      **100 %** on target with 0 % spill. 51 checks, each with a control.
-   - **What is left needs the rig**, in order: (a) run the sweep and see whether
-     the fields overlap — the operator expects "about the same size", and the
-     first complementary pair answers it; (b) wire `RoiEditor` into the adapter;
-     (c) single frame or an average.
-   - **Two live traps.** Calibration patterns **must bypass `build_frame`**:
-     they are already at the device's size, and its scale/rotation/offset — plus
-     `fit`, which overrides all three and is the current default — would
-     transform the very geometry being measured. And `alp.project()` uploads
-     **one** frame (`SeqAlloc(nbImg=1)`), so the sweep is software-timed,
-     project→grab per plane; a hardware-timed one needs `project_sequence()`.
+   - **What is left needs the rig**: (a) run the probe, then the sweep — items
+     1 and 2 above; (c) single frame or an average for the ROI snapshot.
+     ~~(b) wire `RoiEditor` into the adapter~~ done (`720a1b6`).
+   - **Two traps, both now handled in code — do not re-introduce them.**
+     Calibration patterns **must bypass `build_frame`**: hence
+     `project_frame()` and the `RawProjector` protocol, with a test whose
+     control shows `build_frame` really would move the pattern. And
+     `alp.project()` uploads **one** frame (`SeqAlloc(nbImg=1)`), so the sweep
+     is software-timed, project→grab per plane — which is why `FreshGrabber`
+     exists; a hardware-timed sweep would need `project_sequence()`.
 
 5. **Comment-verbosity trim + optimisation pass** (operator, 2026-08-18).
    Two jobs in one sweep over the tree, worst-first by comment+docstring ratio.
@@ -504,13 +521,12 @@ Item 5 keeps the reasoning and the numbers.
   math is now verified against the real panel, but nothing has confirmed where
   the projected pattern lands **on the sample**. That is what `dmdGUI_project`
   is for.
-  **Decided 2026-08-12: acqApp stays on `fit`, deliberately** — worth stating,
-  because it reads as a discrepancy every time someone checks. `dmdGUI_project`
-  is aligned at **132.4 %**; acqApp saves `scale_pct = 100.0` with `fit = True`,
-  and `fit` ignores the scale entirely. So acqApp is *not* projecting at the
-  standalone app's registration, and that is the operator's call, not a bug.
-  Revisit when the field must be registered to the optics rather than fill the
-  panel — which is exactly what §6 item 1 now needs.
+  **Superseded 2026-08-24 (aj).** The 2026-08-12 note here said acqApp stays on
+  `fit = True` deliberately. **That is no longer what the app is running**: the
+  live `acqapp_local.json` has `fit: false, scale_pct: 104.0, offset_x: -7`, so
+  the operator hand-aligned it at some point without updating this file.
+  `dmdGUI_project` is at **132.4 %**. Either way both are alignments set by eye;
+  the sweep in items 1–2 is the measurement, and it is what the ROI path needs.
 - ~~Phase 0's camera throughput number.~~ **Closed, re-measured 2026-08-17
   through `OrcaFireWorker`: 105.92 fps, 2223 MB/s** at full frame (4432×2368,
   20.99 MB/frame), against a camera offering 115.26 — 92 % of the link. **The
@@ -531,6 +547,49 @@ Item 5 keeps the reasoning and the numbers.
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-24 (aj) — the app can produce a calibration; the probe grows one axis at a time
+- **`run_calibration` had never been executed by anything.** This file said it
+  was "imported by its test and by nothing else"; in fact
+  `test_dmd_calibration.py` imports the *pieces*, so the orchestrator the whole
+  feature turns on had zero coverage. `tests/test_dmd_sweep.py` now runs it end
+  to end through a camera model that *lags*, which is the only way the pure half
+  and the wiring are shown to fit together.
+- **The sweep leads with a centre-out probe — the operator's idea, and it earned
+  its place.** A dim centre spot, then a bar grown along DMD-x to completion,
+  then one along DMD-y. **One axis at a time** (their second message, and the
+  better design): a disc conflates the axes, and its equivalent-area radius
+  cannot tell an anisotropic relay from a clipped one. A bar can, and the
+  rotation falls out of the x sweep alone. 12 exposures against 42, so a
+  misaimed rig fails dim and early.
+- **Measured on the simulated rig: per-axis scale to 0.3 %, rotation exact.**
+  1.003/1.032 px per mirror against a Jacobian truth of 1.006/1.030, and
+  +6.03° against +6.03°. **Do not check a probe against the transform's
+  *parameters*** — this rig was written as "scale 1.05, 7°" but its keystone
+  makes the local behaviour 1.006/1.030 at 6.03°, and measuring against 1.05
+  makes a correct probe look 4 % wrong. That cost twenty minutes.
+- **The hard part of the wiring is `grab`, not `project`.** `latest_frame`
+  returns the frame the camera last *displayed*, which is older than the pattern
+  just projected — 40 planes decoded from the frame before each gives rms 0.4 px
+  on nonsense, and nothing in the result shows it. `FreshGrabber` waits for a
+  frame that arrived after the projection and discards two in flight across the
+  mirror flip. **It fails the safe way round**: a driver reusing one array object
+  would make it time out, not return stale frames.
+- **`RawProjector` is split from `ProjectorController` deliberately.** What the
+  sweep needs *is* the guarantee that nothing reshapes the frame; merging them
+  would let a controller that can only project through `build_frame` be handed
+  to the calibration. `test_device_contracts` holds both twins to it and has a
+  control proving the split is real.
+- **Verified on the real ALP short of `Run()`**: opens 1024x768, all 33 patterns
+  render binary and device-sized, `SeqAlloc`/`SeqPut`/`SeqControl`/`SetTiming`
+  accept them, `FreeSeq` and close. **No light emitted; the sweep is unrun.**
+  The ALP refused to open once and opened on an identical retry — a single
+  "not found or not ready" proves nothing.
+- **Two defects found by driving it, not reading it** (§0's method, again): the
+  exposure count was wrong (54, not 94 — `gray_planes` returns `nbx+nby`, not
+  twice that), and the progress bar sat at Qt's -1 sentinel drawing a blank
+  strip. The second came from rendering the dialog offscreen and looking at it.
+- Suite **660 → 692 checks, 21 → 22 files**, all green.
 
 ### 2026-08-24 (ai) — the pupil tracker is archived; the eye region stays
 - **Operator's call: "ditch the pupil tracking for now — archive it, but remove
@@ -597,52 +656,7 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 - Suite **787 → 798, 23/23**. §6 item 2 was found already **done** (`720a1b6`)
   and its entry stale.
 
-### 2026-08-21 (ag) — the lightweight tracker is measurably worse; ground truth built
-- **The operator named the symptoms: jitter and dropouts** (not a mis-placed
-  outline, which is what I had been chasing). And chose hand-marked frames as
-  the way to settle correctness. Both change what is worth doing.
-- **"Try a more lightweight algorithm" — done properly, and it loses.** With
-  the threshold swept rather than left at the 60 that broke the first attempt:
-
-  | | frames | r | \|dr\| med | p95 | cx sd | cost |
-  |---|---|---|---|---|---|---|
-  | rays + region + lids | 151/151 | 53.7 | **0.153** | **0.48** | **0.31** | **2.1 ms** |
-  | blob, threshold 40, moments | 151/151 | 55.0 | 0.253 | 2.07 | 1.39 | 2.7 ms |
-  | blob → boundary → robust circle | 151/151 | 61.7 | 0.804 | 16.7 | 4.06 | 4.5 ms |
-
-  **Four times the jitter and four times the centre wander, and no faster.**
-  Boundary-fit variants are far worse still: the lid chord is not a small
-  minority of the boundary, so robust rejection cannot drop it.
-- **Otsu inside the ROI is unusable** — it picks ~135, because the ROI's bright
-  fur dominates the histogram and the split it finds is fur-vs-rest, not
-  pupil-vs-iris. r = 94 px against a true ~53. So much for removing the knob.
-- **What the montage showed that no number did: the fitted circle sits
-  down-left of the pupil**, its lower-left arc running through fur. Excluding
-  115° of the ring leaves a *partial arc*, and a circle fitted to one trades
-  centre against radius. The lids bought stability and cost accuracy. **Not the
-  operator's complaint, so not fixed — but it is real, and it is the thing to
-  watch if the exclusion is ever widened.**
-- **Two attempts at an automatic accuracy metric both failed**, which is why
-  ground truth is now a tool and not a proxy: scoring the boundary by the first
-  *bright* crossing fires on the corneal glint (r ≈ 10), and by the last *dark*
-  sample runs out into dark fur (r ≈ 80). Stability can be measured without
-  ground truth; correctness cannot.
-- **`devices/pupil_cam/_mark_truth.py`** — `mark` clicks the pupil edge on a
-  spread of frames (robust circle fitted live; one badly-placed click moves the
-  answer **0.00 px**, checked) and `score` runs the tracker over the whole clip
-  and reports centre and radius error at each marked frame. Scoring runs the
-  *whole* clip so the tracker is in the state it would really be in — a fresh
-  tracker on frame 120 measures something the operator never sees.
-- **The dropout half is NOT settled, and I did not change a default on it.**
-  Simulated occlusions say `reseed_after` is non-monotonic: at a 40-frame gap
-  30 recovers in 22 frames against 2, but at 15 and 90 frames it recovers in 0
-  and the short settings take 2–7. The reason is real — a short re-seed latches
-  onto the lid *during* the occlusion and then has to recover from a wrong
-  position — but a grey rectangle is not a blink. **This needs footage of a
-  real dropout**; changing the default on this evidence would file exactly the
-  plausible-wrong-value the §5 audit spent twenty items removing.
-
-Entries before 2026-08-21 (ag) are in
+Entries before 2026-08-22 (ah) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file
 small enough to read at the start of every session.
 
