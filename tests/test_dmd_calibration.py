@@ -24,7 +24,8 @@ from _harness import Report
 from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
-                                            deshear, fit_axes, mask_from_roi,
+                                            deshear, fit_axes,
+                                            holdout_error, mask_from_roi,
                                             offset_stripe, stripe_sweep)
 
 DW, DH = 256, 192          # a small DMD
@@ -165,6 +166,47 @@ def main() -> int:
     r.check(hit_bad < 0.6,
             f"control: a 40 px error in the transform misses "
             f"({100 * hit_bad:.0f}% covered)")
+
+    # ── 4b. knowing when not to trust it ─────────────────────────────────────
+    r.check(0 < c.holdout_px < 4.0,
+            f"a stripe left OUT of the fit is predicted to {c.holdout_px:.2f} px")
+    # The point of hold-out: the residual is optimistic BY CONSTRUCTION, since
+    # least squares sits closest to the points it was handed. Prove the two are
+    # different numbers rather than the same one computed twice.
+    r.check(c.holdout_px != c.rms_px,
+            f"…and it is a different number from the residual "
+            f"({c.holdout_px:.2f} vs {c.rms_px:.2f})")
+    # A wandering stripe must show up in the hold-out even though the fit can
+    # absorb it: this is the failure the residual alone would flatter.
+    good = {0: [(d, 100 + 2 * d, 50.0) for d in (-80, -40, 0, 40, 80)],
+            1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
+    clean = holdout_error(good)
+    bent = dict(good)
+    bent[0] = [(d, 100 + 2 * d + (25 if d == 0 else 0), 50.0)
+               for d in (-80, -40, 0, 40, 80)]
+    r.check(clean is not None and clean < 0.01,
+            f"control: a perfectly linear sweep holds out to {clean:.3f} px")
+    r.check(holdout_error(bent) > 20,
+            f"…and one stripe 25 px off its line shows as "
+            f"{holdout_error(bent):.0f} px of hold-out error (the WORST axis, "
+            f"since averaging it against a good axis would hide it)")
+
+    # An outlier is dropped, and the drop is reported rather than silent.
+    wild = {0: [(d, 100 + 2 * d + (300 if d == 40 else 0), 50.0)
+                for d in (-80, -40, 0, 40, 80)],
+            1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
+    out = fit_axes(wild)
+    r.check(out is not None and out[4] == 9,
+            f"a 300 px outlier is rejected, leaving {out[4]} of 10 stripes")
+    r.check(out[3] < 1.0,
+            f"…so the residual reflects the good stripes ({out[3]:.2f} px)")
+    # CONTROL: rejection must not run away and keep trimming until it "fits".
+    noisy = {0: [(d, 100 + 2 * d + (3 if i % 2 else -3), 50.0)
+                 for i, d in enumerate((-80, -40, 0, 40, 80))],
+             1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
+    r.check(fit_axes(noisy)[4] == 10,
+            "control: ordinary scatter is kept — the worst of a good set is "
+            "not an outlier")
 
     # ── 5. refusing to guess ─────────────────────────────────────────────────
     try:

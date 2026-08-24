@@ -117,15 +117,23 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
         for frac in offsets:
             d = frac * half[axis]
             project(offset_stripe(w, h, axis, d))
-            m = field_mask(np.asarray(grab(), dtype=np.float32), dark,
-                           min_modulation=min_modulation)
+            mod = np.abs(modulation(np.asarray(grab(), dtype=np.float32), dark))
+            m = mod >= min_modulation
             n = int(m.sum())
             box = bounding_box(m)
             edge = bool(box and (box[0] == 0 or box[1] == 0
                                  or box[2] == m.shape[1] or box[3] == m.shape[0]))
-            ys, xs = np.nonzero(m) if n else (np.empty(0), np.empty(0))
-            cx = float(xs.mean()) if n else float("nan")
-            cy = float(ys.mean()) if n else float("nan")
+            # Centroid WEIGHTED by modulation, not of the bare threshold mask.
+            # A binary centroid moves as the threshold moves, and vignetting
+            # tips which edge pixels clear it; weighting makes the estimate
+            # smooth in both. Separable sums, so it costs one pass, not a grid.
+            if n:
+                wgt = np.where(m, mod, 0.0)
+                tot = float(wgt.sum())
+                cx = float(wgt.sum(axis=0) @ np.arange(wgt.shape[1])) / tot
+                cy = float(wgt.sum(axis=1) @ np.arange(wgt.shape[0])) / tot
+            else:
+                cx = cy = float("nan")
             keep = n >= 50 and not edge
             log(f"[dmd-calib] {'xy'[axis]} {frac:+.2f} ({d:+7.1f} mirrors) -> "
                 + (f"{n:>8d} px at ({cx:7.1f}, {cy:7.1f})" if n
@@ -154,18 +162,79 @@ def fit_axes(seen: dict) -> tuple | None:
     pts = [(axis, d, cx, cy) for axis in (0, 1) for d, cx, cy in seen[axis]]
     if len(seen[0]) < 2 or len(seen[1]) < 2 or len(pts) < 5:
         return None
+    keep = np.ones(len(pts), bool)
+    out = _solve(pts, keep)
+    if out is None:
+        return None
+    centre, vx, vy, rms, err = out
+
+    # ONE rejection pass, against a scale taken from that first fit.
+    #
+    # The median, not the rms: a single gross outlier inflates the rms enough to
+    # shelter itself — a 300 px stripe among clean ones pushed the rms to 85, so
+    # a 3x-rms cut sat at 254 and caught nothing. 1.4826 makes the median match
+    # sigma for a normal.
+    #
+    # And once, not iterated: on clean data the scale collapses after the first
+    # trim, so a second pass starts rejecting perfectly good stripes. With ten
+    # stripes there is no budget to hunt outliers one at a time anyway.
+    sigma = 1.4826 * float(np.median(err))
+    if sigma > 0:
+        wild = err > 3.0 * sigma
+        if wild.any() and (~wild).sum() >= max(5, len(pts) // 2):
+            keep = ~wild
+            out = _solve(pts, keep)
+            if out is not None:
+                centre, vx, vy, rms, err = out
+    return centre, vx, vy, rms, int(keep.sum()), keep
+
+
+def _solve(pts, keep):
+    """Least squares over the kept points → (centre, vx, vy, rms, per-point err).
+
+    Separable by coordinate: camera x depends on (cx, vx.x, vy.x) and camera y
+    on (cy, vx.y, vy.y), so it is two 3-parameter fits, not one 6.
+    """
+    if int(np.sum(keep)) < 5:
+        return None
     A = np.array([[1.0, d if axis == 0 else 0.0, d if axis == 1 else 0.0]
                   for axis, d, _cx, _cy in pts])
     bx = np.array([cx for _a, _d, cx, _cy in pts])
     by = np.array([cy for _a, _d, _cx, cy in pts])
-    px, *_ = np.linalg.lstsq(A, bx, rcond=None)
-    py, *_ = np.linalg.lstsq(A, by, rcond=None)
-    centre = np.array([px[0], py[0]])
-    vx = np.array([px[1], py[1]])
-    vy = np.array([px[2], py[2]])
-    res = np.column_stack([bx - A @ px, by - A @ py])
-    rms = float(np.sqrt(np.mean((res ** 2).sum(axis=1))))
-    return centre, vx, vy, rms, len(pts)
+    px, *_ = np.linalg.lstsq(A[keep], bx[keep], rcond=None)
+    py, *_ = np.linalg.lstsq(A[keep], by[keep], rcond=None)
+    err = np.hypot(bx - A @ px, by - A @ py)
+    rms = float(np.sqrt(np.mean(err[keep] ** 2)))
+    return (np.array([px[0], py[0]]), np.array([px[1], py[1]]),
+            np.array([px[2], py[2]]), rms, err)
+
+
+def holdout_error(seen: dict) -> float | None:
+    """Refit without one stripe per axis and see how far off it predicts them.
+
+    **The residual cannot tell you this.** A least-squares fit is closest to the
+    points it was given, so its rms is optimistic by construction; leaving a
+    stripe out and predicting it is the honest version, and on data already in
+    hand it costs nothing to project.
+    """
+    trial = {a: list(seen[a]) for a in (0, 1)}
+    held = []
+    for a in (0, 1):
+        if len(trial[a]) < 4:
+            return None
+        i = len(trial[a]) // 2                  # nearest the middle offset
+        held.append((a, *trial[a].pop(i)))
+    out = fit_axes(trial)
+    if out is None:
+        return None
+    centre, vx, vy, _rms, _n, _keep = out
+    errs = []
+    for axis, d, cx, cy in held:
+        pred = centre + d * (vx if axis == 0 else vy)
+        errs.append(float(np.hypot(cx - pred[0], cy - pred[1])))
+    # The WORST axis, not the mean of the two: one axis predicting badly is
+    # a bad calibration, and averaging it against a good one hides that.
+    return float(max(errs))
 
 
 def deshear(vx: np.ndarray, vy: np.ndarray,
@@ -235,7 +304,7 @@ def calibrate(project: Callable[[np.ndarray], None],
             f"{len(seen[1])} on y, and each axis needs at least 2. The rest "
             f"were off the frame or too dim, so the DMD field and the camera's "
             f"view barely overlap.")
-    centre, vx, vy, rms, n = fit
+    centre, vx, vy, rms, n, keep = fit
 
     kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
     ax = float(np.degrees(np.arctan2(vx[1], vx[0])))
@@ -254,8 +323,17 @@ def calibrate(project: Callable[[np.ndarray], None],
         log(f"[dmd-calib] rotation weighted {lever[0]:.0f} : {lever[1]:.0f} "
             f"(x : y lever arm)")
         vx, vy = deshear(vx, vy, lever)
+    total = len(seen[0]) + len(seen[1])
+    if n < total:
+        log(f"[dmd-calib] {total - n} stripe(s) rejected as outliers "
+            f"(>3x the residual); {n} kept")
     log(f"[dmd-calib] residual {rms:.2f} px over {n} stripes; panel centre "
         f"({centre[0]:.0f}, {centre[1]:.0f})")
+    hold = holdout_error(seen)
+    if hold is not None:
+        log(f"[dmd-calib] hold-out error {hold:.2f} px ({hold / max(kx, ky):.1f} "
+            f"mirrors) — refitted without a stripe, then asked to predict it. "
+            f"This is the number to trust, not the residual.")
 
     cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
     A = np.eye(3)
@@ -270,6 +348,7 @@ def calibrate(project: Callable[[np.ndarray], None],
     c = DmdCalibration(
         cam_to_dmd=np.linalg.inv(A), dmd_size=(w, h),
         cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
+        holdout_px=float(hold or 0.0),
         model="affine" if allow_shear else "affine-noshear",
         # The raw measurements travel with the result, so a fit can be redone
         # offline — re-projecting onto a live animal to re-test a fit is not an
@@ -305,6 +384,9 @@ class DmdCalibration:
     model:      str = "affine"
     rms_px:     float = 0.0
     n_points:   int = 0
+    # Prediction error on a stripe left OUT of the fit. The residual is
+    # optimistic by construction; this is not.
+    holdout_px: float = 0.0
     created:    str = ""
     notes:      str = ""
     # The raw stripe measurements: [axis, offset_mirrors, cam_x, cam_y]. Kept
@@ -393,7 +475,8 @@ class DmdCalibration:
         return {"cam_to_dmd": np.asarray(self.cam_to_dmd).tolist(),
                 "dmd_size": list(self.dmd_size), "cam_size": list(self.cam_size),
                 "model": self.model, "rms_px": float(self.rms_px),
-                "n_points": int(self.n_points), "created": self.created,
+                "n_points": int(self.n_points),
+                "holdout_px": float(self.holdout_px), "created": self.created,
                 "notes": self.notes, "stripes": list(self.stripes or [])}
 
     @classmethod
@@ -403,6 +486,7 @@ class DmdCalibration:
                    model=d.get("model", "affine"),
                    rms_px=float(d.get("rms_px", 0.0)),
                    n_points=int(d.get("n_points", 0)),
+                   holdout_px=float(d.get("holdout_px", 0.0)),
                    created=d.get("created", ""), notes=d.get("notes", ""),
                    stripes=d.get("stripes") or [])
 
@@ -420,6 +504,8 @@ class DmdCalibration:
         return (f"DMD {self.dmd_size[0]}x{self.dmd_size[1]} → camera "
                 f"{self.cam_size[0]}x{self.cam_size[1]}, {self.model}, "
                 f"rms {self.rms_px:.2f} px over {self.n_points} points"
+                + (f", hold-out {self.holdout_px:.2f} px"
+                   if self.holdout_px else "")
                 + (f" ({self.created})" if self.created else ""))
 
 
