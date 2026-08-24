@@ -30,9 +30,12 @@ from _harness import Report
 from test_dmd_calibration import (CH, CW, DH, DW, image_through, sample_field,
                                   true_transform)
 
+from acqApp.devices.dmd.calibration import PROBE_FRACS
+
 from acqApp.devices.dmd.calibration import (CalibrationError, apply_transform,
                                             axis_angle_deg, axis_scale,
-                                            centre_out_probe, gray_planes,
+                                            centre_out_probe,
+                                            coarse_calibration, gray_planes,
                                             probe_verdict, run_calibration)
 from acqApp.devices.dmd.sweep import FreshGrabber, sweep_exposures
 
@@ -162,8 +165,9 @@ def check_probe(r: Report) -> None:
     r.check(len(steps) == sweep_exposures((DW, DH), full=False) - 1,
             f"{len(steps)} probe rows, one per exposure after the dark "
             f"reference")
-    r.check(all(s.axis == 0 for s in steps[1:6])
-            and all(s.axis == 1 for s in steps[6:]),
+    n_f = len(PROBE_FRACS)
+    r.check(all(s.axis == 0 for s in steps[1:1 + n_f])
+            and all(s.axis == 1 for s in steps[1 + n_f:]),
             "x is swept to completion before y — each axis is established on "
             "its own")
 
@@ -265,14 +269,18 @@ def check_run_calibration(r: Report) -> None:
     # The dialog's warning is a count of exposures. If it drifts from what the
     # sweep really does, the operator is told a number about light emission
     # that is not true.
-    r.check(n_projected["n"] == sweep_exposures((DW, DH)),
-            f"sweep_exposures() matches the real count "
-            f"({sweep_exposures((DW, DH))} predicted, {n_projected['n']} run)")
-    # 12 probe + 2 checkerboard + 2x20 Gray planes. Worth pinning: this is the
-    # number the dialog puts in front of the operator before emitting light.
+    r.check(n_projected["n"] <= sweep_exposures((DW, DH)),
+            f"sweep_exposures() bounds the real count "
+            f"({sweep_exposures((DW, DH))} quoted, {n_projected['n']} run)")
+    # …and it is a TIGHT bound, not a safe over-estimate that tells the operator
+    # nothing: the gap is only the planes a coarser code saved.
+    r.check(n_projected["n"] >= 0.6 * sweep_exposures((DW, DH)),
+            f"…tightly ({n_projected['n']} of {sweep_exposures((DW, DH))})")
+    # 12 probe + 2 checkerboard + 4 resolution + 2x20 Gray planes. Worth
+    # pinning: this is the number the dialog shows before any light is emitted.
     n_real = sweep_exposures((1024, 768))
-    r.check(len(gray_planes(1024, 768)[0]) == 20 and n_real == 54,
-            f"…and on the rig's own 1024x768 panel it is {n_real} exposures")
+    r.check(len(gray_planes(1024, 768)[0]) == 20 and n_real == 64,
+            f"…and on the rig's own 1024x768 panel it is at most {n_real}")
 
     # A sweep that cannot be registered must say why, not return a bad matrix.
     try:
@@ -283,6 +291,135 @@ def check_run_calibration(r: Report) -> None:
         r.check("probe saw nothing" in str(e),
                 f"control: an unlit sweep raises at the PROBE, before the "
                 f"full-panel exposures ({str(e)[:45]}…)")
+
+
+def check_unresolved_planes(r: Report) -> None:
+    """The rig's 2026-08-24 failure: probe fine, checkerboard fine, decode 0.0 %.
+
+    At the measured 4.56 camera px per mirror a 1-mirror Gray stripe is 4.6 px,
+    and a relay that blurs even slightly averages it away. `decode` requires
+    EVERY plane, so one unresolved plane invalidated all 10.5 Mpx.
+
+    Simulated by imaging through a magnifying transform and blurring — which is
+    what the optics do — rather than by mocking `decode` into failing.
+    """
+    from acqApp.devices.dmd.calibration import (decode, gray_planes,
+                                                plane_coverage,
+                                                resolve_gray_step)
+
+    # A stand-in for the rig: the DMD magnified ~4.5x onto the camera, through a
+    # relay whose point spread is about TWO mirror widths. That blur is the
+    # premise, not a tuned number — it is what the rig's own data implies, since
+    # a relay that resolved single mirrors would not have returned 0.0 %.
+    dw, dh = 64, 48
+    k, psf = 5, 9              # px per mirror (integer); PSF half-width, px
+    cw, ch = dw * k, dh * k
+
+    def image(pattern):
+        cam = np.repeat(np.repeat(pattern.astype(np.float32), k, axis=0),
+                        k, axis=1)
+        assert cam.shape == (ch, cw), cam.shape
+        pad = np.pad(cam, psf, mode="edge")
+        blur = sum(pad[i:i + ch, j:j + cw]
+                   for i in range(2 * psf + 1)
+                   for j in range(2 * psf + 1)) / (2 * psf + 1) ** 2
+        return blur * 3.0 + 40.0          # a sample under it, plus an offset
+
+    def sweep(gstep):
+        planes, nbx, nby = gray_planes(dw, dh, step=gstep)
+        on = [image(p) for p in planes]
+        off = [image((255 - p).astype(np.uint8)) for p in planes]
+        _dx, _dy, valid = decode(on, off, nbx, nby)
+        return float(valid.mean()), plane_coverage(on, off), nbx, len(planes)
+
+    got, cov, nbx, n = sweep(1)
+    r.check(got < 0.05,
+            f"reproduced: at 1 mirror per code the sweep decodes "
+            f"{100 * got:.1f}% of the frame")
+    early = max(v for _t, v in cov[:max(1, nbx - 3)])
+    r.check(early > 0.5 and cov[-1][1] < 0.05,
+            f"…and the coverage table localises it — {100 * early:.0f}% still "
+            f"valid through the coarse planes, {100 * cov[-1][1]:.1f}% at the "
+            f"end. The FINE planes, not a dead field")
+
+    # The step is MEASURED, by projecting each candidate's finest stripe.
+    held = {}
+    field = 1.0                          # this stand-in fills the frame
+    gstep = resolve_gray_step(lambda f: held.__setitem__("f", f),
+                              lambda: image(held["f"]), (dw, dh),
+                              field=field, log=lambda _s: None)
+    r.check(gstep > 1, f"resolve_gray_step measured its way to {gstep} "
+                       f"mirror(s) per code, {gstep * k:.0f} camera px")
+    fixed, _cov, _nbx, n2 = sweep(gstep)
+    # Not "most of the frame" — under a PSF two mirrors wide only the stripe
+    # CENTRES survive every plane's intersection. Enough to register from is
+    # the bar that matters, and 0 % was the failure.
+    r.check(fixed > 0.2,
+            f"…and at that step it decodes {100 * fixed:.0f}% — thousands of "
+            f"correspondences, against none")
+    r.check(n2 < n, f"…on fewer planes too ({n2} against {n})")
+
+    # CONTROL: coarsening must NOT rescue a rig that sees nothing, or it would
+    # paper over a dark projector instead of a blurry one.
+    planes, nbx2, nby2 = gray_planes(dw, dh, step=gstep)
+    dark = [np.full((ch, cw), 50.0, np.float32) for _ in planes]
+    _dx, _dy, v_dark = decode(dark, dark, nbx2, nby2)
+    r.check(v_dark.mean() == 0.0,
+            "control: with no modulation at all, coarsening still decodes "
+            "nothing — it fixes unresolved stripes, not a dark rig")
+    dead = resolve_gray_step(lambda f: None,
+                             lambda: np.full((ch, cw), 50.0, np.float32),
+                             (dw, dh), field=field, log=lambda _s: None)
+    r.check(dead == 16,
+            f"control: against a dead rig it exhausts every candidate ({dead}) "
+            f"rather than reporting one as resolved")
+
+    planes, nbx3, _nby3 = gray_planes(dw, dh, step=4)
+    r.check(nbx3 == 4 and len(planes) == 4 + 4,
+            f"a 64x48 panel at step 4 needs {nbx3} x-bits, not 6 "
+            f"({len(planes)} planes total)")
+
+
+def check_coarse_calibration(r: Report) -> None:
+    """Rectangles alone give a usable affine — the rig's answer when Gray fails.
+
+    The operator's question (2026-08-24): why not just run the rectangles and
+    read the edges and the tilt? Because the probe already measures every
+    parameter an affine has. The one thing it cannot measure is which WAY each
+    axis runs, and that is what the off-centre bars are for.
+    """
+    rng = np.random.default_rng(5)
+    sample = sample_field(rng)
+
+    for name, M in (("rotated + keystone", true_transform()),
+                    ("mirrored in x", np.array([[-1.1, 0.10, 250.0],
+                                                [0.08, 1.05, 22.0],
+                                                [0.0, 0.0, 1.0]]))):
+        held = {"f": None}
+        c = coarse_calibration(lambda f: held.__setitem__("f", f),
+                               lambda: image_through(held["f"], M, sample, rng),
+                               (DW, DH), log=lambda _s: None)
+        r.check(c.model == "affine-coarse" and "COARSE" in c.notes,
+                f"[{name}] the file says it is coarse, so it cannot be "
+                f"mistaken for a Gray-coded fit later")
+        # It must land where the transform really puts the mirrors.
+        pts = np.array([[DW / 2, DH / 2], [DW / 4, DH / 4],
+                        [3 * DW / 4, 2 * DH / 3]], float)
+        got = apply_transform(np.linalg.inv(c.cam_to_dmd), pts)
+        want = apply_transform(M, pts)
+        err = float(np.abs(got - want).max())
+        r.check(err < 12.0,
+                f"[{name}] rectangles alone place the panel to {err:.1f} px "
+                f"(rms {c.rms_px:.2f} over {c.n_points} bar measurements)")
+
+    # CONTROL: the mirrored case must actually be mirrored, or the check above
+    # passes for free and the handedness bars are proving nothing.
+    flip = np.array([[-1.1, 0.10, 250.0], [0.08, 1.05, 22.0], [0.0, 0.0, 1.0]])
+    d = (apply_transform(flip, np.array([[DW - 1, DH / 2]], float))
+         - apply_transform(flip, np.array([[0, DH / 2]], float)))[0]
+    r.check(d[0] < 0,
+            f"control: that transform really does run DMD +x towards camera −x "
+            f"({d[0]:+.0f} px), so a sign error would have been caught")
 
 
 def check_project_frame(r: Report) -> None:
@@ -405,6 +542,8 @@ def main() -> int:
     check_fresh_grabber(r)
     check_probe(r)
     check_run_calibration(r)
+    check_unresolved_planes(r)
+    check_coarse_calibration(r)
     check_project_frame(r)
     check_wiring(r)
     return r.finish()

@@ -111,19 +111,33 @@ def _gray(v: np.ndarray) -> np.ndarray:
     return v ^ (v >> 1)
 
 
-def gray_planes(width: int, height: int) -> tuple[list[np.ndarray], int, int]:
+def gray_planes(width: int, height: int, *,
+                step: int = 1) -> tuple[list[np.ndarray], int, int]:
     """Gray-coded bit planes for x then y → (planes, n_bits_x, n_bits_y).
 
     Gray rather than plain binary because adjacent mirrors differ in exactly one
     bit, so a pixel straddling a pattern boundary misdecodes by ±1 mirror rather
     than by half the panel.
 
+    `step` is **mirrors per code step**, and it exists because the finest planes
+    are the ones that fail. At the rig's measured 4.6 camera px per mirror a
+    1-mirror stripe is 4.6 px, which any defocus washes out — and since `decode`
+    requires EVERY plane, one unresolved plane invalidates every pixel in the
+    frame and the sweep returns 0.0 % decoded (2026-08-24, a real run).
+    Coarsening costs nothing that matters: the fit is a global model over
+    thousands of points, so quantising each correspondence to `step` mirrors
+    averages out, while an unresolved plane loses all of them.
+
+    The caller converts codes back to mirrors — `decode` returns code units.
+
     Project each plane with its inverse (`255 - plane`); `decode` wants both.
     """
-    nbx = max(1, int(np.ceil(np.log2(max(width, 2)))))
-    nby = max(1, int(np.ceil(np.log2(max(height, 2)))))
-    gx = _gray(np.arange(width, dtype=np.int64))
-    gy = _gray(np.arange(height, dtype=np.int64))
+    step = max(1, int(step))
+    nx, ny = (width + step - 1) // step, (height + step - 1) // step
+    nbx = max(1, int(np.ceil(np.log2(max(nx, 2)))))
+    nby = max(1, int(np.ceil(np.log2(max(ny, 2)))))
+    gx = _gray(np.arange(width, dtype=np.int64) // step)
+    gy = _gray(np.arange(height, dtype=np.int64) // step)
 
     planes: list[np.ndarray] = []
     for k in range(nbx - 1, -1, -1):                    # MSB first
@@ -213,6 +227,115 @@ def decode(on_stack, off_stack, n_bits_x: int, n_bits_y: int, *,
     return x, y, worst >= min_modulation
 
 
+def plane_coverage(on_stack, off_stack, *,
+                   min_modulation: float = MIN_MODULATION) -> list[tuple]:
+    """Per plane: (fraction it modulated, fraction still valid after it).
+
+    The diagnostic for a decode that returned nothing, and the reason it reports
+    a **running intersection** rather than per-plane numbers alone: `decode`
+    requires every plane, so where the intersection collapses is the answer.
+
+      collapse in the LAST few planes  → stripes finer than the optics resolve
+      steady slide from the FIRST      → the field is not really modulating;
+                                         what looked like a field was noise
+
+    Those two have different fixes, which is why this is measured rather than
+    guessed at.
+    """
+    worst = None
+    out: list[tuple] = []
+    for a, b in zip(on_stack, off_stack):
+        a = np.asarray(a, dtype=np.float32)
+        b = np.asarray(b, dtype=np.float32)
+        m = np.abs((a - b) / np.maximum(a + b, np.float32(1e-9)))
+        worst = m.copy() if worst is None else np.minimum(worst, m)
+        out.append((float((m >= min_modulation).mean()),
+                    float((worst >= min_modulation).mean())))
+    return out
+
+
+GRAY_STEPS = (1, 2, 4, 8, 16)       # candidates, coarsening
+
+
+def finest_plane(width: int, height: int, axis: int, step: int) -> np.ndarray:
+    """The LSB plane at `step` — the narrowest stripe the sweep would project."""
+    planes, nbx, _nby = gray_planes(width, height, step=step)
+    return planes[nbx - 1] if axis == 0 else planes[-1]
+
+
+def resolve_gray_step(project: Callable[[np.ndarray], None],
+                      grab: Callable[[], np.ndarray],
+                      dmd_size: tuple[int, int], *,
+                      field: float,
+                      target: float = 0.75,
+                      candidates=GRAY_STEPS,
+                      min_modulation: float = MIN_MODULATION,
+                      log: Callable[[str], None] = print) -> int:
+    """Coarsen the Gray code until its finest stripe actually modulates.
+
+    **Measured, not predicted.** Whether a 1-mirror stripe survives is a
+    question about the relay's point spread; a px-per-mirror rule of thumb is a
+    guess about it, and on 2026-08-24 the guess would have been wrong in both
+    directions on two different rigs. Four exposures per candidate, against a
+    sweep of forty — and a sweep that decodes 0.0 % costs all forty.
+
+    `field` is the checkerboard's modulated fraction: the finest plane should
+    modulate most of the same frame, so the test is relative to what the field
+    already showed rather than to an absolute number. `target` is deliberately
+    demanding — this tests only the FINEST plane, while `decode` intersects
+    every plane, so a stripe that only just clears the bar still loses most of
+    the frame to the intersection.
+    """
+    w, h = int(dmd_size[0]), int(dmd_size[1])
+    want = target * float(field)
+    best = candidates[-1]
+    for step in candidates:
+        cover = []
+        for axis in (0, 1):
+            p = finest_plane(w, h, axis, step)
+            project(p)
+            a = np.asarray(grab(), dtype=np.float32)
+            project((255 - p).astype(np.uint8))
+            b = np.asarray(grab(), dtype=np.float32)
+            m = np.abs((a - b) / np.maximum(a + b, np.float32(1e-9)))
+            cover.append(float((m >= min_modulation).mean()))
+        log(f"[dmd-calib] finest stripe at {step:>2} mirror(s): "
+            f"x {100 * cover[0]:5.1f}%, y {100 * cover[1]:5.1f}% of frame "
+            f"(need {100 * want:.1f}%)")
+        if min(cover) >= want:
+            return step
+        best = step
+    log(f"[dmd-calib] no candidate resolved; using {best} and expecting trouble")
+    return best
+
+
+def _decode_diagnosis(cov: list[tuple], nbx: int, step: int,
+                      scale: float | None) -> str:
+    """Turn a coverage table into the sentence that names the fix."""
+    if not cov:
+        return "no planes were captured at all"
+    if cov[0][0] < 0.02:
+        return ("the FIRST plane modulates almost nothing, so this is not a "
+                "resolution problem — the projector and camera are not seeing "
+                "the same light. Check the illumination, the exposure, and "
+                "that the sweep patterns really reach the sample")
+    survives = [i for i, (_t, v) in enumerate(cov) if v >= 0.05]
+    last = survives[-1] if survives else -1
+    if last < 0:
+        return ("coverage collapses immediately: individual planes modulate but "
+                "not the SAME pixels, which is what noise looks like rather "
+                "than a field")
+    if last >= len(cov) - 4:
+        fine = f" (currently {step} mirror{'' if step == 1 else 's'} per code"
+        fine += f", {step * scale:.1f} camera px)" if scale else ")"
+        return (f"the first {last + 1} planes are fine and the last "
+                f"{len(cov) - last - 1} kill it — the stripes are finer than "
+                f"the optics resolve{fine}. Raise `step`, or focus the relay")
+    which = "x" if last < nbx else "y"
+    return (f"coverage dies at plane {last + 1} of {len(cov)}, in the {which} "
+            f"block — the stripes at that scale are not resolved")
+
+
 def correspondences(dmd_x, dmd_y, valid, *, step: int = 8):
     """Valid pixels as (camera_xy, dmd_xy) point arrays, subsampled by `step`.
 
@@ -252,8 +375,11 @@ def correspondences(dmd_x, dmd_y, valid, *, step: int = 8):
 # cannot catch a mirror flip, and one pair still gives the whole field extent in
 # two exposures. This runs first because it is cheap, dim and per-axis.
 
-# Fractions of the half-extent along the axis being grown.
-PROBE_FRACS = (0.12, 0.30, 0.55, 0.80, 1.00)
+# Fractions of the half-extent along the axis being grown. Weighted towards the
+# SMALL end on purpose: where the DMD overfills the camera every large bar runs
+# off the frame and is discarded, and the rig's first run left only two usable y
+# steps out of five (2026-08-24). Small bars are also the dim ones.
+PROBE_FRACS = (0.08, 0.14, 0.22, 0.32, 0.45, 0.62, 0.80, 1.00)
 # The bar's fixed half-extent across that axis, as a fraction of the panel's.
 # Small enough that the bar is unambiguously long, big enough to survive the
 # modulation threshold on a dim relay.
@@ -415,6 +541,19 @@ def axis_scale(steps: list[ProbeStep], axis: int) -> float | None:
     are proportional with no intercept, and a two-parameter fit over five points
     would just absorb the clipping into the intercept.
     """
+    fit = axis_scale_fit(steps, axis)
+    return fit[0] if fit else None
+
+
+def axis_scale_fit(steps: list[ProbeStep],
+                   axis: int) -> tuple[float, float, int] | None:
+    """(px per mirror, rms residual in camera px, points used).
+
+    The residual is the point, exactly as it is for `fit_transform`: a scale
+    with no residual cannot be judged, and on a rig where the DMD overfills the
+    camera only two or three steps survive unclipped — few enough that a bad one
+    would pass unnoticed.
+    """
     u = axis_direction(steps, axis)
     if u is None:
         return None
@@ -423,7 +562,143 @@ def axis_scale(steps: list[ProbeStep], axis: int) -> float | None:
         return None
     x = np.array([s.dmd_extent for s in use])
     y = np.array([_extent_along(s.cov, u) for s in use])
-    return float((x @ y) / (x @ x)) if (x @ x) > 0 else None
+    if (x @ x) <= 0:
+        return None
+    k = float((x @ y) / (x @ x))
+    rms = float(np.sqrt(np.mean((y - k * x) ** 2)))
+    return k, rms, len(use)
+
+
+def resolve_handedness(project: Callable[[np.ndarray], None],
+                       grab: Callable[[], np.ndarray],
+                       steps: list[ProbeStep], dmd_size: tuple[int, int], *,
+                       min_modulation: float = MIN_MODULATION,
+                       log: Callable[[str], None] = print):
+    """Which WAY each DMD axis runs in the camera → (u_x, u_y) or None.
+
+    **A centred bar cannot answer this and neither can the eigenvector**, whose
+    sign is arbitrary — so a calibration built from the probe alone would be
+    mirrored about the panel centre half the time, and a mirrored registration
+    aims every ROI at the wrong place while looking perfectly well fitted. This
+    is the same failure the checkerboard's 1/2/3/4-dot corner marks exist to
+    catch, answered in two exposures instead of a full pair.
+
+    One off-centre bar per axis: project the half of the panel on the POSITIVE
+    side and see which way its centroid moves.
+    """
+    w, h = int(dmd_size[0]), int(dmd_size[1])
+    centre = np.array([np.nanmean([s.cam_cx for s in steps if s.lit_px >= 3]),
+                       np.nanmean([s.cam_cy for s in steps if s.lit_px >= 3])])
+    if not np.all(np.isfinite(centre)):
+        return None
+
+    project(_blank(w, h))
+    dark = np.asarray(grab(), dtype=np.float32)
+
+    out = []
+    for axis in (0, 1):
+        u = axis_direction(steps, axis)
+        if u is None:
+            return None
+        y, x = np.ogrid[:h, :w]
+        cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+        # The positive half, inset so it stays inside the field the probe saw.
+        if axis == 0:
+            f = np.where((x > cx) & (x <= cx + w / 4) & (np.abs(y - cy) <= h / 8),
+                         ON, OFF).astype(np.uint8)
+        else:
+            f = np.where((y > cy) & (y <= cy + h / 4) & (np.abs(x - cx) <= w / 8),
+                         ON, OFF).astype(np.uint8)
+        project(f)
+        lit = np.asarray(grab(), dtype=np.float32)
+        m = field_mask(lit, dark, min_modulation=min_modulation)
+        if int(m.sum()) < 3:
+            log(f"[dmd-calib] the off-centre {'xy'[axis]} bar is invisible — "
+                f"handedness cannot be resolved")
+            return None
+        ys, xs = np.nonzero(m)
+        d = np.array([float(xs.mean()), float(ys.mean())]) - centre
+        sign = 1.0 if float(d @ u) >= 0 else -1.0
+        log(f"[dmd-calib] DMD +{'xy'[axis]} moves {float(d @ u):+.0f} px along "
+            f"the measured axis → {'as measured' if sign > 0 else 'FLIPPED'}")
+        out.append(sign * u)
+    return out[0], out[1]
+
+
+def coarse_calibration(project: Callable[[np.ndarray], None],
+                       grab: Callable[[], np.ndarray],
+                       dmd_size: tuple[int, int], *,
+                       fracs=PROBE_FRACS,
+                       min_modulation: float = MIN_MODULATION,
+                       log: Callable[[str], None] = print) -> DmdCalibration:
+    """An affine registration from the RECTANGLES ALONE — no Gray coding.
+
+    The probe already measures every parameter an affine needs: the panel
+    centre gives the translation, the two scales give the magnification, and the
+    two axis directions give rotation and shear. Six parameters, six
+    measurements, all of them from large bright regions.
+
+    **Prefer this when the Gray sweep cannot decode**, which is the normal case
+    on a relay that does not resolve single mirrors — on this rig at 4.6 camera
+    px per mirror the sweep returned 0.0 % while the probe was perfectly happy
+    (2026-08-24). What it gives up is real and worth knowing:
+
+      * **no keystone.** An affine has no perspective term, so if the panel is
+        tilted relative to the sample this is wrong towards the edges — by an
+        amount `run_calibration`'s residual would have told you and this cannot.
+      * **a thin residual.** It comes from the scale fits' own scatter over a
+        handful of unclipped steps, not from thousands of correspondences.
+
+    So it is a *coarse* calibration, named that in the file, and good enough to
+    aim an ROI when the alternative is nothing at all.
+    """
+    w, h = int(dmd_size[0]), int(dmd_size[1])
+    steps = centre_out_probe(project, grab, (w, h), fracs=fracs,
+                             min_modulation=min_modulation, log=log)
+    verdict = probe_verdict(steps, steps[0].cam_shape, (w, h))
+    log(f"[dmd-calib] probe: {verdict}")
+    if not any(s.lit_px for s in steps):
+        raise CalibrationError("the centre-out probe saw nothing: " + verdict)
+
+    fx, fy = axis_scale_fit(steps, 0), axis_scale_fit(steps, 1)
+    if fx is None or fy is None:
+        raise CalibrationError(
+            "not enough unclipped probe steps to measure a scale on both axes "
+            "— the DMD field may be much larger than the camera's view. Every "
+            "bar past the first few ran off the edge of the frame.")
+    kx, rms_x, n_x = fx
+    ky, rms_y, n_y = fy
+
+    hand = resolve_handedness(project, grab, steps, (w, h),
+                              min_modulation=min_modulation, log=log)
+    if hand is None:
+        raise CalibrationError(
+            "could not tell which way the DMD axes run. A centred bar is "
+            "symmetric, so without this the registration would be mirrored — "
+            "which aims every ROI at the wrong place while looking well fitted.")
+    ux, uy = hand
+
+    centre = np.array([np.nanmean([s.cam_cx for s in steps if s.lit_px >= 3]),
+                       np.nanmean([s.cam_cy for s in steps if s.lit_px >= 3])])
+    # dmd → cam, about the panel centre; then invert, since a calibration is
+    # stored camera → DMD.
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    A = np.eye(3)
+    A[:2, 0] = kx * ux
+    A[:2, 1] = ky * uy
+    A[:2, 2] = centre - kx * cx * ux - ky * cy * uy
+    cam_to_dmd = np.linalg.inv(A)
+
+    rms = float(np.hypot(rms_x, rms_y))
+    log(f"[dmd-calib] coarse affine: {kx:.3f} x {ky:.3f} px/mirror, "
+        f"residual {rms:.2f} px over {n_x + n_y} bar measurements")
+    ch, cw = steps[0].cam_shape
+    return DmdCalibration(
+        cam_to_dmd=cam_to_dmd, dmd_size=(w, h), cam_size=(int(cw), int(ch)),
+        model="affine-coarse", rms_px=rms, n_points=n_x + n_y,
+        created=datetime.now().isoformat(timespec="seconds"),
+        notes=f"COARSE — from the probe's rectangles, no Gray coding, no "
+              f"keystone term. probe: {verdict}")
 
 
 def axis_angle_deg(steps: list[ProbeStep], axis: int) -> float | None:
@@ -700,6 +975,7 @@ def run_calibration(project: Callable[[np.ndarray], None],
                     square: int = 64,
                     step: int = 8,
                     probe: bool = True,
+                    gray_step: int = 0,     # 0 = size it from the probe's scale
                     min_modulation: float = MIN_MODULATION,
                     log: Callable[[str], None] = print) -> DmdCalibration:
     """Project a sweep, image it, and return the registration.
@@ -729,7 +1005,7 @@ def run_calibration(project: Callable[[np.ndarray], None],
         return np.array(grab())
 
     # 1. centre-out, one axis at a time: the dimmest exposures come first.
-    verdict = ""
+    verdict, scale = "", None
     if probe:
         steps = centre_out_probe(project, grab, (w, h),
                                  min_modulation=min_modulation, log=log)
@@ -738,6 +1014,11 @@ def run_calibration(project: Callable[[np.ndarray], None],
         if not any(s.lit_px for s in steps):
             raise CalibrationError(
                 "the centre-out probe saw nothing: " + verdict)
+        # The probe measured px/mirror, so the Gray code can be sized to the
+        # optics instead of to the panel. This is the difference between a
+        # sweep that decodes and one that returns 0.0 % (see gray_planes).
+        ks = [k for k in (axis_scale(steps, 0), axis_scale(steps, 1)) if k]
+        scale = min(ks) if ks else None
 
     # 2. one complementary pair: the whole field extent, and the corner marks
     #    that a symmetric bar cannot give — they are what catches a mirror flip.
@@ -749,15 +1030,35 @@ def run_calibration(project: Callable[[np.ndarray], None],
     frac = float(lit.mean())
     box = bounding_box(lit)
     log(f"[dmd-calib] {100 * frac:.1f}% of the frame is modulated, bbox {box}")
+    # The probe already predicted how much of the frame the field covers. When
+    # the two disagree badly the checkerboard's "field" is scattered noise, not
+    # a field — and it decodes to nothing. Say so here, not 40 exposures later.
+    if scale is not None:
+        want = min(1.0, (scale * w) * (scale * h) / float(np.prod(cam_shape)))
+        if want > 0.5 and frac < 0.5 * want:
+            log(f"[dmd-calib] WARNING: the probe put the field at ~{100*want:.0f}% "
+                f"of the frame but only {100*frac:.1f}% modulates. Scattered "
+                f"modulation over a full-frame bbox is noise, and 20 planes of "
+                f"it intersect to nothing — expect the decode to fail.")
     if frac < 0.01:
         raise CalibrationError(
             "the projector does not modulate the camera at all — check that "
             "the DMD is displaying, the illumination is on, the camera is "
             "exposing, and that the two fields overlap")
 
-    # 3. Gray sweep
-    planes, nbx, nby = gray_planes(w, h)
-    log(f"[dmd-calib] {2 * len(planes)} exposures ({nbx} x-bits, {nby} y-bits)")
+    # 3. Gray sweep, coded no finer than the optics were MEASURED to resolve.
+    if gray_step:
+        gstep = int(gray_step)
+    else:
+        # From the FINEST candidate upward, not from a predicted one: the
+        # measurement is cheap and it finds the best code the optics support,
+        # where a rule of thumb would only ever confirm itself.
+        gstep = resolve_gray_step(project, grab, (w, h), field=frac,
+                                  min_modulation=min_modulation, log=log)
+    planes, nbx, nby = gray_planes(w, h, step=gstep)
+    log(f"[dmd-calib] {2 * len(planes)} exposures ({nbx} x-bits, {nby} y-bits, "
+        f"{gstep} mirror{'' if gstep == 1 else 's'} per code"
+        + (f" = {gstep * scale:.1f} camera px)" if scale else ")"))
     on, off = [], []
     for i, p in enumerate(planes):
         on.append(shot(p))
@@ -765,12 +1066,25 @@ def run_calibration(project: Callable[[np.ndarray], None],
     dx, dy, valid = decode(on, off, nbx, nby, min_modulation=min_modulation)
     log(f"[dmd-calib] {100 * valid.mean():.1f}% of pixels decoded")
 
+    # Codes → mirrors. The centre of the code's cell, not its edge.
+    if gstep > 1:
+        dx = dx * gstep + (gstep - 1) / 2.0
+        dy = dy * gstep + (gstep - 1) / 2.0
+
     cam, dmd = correspondences(dx, dy, valid, step=step)
     if len(cam) < 20:
+        # Report WHICH plane killed it before raising. The exposures are already
+        # paid for, and "check focus and exposure" sent a real session looking
+        # at the wrong thing after the probe had just succeeded.
+        cov = plane_coverage(on, off, min_modulation=min_modulation)
+        log("[dmd-calib] plane   this plane   still valid after it")
+        for i, (t, v) in enumerate(cov):
+            log(f"[dmd-calib]  {i:>3}      {100 * t:6.1f}%        {100 * v:6.1f}%")
+        why = _decode_diagnosis(cov, nbx, gstep, scale)
         raise CalibrationError(
             f"only {len(cam)} usable correspondences — too few to register. "
-            f"Check focus and exposure: every plane must modulate a pixel for "
-            f"it to count.")
+            f"{why}. (Every plane must modulate a pixel for it to count, so "
+            f"one unresolved plane costs the whole frame.)")
 
     M, rms, keep = fit_transform(cam, dmd, model=model)
     log(f"[dmd-calib] {model}: rms {rms:.3f} px over {int(keep.sum())} inliers")
