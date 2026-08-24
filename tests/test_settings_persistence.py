@@ -27,10 +27,12 @@ EDITS = [
      lambda p: p._spn_exposure.value(),        7321.0),
     ("voltage_cam", "binning",   lambda p: p._cmb_binning.setCurrentIndex(1),
      lambda p: p.get_config().binning,          2),
-    ("pupil_cam",   "exposure",  lambda p: p._spn_exp.setValue(4321.0),
-     lambda p: p._spn_exp.value(),              4321.0),
-    ("pupil_cam",   "region R",  lambda p: p._spn_lr.setValue(118.0),
-     lambda p: p.settings.limit_r,              118.0),
+    ("pupil_cam",   "threshold", lambda p: p._spn_thr.setValue(77),
+     lambda p: p._spn_thr.value(),              77),
+    ("pupil_cam",   "fit shape", lambda p: p._cmb_fit.setCurrentText("ellipse"),
+     lambda p: p._cmb_fit.currentText(),        "ellipse"),
+    ("pupil_cam",   "rays",      lambda p: p._spn_rays.setValue(96),
+     lambda p: p._spn_rays.value(),             96),
     ("wheel",       "V/rev",     lambda p: p._spn_vpr.setValue(3.210),
      lambda p: p.settings.volts_per_rev,        3.210),
     ("wheel",       "diameter",  lambda p: p._spn_dia.setValue(123.0),
@@ -145,9 +147,9 @@ def main() -> int:
         return next(b for b in flat if getattr(b, "_base_title", "") == title)
 
     p = panels["pupil_cam"]
-    box = find("Eye region")
+    box = find("Search limit")
     box.setChecked(False); box.setChecked(True); box.setChecked(False)
-    r.check(box.title().count(W.SHUT) == 1 and "Eye region" in box.title(),
+    r.check(box.title().count(W.SHUT) == 1 and "Search limit" in box.title(),
             f"control: toggling three times leaves one arrow ({box.title()!r})")
     box.setChecked(True)            # back open, so the height below is the
     pump(app, 0.05)                 # expanded one
@@ -172,6 +174,13 @@ def main() -> int:
             "…and unfolding does not wrongly re-enable it")
     r.check(all(c.isVisibleTo(box) for c in (p._spn_lx, p._spn_ly, p._spn_lr)),
             "…while the rest of the box comes back")
+
+    # The pupil tab's Advanced group folds itself and renames its own title, so
+    # it is skipped — taking its tick over would fight it.
+    adv = next(b for b in flat
+               if getattr(b, "_base_title", "").startswith("Advanced tracking"))
+    r.check(not adv.isChecked(),
+            "the panel's own collapsible group is left as the panel set it")
 
     box.setChecked(False)       # left folded, read back after the restart below
     pump(app, 0.05)
@@ -267,7 +276,7 @@ def main() -> int:
         return next(b for b in flat2
                     if getattr(b, "_base_title", "") == title)
 
-    r.check(not find2("Eye region").isChecked(),
+    r.check(not find2("Search limit").isChecked(),
             "a folded settings box comes back folded")
     r.check(find2("Camera").isChecked(),
             "control: a box that was left open comes back open")

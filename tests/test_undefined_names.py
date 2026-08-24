@@ -28,8 +28,7 @@ RESOLVES = set(dir(builtins)) | {
     "__builtins__", "__debug__", "__path__", "__annotations__", "__module__",
     "__qualname__", "__class__", "__dict__", "__conditional_annotations__",
 }
-# archive/ is removed-but-kept code; it is not held to live standards.
-SKIP_DIRS = {".venv", "__pycache__", ".git", "archive"}
+SKIP_DIRS = {".venv", "__pycache__", ".git"}
 
 
 def _module_bindings(top: symtable.SymbolTable) -> set[str]:
@@ -115,7 +114,7 @@ def check_package(r: Report) -> None:
     r.check(len(files) > 60, f"the scan reaches the whole package ({len(files)} files)")
     for must in ("main.py", "acq/devices.py", "adapters/base.py",
                  "devices/dmd/control.py", "devices/stage/settings.py",
-                 "devices/pupil_cam/panel.py", "closed_loop/settings.py"):
+                 "devices/pupil_cam/tracking.py", "closed_loop/settings.py"):
         r.check(APP_DIR / must in files, f"{must} is in the scan")
 
     bad, starred, unparsed = [], [], []
@@ -226,7 +225,7 @@ def check_injection(r: Report) -> None:
     """Break real files the way a split breaks them: drop one used import."""
     for rel in ("main.py", "dialogs.py", "adapters/base.py",
                 "devices/dmd/control.py", "devices/stage/panel.py",
-                "devices/pupil_cam/acquisition.py", "closed_loop/worker.py"):
+                "devices/pupil_cam/tracking.py", "closed_loop/worker.py"):
         if not (APP_DIR / rel).is_file():
             # Report, don't crash: a moved file must fail this test loudly, not
             # take the run down with a traceback.

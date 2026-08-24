@@ -79,18 +79,6 @@ acq/                    acquisition core — no Qt widgets, no vendor SDKs
   sync.py               SyncController: shared clock + tick + trigger bus
   worker.py             PullWorker: the QThread guard every device worker uses
   writer.py             Writer / HDF5Writer: one file per session
-archive/                removed-but-kept code; nothing here is imported
-  pupil_tracking/       the pupil tracker, retired 2026-08-24 (PLAN §7 (ai))
-    README.md           why it went, what was kept, how to restore it
-    _mark_truth.py      script: mark the pupil edge by hand, then score against it
-    _test_tracking.py   script: tracker vs synthetic ground truth
-    fits.py             circle/ellipse fitting
-    rays.py             radial edge search
-    track_worker.py     the tracker's own thread
-    tracking.py         the algorithm (IMAQ Find Circular Edge port)
-    tests/
-      test_pupil_fits.py
-      test_pupil_tracking_thread.py
 adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
                         display tick, recording sink, metadata
   __init__.py           the registry (ADAPTERS) and the lifecycle table
@@ -122,12 +110,19 @@ devices/                one package per instrument
   puffer/
     control.py
   pupil_cam/
+    _mark_truth.py      script: mark the pupil edge by hand, then score the
+                        tracker against it — the only real ground truth there is
+    _test_tracking.py   script: tracker vs synthetic ground truth, no hardware
     acquisition.py      Basler worker + mock twin
     avi.py              uncompressed-AVI reader (no Qt); there is no decoder here
     control.py          eye-tracking LED
+    fits.py             circle/ellipse fitting
     panel.py
-    settings.py         camera, eye region, clip path — no tracking knobs
-    video.py            third frame source: replay recorded footage
+    rays.py             radial edge search
+    settings.py         camera, eye region, and the tracking knobs
+    track_worker.py     tracking gets its own thread — it is unbounded work
+    tracking.py         the pupil algorithm (IMAQ Find Circular Edge port)
+    video.py            third frame source: replay footage to tune the tracker
   stage/
     acquisition.py      read-only position poller; never issues motion
     control.py          StageController + mock; microns, soft-limit clamped
@@ -176,7 +171,9 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_encoder_derive.py
   test_encoder_timing.py
   test_module_subsets.py
-  test_pupil_limit.py         the eye region: panel, preview, persistence
+  test_pupil_fits.py
+  test_pupil_limit.py         the search-limit circle: seed, fit, panel, preview
+  test_pupil_tracking_thread.py
   test_pupil_video.py
   test_readout_fps.py
   test_recording_losses.py
@@ -197,6 +194,7 @@ style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here
 PLAN.md                 the living plan — read first
+PUPIL_TRACKING.md       branch-only: the colleague's guide to this branch
 README.md               the authoritative description
 requirements.txt
 .gitignore

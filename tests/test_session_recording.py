@@ -77,10 +77,7 @@ def main() -> int:
         pump(app, 0.05)
     r.check(len(mod["voltage_cam"]._y) > 0, "voltage-cam ΔF/F reached the plot")
     r.check(len(mod["wheel"]._y) > 0, "wheel samples reached the plot")
-    # The pupil module has no trace since the tracker was archived; what it
-    # must still do is show frames.
-    r.check(mod["pupil_cam"]._img.image is not None,
-            "pupil frames reached the preview")
+    r.check(len(mod["pupil_cam"]._y) > 0, "pupil samples reached the plot")
 
     # ── Puffer: the panel must actually drive the controller ─────────────────
     puffer = mod["puffer"].controller
