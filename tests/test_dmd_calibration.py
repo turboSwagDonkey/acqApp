@@ -24,7 +24,7 @@ from _harness import Report
 from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
-                                            fit_axis_line, mask_from_roi,
+                                            deshear, fit_axes, mask_from_roi,
                                             offset_stripe, stripe_sweep)
 
 DW, DH = 256, 192          # a small DMD
@@ -174,9 +174,40 @@ def main() -> int:
         r.check("usable stripe" in str(e),
                 f"a dark rig raises, naming the axis and the count "
                 f"({str(e)[:46]}…)")
-    r.check(fit_axis_line([(0.0, 1.0, 2.0), (1.0, 2.0, 3.0)]) is None,
-            "two points are refused — a line through two points has no residual "
-            "and so cannot be judged")
+    r.check(fit_axes({0: [(0.0, 1.0, 2.0)], 1: [(0.0, 1.0, 2.0)]}) is None,
+            "one stripe per axis is refused — a fit with no residual cannot be "
+            "judged")
+
+    # Shear is DISCARDED by default, and the discarded amount is recorded.
+    r.check(c.model == "affine-noshear" and "shear" in c.notes,
+            f"shear is off by default and the measured value is kept in the "
+            f"notes ({c.model})")
+    A = c.dmd_to_cam[:2, :2]
+    gap = abs(np.degrees(np.arctan2(A[1, 1], A[0, 1]))
+              - np.degrees(np.arctan2(A[1, 0], A[0, 0])))
+    gap = min(gap, 360 - gap)
+    r.check(abs(gap - 90.0) < 0.01,
+            f"…so the two axes come out exactly perpendicular ({gap:.3f}deg)")
+    withshear = run(make_camera(M, rng), allow_shear=True)
+    r.check(withshear.model == "affine",
+            "…and allow_shear=True keeps it, for a relay where it is real")
+    # deshear must preserve both scales and the handedness, not just square up.
+    vx = np.array([3.0, 1.0])
+    vy = np.array([-0.6, 2.0])
+    ox, oy = deshear(vx, vy)
+    r.check(abs(np.hypot(*ox) - np.hypot(*vx)) < 1e-9
+            and abs(np.hypot(*oy) - np.hypot(*vy)) < 1e-9,
+            "deshear keeps each axis's measured scale")
+    r.check(abs(float(ox @ oy)) < 1e-9,
+            "…makes them perpendicular")
+    r.check(np.sign(vx[0] * vy[1] - vx[1] * vy[0])
+            == np.sign(ox[0] * oy[1] - ox[1] * oy[0]),
+            "…and preserves handedness, so it cannot mirror the registration")
+
+    # The raw stripes travel with the result, so a fit can be redone offline.
+    r.check(len(c.stripes) == c.n_points and len(c.stripes[0]) == 4,
+            f"the {len(c.stripes)} raw stripe measurements are stored "
+            f"[axis, offset, cam_x, cam_y]")
 
     # Stripes that run off the frame are dropped, not fitted. This is what the
     # rig does: its DMD field is ~1.9x the camera's area.
@@ -202,8 +233,10 @@ def main() -> int:
     c.save(p)
     back = DmdCalibration.load(p)
     r.check(np.allclose(back.cam_to_dmd, c.cam_to_dmd)
-            and back.dmd_size == c.dmd_size and back.rms_px == c.rms_px,
-            "a calibration survives save/load with its provenance")
+            and back.dmd_size == c.dmd_size and back.rms_px == c.rms_px
+            and back.stripes == c.stripes,
+            "a calibration survives save/load with its provenance and its "
+            "raw stripes")
 
     return r.finish()
 

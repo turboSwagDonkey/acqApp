@@ -138,20 +138,65 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
     return out
 
 
-def fit_axis_line(points: list[tuple]) -> tuple | None:
-    """[(offset, cam_x, cam_y)] → (origin, px-per-mirror vector, rms, n).
+def fit_axes(seen: dict) -> tuple | None:
+    """All stripes at once → (centre, vx, vy, rms, n).
 
-    The vector carries both the scale (its length) and which way the axis runs
-    (its sign) — the reason signed offsets beat symmetric patterns.
+    **One fit with ONE shared centre**, not a line per axis. Both axes pass
+    through the panel centre at offset 0, so fitting them separately gives two
+    intercepts that disagree — on the rig they disagreed by 67 px, because the
+    DMD overfills the camera and the surviving stripes sit to one side, making
+    each intercept an extrapolation. That error then reappears as shear, which
+    is the parameter loose enough to absorb it.
+
+    Separable by coordinate: camera x depends on (cx, vx.x, vy.x) and camera y
+    on (cy, vx.y, vy.y), so it is two 3-parameter least squares, not one 6.
     """
-    if len(points) < 3:
+    pts = [(axis, d, cx, cy) for axis in (0, 1) for d, cx, cy in seen[axis]]
+    if len(seen[0]) < 2 or len(seen[1]) < 2 or len(pts) < 5:
         return None
-    d = np.array([p[0] for p in points], float)
-    P = np.array([[p[1], p[2]] for p in points], float)
-    A = np.column_stack([d, np.ones(len(d))])
-    sol, *_ = np.linalg.lstsq(A, P, rcond=None)
-    rms = float(np.sqrt(np.mean(((P - A @ sol) ** 2).sum(axis=1))))
-    return sol[1], sol[0], rms, len(points)
+    A = np.array([[1.0, d if axis == 0 else 0.0, d if axis == 1 else 0.0]
+                  for axis, d, _cx, _cy in pts])
+    bx = np.array([cx for _a, _d, cx, _cy in pts])
+    by = np.array([cy for _a, _d, _cx, cy in pts])
+    px, *_ = np.linalg.lstsq(A, bx, rcond=None)
+    py, *_ = np.linalg.lstsq(A, by, rcond=None)
+    centre = np.array([px[0], py[0]])
+    vx = np.array([px[1], py[1]])
+    vy = np.array([px[2], py[2]])
+    res = np.column_stack([bx - A @ px, by - A @ py])
+    rms = float(np.sqrt(np.mean((res ** 2).sum(axis=1))))
+    return centre, vx, vy, rms, len(pts)
+
+
+def deshear(vx: np.ndarray, vy: np.ndarray,
+            weights: tuple = (1.0, 1.0)) -> tuple:
+    """Force the two axes perpendicular, keeping both scales and the handedness.
+
+    A relay is a rotation plus a magnification per axis; shear only appears with
+    tilt, and an affine cannot represent tilt properly anyway (that is keystone,
+    a perspective term). What shear CAN do is soak up measurement error, so it
+    is off unless asked for. The measured value is logged either way.
+
+    Each axis gives its own estimate of the rotation and they are averaged
+    **by evidence**, not equally: a slope's precision goes as the lever arm
+    `sqrt(sum(d^2))`, and on this rig the DMD overfills the camera so one axis
+    routinely keeps far fewer stripes than the other. Splitting the difference
+    evenly would drag the well-measured axis towards the badly-measured one.
+    """
+    kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
+    turn = 1.0 if float(vx[0] * vy[1] - vx[1] * vy[0]) >= 0 else -1.0
+    ax = float(np.arctan2(vx[1], vx[0]))
+    ay = float(np.arctan2(vy[1], vy[0])) - turn * np.pi / 2.0
+    wx, wy = float(weights[0]), float(weights[1])
+    if wx <= 0 and wy <= 0:
+        wx = wy = 1.0
+    # Weighted circular mean: the two estimates straddle the wrap at ±pi, so
+    # they cannot simply be averaged as numbers.
+    th = float(np.arctan2(wx * np.sin(ax) + wy * np.sin(ay),
+                          wx * np.cos(ax) + wy * np.cos(ay)))
+    return (kx * np.array([np.cos(th), np.sin(th)]),
+            ky * np.array([np.cos(th + turn * np.pi / 2.0),
+                           np.sin(th + turn * np.pi / 2.0)]))
 
 
 # ── the transform ─────────────────────────────────────────────────────────────
@@ -168,6 +213,7 @@ def calibrate(project: Callable[[np.ndarray], None],
               grab: Callable[[], np.ndarray],
               dmd_size: tuple[int, int], *,
               offsets=STRIPE_OFFSETS,
+              allow_shear: bool = False,
               min_modulation: float = MIN_MODULATION,
               log: Callable[[str], None] = print) -> "DmdCalibration":
     """Project the stripes, fit the affine, return the registration.
@@ -182,27 +228,34 @@ def calibrate(project: Callable[[np.ndarray], None],
     seen = stripe_sweep(project, grab, (w, h), offsets=offsets,
                         min_modulation=min_modulation, log=log)
 
-    fits = {}
-    for axis in (0, 1):
-        f = fit_axis_line(seen[axis])
-        if f is None:
-            raise CalibrationError(
-                f"only {len(seen[axis])} usable stripe(s) on the "
-                f"{'xy'[axis]} axis — need 3. The rest were off the frame or "
-                f"too dim, so the DMD field and the camera's view barely "
-                f"overlap on that axis.")
-        fits[axis] = f
-        _o, vec, rms, n = f
-        log(f"[dmd-calib] {'xy'[axis]}: {np.hypot(*vec):.3f} px/mirror along "
-            f"({vec[0]:+.3f}, {vec[1]:+.3f}), residual {rms:.2f} px over "
-            f"{n} stripes")
+    fit = fit_axes(seen)
+    if fit is None:
+        raise CalibrationError(
+            f"too few usable stripes to fit — {len(seen[0])} on x and "
+            f"{len(seen[1])} on y, and each axis needs at least 2. The rest "
+            f"were off the frame or too dim, so the DMD field and the camera's "
+            f"view barely overlap.")
+    centre, vx, vy, rms, n = fit
 
-    ox, vx, rms_x, n_x = fits[0]
-    oy, vy, rms_y, n_y = fits[1]
-    # Both lines pass through the panel centre at offset 0, so their origins
-    # are two measurements of one point. Their gap is a real error bar.
-    gap = float(np.hypot(*(ox - oy)))
-    centre = (ox + oy) / 2.0
+    kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
+    ax = float(np.degrees(np.arctan2(vx[1], vx[0])))
+    ay = float(np.degrees(np.arctan2(vy[1], vy[0])))
+    gap = abs(ay - ax)
+    gap = min(gap, 360.0 - gap)
+    shear = gap - 90.0
+    log(f"[dmd-calib] x {kx:.3f} px/mirror at {ax:+.2f}deg, "
+        f"y {ky:.3f} at {ay:+.2f}deg")
+    log(f"[dmd-calib] axes {gap:.2f}deg apart -> shear {shear:+.2f}deg"
+        + ("  (kept)" if allow_shear else "  (DISCARDED — see allow_shear)"))
+    if not allow_shear:
+        # Lever arm per axis: how well each one determines a direction.
+        lever = tuple(float(np.sqrt(sum(d * d for d, _x, _y in seen[a])))
+                      for a in (0, 1))
+        log(f"[dmd-calib] rotation weighted {lever[0]:.0f} : {lever[1]:.0f} "
+            f"(x : y lever arm)")
+        vx, vy = deshear(vx, vy, lever)
+    log(f"[dmd-calib] residual {rms:.2f} px over {n} stripes; panel centre "
+        f"({centre[0]:.0f}, {centre[1]:.0f})")
 
     cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
     A = np.eye(3)
@@ -213,15 +266,21 @@ def calibrate(project: Callable[[np.ndarray], None],
             "the two measured axes came out parallel, so the registration "
             "cannot be inverted — one of them was not really measured")
 
-    rms = float(np.sqrt((rms_x ** 2 + rms_y ** 2) / 2.0))
     shape = np.asarray(grab()).shape
     c = DmdCalibration(
         cam_to_dmd=np.linalg.inv(A), dmd_size=(w, h),
-        cam_size=(int(shape[1]), int(shape[0])), rms_px=rms,
-        n_points=n_x + n_y,
+        cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
+        model="affine" if allow_shear else "affine-noshear",
+        # The raw measurements travel with the result, so a fit can be redone
+        # offline — re-projecting onto a live animal to re-test a fit is not an
+        # acceptable debugging loop.
+        stripes=[[axis, d, px, py] for axis in (0, 1)
+                 for d, px, py in seen[axis]],
         created=datetime.now().isoformat(timespec="seconds"),
-        notes=f"stripes only; panel centre ({centre[0]:.0f}, {centre[1]:.0f}), "
-              f"the two axes' estimates of it {gap:.1f} px apart")
+        notes=f"{kx:.3f} x {ky:.3f} px/mirror, DMD-x {ax:+.2f}deg, measured "
+              f"shear {shear:+.2f}deg "
+              f"({'kept' if allow_shear else 'discarded'}), panel centre "
+              f"({centre[0]:.0f}, {centre[1]:.0f})")
     log(f"[dmd-calib] {c.describe()}")
     log(f"[dmd-calib] the camera sees mirrors {c.visible_mirrors()}")
     if rms > 10.0:
@@ -248,8 +307,13 @@ class DmdCalibration:
     n_points:   int = 0
     created:    str = ""
     notes:      str = ""
+    # The raw stripe measurements: [axis, offset_mirrors, cam_x, cam_y]. Kept
+    # so a fit can be reconsidered without going back to the rig.
+    stripes:    list = None
 
     def __post_init__(self) -> None:
+        if self.stripes is None:
+            self.stripes = []
         # Keyed by camera shape. Safe because a calibration is a measurement:
         # a new registration is a new object, never an edit to this one.
         self._mask_cache: dict[tuple[int, int], np.ndarray] = {}
@@ -330,7 +394,7 @@ class DmdCalibration:
                 "dmd_size": list(self.dmd_size), "cam_size": list(self.cam_size),
                 "model": self.model, "rms_px": float(self.rms_px),
                 "n_points": int(self.n_points), "created": self.created,
-                "notes": self.notes}
+                "notes": self.notes, "stripes": list(self.stripes or [])}
 
     @classmethod
     def from_dict(cls, d: dict) -> "DmdCalibration":
@@ -339,7 +403,8 @@ class DmdCalibration:
                    model=d.get("model", "affine"),
                    rms_px=float(d.get("rms_px", 0.0)),
                    n_points=int(d.get("n_points", 0)),
-                   created=d.get("created", ""), notes=d.get("notes", ""))
+                   created=d.get("created", ""), notes=d.get("notes", ""),
+                   stripes=d.get("stripes") or [])
 
     def save(self, path: str | Path) -> Path:
         p = Path(path)
