@@ -99,11 +99,15 @@ class CalibrationDialog(QDialog):
     """Ask, then run the stripe sweep, then offer to save what it measured."""
 
     def __init__(self, projector, grab_source, *, parent=None,
-                 real: bool = True, on_saved=None):
+                 real: bool = True, on_saved=None, set_live=None):
         super().__init__(parent)
         self._proj = projector
         self._source = grab_source
         self._on_saved = on_saved
+        # Starts the camera itself rather than telling the operator to go and
+        # press Live view in another part of the window. Restored afterwards to
+        # whatever it was, so this leaves the rig as it found it.
+        self._set_live = set_live
         self._calib: DmdCalibration | None = None
         self._cancel = False
         self._running = False
@@ -126,8 +130,10 @@ class CalibrationDialog(QDialog):
             f"<b>{n} exposures.</b> Nothing narrower than 5 % of the panel: "
             f"this relay scatters enough to erase fine patterns, so coarse "
             f"ones are all that survive.<br><br>"
-            f"First: the voltage camera must be running, and "
-            f"<b>dmdGUI_project must be closed</b> — one process owns the USB.")
+            f"The camera is started for the run and put back afterwards, and "
+            f"the DMD does not need Display pressed — this drives both. "
+            f"<b>dmdGUI_project must be closed</b>, though: one process owns "
+            f"the USB.")
         head.setWordWrap(True)
         root.addWidget(head)
 
@@ -205,7 +211,17 @@ class CalibrationDialog(QDialog):
         self._bar.setValue(0)
         w, h = self._proj.resolution
 
-        grabber = FreshGrabber(self._source, pump=self._pump)
+        # Start the camera if it is not already running; remember whether we
+        # did, so the finally block can put it back.
+        was_live = True
+        if self._set_live is not None:
+            was_live = bool(self._set_live(True))
+            if not was_live:
+                self.log("[sweep] started the live view for this run")
+
+        # A longer timeout on the first grab: a camera that has just been told
+        # to start has to build its worker and deliver a frame.
+        grabber = FreshGrabber(self._source, timeout_s=12.0, pump=self._pump)
 
         def project(frame) -> None:
             self._proj.project_frame(frame)
@@ -232,6 +248,9 @@ class CalibrationDialog(QDialog):
                 self._proj.stop()
             except Exception as e:                  # noqa: BLE001
                 self.log(f"[sweep] could not stop the projector: {e}")
+            if self._set_live is not None and not was_live:
+                self._set_live(False)
+                self.log("[sweep] live view stopped again")
             self.log(f"[sweep] {grabber.n_grabs} exposures in "
                      f"{time.monotonic() - t0:.1f} s "
                      f"({1000 * grabber.waited_s / max(1, grabber.n_grabs):.0f} "

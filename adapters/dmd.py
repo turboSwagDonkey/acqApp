@@ -57,7 +57,13 @@ class DmdModule(ModuleAdapter):
 
         This is the app's only actuating path that is not a Display. The dialog
         states what it will emit and does nothing until a button is pressed
-        (§2); the check below is only that the sweep could see anything at all.
+        (§2).
+
+        It needs no setup from the operator: `set_live` starts the camera and
+        puts it back, and `project_frame` drives the DMD directly, so neither
+        Live view nor Display has to be pressed first. Requiring them was
+        friction with no safety value — the actuation decision is the dialog's
+        button, not whether a preview happened to be running.
         """
         from PyQt6.QtWidgets import QMessageBox
 
@@ -65,17 +71,18 @@ class DmdModule(ModuleAdapter):
 
         if self.controller is None:
             return
-        if self.win.latest_frame("voltage_cam") is None:
+        if "voltage_cam" not in self.win.module_keys():
             QMessageBox.information(
-                self.panel, "No camera frame",
+                self.panel, "No voltage camera",
                 "The sweep images each pattern with the voltage camera, and "
-                "none is arriving.\n\nLoad the voltage camera and press Free "
-                "run (or Record), then try again.")
+                "that module is not loaded.\n\n"
+                "Restart and tick Voltage camera in the startup picker.")
             return
         dlg = CalibrationDialog(
             self.controller, lambda: self.win.latest_frame("voltage_cam"),
             parent=self.panel, real=self._real,
-            on_saved=self._adopt_calibration)
+            on_saved=self._adopt_calibration,
+            set_live=self.win.set_live)
         dlg.exec()
 
     def _adopt_calibration(self, path: str) -> None:

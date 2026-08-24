@@ -26,6 +26,45 @@ DEFAULT_W, DEFAULT_H = 1024, 768
 FRAME_START = 0
 FRAME_STOP = -1
 
+# What the panel is asking the device to show.
+MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
+MODES = (MODE_ALL_ON, MODE_PATTERN, MODE_ROI)
+
+
+def roi_frame(settings, width: int, height: int):
+    """The ROI mask as a device-sized frame, or None with the reason printed.
+
+    Here rather than in the adapter because the controller is what owns "what
+    is currently loaded", and the mock has to answer `on_pixels` truthfully for
+    the same reason the real one does.
+    """
+    import numpy as _np
+    if not settings.rois:
+        print("[DMD] ROI mode: no ROIs drawn — nothing to project")
+        return None
+    if not settings.calib_path:
+        print("[DMD] ROI mode: no calibration loaded, so camera ROIs cannot be "
+              "turned into mirrors. Run Calibrate… first.")
+        return None
+    try:
+        from acqApp.devices.dmd.calibration import DmdCalibration
+        from acqApp.devices.dmd.roi import RoiSet
+        calib = DmdCalibration.load(settings.calib_path)
+        frame = RoiSet.from_list(list(settings.rois)).dmd_frame(calib)
+    except Exception as e:                        # noqa: BLE001
+        print(f"[DMD] ROI mode: could not build the mask ({type(e).__name__}: "
+              f"{e})")
+        return None
+    if frame.shape != (height, width):
+        print(f"[DMD] ROI mode: the calibration is for a "
+              f"{frame.shape[1]}x{frame.shape[0]} panel, this device is "
+              f"{width}x{height} — re-run the calibration")
+        return None
+    if not int((frame > 0).sum()):
+        print("[DMD] ROI mode: the ROIs map to no mirrors at all — they may be "
+              "outside the DMD's reachable field")
+    return _np.asarray(frame)
+
 
 @dataclass
 class DmdSettings:
@@ -45,6 +84,9 @@ class DmdSettings:
     offset_x:      float       = 0.0    # device px from the panel centre
     offset_y:      float       = 0.0
     invert:        bool        = False  # swap on/off mirrors
+    # What gets projected. `all_on` is kept in step with it because the session
+    # metadata and the geometry checks below have always read that field.
+    display_mode:  str         = MODE_PATTERN   # pattern | all_on | roi
     all_on:        bool        = False  # turn all mirrors on
     fit:           bool        = False  # scale to fit and centre
     lib_dir:       str         = ""     # ALP API location
@@ -73,7 +115,7 @@ class DmdController(QObject):
         self._dev = alp.AlpDevice(lib_dir)
         self._dev.open()
         print(f"[DMD] ALP {self._dev.width}x{self._dev.height} (API from {source})")
-        if self._s.pattern_path or self._s.all_on:
+        if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
             self.load_pattern(self._s.pattern_path)
 
     @property
@@ -100,19 +142,30 @@ class DmdController(QObject):
     def apply_settings(self, settings: DmdSettings) -> None:
         geometry_changed = (
             (settings.scale_pct, settings.rotation_deg, settings.offset_x,
-             settings.offset_y, settings.invert, settings.fit, settings.all_on)
+             settings.offset_y, settings.invert, settings.fit,
+             settings.display_mode, settings.rois, settings.calib_path)
             != (self._s.scale_pct, self._s.rotation_deg, self._s.offset_x,
-                self._s.offset_y, self._s.invert, self._s.fit, self._s.all_on))
+                self._s.offset_y, self._s.invert, self._s.fit,
+                self._s.display_mode, self._s.rois, self._s.calib_path))
         self._s = settings
-        if geometry_changed and (settings.pattern_path or settings.all_on):
+        # ROI and all-on modes need no file, so the old "only if there is a
+        # pattern path" guard would have left them stale.
+        if geometry_changed and (settings.pattern_path
+                                 or settings.display_mode != MODE_PATTERN):
             self.load_pattern(settings.pattern_path)
 
     def load_pattern(self, path: Path | None = None) -> None:
         w, h = self.resolution
+        mode = self._s.display_mode
 
-        if self._s.all_on:
+        if mode == MODE_ALL_ON:
             self._pattern = np.full((h, w), 255, dtype=np.uint8)
             print(f"[DMD] all mirrors ON -> {w}x{h}, {self.on_pixels} mirrors on")
+            return
+        if mode == MODE_ROI:
+            self._pattern = roi_frame(self._s, w, h)
+            if self._pattern is not None:
+                print(f"[DMD] ROIs -> {w}x{h}, {self.on_pixels} mirrors on")
             return
 
         p = Path(path or self._s.pattern_path or "")
@@ -221,7 +274,8 @@ class MockDmdController(QObject):
         self._sink = sink
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        reload = ((settings.pattern_path or settings.all_on) and settings != self._s)
+        reload = ((settings.pattern_path or settings.display_mode != MODE_PATTERN)
+                  and settings != self._s)
         self._s = settings
         if reload:
             self.load_pattern(settings.pattern_path)
@@ -233,10 +287,13 @@ class MockDmdController(QObject):
         self.frame_displayed.emit(idx)
 
     def load_pattern(self, path: Path | None = None) -> None:
-        if self._s.all_on:
+        if self._s.display_mode == MODE_ALL_ON:
             self._pattern = np.full((DEFAULT_H, DEFAULT_W), 255, dtype=np.uint8)
             print(f"[DMD mock] all mirrors ON -> {DEFAULT_W}x{DEFAULT_H}, "
                   f"{self.on_pixels} mirrors on")
+            return
+        if self._s.display_mode == MODE_ROI:
+            self._pattern = roi_frame(self._s, DEFAULT_W, DEFAULT_H)
             return
 
         p = Path(path or self._s.pattern_path or "")

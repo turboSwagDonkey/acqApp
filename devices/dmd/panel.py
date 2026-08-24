@@ -16,14 +16,15 @@ from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen, QPixmap,
                          QShortcut)
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-    QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    QRadioButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
 from acqApp.devices.dmd import alp
-from acqApp.devices.dmd.control import DEFAULT_H, DEFAULT_W, DmdSettings
+from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
+                                        MODE_PATTERN, MODE_ROI, DmdSettings)
 
 
 class SettingsPanel(QWidget):
@@ -90,11 +91,31 @@ class SettingsPanel(QWidget):
         pat_lay.addWidget(self._btn_browse)
         lay.addRow("Pattern:", pat_w)
 
-        # ── All ON toggle ────────────────────────────────────────────────────
-        self._chk_all_on = QCheckBox("All ON (turn all mirrors on)")
-        self._chk_all_on.setChecked(self._s.all_on)
-        self._chk_all_on.toggled.connect(self._on_all_on_toggled)
-        lay.addRow(self._chk_all_on)
+        # ── what to display ──────────────────────────────────────────────────
+        # Three exclusive sources, shown together rather than hidden in a combo:
+        # which one is live decides what the Display button emits, and that is
+        # worth being able to read at a glance on a rig.
+        mode_w = QWidget()
+        mode_lay = QHBoxLayout(mode_w)
+        mode_lay.setContentsMargins(0, 0, 0, 0)
+        self._modes = QButtonGroup(self)
+        self._rb = {}
+        for key, label, tip in (
+                (MODE_ALL_ON, "All ON", "Every mirror on — the full field."),
+                (MODE_PATTERN, "Image", "The pattern file, placed by the "
+                                        "alignment below."),
+                (MODE_ROI, "ROIs", "Only the drawn ROIs, mapped through the "
+                                   "measured calibration.")):
+            rb = QRadioButton(label)
+            rb.setToolTip(tip)
+            self._modes.addButton(rb)
+            mode_lay.addWidget(rb)
+            self._rb[key] = rb
+        mode_lay.addStretch(1)
+        self._rb.get(self._s.display_mode, self._rb[MODE_PATTERN]).setChecked(True)
+        for rb in self._rb.values():
+            rb.toggled.connect(self._on_mode_changed)
+        lay.addRow("Display:", mode_w)
 
         # ── Live preview box ─────────────────────────────────────────────────
         self._preview = QLabel("No preview")
@@ -209,12 +230,12 @@ class SettingsPanel(QWidget):
         root.addWidget(self._build_rois())
         root.addStretch(1)
 
-        self._on_all_on_toggled(self._chk_all_on.isChecked())
+        self._on_mode_changed()
         self._update_preview()
 
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.valueChanged.connect(self._emit)
-        for c in (self._chk_fit, self._chk_invert, self._chk_all_on):
+        for c in (self._chk_fit, self._chk_invert):
             c.toggled.connect(self._emit)
         self._cmb_trig.currentTextChanged.connect(self._emit)
 
@@ -360,19 +381,24 @@ class SettingsPanel(QWidget):
         self._update_preview()
         self.settings_changed.emit(self.settings)
 
-    def _on_all_on_toggled(self, on: bool) -> None:
-        self._btn_browse.setEnabled(not on)
-        self._chk_fit.setEnabled(not on)
-        self._chk_invert.setEnabled(not on)
+    def _on_mode_changed(self, *_a) -> None:
+        """Only the image mode uses the pattern file and the alignment.
 
+        Greyed rather than hidden: an operator who set a 104 % scale wants to
+        see it is still there when they switch to ROIs and back.
+        """
+        pattern = self.mode == MODE_PATTERN
+        self._btn_browse.setEnabled(pattern)
+        self._chk_fit.setEnabled(pattern)
+        self._chk_invert.setEnabled(pattern)
         fit_active = self._chk_fit.isChecked()
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
-            w.setEnabled(not on and not fit_active)
-
+            w.setEnabled(pattern and not fit_active)
         self._update_preview()
+        self.settings_changed.emit(self.settings)
 
     def _on_fit_toggled(self, on: bool) -> None:
-        if self._chk_all_on.isChecked():
+        if self.mode != MODE_PATTERN:
             return
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.setEnabled(not on)
@@ -388,6 +414,20 @@ class SettingsPanel(QWidget):
             self.load_requested.emit(p)
             self._emit()
 
+    def _roi_preview(self, w: int, h: int):
+        """The ROI mask, memoised on what it depends on.
+
+        `_update_preview` runs on every resize event and every settings change,
+        and building this reloads the calibration JSON and rasterises ~786k
+        mirrors — tens of ms each, which a window drag would pay on every frame.
+        """
+        key = (self.mode, self._rois, self._calib_path, w, h)
+        if getattr(self, "_roi_cache_key", None) != key:
+            from acqApp.devices.dmd.control import roi_frame
+            self._roi_cache_key = key
+            self._roi_cache = roi_frame(self.settings, w, h)
+        return self._roi_cache
+
     def _update_preview(self) -> None:
         """Renders the pattern array with a padded thatched magenta border around DMD bounds."""
         pw = self._preview.width()
@@ -399,9 +439,24 @@ class SettingsPanel(QWidget):
         p = self._pattern_path
 
         # Determine frame buffer
-        if self._chk_all_on.isChecked():
+        mode = self.mode
+        if mode == MODE_ALL_ON:
             self._lbl_pattern.setText("All mirrors ON (Full Illumination)")
             frame = np.full((h, w), 255, dtype=np.uint8)
+        elif mode == MODE_ROI:
+            # The real mask needs the calibration and the ROI geometry, which
+            # `control.roi_frame` already assembles — reuse it rather than
+            # keeping a second, subtly different renderer in the panel.
+            n = len(self._rois)
+            frame = self._roi_preview(w, h)
+            if frame is None:
+                frame = np.zeros((h, w), dtype=np.uint8)
+                self._lbl_pattern.setText(
+                    f"{n} ROI(s) — need a calibration to project"
+                    if n else "No ROIs drawn yet")
+            else:
+                self._lbl_pattern.setText(
+                    f"{n} ROI(s) -> {int((frame > 0).sum())} mirrors")
         elif p is None:
             self._lbl_pattern.setText("No pattern loaded")
             frame = np.zeros((h, w), dtype=np.uint8)
@@ -468,6 +523,13 @@ class SettingsPanel(QWidget):
         self._preview.setPixmap(canvas)
 
     @property
+    def mode(self) -> str:
+        for key, rb in self._rb.items():
+            if rb.isChecked():
+                return key
+        return MODE_PATTERN
+
+    @property
     def settings(self) -> DmdSettings:
         return DmdSettings(
             pattern_path=self._pattern_path,
@@ -480,7 +542,8 @@ class SettingsPanel(QWidget):
             offset_x=self._spn_dx.value(),
             offset_y=self._spn_dy.value(),
             invert=self._chk_invert.isChecked(),
-            all_on=self._chk_all_on.isChecked(),
+            display_mode=self.mode,
+            all_on=self.mode == MODE_ALL_ON,
             fit=self._chk_fit.isChecked(),
             lib_dir=self._s.lib_dir,
             rois=self._rois,

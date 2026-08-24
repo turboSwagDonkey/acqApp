@@ -369,8 +369,15 @@ def check_roi_wiring(r) -> None:
     r.check(win.latest_frame("nope") is None, "an unloaded module gives None")
 
     # The panel round-trips what the editor produces.
-    dmd.panel.set_rois(({"kind": "rect", "name": "r1", "cx": 100.0, "cy": 80.0,
-                         "w": 40.0, "h": 30.0, "angle": 0.0, "enabled": True},))
+    # Keys exactly as RectRoi.to_dict() writes them: `roi_from_dict` passes
+    # them straight to the constructor, so cx/cy/angle would raise.
+    dmd.panel.set_rois(({"kind": "rect", "name": "r1", "enabled": True,
+                         "x": 100.0, "y": 80.0, "w": 40.0, "h": 30.0,
+                         "angle_deg": 0.0},))
+    from acqApp.devices.dmd.roi import RoiSet
+    r.check(len(RoiSet.from_list(list(dmd.panel.rois))) == 1,
+            "…and they round-trip through roi_from_dict, so the ROI display "
+            "mode can rebuild them")
     r.check(len(dmd.panel.settings.rois) == 1, "ROIs land in DmdSettings")
     md = dmd.metadata()
     r.check(md["dmd_n_rois"] == 1 and "r1" in md["dmd_rois"],

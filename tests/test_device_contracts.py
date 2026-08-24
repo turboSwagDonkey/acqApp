@@ -270,6 +270,7 @@ def main() -> int:
         def on_worker_error(self, m): ...
         def module_keys(self): return []
         def latest_frame(self, key): return None
+        def set_live(self, on): return False
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

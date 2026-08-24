@@ -285,6 +285,19 @@ class MainWindow(QMainWindow):
             out.extend(m.signal_sources())
         return out
 
+    def set_live(self, on: bool) -> bool:
+        """Turn the live view on/off for a module that needs frames flowing.
+
+        Returns the PREVIOUS state, so a caller that started it can put it back
+        — the DMD calibration does exactly that. Goes through the button rather
+        than `_start_session` so the UI, the tooltip and the status line all
+        stay in step with reality.
+        """
+        was = self._btn_run.isChecked()
+        if bool(on) != was:
+            self._btn_run.setChecked(bool(on))
+        return was
+
     def latest_frame(self, key: str):
         """The newest frame from module `key`'s camera, or None.
 

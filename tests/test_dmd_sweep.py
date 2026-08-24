@@ -175,6 +175,65 @@ def check_end_to_end(r: Report) -> None:
             f"shown that number before any light is emitted")
 
 
+def check_display_modes(r: Report) -> None:
+    """All ON / Image / ROIs each load a different frame, and ROI needs a calib."""
+    import tempfile
+    from pathlib import Path
+
+    from acqApp.devices.dmd.calibration import DmdCalibration
+    from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
+                                            MODE_PATTERN, MODE_ROI,
+                                            DmdSettings, MockDmdController)
+
+    # A calibration whose panel matches the mock, so the mask is device-sized.
+    A = np.array([[4.0, 0.0, 200.0], [0.0, 4.0, 150.0], [0.0, 0.0, 1.0]])
+    calib = DmdCalibration(cam_to_dmd=np.linalg.inv(A),
+                           dmd_size=(DEFAULT_W, DEFAULT_H), cam_size=(900, 600))
+    cpath = Path(tempfile.mkdtemp()) / "c.json"
+    calib.save(cpath)
+    # Keys as `RectRoi.to_dict()` really writes them — x/y/angle_deg, not
+    # cx/cy/angle. The panel round-trips these through `roi_from_dict`, so a
+    # near-miss raises rather than being ignored.
+    roi = {"kind": "rect", "name": "r1", "enabled": True, "x": 450.0,
+           "y": 300.0, "w": 120.0, "h": 90.0, "angle_deg": 0.0}
+
+    c = MockDmdController(DmdSettings(display_mode=MODE_ALL_ON))
+    c.load_pattern()
+    all_on = c.on_pixels
+    r.check(all_on == DEFAULT_W * DEFAULT_H,
+            f"All ON turns on every mirror ({all_on})")
+
+    c = MockDmdController(DmdSettings(display_mode=MODE_ROI, rois=(roi,),
+                                      calib_path=str(cpath)))
+    c.load_pattern()
+    n_roi = c.on_pixels
+    r.check(0 < n_roi < all_on,
+            f"ROI mode lights only the ROI's mirrors ({n_roi} of {all_on})")
+    # It must be the RIGHT mirrors: a 120x90 camera-px ROI at 4 px/mirror is
+    # about 30x22 mirrors.
+    r.check(abs(n_roi - (120 / 4) * (90 / 4)) < 0.4 * (120 / 4) * (90 / 4),
+            f"…and about the right number of them ({n_roi}, expected ~675)")
+
+    # CONTROL: without a calibration there is no way to map camera px to
+    # mirrors, and guessing would aim light at the wrong place.
+    c = MockDmdController(DmdSettings(display_mode=MODE_ROI, rois=(roi,)))
+    c.load_pattern()
+    r.check(c.on_pixels == 0,
+            "control: ROI mode with no calibration projects nothing rather "
+            "than guessing a transform")
+    c = MockDmdController(DmdSettings(display_mode=MODE_ROI,
+                                      calib_path=str(cpath)))
+    c.load_pattern()
+    r.check(c.on_pixels == 0, "control: …and with no ROIs, likewise")
+
+    # Switching mode reloads: the old guard only reloaded when a pattern FILE
+    # was set, so all-on and ROI modes would have stayed stale.
+    c = MockDmdController(DmdSettings(display_mode=MODE_PATTERN))
+    c.apply_settings(DmdSettings(display_mode=MODE_ALL_ON))
+    r.check(c.on_pixels == all_on,
+            "changing the mode reloads the frame, with no pattern file set")
+
+
 def check_project_frame(r: Report) -> None:
     """`project_frame` must not go through `build_frame`. PLAN §6 names this
     trap twice, and it is invisible in the result: a warped calibration
@@ -235,9 +294,10 @@ def check_wiring(r: Report) -> None:
             "the DMD adapter owns the calibrate path, not the panel — only it "
             "can reach both the controller and the camera")
 
-    # No camera frame yet: the dialog must not open. Asserted by watching for
-    # the message box rather than the dialog, since neither can be shown here.
-    seen = {"box": 0, "dialog": 0}
+    # The dialog must open with the camera STOPPED: it starts the camera
+    # itself and puts it back, so requiring Live view first would be friction
+    # with no safety value — the actuation decision is the dialog's button.
+    seen = {"box": 0, "dialog": 0, "exec": 0, "live": []}
     from PyQt6.QtWidgets import QMessageBox
     real_info = QMessageBox.information
     QMessageBox.information = staticmethod(
@@ -249,29 +309,39 @@ def check_wiring(r: Report) -> None:
         """Stands in for the sweep window — it must be constructed AND exec'd,
         so a wiring that builds it and forgets to show it still fails."""
 
-        def __init__(self, *_a, **_k):
+        def __init__(self, *_a, **kw):
             seen["dialog"] += 1
+            seen["live"].append(kw.get("set_live"))
 
         def exec(self):
             seen["exec"] += 1
             return 0
 
-    seen["exec"] = 0
     SW.CalibrationDialog = FakeDialog
     try:
+        r.check(not win._btn_run.isChecked(), "control: the camera is stopped")
         dmd.panel.calibrate_requested.emit()
-        r.check(seen["box"] == 1 and seen["dialog"] == 0,
-                "with no camera frame it explains instead of opening the "
-                "sweep — a sweep with nothing to image would emit light for "
-                "nothing")
+        r.check(seen["dialog"] == 1 and seen["exec"] == 1 and seen["box"] == 0,
+                "the dialog opens with the camera stopped — it starts the "
+                "camera itself rather than refusing")
+        r.check(callable(seen["live"][0]),
+                "…and is handed set_live, so it can start the camera and put "
+                "it back")
 
-        win._btn_run.setChecked(True)
-        pump(app, 1.2)
+        # set_live really drives the window, and reports the PREVIOUS state so
+        # the dialog can restore it.
+        was = win.set_live(True)
+        pump(app, 1.0)
+        r.check(was is False and win._btn_run.isChecked(),
+                "set_live(True) starts the live view and reports it was off")
         r.check(win.latest_frame("voltage_cam") is not None,
-                "control: the camera is now delivering frames")
-        dmd.panel.calibrate_requested.emit()
-        r.check(seen["dialog"] == 1 and seen["exec"] == 1,
-                "…and with one, the button opens the sweep dialog")
+                "…and frames really flow after it")
+        r.check(win.set_live(True) is True,
+                "control: calling it again reports it was already on, so a "
+                "dialog cannot stop a camera the operator started")
+        win.set_live(False)
+        pump(app, 0.3)
+        r.check(not win._btn_run.isChecked(), "set_live(False) stops it again")
     finally:
         QMessageBox.information = real_info
         SW.CalibrationDialog = real_dlg
@@ -294,6 +364,7 @@ def main() -> int:
     r = Report("dmd-sweep")
     check_fresh_grabber(r)
     check_end_to_end(r)
+    check_display_modes(r)
     check_project_frame(r)
     check_wiring(r)
     return r.finish()

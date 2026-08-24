@@ -58,8 +58,12 @@ EDITS = [
      lambda p: p.settings.rotation_deg,         12.5),
     ("dmd",         "offset X",  lambda p: p._spn_dx.setValue(37.0),
      lambda p: p.settings.offset_x,             37.0),
-    ("dmd",         "all-on",    lambda p: p._chk_all_on.setChecked(True),
-     lambda p: p.settings.all_on,               True),
+    # The display mode replaced the all-on checkbox. `all_on` is still written,
+    # because the session metadata has always carried it.
+    # Only ONE mode row: the three are exclusive radios, so a second would
+    # simply overwrite the first and prove nothing.
+    ("dmd",         "mode-roi",  lambda p: p._rb["roi"].setChecked(True),
+     lambda p: p.settings.display_mode,         "roi"),
 ]
 
 SAVE_EDITS = [

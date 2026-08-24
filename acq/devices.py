@@ -164,6 +164,18 @@ class ModuleHost(Protocol):
         """Every module's `SignalSource`s, pooled for the closed loop."""
         ...
 
+    def set_live(self, on: bool) -> bool:
+        """Turn the window's live view on or off; returns its PREVIOUS state.
+
+        Added deliberately (§5b A4): the DMD calibration images each pattern
+        with the voltage camera, so it needs frames flowing — and requiring the
+        operator to press Live view first, in another part of the window, before
+        a dialog that then complains, is a worse design than letting the dialog
+        do it and put it back. The return value is what makes putting it back
+        possible.
+        """
+        ...
+
     def latest_frame(self, key: str) -> Any:
         """The newest frame from another module's camera, or None.
 
