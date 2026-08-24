@@ -127,6 +127,22 @@ class DmdController(QObject):
             offset_y=self._s.offset_y, invert=self._s.invert, fit=self._s.fit)
         print(f"[DMD] {p.name} -> {w}x{h}, {self.on_pixels} mirrors on")
 
+    def project_frame(self, frame: np.ndarray) -> None:
+        """Project one device-sized frame AS IT IS — no `build_frame`.
+
+        For the calibration sweep, which measures the geometry and so must not
+        be put through it: scale/rotation/offset, and `fit` which overrides all
+        three, would transform the very thing being measured. The panel's
+        settings are left untouched, so the next Display is unaffected.
+        """
+        h, w = self.resolution[1], self.resolution[0]
+        if frame.shape != (h, w):
+            raise ValueError(f"frame is {frame.shape}, device is {(h, w)}")
+        self._pattern = np.ascontiguousarray(frame, dtype=np.uint8)
+        self._dev.project(self._pattern, illumination_us=None, loop=True)
+        self._running = True
+        self._frame(FRAME_START)
+
     def display(self) -> None:
         if self._pattern is None:
             print("[DMD] display: no pattern loaded — nothing to project")
@@ -240,6 +256,15 @@ class MockDmdController(QObject):
                        np.ones((4, 4), dtype=np.uint8)).astype(np.uint8)
         reps = (DEFAULT_H // tile.shape[0] + 1, DEFAULT_W // tile.shape[1] + 1)
         self._pattern = np.tile(tile, reps)[:DEFAULT_H, :DEFAULT_W]
+
+    def project_frame(self, frame: np.ndarray) -> None:
+        """Hold the frame so `on_pixels` is truthful; nothing is emitted."""
+        h, w = DEFAULT_H, DEFAULT_W
+        if frame.shape != (h, w):
+            raise ValueError(f"frame is {frame.shape}, device is {(h, w)}")
+        self._pattern = np.ascontiguousarray(frame, dtype=np.uint8)
+        self._running = True
+        self._frame(FRAME_START)
 
     def display(self) -> None:
         if self._running:

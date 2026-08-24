@@ -117,6 +117,8 @@ devices/                one package per instrument
     panel.py
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
     roi_panel.py        draw and edit ROIs over a snapshot
+    sweep.py            runs calibration.py against the rig: the fresh-frame
+                        grabber and the dialog that asks before emitting light
   puffer/
     control.py
   pupil_cam/
@@ -170,6 +172,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_dmd.py
   test_dmd_calibration.py
   test_dmd_roi.py
+  test_dmd_sweep.py           the sweep against the rig: fresh grabs, the probe
   test_encoder_derive.py
   test_encoder_timing.py
   test_module_subsets.py

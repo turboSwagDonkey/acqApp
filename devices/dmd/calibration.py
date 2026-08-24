@@ -39,6 +39,12 @@ import numpy as np
 
 ON, OFF = np.uint8(255), np.uint8(0)
 
+
+class CalibrationError(RuntimeError):
+    """The sweep could not be registered — with a reason worth reading."""
+
+
+
 # Modulation below this counts as "the projector does not reach this pixel".
 # Well under a real lit/unlit contrast, well over sensor noise on a dark frame.
 MIN_MODULATION = 0.15
@@ -220,6 +226,265 @@ def correspondences(dmd_x, dmd_y, valid, *, step: int = 8):
     cam = np.column_stack((xs, ys)).astype(np.float64)
     dmd = np.column_stack((dmd_x[sel], dmd_y[sel])).astype(np.float64)
     return cam, dmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Centre-out probe
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Grow a shape outward from the centre of the panel and watch what the camera
+# does. Operator's idea (2026-08-24), and it earns its place three times over:
+#
+#   * it is the SMALLEST first actuation that answers "do the two fields
+#     overlap" — a spot at 8 % of the panel puts well under 1 % of a full
+#     checkerboard's light on the sample, and on an in-vivo rig the first
+#     emission is the one worth making small;
+#   * ONE AXIS AT A TIME (operator, 2026-08-24), so each axis is established on
+#     its own. A disc conflates them: it cannot tell an anisotropic relay from a
+#     clipped one, and its equivalent-area radius hides both. A bar grown along
+#     DMD-x has one honest answer per step;
+#   * a rotation falls out for free. Growing a bar along DMD-x moves the camera
+#     image along a fixed direction; the angle of that direction IS the
+#     rotation, measured before any Gray coding rather than inferred from the
+#     homography afterwards.
+#
+# It does NOT replace `checkerboard_pair`: a centred bar is symmetric, so it
+# cannot catch a mirror flip, and one pair still gives the whole field extent in
+# two exposures. This runs first because it is cheap, dim and per-axis.
+
+# Fractions of the half-extent along the axis being grown.
+PROBE_FRACS = (0.12, 0.30, 0.55, 0.80, 1.00)
+# The bar's fixed half-extent across that axis, as a fraction of the panel's.
+# Small enough that the bar is unambiguously long, big enough to survive the
+# modulation threshold on a dim relay.
+PROBE_CROSS = 0.06
+# The "is anything there at all" spot, before either axis is swept.
+PROBE_SPOT = 0.10
+
+
+def disc(width: int, height: int, radius: float, *,
+         cx: float | None = None, cy: float | None = None) -> np.ndarray:
+    """A filled circle of `radius` mirrors, centred on the panel by default."""
+    cx = (width - 1) / 2.0 if cx is None else cx
+    cy = (height - 1) / 2.0 if cy is None else cy
+    y, x = np.ogrid[:height, :width]
+    return np.where((x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2,
+                    ON, OFF).astype(np.uint8)
+
+
+def axis_bar(width: int, height: int, axis: int, half_extent: float, *,
+             cross_frac: float = PROBE_CROSS) -> np.ndarray:
+    """A centred bar `half_extent` mirrors long along `axis` (0 = x, 1 = y)."""
+    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+    y, x = np.ogrid[:height, :width]
+    if axis == 0:
+        long_ok = np.abs(x - cx) <= half_extent
+        cross_ok = np.abs(y - cy) <= cross_frac * height / 2.0
+    else:
+        long_ok = np.abs(y - cy) <= half_extent
+        cross_ok = np.abs(x - cx) <= cross_frac * width / 2.0
+    return np.where(long_ok & cross_ok, ON, OFF).astype(np.uint8)
+
+
+@dataclass
+class ProbeStep:
+    """One projected shape, and what the camera saw of it.
+
+    `cov` is the lit region's 2x2 second-moment matrix in camera px, kept
+    whole rather than reduced here: the extent has to be measured along a
+    direction that is only known once the LARGEST step has been seen, so the
+    per-step reduction cannot happen while the step is being taken.
+    """
+    axis:        int                        # 0 = DMD x, 1 = DMD y, -1 = the spot
+    frac:        float
+    dmd_extent:  float                      # mirrors, half-extent along `axis`
+    lit_px:      int
+    lit_frac:    float                      # of the whole camera frame
+    box:         tuple[int, int, int, int] | None
+    cam_cx:      float                      # centroid, camera px
+    cam_cy:      float
+    cov:         tuple                      # ((sxx, sxy), (sxy, syy)), camera px
+    clipped:     bool                       # its lit area touches the frame edge
+    cam_shape:   tuple[int, int] = (0, 0)   # so a step describes its own frame
+
+
+def _measure(mask: np.ndarray) -> tuple[float, float, tuple, bool]:
+    """(cx, cy, covariance, clipped) of the lit region."""
+    n = int(mask.sum())
+    box = bounding_box(mask)
+    clipped = bool(box is not None and (box[0] == 0 or box[1] == 0
+                                        or box[2] == mask.shape[1]
+                                        or box[3] == mask.shape[0]))
+    if n < 3:
+        return float("nan"), float("nan"), ((0.0, 0.0), (0.0, 0.0)), clipped
+    ys, xs = np.nonzero(mask)
+    cx, cy = float(xs.mean()), float(ys.mean())
+    dx, dy = xs - cx, ys - cy
+    c = ((float((dx * dx).mean()), float((dx * dy).mean())),
+         (float((dx * dy).mean()), float((dy * dy).mean())))
+    return cx, cy, c, clipped
+
+
+def centre_out_probe(project: Callable[[np.ndarray], None],
+                     grab: Callable[[], np.ndarray],
+                     dmd_size: tuple[int, int], *,
+                     fracs=PROBE_FRACS,
+                     min_modulation: float = MIN_MODULATION,
+                     log: Callable[[str], None] = print) -> list[ProbeStep]:
+    """A dim spot, then a bar grown along x, then one along y → a row each.
+
+    One dark reference is grabbed first and reused throughout: the sample does
+    not change between exposures, so `(lit - dark) / (lit + dark)` cancels it
+    exactly as a complementary pair would, at half the exposures.
+
+    **This actuates** — the caller owns that decision (§2).
+    """
+    w, h = int(dmd_size[0]), int(dmd_size[1])
+    half = (w / 2.0, h / 2.0)
+
+    project(_blank(w, h))
+    dark = np.asarray(grab(), dtype=np.float32)
+
+    def shot(frame, axis, frac, extent) -> ProbeStep:
+        project(frame)
+        lit = np.asarray(grab(), dtype=np.float32)
+        if lit.shape != dark.shape:
+            raise CalibrationError(
+                f"the camera changed shape mid-probe ({dark.shape} -> "
+                f"{lit.shape}) — its settings must hold for the whole sweep")
+        m = field_mask(lit, dark, min_modulation=min_modulation)
+        n = int(m.sum())
+        cx, cy, cov, clipped = _measure(m)
+        s = ProbeStep(axis=axis, frac=float(frac), dmd_extent=float(extent),
+                      lit_px=n, lit_frac=float(n) / m.size,
+                      box=bounding_box(m), cam_cx=cx, cam_cy=cy, cov=cov,
+                      clipped=clipped, cam_shape=(m.shape[0], m.shape[1]))
+        name = "spot" if axis < 0 else f"{'xy'[axis]}={frac:4.2f}"
+        log(f"[dmd-probe] {name:>8} ({extent:6.1f} mirrors) -> {n:>9d} px lit "
+            f"({100 * s.lit_frac:5.1f}% of frame)"
+            + ("" if n < 3 else f", centre ({cx:.0f}, {cy:.0f})")
+            + (" [touches the frame edge]" if clipped else ""))
+        return s
+
+    out = [shot(disc(w, h, PROBE_SPOT * min(half)), -1, PROBE_SPOT,
+                PROBE_SPOT * min(half))]
+    if out[0].lit_px == 0:
+        # Say it here rather than after ten more exposures: a spot at the panel
+        # centre that the camera cannot see is the whole answer.
+        log("[dmd-probe] the centre spot is invisible — the axis sweeps will "
+            "show whether anything reaches the camera at all")
+    for axis in (0, 1):
+        for frac in fracs:
+            extent = frac * half[axis]
+            out.append(shot(axis_bar(w, h, axis, extent), axis, frac, extent))
+    return out
+
+
+def _extent_along(cov: tuple, u: np.ndarray) -> float:
+    """Half-extent of a uniform region along unit vector `u`, in camera px.
+
+    A uniform rectangle of half-extent A has variance A^2/3 along that axis, so
+    the second moment is what converts back. Second moments rather than the
+    bounding box because a rotated bar's box grows in BOTH camera axes.
+    """
+    c = np.asarray(cov, dtype=np.float64)
+    return float(np.sqrt(max(0.0, 3.0 * (u @ c @ u))))
+
+
+def axis_direction(steps: list[ProbeStep], axis: int) -> np.ndarray | None:
+    """Unit vector in camera px that DMD `axis` runs along.
+
+    Taken from the LARGEST unclipped step, where the bar is unambiguously
+    longer than it is wide; at the smallest step the two are comparable and the
+    principal axis can be the cross one.
+    """
+    use = [s for s in steps if s.axis == axis and s.lit_px >= 3 and not s.clipped]
+    if not use:
+        return None
+    c = np.asarray(max(use, key=lambda s: s.dmd_extent).cov, dtype=np.float64)
+    vals, vecs = np.linalg.eigh(c)
+    if vals[-1] <= 0:
+        return None
+    return vecs[:, -1]
+
+
+def axis_scale(steps: list[ProbeStep], axis: int) -> float | None:
+    """Camera px per mirror along DMD `axis`.
+
+    Through the origin: the bar is centred, so its half-extent and its image's
+    are proportional with no intercept, and a two-parameter fit over five points
+    would just absorb the clipping into the intercept.
+    """
+    u = axis_direction(steps, axis)
+    if u is None:
+        return None
+    use = [s for s in steps if s.axis == axis and s.lit_px >= 3 and not s.clipped]
+    if len(use) < 2:
+        return None
+    x = np.array([s.dmd_extent for s in use])
+    y = np.array([_extent_along(s.cov, u) for s in use])
+    return float((x @ y) / (x @ x)) if (x @ x) > 0 else None
+
+
+def axis_angle_deg(steps: list[ProbeStep], axis: int) -> float | None:
+    """Clockwise angle from camera-x to DMD `axis`, in degrees.
+
+    Camera y runs downward, so a positive angle here is clockwise on screen —
+    the same convention `build_frame` and the standalone GUI use. The
+    eigenvector's sign is arbitrary, so this folds to (-90, 90]: a bar is
+    symmetric and cannot distinguish its two ends.
+    """
+    u = axis_direction(steps, axis)
+    if u is None:
+        return None
+    ang = float(np.degrees(np.arctan2(u[1], u[0])))
+    return ang - 180.0 if ang > 90 else (ang + 180.0 if ang <= -90 else ang)
+
+
+def probe_verdict(steps: list[ProbeStep], cam_shape: tuple[int, int],
+                  dmd_size: tuple[int, int]) -> str:
+    """A line per axis: does it reach, at what scale, and is it clipped."""
+    if not steps or not any(s.lit_px for s in steps):
+        return ("the projector does not modulate the camera at all — check "
+                "that the DMD is displaying, the illumination is on and the "
+                "camera is exposing")
+    ch, cw = int(cam_shape[0]), int(cam_shape[1])
+    lit = [s for s in steps if s.lit_px >= 3]
+    parts = []
+    if lit:
+        parts.append(f"the DMD centre lands at ({lit[0].cam_cx:.0f}, "
+                     f"{lit[0].cam_cy:.0f}) in a {cw}x{ch} frame")
+    ax, ay = axis_angle_deg(steps, 0), axis_angle_deg(steps, 1)
+    if ax is not None:
+        parts.append(f"DMD-x runs at {ax:+.1f}deg to camera-x")
+    if ax is not None and ay is not None:
+        # Both folded to (-90, 90], so the separation of two undirected lines
+        # is the smaller of the gap and its supplement.
+        d = abs(ay - ax)
+        sep = min(d, 180.0 - d)
+        if abs(sep - 90.0) > 1.0:
+            parts.append(f"the DMD axes are {sep:.1f}deg apart, not 90 — there "
+                         f"is keystone, and an affine fit will show it as "
+                         f"residual")
+    for axis, half_cam in ((0, cw / 2.0), (1, ch / 2.0)):
+        name = "xy"[axis]
+        k = axis_scale(steps, axis)
+        last = [s for s in steps if s.axis == axis]
+        if k is None:
+            parts.append(f"{name}: too few unclipped steps to measure a scale")
+            continue
+        reach = k * dmd_size[axis] / 2.0        # half the panel, in camera px
+        clipped = bool(last and last[-1].clipped)
+        parts.append(f"{name}: {k:.3f} px/mirror, the panel's half-width is "
+                     f"{reach:.0f} px against the frame's {half_cam:.0f} "
+                     + ("(CLIPPED — the DMD reaches past the camera's view)"
+                        if clipped or reach > half_cam else "(fits)"))
+    kx, ky = axis_scale(steps, 0), axis_scale(steps, 1)
+    if kx and ky and abs(kx - ky) > 0.05 * max(kx, ky):
+        parts.append(f"the two axes differ by {100 * abs(kx - ky) / max(kx, ky):.0f}% "
+                     f"— the relay is anisotropic, so an affine model is the "
+                     f"floor, not a homography's luxury")
+    return "; ".join(parts)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -428,16 +693,13 @@ class DmdCalibration:
                 + (f" ({self.created})" if self.created else ""))
 
 
-class CalibrationError(RuntimeError):
-    """The sweep could not be registered — with a reason worth reading."""
-
-
 def run_calibration(project: Callable[[np.ndarray], None],
                     grab: Callable[[], np.ndarray],
                     dmd_size: tuple[int, int], *,
                     model: str = "homography",
                     square: int = 64,
                     step: int = 8,
+                    probe: bool = True,
                     min_modulation: float = MIN_MODULATION,
                     log: Callable[[str], None] = print) -> DmdCalibration:
     """Project a sweep, image it, and return the registration.
@@ -447,6 +709,10 @@ def run_calibration(project: Callable[[np.ndarray], None],
     keeps this testable against a simulated camera — the whole pipeline can be
     held to a transform we chose before any light is emitted — and keeps the
     hardware out of the algorithm (§5b A3's lesson, applied up front).
+
+    Stages, dimmest first, so a misaimed rig fails on twelve small exposures
+    rather than forty-two full-panel ones: the centre-out probe, then one
+    complementary checkerboard pair for the field extent, then the Gray sweep.
 
     **The caller owns the actuation.** By the time this is called the decision
     to emit light has been made; it projects on every plane.
@@ -462,7 +728,19 @@ def run_calibration(project: Callable[[np.ndarray], None],
         # ORCA full frame, and `decode`/`modulation` convert per plane anyway.
         return np.array(grab())
 
-    # 1. one complementary pair: does the projector reach the camera at all?
+    # 1. centre-out, one axis at a time: the dimmest exposures come first.
+    verdict = ""
+    if probe:
+        steps = centre_out_probe(project, grab, (w, h),
+                                 min_modulation=min_modulation, log=log)
+        verdict = probe_verdict(steps, steps[0].cam_shape, (w, h))
+        log(f"[dmd-calib] probe: {verdict}")
+        if not any(s.lit_px for s in steps):
+            raise CalibrationError(
+                "the centre-out probe saw nothing: " + verdict)
+
+    # 2. one complementary pair: the whole field extent, and the corner marks
+    #    that a symmetric bar cannot give — they are what catches a mirror flip.
     log("[dmd-calib] field extent (1 pair)")
     a, b = checkerboard_pair(w, h, square)
     ia, ib = shot(a), shot(b)
@@ -477,7 +755,7 @@ def run_calibration(project: Callable[[np.ndarray], None],
             "the DMD is displaying, the illumination is on, the camera is "
             "exposing, and that the two fields overlap")
 
-    # 2. Gray sweep
+    # 3. Gray sweep
     planes, nbx, nby = gray_planes(w, h)
     log(f"[dmd-calib] {2 * len(planes)} exposures ({nbx} x-bits, {nby} y-bits)")
     on, off = [], []
@@ -501,7 +779,10 @@ def run_calibration(project: Callable[[np.ndarray], None],
         cam_size=(int(cam_shape[1]), int(cam_shape[0])),
         model=model, rms_px=rms, n_points=int(keep.sum()),
         created=datetime.now().isoformat(timespec="seconds"),
-        notes=f"field {100 * frac:.1f}% of frame, bbox {box}")
+        # The probe's verdict goes in the file: it is the only record of what
+        # the two fields looked like BEFORE the fit smoothed them into a matrix.
+        notes=f"field {100 * frac:.1f}% of frame, bbox {box}"
+              + (f"; probe: {verdict}" if verdict else ""))
 
 
 def mask_from_roi(roi_cam: np.ndarray, dmd_to_cam: np.ndarray,

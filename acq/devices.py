@@ -84,6 +84,25 @@ class RecordingOutput(OutputController, Protocol):
 
 
 @runtime_checkable
+class RawProjector(Protocol):
+    """Displays a frame at the device's own size, untransformed.
+
+    Split from `ProjectorController` rather than folded into it because the one
+    client is the calibration sweep, and what that client needs is precisely
+    the guarantee that nothing reshapes the frame — `build_frame`'s
+    scale/rotation/offset (and `fit`, which overrides all three) would transform
+    the geometry being measured.
+    """
+
+    @property
+    def resolution(self) -> tuple[int, int]: ...
+
+    def project_frame(self, frame: Any) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+@runtime_checkable
 class ProjectorController(RecordingOutput, Protocol):
     """Describes itself into the file. `device_name` separates a real projection
     from the mock, `resolution` fixes the panel the geometry is relative to, and

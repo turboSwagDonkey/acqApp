@@ -27,7 +27,7 @@ block_real_devices()
 
 from acqApp.acq.devices import (            # noqa: E402
     CameraWorker, ClockedWorker, DeviceWorker, ExposureControl,
-    OutputController, ProjectorController, RecordingOutput,
+    OutputController, ProjectorController, RawProjector, RecordingOutput,
 )
 
 
@@ -96,6 +96,10 @@ def main() -> int:
         (MockPufferController,    RecordingOutput),
         (DmdController,           ProjectorController),
         (MockDmdController,       ProjectorController),
+        # The calibration sweep programs against this and nothing wider: what
+        # it needs is the guarantee that the frame is not reshaped.
+        (DmdController,           RawProjector),
+        (MockDmdController,       RawProjector),
     ]
     for cls, proto in CONFORM:
         missing = has_all(cls, proto)
@@ -126,6 +130,13 @@ def main() -> int:
     r.check(missing == ["on_pixels"],
             f"control: a projector missing only on_pixels is caught "
             f"(got {missing})")
+    # …and the split is real: a full ProjectorController is not automatically a
+    # RawProjector. Merging the two would let a controller that can only
+    # project THROUGH build_frame be handed to the sweep.
+    r.check(has_all(AlmostAProjector, RawProjector) == ["project_frame", "stop"],
+            f"control: RawProjector is a separate promise, not implied by "
+            f"ProjectorController (missing "
+            f"{has_all(AlmostAProjector, RawProjector)})")
 
     # ── 2. parity ────────────────────────────────────────────────────────────
     # Differences that are deliberate. Anything else is drift and fails.

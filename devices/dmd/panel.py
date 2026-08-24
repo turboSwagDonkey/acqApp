@@ -9,6 +9,7 @@ every Emulate toggle while the panel is built once.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
@@ -30,9 +31,10 @@ class SettingsPanel(QWidget):
     load_requested   = pyqtSignal(object)   # emits Path
     display_requested = pyqtSignal()
     stop_requested    = pyqtSignal()
-    # The adapter opens the editor: it is the only side that can reach the
-    # voltage camera's frame (`ModuleHost.latest_frame`).
+    # The adapter opens both: it is the only side that can reach the voltage
+    # camera's frame (`ModuleHost.latest_frame`) and the live controller.
     rois_edit_requested = pyqtSignal()
+    calibrate_requested = pyqtSignal()
 
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
@@ -249,11 +251,20 @@ class SettingsPanel(QWidget):
         v.addWidget(self._lbl_calib)
         crow = QHBoxLayout()
         crow.setContentsMargins(0, 0, 0, 0)
-        b_load = QPushButton("Load calibration…")
-        b_load.setToolTip("A DmdCalibration JSON written by run_calibration().")
+        b_run = QPushButton("Calibrate…")
+        b_run.setStyleSheet(style.solid_btn("dmd"))
+        b_run.setToolTip(
+            "Measure the camera↔DMD transform by projecting a sweep.\n"
+            "THIS PROJECTS LIGHT — the dialog says what it will do and asks "
+            "first.\nIt also offers a dim probe that measures where the DMD "
+            "field lands without producing a calibration.")
+        b_run.clicked.connect(self.calibrate_requested)
+        b_load = QPushButton("Load…")
+        b_load.setToolTip("A DmdCalibration JSON written by an earlier sweep.")
         b_load.clicked.connect(self._pick_calib)
         self._btn_calib_clear = QPushButton("Clear")
         self._btn_calib_clear.clicked.connect(lambda: self._set_calib(""))
+        crow.addWidget(b_run)
         crow.addWidget(b_load)
         crow.addWidget(self._btn_calib_clear)
         v.addLayout(crow)
@@ -271,6 +282,10 @@ class SettingsPanel(QWidget):
         self._calib_path = path
         self._show_rois()
         self._emit()
+
+    def set_calib_path(self, path: str) -> None:
+        """Adopt a calibration the adapter just measured or loaded."""
+        self._set_calib(path)
 
     def set_rois(self, rois) -> None:
         """Store what the editor produced. Called by the adapter, not the user."""

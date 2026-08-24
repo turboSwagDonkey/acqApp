@@ -25,6 +25,13 @@ class DmdModule(ModuleAdapter):
 
     controller: ProjectorController | None   # narrows ModuleAdapter.controller
 
+    def __init__(self, win) -> None:
+        super().__init__(win)
+        # Whether the ALP really opened. Not re-derived from the class, because
+        # a real DmdController that failed and fell back is the case that
+        # matters, and only build_controller knows.
+        self._real = False
+
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
         # Route through this adapter, not straight to the controller: the
@@ -35,7 +42,52 @@ class DmdModule(ModuleAdapter):
         self.panel.stop_requested.connect(self.stop_display)
         self.panel.settings_changed.connect(self._save)
         self.panel.rois_edit_requested.connect(self.edit_rois)
+        self.panel.calibrate_requested.connect(self.calibrate)
         return self.panel
+
+    # ── the camera↔DMD registration ──
+    def calibrate(self) -> None:
+        """Open the sweep dialog: project patterns, image them, fit a transform.
+
+        The two hardware operations `run_calibration` wants are exactly the two
+        this adapter can reach — `project_frame` on its own controller, and the
+        **voltage** camera's newest frame through the host. Nothing narrower
+        would do: the DMD images through that camera, so the registration is in
+        ORCA pixels.
+
+        This is the app's only actuating path that is not a Display. The dialog
+        states what it will emit and does nothing until a button is pressed
+        (§2); the check below is only that the sweep could see anything at all.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+
+        from acqApp.devices.dmd.sweep import CalibrationDialog
+
+        if self.controller is None:
+            return
+        if self.win.latest_frame("voltage_cam") is None:
+            QMessageBox.information(
+                self.panel, "No camera frame",
+                "The sweep images each pattern with the voltage camera, and "
+                "none is arriving.\n\nLoad the voltage camera and press Free "
+                "run (or Record), then try again.")
+            return
+        dlg = CalibrationDialog(
+            self.controller, lambda: self.win.latest_frame("voltage_cam"),
+            parent=self.panel, real=self._real,
+            on_saved=self._adopt_calibration)
+        dlg.exec()
+
+    def _adopt_calibration(self, path: str) -> None:
+        """Point the panel at the calibration the sweep just wrote.
+
+        Measuring one and then leaving the ROI editor on the old one is the
+        failure this exists to prevent — the editor would draw a field outline
+        that no longer describes the projector.
+        """
+        self.panel.set_calib_path(path)
+        self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
+
 
     # ── photostimulation ROIs ──
     def edit_rois(self) -> None:
@@ -145,6 +197,7 @@ class DmdModule(ModuleAdapter):
                       f"using mock. If the standalone DMD app is open, close "
                       f"it and toggle Emulate off again.")
                 self.controller = MockDmdController(s)
+        self._real = real
         if self.panel is not None:
             self.panel.set_device(self.controller.device_name,
                                   self.controller.resolution, real)
