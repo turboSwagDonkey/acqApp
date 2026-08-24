@@ -63,7 +63,7 @@ class SettingsPanel(QWidget):
         
         self._lbl_dev.setText(dev_label)
         self._lbl_dev.setStyleSheet(
-            f"color:{style.HEX['dmd'] if real else '#c86'};")
+            f"color:{style.HEX['dmd'] if real else style.WARN};")
         self._update_preview()
 
     def _build(self) -> None:
@@ -123,7 +123,8 @@ class SettingsPanel(QWidget):
         self._preview.setMaximumHeight(240)
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setStyleSheet(
-            "color:#777; border:1px solid #333; border-radius:3px;")
+            f"color:{style.muted()}; border:1px solid {style.line()}; "
+            f"border-radius:3px;")
         lay.addRow(self._preview)
 
         # ── Pattern Alignment (Geometry Card) ────────────────────────────────
@@ -268,7 +269,7 @@ class SettingsPanel(QWidget):
 
         self._lbl_calib = QLabel()
         self._lbl_calib.setWordWrap(True)
-        self._lbl_calib.setStyleSheet("color:#9aa0a6;")
+        self._lbl_calib.setStyleSheet(f"color:{style.muted()};")
         v.addWidget(self._lbl_calib)
         crow = QHBoxLayout()
         crow.setContentsMargins(0, 0, 0, 0)

@@ -17,7 +17,8 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from acqApp.devices.dmd.calibration import ON, OFF, DmdCalibration, mask_from_roi
+from acqApp.devices.dmd.calibration import (OFF, ON, DmdCalibration,
+                                            apply_transform, mask_from_roi)
 
 
 @dataclass
@@ -32,6 +33,16 @@ class _Roi:
 
         Explicit coordinates rather than a shape, so a caller that only wants a
         percentage can evaluate on a coarse grid instead of every pixel.
+        """
+        raise NotImplementedError
+
+    def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
+        """Membership at SCATTERED points, not on a grid.
+
+        `mask_at` broadcasts a grid, which is right for drawing but wrong for
+        the projection path: that asks "is this mirror inside" for ~786k
+        mirrors whose camera positions are arbitrary, and building a
+        camera-sized grid to sample from cost 107 ms per rebuild.
         """
         raise NotImplementedError
 
@@ -76,6 +87,15 @@ class RectRoi(_Roi):
             dx, dy = c * dx + s * dy, -s * dx + c * dy
         return (np.abs(dx) <= self.w / 2.0) & (np.abs(dy) <= self.h / 2.0)
 
+    def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
+        dx = np.asarray(px, dtype=np.float64) - self.x
+        dy = np.asarray(py, dtype=np.float64) - self.y
+        if self.angle_deg:
+            t = np.radians(self.angle_deg)
+            c, s = np.cos(t), np.sin(t)
+            dx, dy = c * dx + s * dy, -s * dx + c * dy
+        return (np.abs(dx) <= self.w / 2.0) & (np.abs(dy) <= self.h / 2.0)
+
     def boundary(self, n: int = 64) -> np.ndarray:
         """The four corners — and they are exact. A projective map takes
         straight lines to straight lines, so if the corners land inside the
@@ -107,6 +127,11 @@ class CircleRoi(_Roi):
         dx2 = (np.asarray(xs, dtype=np.float64) - self.x) ** 2   # see RectRoi
         dy2 = (np.asarray(ys, dtype=np.float64) - self.y) ** 2
         return dx2[None, :] + dy2[:, None] <= self.r ** 2
+
+    def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
+        dx = np.asarray(px, dtype=np.float64) - self.x
+        dy = np.asarray(py, dtype=np.float64) - self.y
+        return dx * dx + dy * dy <= self.r ** 2
 
     def boundary(self, n: int = 64) -> np.ndarray:
         """`n` points around the rim. Sampled, not exact: a circle's image under
@@ -182,6 +207,10 @@ class RoiSet:
         The fraction is returned rather than silently dropping the remainder:
         an ROI half outside the projector's field still *looks* drawn, and the
         operator has to be told that half of it will never be illuminated.
+
+        **In camera space, and no longer on the projection path** — `dmd_frame`
+        clips per mirror instead, which is both exact and ~100x cheaper. This
+        is the camera-space answer, for a caller that wants the mask itself.
         """
         shape = (calib.cam_size[1], calib.cam_size[0])
         want = self.mask(shape)
@@ -196,7 +225,7 @@ class RoiSet:
         For the status line, which shows a whole-number percentage. Evaluated on
         a grid capped at `max_side`, and only at the pixels an ROI actually
         covers, so it costs the ROI's area rather than the camera's. Use
-        `clipped_mask` when the actual mask is wanted; the projection path does.
+        `clipped_mask` when the camera-space mask itself is wanted.
         """
         w, h = calib.cam_size
         step = max(1, int(np.ceil(max(int(w), int(h)) / max(1, max_side))))
@@ -221,11 +250,58 @@ class RoiSet:
         return [r.name for r in self.rois
                 if r.enabled and not calib.accessible(r.boundary()).all()]
 
-    def dmd_frame(self, calib: DmdCalibration) -> np.ndarray:
-        """The device-sized binary frame that illuminates these ROIs."""
-        shape = (calib.cam_size[1], calib.cam_size[0])
-        return mask_from_roi(self.mask(shape), calib.dmd_to_cam,
-                             calib.dmd_size[0], calib.dmd_size[1])
+    def contains(self, px: np.ndarray, py: np.ndarray, *,
+                 enabled_only: bool = True) -> np.ndarray:
+        """Union of the ROIs at scattered camera points."""
+        out = np.zeros(np.shape(px), dtype=bool)
+        for roi in self.rois:
+            if enabled_only and not roi.enabled:
+                continue
+            out |= roi.contains(px, py)
+        return out
+
+    def dmd_frame(self, calib: DmdCalibration, *,
+                  enabled_only: bool = True) -> np.ndarray:
+        """The device-sized binary frame that illuminates these ROIs.
+
+        Asks each MIRROR where it lands and whether an ROI is there, rather
+        than rasterising a camera-sized mask and sampling it — the old way built
+        a 4432x2368 bool per ROI to read 786k values out of.
+
+        And only the mirrors that could possibly be in each ROI: its camera
+        boundary is mapped into mirror space and the search is confined to that
+        block. ROIs cover a small share of the panel, so this is the difference
+        between evaluating 786k mirrors per ROI and a few tens of thousands.
+
+        Iterating mirrors (not ROI pixels) is still the point: a forward map
+        leaves holes wherever the DMD is coarser than the camera, and a mask
+        with holes is a stimulus with holes.
+        """
+        w, h = int(calib.dmd_size[0]), int(calib.dmd_size[1])
+        cw, ch = calib.cam_size
+        M = np.asarray(calib.dmd_to_cam, dtype=np.float64)
+        out = np.zeros((h, w), dtype=bool)
+
+        for roi in self.rois:
+            if enabled_only and not roi.enabled:
+                continue
+            d = apply_transform(calib.cam_to_dmd, roi.boundary(64))
+            x0 = max(0, int(np.floor(d[:, 0].min())))
+            x1 = min(w, int(np.ceil(d[:, 0].max())) + 1)
+            y0 = max(0, int(np.floor(d[:, 1].min())))
+            y1 = min(h, int(np.ceil(d[:, 1].max())) + 1)
+            if x1 <= x0 or y1 <= y0:
+                continue                    # entirely off the panel
+            x = np.arange(x0, x1, dtype=np.float64)[None, :]
+            y = np.arange(y0, y1, dtype=np.float64)[:, None]
+            den = M[2, 0] * x + M[2, 1] * y + M[2, 2]
+            den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+            px = (M[0, 0] * x + M[0, 1] * y + M[0, 2]) / den
+            py = (M[1, 0] * x + M[1, 1] * y + M[1, 2]) / den
+            hit = roi.contains(px, py)
+            hit &= (px >= 0) & (px < cw) & (py >= 0) & (py < ch)
+            out[y0:y1, x0:x1] |= hit
+        return np.where(out, ON, OFF).astype(np.uint8)
 
     # ── persistence ──────────────────────────────────────────────────────────
     def to_list(self) -> list[dict[str, Any]]:

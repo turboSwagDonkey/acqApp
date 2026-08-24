@@ -128,6 +128,10 @@ class DmdModule(ModuleAdapter):
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
         dlg.resize(1000, 760)
+        # Same accent the settings tab wears (`dialogs.add_panel`), so the DMD's
+        # own windows are not the only untinted surfaces in the app.
+        from acqApp import style
+        dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
         ed = RoiEditor(calib)
         ed.set_image(frame)

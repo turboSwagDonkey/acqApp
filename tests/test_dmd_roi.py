@@ -260,10 +260,18 @@ def main() -> int:
     frame16[3, 4] = 65000                       # every sCMOS has a few
     ed.set_image(frame16)
     lo, hi = ed._img.getLevels()
-    p1, p99 = np.percentile(frame16, (1, 99))
-    r.check(abs(lo - p1) < 1 and abs(hi - p99) < 1,
+    s1, s99 = np.percentile(frame16[::4, ::4], (1, 99))
+    r.check(abs(lo - s1) < 1 and abs(hi - s99) < 1,
             f"levels come from the 1st/99th percentile ({lo:.0f}-{hi:.0f}), "
             f"not min/max")
+    # Taken from a strided view, because percentile SORTS: 87 ms at ORCA full
+    # frame for a contrast estimate. Legitimate only if it agrees with the
+    # whole-frame answer, so that is asserted rather than assumed.
+    f1, f99 = np.percentile(frame16, (1, 99))
+    span = float(f99 - f1)
+    r.check(abs(lo - f1) < 0.02 * span and abs(hi - f99) < 0.02 * span,
+            f"…and 1/16 of the pixels give the same answer as all of them "
+            f"({lo:.0f}-{hi:.0f} vs {f1:.0f}-{f99:.0f}, span {span:.0f})")
     r.check(hi < 0.1 * frame16.max(),
             f"control: a hot pixel at {frame16.max()} would have stretched the "
             f"range to it; the shown top is {hi:.0f}")

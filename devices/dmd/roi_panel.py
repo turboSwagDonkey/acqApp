@@ -18,10 +18,15 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from acqApp import style
 from acqApp.devices.dmd.calibration import DmdCalibration
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet
 
-_FIELD_PEN = pg.mkPen("#ffbf00", width=2, style=Qt.PenStyle.DashLine)
+# The reachable field is the DMD's own boundary, so it wears the DMD accent —
+# the same magenta the tab, its buttons and the panel preview use. The ROI pens
+# stay independent colours: they must read against a grey camera frame AND be
+# told apart from the field outline they sit inside.
+_FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
 _ROI_PEN = pg.mkPen("#00d0ff", width=2)
 _ROI_HOVER = pg.mkPen("#4dff88", width=3)
 
@@ -126,6 +131,7 @@ class RoiEditor(QWidget):
 
         self._status = QLabel("no calibration — ROIs cannot be projected")
         self._status.setWordWrap(True)
+        self._status.setStyleSheet(f"color:{style.muted()};")
         root.addWidget(self._status)
         self._draw_field()
 
@@ -141,7 +147,11 @@ class RoiEditor(QWidget):
         is why the editor looked far worse than the view it was opened from.
         """
         self._image = np.asarray(frame)
-        lo, hi = np.percentile(self._image, (1, 99))
+        # Percentiles off a strided view, not the whole frame: np.percentile
+        # sorts, and at ORCA full frame that is 87 ms for a number that is a
+        # contrast estimate. 1/16 of 10.5 Mpx is still 650k samples, and the
+        # live preview has always taken its levels from the downsampled copy.
+        lo, hi = np.percentile(self._image[::4, ::4], (1, 99))
         if hi <= lo:                    # a flat frame — fall back to the range
             lo, hi = float(self._image.min()), float(self._image.max()) or 1.0
         self._img.setImage(self._image, autoLevels=False,

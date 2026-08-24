@@ -21,8 +21,8 @@ from typing import Callable
 
 import numpy as np
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
-    QPushButton, QVBoxLayout,
+    QApplication, QDialog, QGroupBox, QHBoxLayout, QLabel,
+    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
 )
 
 from acqApp import style
@@ -113,6 +113,10 @@ class CalibrationDialog(QDialog):
         self._running = False
         self.setWindowTitle("DMD calibration")
         self.resize(760, 520)
+        # The settings tabs get their subsystem accent from `dialogs.add_panel`;
+        # a standalone dialog has to ask for it, or the DMD's own windows are
+        # the only untinted surfaces in the app.
+        self.setStyleSheet(style.accent_panel("dmd"))
         self._build(real)
 
     # ── construction ─────────────────────────────────────────────────────────
@@ -143,13 +147,16 @@ class CalibrationDialog(QDialog):
                 "stripe will be visible and this will stop with that as the "
                 "reason. It still exercises the whole path without light.")
             warn.setWordWrap(True)
-            warn.setStyleSheet("color:#c86;")
+            warn.setStyleSheet(f"color:{style.WARN};")
             root.addWidget(warn)
 
+        log_box = QGroupBox("Sweep log")
+        log_lay = QVBoxLayout(log_box)
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setStyleSheet("font-family:Consolas,monospace;")
-        root.addWidget(self._log, 1)
+        log_lay.addWidget(self._log)
+        root.addWidget(log_box, 1)
 
         self._bar = QProgressBar()
         self._bar.setRange(0, n)
@@ -167,6 +174,7 @@ class CalibrationDialog(QDialog):
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._request_cancel)
         self._btn_save = QPushButton("Save calibration…")
+        self._btn_save.setStyleSheet(style.solid_btn("dmd"))
         self._btn_save.setEnabled(False)
         self._btn_save.clicked.connect(self._save)
         self._btn_close = QPushButton("Close")

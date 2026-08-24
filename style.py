@@ -22,6 +22,32 @@ HEX = {
     "saving":      "#c9a227",   # gold    (where recordings are written)
 }
 
+# Neutral (non-accent) tones per theme: (groupbox border, pane border, status
+# text, plot background, plot foreground).
+_THEME = {
+    "light": dict(border="#bbb", pane="#ccc", status="#555", plot_bg="w",       plot_fg="k"),
+    "dark":  dict(border="#454a4e", pane="#3a3e42", status="#9aa0a6", plot_bg="#1b1e20", plot_fg="#c8ccd0"),
+}
+
+
+# The theme in force, so a panel can ask for a neutral tone instead of writing
+# a hex literal. Hard-coded "#777" and "#9aa0a6" were dark-theme values that
+# looked wrong the moment the operator switched to light.
+_ACTIVE = "dark"
+
+WARN = "#cc8866"        # amber: "this will not do what you expect"
+
+
+def muted() -> str:
+    """Secondary text colour for the theme in force."""
+    return _THEME[_ACTIVE]["status"]
+
+
+def line() -> str:
+    """Neutral border colour for the theme in force."""
+    return _THEME[_ACTIVE]["border"]
+
+
 # ── Reusable QSS snippets ─────────────────────────────────────────────────────
 
 def toggle_btn(key: str) -> str:
@@ -54,12 +80,19 @@ def record_btn(key: str) -> str:
 
 
 def solid_btn(key: str) -> str:
-    """Always-on accent-coloured button."""
+    """Accent-coloured button for a panel's primary action.
+
+    The disabled rule is not optional: a stylesheet background overrides the
+    palette, so without it a greyed-out button still reads as the thing to
+    press — which on a rig means reaching for an action that will not fire.
+    """
     c = HEX[key]
     return (
         f"QPushButton{{background:{c};color:white;font-weight:bold;"
         "border-radius:4px;padding:3px 8px}"
         f"QPushButton:pressed{{background:{QColor(c).darker(120).name()}}}"
+        f"QPushButton:disabled{{background:{QColor(c).darker(260).name()};"
+        f"color:{_THEME['dark']['status']}}}"
     )
 
 
@@ -87,14 +120,6 @@ def dock_accent(key: str) -> str:
 
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
-
-# Neutral (non-accent) tones per theme: (groupbox border, pane border, status
-# text, plot background, plot foreground).
-_THEME = {
-    "light": dict(border="#bbb", pane="#ccc", status="#555", plot_bg="w",       plot_fg="k"),
-    "dark":  dict(border="#454a4e", pane="#3a3e42", status="#9aa0a6", plot_bg="#1b1e20", plot_fg="#c8ccd0"),
-}
-
 
 def _qss(t: dict) -> str:
     return f"""
@@ -157,7 +182,9 @@ def apply_theme(app, theme: str) -> None:
     """Apply a full dark/light theme to the QApplication (palette + QSS +
     pyqtgraph). Call once at startup, before building windows/plots."""
     import pyqtgraph as pg
+    global _ACTIVE
     dark = theme == "dark"
+    _ACTIVE = "dark" if dark else "light"
     app.setStyle("Fusion")
     app.setPalette(_dark_palette() if dark else app.style().standardPalette())
     app.setStyleSheet(_qss(_THEME["dark" if dark else "light"]))
