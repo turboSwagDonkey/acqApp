@@ -8,6 +8,19 @@ mis-set knobs rather than a bad algorithm — see PLAN.md §7 (ah) and (ai).
 when configured correctly (151/151 frames on the rig's pAce clip) and because
 the measurements behind it were expensive.
 
+## To work on it, use the branch — do not restore it here
+
+**`git checkout pupil-tracking`** is a live, green tree with this code back in
+`devices/pupil_cam/` and its two test files re-registered (830 checks, 24 files).
+Its **`PUPIL_TRACKING.md`** is the guide: setup on a machine with no rig, the
+three ways to exercise the tracker, and every measurement below plus the ones
+that are only in `docs/SESSIONLOG.md`.
+
+That branch exists so a colleague can change the tracker **without touching
+master and without needing the operator's machine**. Work there and open a pull
+request; the restore steps below are for merging that work back, not for
+starting it.
+
 ## What is here
 
 | file | what it is |

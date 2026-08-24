@@ -35,7 +35,13 @@ before and after anything.
 `archive/pupil_tracking/` with a README carrying the measurements; nothing
 imports it. The pupil camera still previews and records, and the **eye region**
 is kept — drawn on the preview, persisted, recorded. Do not restore the tracker
-without being asked.
+**on master** without being asked.
+
+**Tracker work happens on the `pupil-tracking` branch, not here** (2026-08-24,
+operator's request: somewhere a colleague can try changes separately). It has
+the tracker live and green — 830 checks, 24 files — and **`PUPIL_TRACKING.md`**
+is its entry point, written for someone who has never seen the repo. Master's
+decision is unchanged; the branch merges back by pull request.
 
 **There are SIX pupil clips on `E:`, not one** (found 2026-08-22 — four sessions
 measured the first and generalised from it). Still worth knowing, since they are
