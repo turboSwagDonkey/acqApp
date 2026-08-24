@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
-    QVBoxLayout, QWidget,
+    QComboBox, QGraphicsEllipseItem, QGraphicsRectItem, QHBoxLayout, QLabel,
+    QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
@@ -29,6 +29,8 @@ from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet
 _FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
 _ROI_PEN = pg.mkPen("#00d0ff", width=2)
 _ROI_HOVER = pg.mkPen("#4dff88", width=3)
+_BAND_PEN = pg.mkPen("#00d0ff", width=1, style=Qt.PenStyle.DashLine)
+_BAND_FILL = pg.mkBrush(0, 208, 255, 40)
 
 
 class _DrawViewBox(pg.ViewBox):
@@ -42,6 +44,11 @@ class _DrawViewBox(pg.ViewBox):
     Gated on a toggle rather than a modifier key: panning and zooming a 4432 px
     frame is how you find the target in the first place, so the two cannot both
     own an unqualified left-drag.
+
+    The rubber band is not decoration. Without it the drag produced nothing
+    until release, so there was no way to tell whether the mode was even armed
+    until after committing an ROI — and it is drawn in the SAME shape the
+    release will create, so what is dragged is what appears.
     """
 
     drawn = pyqtSignal(object, object)      # (x0, y0), (x1, y1) in image px
@@ -49,21 +56,58 @@ class _DrawViewBox(pg.ViewBox):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self._draw = False
+        # NOT `shape`: QGraphicsItem.shape() is a method Qt calls during hit
+        # testing, and shadowing it with a string raises inside Qt's own paint
+        # path — where the traceback names neither this class nor the assignment.
+        self.roi_shape = "rectangle"
+        self._rect = QGraphicsRectItem()
+        self._ellipse = QGraphicsEllipseItem()
+        for it in (self._rect, self._ellipse):
+            it.setPen(_BAND_PEN)
+            it.setBrush(_BAND_FILL)
+            it.setZValue(1e6)
+            it.hide()
+            # ignoreBounds: a half-drawn band must not move autoRange.
+            self.addItem(it, ignoreBounds=True)
 
     def set_draw_mode(self, on: bool) -> None:
         self._draw = bool(on)
         self.setCursor(Qt.CursorShape.CrossCursor if on
                        else Qt.CursorShape.ArrowCursor)
+        if not on:
+            self._hide_band()
+
+    def _hide_band(self) -> None:
+        self._rect.hide()
+        self._ellipse.hide()
+
+    def _show_band(self, a, b) -> None:
+        x0, x1 = sorted((a.x(), b.x()))
+        y0, y1 = sorted((a.y(), b.y()))
+        if self.roi_shape.startswith("rect"):
+            self._ellipse.hide()
+            self._rect.setRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+            self._rect.show()
+        else:
+            # The circle the release will make: same centre, same radius.
+            self._rect.hide()
+            r = ((x1 - x0) + (y1 - y0)) / 4.0
+            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            self._ellipse.setRect(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            self._ellipse.show()
 
     def mouseDragEvent(self, ev, axis=None) -> None:
         if not self._draw or ev.button() != Qt.MouseButton.LeftButton:
             super().mouseDragEvent(ev, axis=axis)
             return
         ev.accept()
+        a = self.mapToView(ev.buttonDownPos())
+        b = self.mapToView(ev.pos())
         if ev.isFinish():
-            a = self.mapToView(ev.buttonDownPos())
-            b = self.mapToView(ev.pos())
+            self._hide_band()
             self.drawn.emit((a.x(), a.y()), (b.x(), b.y()))
+        else:
+            self._show_band(a, b)
 
 
 class RoiEditor(QWidget):
@@ -112,7 +156,10 @@ class RoiEditor(QWidget):
         self._btn_draw.setToolTip(
             "Drag on the image to place an ROI where you want it.\n"
             "Off, dragging pans the view as usual.")
+        self._btn_draw.setStyleSheet(style.toggle_btn("dmd"))
         self._btn_draw.toggled.connect(self._vb.set_draw_mode)
+        self._cmb.currentTextChanged.connect(
+            lambda t: setattr(self._vb, "roi_shape", t))
         bar.addWidget(self._btn_draw)
         for label, slot in (("Add", self._on_add), ("Delete", self._on_delete),
                             ("Clear", self._on_clear)):
@@ -218,7 +265,10 @@ class RoiEditor(QWidget):
         if self._cmb.currentText().startswith("rect"):
             roi = RectRoi(x=cx, y=cy, w=w, h=h)
         else:
-            roi = CircleRoi(x=cx, y=cy, r=max(w, h) / 2.0)
+            # (w + h) / 4, matching the band exactly — the radius the drag
+            # previewed is the radius it makes. max() would overflow the drag
+            # on the short side and min() would collapse a sloppy one.
+            roi = CircleRoi(x=cx, y=cy, r=(w + h) / 4.0)
         self._set.add(roi)
         self._rebuild_items()
         self._list.setCurrentRow(len(self._set) - 1)

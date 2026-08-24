@@ -291,6 +291,65 @@ def main() -> int:
                 f"({roi.x:.0f}, {roi.y:.0f})")
         r.check(abs(roi.w - 60) < 1 and abs(roi.h - 50) < 1,
                 f"…and sized by it ({roi.w:.0f}x{roi.h:.0f})")
+    # The REAL drag path, not just the handler: mouseDragEvent maps the event's
+    # local coordinates into image space, and nothing exercised that mapping.
+    from PyQt6.QtCore import QPointF, Qt as _Qt
+    ed._on_clear()
+    ed._btn_draw.setChecked(True)
+    vb = ed._vb
+
+    class _Ev:
+        """Duck-types exactly what _DrawViewBox.mouseDragEvent calls."""
+
+        def __init__(self, down, now, finish=True):
+            self._d, self._p, self._f = QPointF(*down), QPointF(*now), finish
+            self.accepted = False
+
+        def button(self): return _Qt.MouseButton.LeftButton
+        def buttonDownPos(self, *_a): return self._d
+        def pos(self): return self._p
+        def isFinish(self): return self._f
+        def accept(self): self.accepted = True
+
+    want_a, want_b = (200.0, 150.0), (400.0, 330.0)
+    la, lb = vb.mapFromView(QPointF(*want_a)), vb.mapFromView(QPointF(*want_b))
+    vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y())))
+    if r.check(len(ed.roi_set) == 1, "a real drag event creates one ROI"):
+        got = list(ed.roi_set)[0]
+        r.check(abs(got.x - 300) < 0.5 and abs(got.y - 240) < 0.5
+                and abs(got.w - 200) < 0.5 and abs(got.h - 180) < 0.5,
+                f"…exactly where it was dragged: centre ({got.x:.1f}, "
+                f"{got.y:.1f}) {got.w:.0f}x{got.h:.0f}, want (300, 240) 200x180")
+
+    # The rubber band tracks the drag and clears on release, so the mode is
+    # visible before anything is committed.
+    ed._on_clear()
+    mid = _Ev((la.x(), la.y()), (lb.x(), lb.y()), finish=False)
+    vb.mouseDragEvent(mid)
+    r.check(vb._rect.isVisible() and len(ed.roi_set) == 0,
+            "mid-drag shows the band and commits nothing")
+    band = vb._rect.rect()
+    r.check(abs(band.width() - 200) < 0.5 and abs(band.height() - 180) < 0.5,
+            f"…the size being dragged ({band.width():.0f}x{band.height():.0f})")
+    vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y())))
+    r.check(not vb._rect.isVisible(), "…and it clears on release")
+
+    # A circle's band must be the circle that gets made, or the preview lies.
+    ed._on_clear()
+    ed._cmb.setCurrentText("circle")
+    vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y()), finish=False))
+    er = vb._ellipse.rect()
+    vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y())))
+    made = list(ed.roi_set)[0]
+    r.check(abs(er.width() / 2 - made.r) < 0.5,
+            f"the circle band previews the radius it creates "
+            f"({er.width() / 2:.1f} vs {made.r:.1f})")
+    ed._cmb.setCurrentText("rectangle")
+    ed._btn_draw.setChecked(False)
+    r.check(not vb._rect.isVisible() and not vb._ellipse.isVisible(),
+            "disarming Draw clears any band left on screen")
+    ed._on_clear()
+
     # CONTROL: a stray click must not litter the set with zero-size ROIs.
     n = len(ed.roi_set)
     ed._on_drawn((200.0, 200.0), (200.5, 200.5))
