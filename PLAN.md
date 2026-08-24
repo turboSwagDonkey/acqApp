@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-22 |
+| **Last updated** | 2026-08-24 |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-22 closed the pupil complaint**: the jitter and dropouts are **two settings, not the algorithm** — `edge_select="strongest"` alone takes a 151/151 clip to 44/151, and the operator was running it (§0, §7 (ah)). Found by reading their saved `acqapp_local.json` and replaying **all six** rig clips, five of which this file never knew existed. Suite **798 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6's top three — item 1 is now "tell the operator and re-run", item 2 landed on 2026-08-21. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). **2026-08-22** settled the pupil complaint — jitter and dropouts were two mis-set knobs, not the algorithm (§7 (ah)) — and on **2026-08-24 the operator retired the tracker anyway**: it is in `archive/pupil_tracking/`, out of the live code, with the eye region kept (§7 (ai)). The pupil camera still previews and records. Suite **660 checks, 21 files — all green**. §5b **A3 triggered** and is the one open architecture item. **Next focus: DMD calibration and ROI drawing** — §6. |
 
 ---
 
@@ -28,15 +28,18 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **798 checks, 23 files, ~54 s**, and it is ALL GREEN. Run it
-before and after anything. For pupil work also run
-`devices/pupil_cam/_test_tracking.py` (15 synthetic ground-truth checks): the
-suite and that script cover different failures, and 2026-08-18 showed the
-script passing 15/15 while the tracker could not follow a real eye at all.
-**Better still, replay the rig's own clips.**
+the contract: **660 checks, 21 files, ~46 s**, and it is ALL GREEN. Run it
+before and after anything.
 
-**There are SIX clips on `E:`, not one** (found 2026-08-22 — four sessions
-measured the first and generalised from it):
+**The pupil tracker is retired** (2026-08-24, operator's call). It lives in
+`archive/pupil_tracking/` with a README carrying the measurements; nothing
+imports it. The pupil camera still previews and records, and the **eye region**
+is kept — drawn on the preview, persisted, recorded. Do not restore the tracker
+without being asked.
+
+**There are SIX pupil clips on `E:`, not one** (found 2026-08-22 — four sessions
+measured the first and generalised from it). Still worth knowing, since they are
+the only real footage on this machine:
 
     E:\pAce\VF203.2R\20260701\{FOV1_T1,FOV1_T2,FOV1_T3,FOV2_T1,FOV2_T2}\*_Pupil.avi
     E:\State\VF182.6B\20260709\FOV1_T1\FOV1_T1_Pupil.avi
@@ -55,7 +58,7 @@ Use the **absolute** path to that interpreter. The shell usually starts in
 `Desktop\python` (the *parent* of this repo), where `.venv\Scripts\python.exe`
 resolves to nothing and Python reports a baffling "the module '.venv' could not
 be loaded". Python here is **3.14** — no cv2 wheels exist for it, which is why
-`devices/pupil_cam/tracking.py` is hand-rolled numpy.
+the archived tracker is hand-rolled numpy and `avi.py` reads RIFF by hand.
 
 **Sibling projects are proven code, not scratch work.** `../stage_control/` and
 `../dmdGUI_project/` are standalone apps that already work on this hardware, and
@@ -96,58 +99,17 @@ asserted in a docstring that "the rig's forward direction is the falling one".
 **The rig fact to remember: forward = rising voltage = positive speed and
 distance.**
 
-**The pupil tracker now has two controls for where it looks** (§7 (ae), (af)),
-and on the rig's own clip they take it from **0/151 frames to 151/151** with no
-click anywhere:
+**Why the tracker was retired, in one line:** the operator's "jitter and
+dropouts" were `edge_select="strongest"` and `smooth_sigma=12` in their saved
+settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose to
+retire it anyway rather than re-tune. **The numbers are in
+`archive/pupil_tracking/README.md`**, not here.
 
-- **The eye region** — a circle in camera px, set on the preview. It bounds the
-  seed and refuses a fit centred outside. Without it `coarse_seed` bails at its
-  >50 %-dark guard, because the frame is 53 % below threshold. **Draw it
-  generously**: that same guard now applies *inside* the circle.
-- **Ignored directions** (`exclude_deg`) — where a lid crosses the pupil, the
-  rays find the *lid's* edge and those points go into the fit like any other.
-  `find_circular_edge` had always taken this argument; nothing exposed it.
-  "Find lids" measures the sectors (`tracking.lid_sectors`) instead of asking
-  the operator to know the angles. Worth **conf 0.26 → 0.34, rms 1.16 → 0.98,
-  and half the worst-case frame-to-frame radius jump.**
-
-Two claims this file used to make, both corrected by measurement: auto-seeding
-*can* work unlimited, but only over thresholds 30–45 — a 15-level window with
-the shipped 60 outside it, against 25–80 with a region. And the dark region is
-**not** elliptical: measured directly it sits at 50–57 px over ~200° of arc, and
-the low points are lid occlusion, not shape. Fitting a circle is right.
-
-**THE PUPIL COMPLAINT IS SETTLED, AND IT WAS NEVER THE ALGORITHM** (2026-08-22).
-Read the operator's saved `acqapp_local.json` — it is what the app loads at
-launch, and on 2026-08-21 it held `edge_select="strongest"`, `smooth_sigma=12`,
-`min_confidence=0.01`, `min_strength=0.5`, `threshold=23`, `n_rays=200`,
-`reseed_after=100`. Flipping **one knob at a time** on the pAce clip, which
-tracks 151/151 stock:
-
-| knob at the operator's value | tracked | lost runs | cx sd |
-|---|---|---|---|
-| *(none — the stock config)* | 151/151 | 0 | 0.87 |
-| `edge_select="strongest"` | **44/151** | 23 | **28.7** |
-| `smooth_sigma=12.0` | **46/151** | 24 | **20.0** |
-| `min_confidence=0.01` | 151/151 | 0 | 0.87 |
-| `min_strength=0.5` | 150/151 | 1 | 0.54 |
-| `reseed_after=100` | 151/151 | 0 | 0.87 |
-
-Three of the five are harmless alone. **Two are ruinous, and each independently
-produces exactly the reported symptoms.** On the operator's own clip, restoring
-`edge_select="first"` and changing nothing else goes **5/151 → 145/151**,
-|dr| median 1.394 → 0.269, confidence 0.010 → 0.205. `reseed_after=100` is the
-amplifier: one bad frame costs 100 blind ones, which is where their 102-frame
-dropout comes from.
-
-**`smooth_sigma` has no safe default and must not be given one.** Best is 0.5 on
-the State clip (141/151, against 86 at 1.5) and 1.5–3.0 on the pAce clip. From
-4.0 the radius silently inflates 53.6 → 70 px while the frame count stays high.
-
-**PICK UP HERE — §6's "THE NEXT THREE THINGS".** Item 1 is now a message to the
-operator, not code. The DMD ROI work needs someone at the rig (it projects
-light) and has three open design calls named in §6 item 4; the wheel diameter
-needs a ruler.
+**PICK UP HERE — DMD calibration and ROI drawing** (operator, 2026-08-24). That
+is the focus now; §6 leads with it. The offline half is built and tested and the
+editor is in the DMD tab; what is missing is a way to *produce* a calibration —
+`run_calibration()` exists and nothing in the UI calls it. Note it projects
+light, so §2's actuation rule applies.
 
 **The method that earned its keep over 2026-08-18/19, and the one to reuse.**
 Every real defect in those sessions was in code that had only ever run at *toy*
@@ -356,56 +318,29 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Tell the operator their two settings, and have them re-run.** The
-   diagnosis is done (§0, §7 (ah)) and no further tracker work is justified
-   until they have. What to say:
-   - **Set Edge choice back to `first`.** On their own clip that alone is
-     5/151 → 145/151 frames.
-   - **Set Edge smoothing back to ~1.5, or 0.5 for footage as dark as
-     `State/VF182.6B`.** Their 12.0 is bad on every clip measured.
-   - Then re-run and say whether it is acceptable. **If it still is not**, the
-     next step is ground truth, not tuning: `_mark_truth.py mark --clip … --out
-     truth.json` then `… score`. Both automatic accuracy metrics failed
-     (§7 (ag)), and jitter measures steadiness, not correctness.
-   **Two branches stay closed.** The lighter algorithm is 4× worse (§7 (ag)).
-   And a hand-placed first seed is worth ~5 frames, not a rescue — with
-   `"strongest"` still set, a *perfect* seed gives 18/151 (§7 (ah)).
+1. **Give the app a way to PRODUCE a DMD calibration.** Everything else in the
+   chain exists: `devices/dmd/calibration.py` builds the patterns, decodes them
+   and fits the transform (`run_calibration(project, grab, …)`, 51 checks, decode
+   median 0.40 px / homography rms 0.41 px on a simulated rig), and the DMD tab
+   can **load** a `DmdCalibration` JSON and draw ROIs against it. Nothing writes
+   one. **`run_calibration` is imported by its test and by nothing else.**
+   - It takes `project` and `grab` as callables, deliberately, so the wiring is
+     small: `project` → the DMD controller, `grab` → the **voltage camera**
+     (`ModuleHost.latest_frame`, already widened for the ROI editor).
+   - **Patterns must bypass `build_frame`** — they are already at the device's
+     size, and its scale/rotation/offset, plus `fit` which overrides all three,
+     would transform the very geometry being measured.
+   - **`alp.project()` uploads ONE frame** (`SeqAlloc(nbImg=1)`), so the sweep is
+     software-timed, project→grab per plane. ~40 planes.
+   - **This actuates.** Verify the whole path short of the projecting call, then
+     ask (§2). Close `dmdGUI_project` first — one process owns the USB.
 
-~~Pupil tracking — draw an ROI and try a lighter algorithm.~~ **Superseded
-2026-08-21 by the above.** The original framing is kept because its reasoning
-still stands:
-   Two sessions of work took it from *not finding the eye at all* to finding it
-   every frame, but **the operator's verdict on 2026-08-21 is still "not
-   good"**, and that is the number that counts, not the confidence figure.
-   The direction they asked for, and the state of it:
-   - **Let the operator draw an ROI around the eye.** Today's region is a
-     *circle*, placed by two clicks. An eye is an almond, so a circle round it
-     necessarily takes in a lot of fur. A rectangle is what "ROI" normally
-     means and would fit the eye far better. **Not started.**
-   - **Try a lighter algorithm.** The current one is a port of LabVIEW's IMAQ
-     *Find Circular Edge* — an annulus, 64 rays, per-ray sub-pixel edges, a
-     robust circle fit and a refinement loop, with a dozen knobs. Against
-     footage whose interior is grey 23 and whose surround is grey 61, that is
-     a great deal of machinery for a bimodal threshold.
-     **Settled 2026-08-21 (§7 (ag)): tried at the right threshold, and it
-     loses** — 4× the jitter and 4× the centre wander, no faster. Otsu inside
-     the ROI is unusable too (picks ~135, r = 94 px). Closed.
-
-2. ~~**Wire `RoiEditor` into the DMD settings tab.**~~ **Done 2026-08-21**
-   (commit `720a1b6`), and this entry was stale for a session. A
-   "Photostimulation ROIs" group in the DMD tab opens the editor as a dialog,
-   drawing on a **voltage-camera** frame via a deliberate `ModuleHost`
-   widening (`latest_frame`) — the §5b A4 case. Two traps it hit: `get_latest()`
-   *consumes*, so the adapter caches a frame instead; and the cache is kept at
-   full resolution, since ROIs and the registration are both in camera px.
-   **What is still open is the design, not the wiring:**
-   - **Single frame or an average?** (item 4 (c), still open.)
-   - **Do ROIs persist across sessions, and is a mask one static pattern or a
-     sequence?** (item 4, still open.) The second decides whether
-     `alp.project()` is enough or `project_sequence()` is needed.
-   Note the editor itself needs **no light** — it draws over a snapshot. Only
-   the calibration sweep and the stimulation do, so the wiring can be built and
-   mock-verified before anyone stands at the rig.
+2. **Run the sweep at the rig and check the fields overlap.** The operator
+   expects the DMD and camera fields to be "about the same size", and the first
+   complementary pair answers it before any Gray coding. `run_calibration`
+   raises with a diagnosis if the projector does not modulate the camera at all.
+   Then decide **(c) single frame or an average** for the ROI snapshot, which is
+   still open from item 4.
 
 3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
    answers it. Until it is set the app reports rev/s and rev instead of mm/s and
@@ -413,9 +348,9 @@ still stands:
    `volts_per_rev` is a measured 4.912 and the sign is settled, so this is the
    only thing between the wheel and fully physical units.
 
-~~Set a search limit on the pupil camera at the rig and check it holds.~~
-**Done 2026-08-21, and it is item 1 above now** — the operator tried it and the
-answer was "still not good".
+~~Pupil tracking.~~ **Retired 2026-08-24** — `archive/pupil_tracking/`. The
+eye region stayed. Do not restore without being asked; the README there has the
+measurements and the restore steps.
 
 ~~Settle `_SIGN`.~~ **Done 2026-08-19** — the operator answered it; see §0 and
 §7 (ad).
@@ -597,6 +532,32 @@ Item 5 keeps the reasoning and the numbers.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-24 (ai) — the pupil tracker is archived; the eye region stays
+- **Operator's call: "ditch the pupil tracking for now — archive it, but remove
+  it from the live code, keep the seed limiting circle."** Done as asked, and as
+  an archive rather than a delete: `archive/pupil_tracking/` holds `tracking.py`,
+  `rays.py`, `fits.py`, `track_worker.py`, both diagnostic scripts and the two
+  test files, with a **README carrying the measurements and the restore steps**
+  — including the `PupilSettings` fields that were removed with the panel
+  controls that set them, which is the part that would be reconstructed wrongly.
+- **What the pupil camera still does:** opens, previews, records to HDF5, drives
+  the LED, replays a clip. What it no longer does: fit, trace a radius, draw the
+  search overlay, seed on click, find lids.
+- **The eye region survives intact** — two-click placement on the preview, the
+  rubber band, the spinboxes, persistence, and `pupil_limit_x/y/r` in the
+  session metadata. It bounds nothing now; it is operator-set geometry.
+- **The panel went from ~14 controls to three groups** (Camera, Eye region,
+  Illumination) — checked by rendering it offscreen, not by reading the diff.
+- **Suite 798 → 660 checks, 23 → 21 files, all green.** The 138 checks went with
+  the code they covered. Four live tests needed edits rather than deletion:
+  `test_pupil_limit` (kept the region half, dropped the tracker half),
+  `test_pupil_video` (kept the reader/worker/adapter), `test_settings_persistence`
+  (its pupil rows drove tracking spinboxes) and `test_session_recording` (it
+  asserted the radius trace filled; now it asserts frames reach the preview).
+- **`archive/` is excluded from `test_undefined_names` and undrawn in
+  `test_structure`, but its files ARE listed in the tree** — removed code should
+  not be held to live standards, and should not be invisible either.
+
 ### 2026-08-22 (ah) — the pupil complaint was two settings, not the algorithm
 - **Both of §6 item 1's blockers dissolved on inspection, and neither needed the
   operator.** "Get a clip that shows a dropout" — there are **six** clips on
@@ -681,107 +642,7 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   real dropout**; changing the default on this evidence would file exactly the
   plausible-wrong-value the §5 audit spent twenty items removing.
 
-### 2026-08-21 (af) — "tracking is still awful": it was the eyelids
-- **The operator was right, and the region was only half of it.** The region
-  fixed *finding* the eye; it does nothing to the fit. Rendering the fit over
-  the clip and reading it: only **29 of 64 rays** survived, confidence averaged
-  **0.26** against a 0.10 floor, and the circle's bottom arc ran out into fur.
-- **The cause, from two independent measurements that agree.** Binning ray
-  survival by angle puts the failures in 60–160° and ~235–290°; sweeping the
-  boundary intensity directly puts the occlusion in the same places. Where a
-  lid crosses, the rays find the **lid's** edge and those points enter the fit
-  like any other, for the robust rejection to fight every frame.
-- **`find_circular_edge` has taken `exclude_deg` all along** — its docstring
-  even gives the eyelid example — and **nothing exposed it.** Now
-  `PupilSettings.exclude_deg`, with **"Find lids"** on the preview bar:
-  `tracking.lid_sectors()` measures the sectors from a run of fits rather than
-  asking the operator to know that the lower lid is at 70–155° (and the
-  convention, 90° = image *bottom*, is a trap). Drawn on the preview in red,
-  and recorded in the session file — a radius trace fitted from two thirds of
-  the ring cannot be compared with one fitted from all of it.
-- **Measured, auto-seed only, no click:** frames **149/151 → 151/151**,
-  confidence **0.260 → 0.338**, rms **1.16 → 0.98 px**, p95 frame-to-frame
-  radius jump **0.98 → 0.48 px**. The visible win is the second half of the
-  clip, where the old trace sawtooths ±1.5 px and drops out and the new one
-  does not. Stable across how long it watches: 30, 60 and 120 frames all give
-  a sector in the same place and all beat the baseline.
-- **A hypothesis of mine that the data killed, recorded so it is not retried:**
-  the boundary radius varies 38→60 px by direction, which looked like an
-  off-axis *ellipse*. It is not. Fitted to the directly-measured boundary a
-  circle beats an ellipse (1.88 vs 3.63 px rms) — the variation is occlusion,
-  and the app's r=53 already matches the unoccluded arc. Separately: **ellipse
-  mode is broken on real footage** (8/151 frames), because `_BAND_ELLIPSE`
-  sweeps r×0.35–2.9 = 18–154 px, far out into fur. Not fixed — this rig fits
-  circles — but it passes `_test_tracking.py` on synthetic eyes, which is the
-  same synthetic-suite blind spot as §6 item 6.
-- Suite **756 → 776, 23/23**; `_test_tracking.py` 15/15.
-- **The operator's verdict at the end of the session was still "not good".**
-  That outranks every number above, and §6 item 1 is now that complaint rather
-  than a tick. What they asked for: **draw an ROI** (a rectangle round the eye,
-  not a circle — an eye is an almond and a circle round it takes in fur) and a
-  **lighter algorithm** than a 64-ray IMAQ port.
-- **The lightweight prototype is UNFINISHED, not disproved.** Threshold →
-  largest component → moments/boundary fit measured *worse* than the ray
-  tracker (r 66–86 px against 53.7, jitter 2–14× higher) — but at threshold
-  **60, which is the surround's grey level**, so the blob was leaking into the
-  orbit. The interior is 23. The threshold sweep that decides it was written
-  and not run. Anyone resuming: run it before concluding, and try an **Otsu
-  threshold inside the ROI**, which removes the knob altogether. Also note a
-  blob method is not automatically cheaper — `scipy.label` +
-  `binary_fill_holes` on a 330×240 crop was **3.2 ms/frame** against the ray
-  tracker's **2.1 ms**.
-- **`RoiEditor` has never been in the UI**, which the operator found by going
-  to look for it in the DMD tab. It is imported by `tests/test_dmd_roi.py` and
-  by nothing else. Promoted to §6 item 2 — and worth knowing that the editor
-  itself emits no light, so the wiring is buildable and mock-verifiable now.
-- **Two operator calls, about different things — do not merge them.** The
-  **editor belongs in the DMD settings tab** (that is where they went looking).
-  And **the DMD images through the voltage camera, not the pupil camera** — so
-  the frame it draws on is an ORCA frame. Written down because the obvious
-  reading of the second ("put the editor on the voltage cam") is wrong, and
-  this session made that mistake once already.
-
-### 2026-08-19/20 (ae) — a search limit for the pupil: 0/151 → 149/151 on the rig's clip
-- **The operator's ask: a limiting circle, because the animal is head-fixed and
-  the eye only ever occupies one part of the frame.** It is a circle in camera
-  px (`limit_x/limit_y/limit_r`, r ≤ 0 = whole frame) that bounds `coarse_seed`
-  and refuses a fit centred outside it. Set by dragging a `pg.CircleROI` on the
-  preview or by typing three numbers; drawn on the preview whenever it is in
-  force, and recorded in the session metadata — it decides which fits were
-  accepted, so the trace cannot be read without it.
-- **Validated on the rig's own clip, not a synthetic one.** This machine is the
-  rig, so `E:\pAce\VF203.2R\20260701\FOV1_T1\FOV1_T1_Pupil.avi` is right here.
-  Auto-seed only, no click anywhere: **coarse_seed 0/151 → 151/151, tracked
-  0/151 → 149/151**, centre 853.4 ± 1.0 / 506.4 ± 1.6 px, radius 53.2 ± 2.0 px,
-  2.59 ms/frame. PLAN's diagnosis was exactly right — the frame is **53.3 %**
-  below threshold 60, over the >50 % guard.
-- **Two things the measurement corrected, both of which this file had asserted:**
-  "auto-seeding cannot work on this rig's framing" is too strong (it works over
-  a 15-level threshold window, 30–45, with the shipped 60 outside it — the limit
-  widens that to 25–80), and the crop is **not simply faster**: a whole-frame
-  call that bails at the guard is the cheapest of all, 1.96 ms against the
-  limit's 5.67 ms, because it gives up before labelling anything. The crop stops
-  the limit from *costing* a sensor-sized labelling. Both now said in the code.
-- **The trap the limit inherits, written into a test so it is not rediscovered:**
-  drawn tight around the pupil, the same >50 %-dark guard fires *inside* the
-  circle. The tooltip says to draw it generously.
-- **`tests/test_pupil_limit.py`, 43 checks**, each with a control — including
-  that a drag writes back as **one** settings change (three would drop the
-  annulus lock three times, since `limit` is in `_RESEED_ON`) and that a click
-  outside the limit is refused rather than queueing a search that can only fail.
-  Suite **688 → 732, 23/23**; `_test_tracking.py` still 15/15.
-- **Trim pass: nine more files, and a recommendation to close it** — see §6
-  item 5. It found three stale facts, which was worth more than the 27 lines.
-- **This file was 1432 lines**, against §8's target of ~400; the operator asked
-  for it shorter mid-session. **1432 → 646**, in two moves and with nothing
-  deleted: §7 held 16 sessions where §8 says ~3, so (ab) and older went to
-  `docs/SESSIONLOG.md`; and the closed reasoning in §5b and §6 went to a new
-  **[docs/DECISIONS.md](docs/DECISIONS.md)**, each block replaced by the verdict
-  plus a pointer. What is left is either live or a fact still being used, so
-  ~400 is not reachable without losing something — the next real reduction is
-  §6 items 8–10 and "Needs the rig", once that rig session happens.
-
-Entries before 2026-08-19/20 (ae) are in
+Entries before 2026-08-21 (ag) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file
 small enough to read at the start of every session.
 

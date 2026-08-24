@@ -4,6 +4,106 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-21 (af) — "tracking is still awful": it was the eyelids
+- **The operator was right, and the region was only half of it.** The region
+  fixed *finding* the eye; it does nothing to the fit. Rendering the fit over
+  the clip and reading it: only **29 of 64 rays** survived, confidence averaged
+  **0.26** against a 0.10 floor, and the circle's bottom arc ran out into fur.
+- **The cause, from two independent measurements that agree.** Binning ray
+  survival by angle puts the failures in 60–160° and ~235–290°; sweeping the
+  boundary intensity directly puts the occlusion in the same places. Where a
+  lid crosses, the rays find the **lid's** edge and those points enter the fit
+  like any other, for the robust rejection to fight every frame.
+- **`find_circular_edge` has taken `exclude_deg` all along** — its docstring
+  even gives the eyelid example — and **nothing exposed it.** Now
+  `PupilSettings.exclude_deg`, with **"Find lids"** on the preview bar:
+  `tracking.lid_sectors()` measures the sectors from a run of fits rather than
+  asking the operator to know that the lower lid is at 70–155° (and the
+  convention, 90° = image *bottom*, is a trap). Drawn on the preview in red,
+  and recorded in the session file — a radius trace fitted from two thirds of
+  the ring cannot be compared with one fitted from all of it.
+- **Measured, auto-seed only, no click:** frames **149/151 → 151/151**,
+  confidence **0.260 → 0.338**, rms **1.16 → 0.98 px**, p95 frame-to-frame
+  radius jump **0.98 → 0.48 px**. The visible win is the second half of the
+  clip, where the old trace sawtooths ±1.5 px and drops out and the new one
+  does not. Stable across how long it watches: 30, 60 and 120 frames all give
+  a sector in the same place and all beat the baseline.
+- **A hypothesis of mine that the data killed, recorded so it is not retried:**
+  the boundary radius varies 38→60 px by direction, which looked like an
+  off-axis *ellipse*. It is not. Fitted to the directly-measured boundary a
+  circle beats an ellipse (1.88 vs 3.63 px rms) — the variation is occlusion,
+  and the app's r=53 already matches the unoccluded arc. Separately: **ellipse
+  mode is broken on real footage** (8/151 frames), because `_BAND_ELLIPSE`
+  sweeps r×0.35–2.9 = 18–154 px, far out into fur. Not fixed — this rig fits
+  circles — but it passes `_test_tracking.py` on synthetic eyes, which is the
+  same synthetic-suite blind spot as §6 item 6.
+- Suite **756 → 776, 23/23**; `_test_tracking.py` 15/15.
+- **The operator's verdict at the end of the session was still "not good".**
+  That outranks every number above, and §6 item 1 is now that complaint rather
+  than a tick. What they asked for: **draw an ROI** (a rectangle round the eye,
+  not a circle — an eye is an almond and a circle round it takes in fur) and a
+  **lighter algorithm** than a 64-ray IMAQ port.
+- **The lightweight prototype is UNFINISHED, not disproved.** Threshold →
+  largest component → moments/boundary fit measured *worse* than the ray
+  tracker (r 66–86 px against 53.7, jitter 2–14× higher) — but at threshold
+  **60, which is the surround's grey level**, so the blob was leaking into the
+  orbit. The interior is 23. The threshold sweep that decides it was written
+  and not run. Anyone resuming: run it before concluding, and try an **Otsu
+  threshold inside the ROI**, which removes the knob altogether. Also note a
+  blob method is not automatically cheaper — `scipy.label` +
+  `binary_fill_holes` on a 330×240 crop was **3.2 ms/frame** against the ray
+  tracker's **2.1 ms**.
+- **`RoiEditor` has never been in the UI**, which the operator found by going
+  to look for it in the DMD tab. It is imported by `tests/test_dmd_roi.py` and
+  by nothing else. Promoted to §6 item 2 — and worth knowing that the editor
+  itself emits no light, so the wiring is buildable and mock-verifiable now.
+- **Two operator calls, about different things — do not merge them.** The
+  **editor belongs in the DMD settings tab** (that is where they went looking).
+  And **the DMD images through the voltage camera, not the pupil camera** — so
+  the frame it draws on is an ORCA frame. Written down because the obvious
+  reading of the second ("put the editor on the voltage cam") is wrong, and
+  this session made that mistake once already.
+
+### 2026-08-19/20 (ae) — a search limit for the pupil: 0/151 → 149/151 on the rig's clip
+- **The operator's ask: a limiting circle, because the animal is head-fixed and
+  the eye only ever occupies one part of the frame.** It is a circle in camera
+  px (`limit_x/limit_y/limit_r`, r ≤ 0 = whole frame) that bounds `coarse_seed`
+  and refuses a fit centred outside it. Set by dragging a `pg.CircleROI` on the
+  preview or by typing three numbers; drawn on the preview whenever it is in
+  force, and recorded in the session metadata — it decides which fits were
+  accepted, so the trace cannot be read without it.
+- **Validated on the rig's own clip, not a synthetic one.** This machine is the
+  rig, so `E:\pAce\VF203.2R\20260701\FOV1_T1\FOV1_T1_Pupil.avi` is right here.
+  Auto-seed only, no click anywhere: **coarse_seed 0/151 → 151/151, tracked
+  0/151 → 149/151**, centre 853.4 ± 1.0 / 506.4 ± 1.6 px, radius 53.2 ± 2.0 px,
+  2.59 ms/frame. PLAN's diagnosis was exactly right — the frame is **53.3 %**
+  below threshold 60, over the >50 % guard.
+- **Two things the measurement corrected, both of which this file had asserted:**
+  "auto-seeding cannot work on this rig's framing" is too strong (it works over
+  a 15-level threshold window, 30–45, with the shipped 60 outside it — the limit
+  widens that to 25–80), and the crop is **not simply faster**: a whole-frame
+  call that bails at the guard is the cheapest of all, 1.96 ms against the
+  limit's 5.67 ms, because it gives up before labelling anything. The crop stops
+  the limit from *costing* a sensor-sized labelling. Both now said in the code.
+- **The trap the limit inherits, written into a test so it is not rediscovered:**
+  drawn tight around the pupil, the same >50 %-dark guard fires *inside* the
+  circle. The tooltip says to draw it generously.
+- **`tests/test_pupil_limit.py`, 43 checks**, each with a control — including
+  that a drag writes back as **one** settings change (three would drop the
+  annulus lock three times, since `limit` is in `_RESEED_ON`) and that a click
+  outside the limit is refused rather than queueing a search that can only fail.
+  Suite **688 → 732, 23/23**; `_test_tracking.py` still 15/15.
+- **Trim pass: nine more files, and a recommendation to close it** — see §6
+  item 5. It found three stale facts, which was worth more than the 27 lines.
+- **This file was 1432 lines**, against §8's target of ~400; the operator asked
+  for it shorter mid-session. **1432 → 646**, in two moves and with nothing
+  deleted: §7 held 16 sessions where §8 says ~3, so (ab) and older went to
+  `docs/SESSIONLOG.md`; and the closed reasoning in §5b and §6 went to a new
+  **[docs/DECISIONS.md](docs/DECISIONS.md)**, each block replaced by the verdict
+  plus a pointer. What is left is either live or a fact still being used, so
+  ~400 is not reachable without losing something — the next real reduction is
+  §6 items 8–10 and "Needs the rig", once that rig session happens.
+
 ### 2026-08-19 (ad) — `_SIGN` answered; the suite is green for the first time
 - **The operator settled it: a mouse running forward reads positive, and the
   voltage ramps UP as it does.** So `_SIGN = +1.0` was right all along and the
