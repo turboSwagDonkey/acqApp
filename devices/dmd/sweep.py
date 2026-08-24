@@ -27,11 +27,8 @@ from PyQt6.QtWidgets import (
 
 from acqApp import style
 
-from acqApp.devices.dmd.calibration import (CalibrationError, DmdCalibration,
-                                            PROBE_FRACS, STRIPE_OFFSETS,
-                                            centre_out_probe,
-                                            coarse_calibration, gray_planes,
-                                            probe_verdict, run_calibration)
+from acqApp.devices.dmd.calibration import (STRIPE_OFFSETS, CalibrationError,
+                                            DmdCalibration, calibrate)
 
 
 class SweepCancelled(CalibrationError):
@@ -92,37 +89,14 @@ class FreshGrabber:
             time.sleep(0.002)          # a bare spin starves the Qt thread
 
 
-def coarse_exposures(_dmd_size: tuple[int, int]) -> int:
-    """One dark reference plus a stripe per offset per axis."""
+def sweep_exposures(_dmd_size: tuple[int, int] = (0, 0)) -> int:
+    """One dark reference plus a stripe per offset per axis. A test pins this —
+    it is the number the operator is shown before any light is emitted."""
     return 1 + 2 * len(STRIPE_OFFSETS)
 
 
-def sweep_exposures(dmd_size: tuple[int, int], *, probe: bool = True,
-                    full: bool = True) -> int:
-    """An UPPER BOUND on the project→grab pairs a run will cost.
-
-    A bound rather than a count, because the Gray step is measured at the rig
-    (`resolve_gray_step`), and a coarser code needs fewer planes: the worst case
-    is the finest code resolving immediately. Honest only if it tracks what
-    `run_calibration` actually does, so a test pins it — the operator is shown
-    this number before any light is emitted.
-    """
-    n = (1 + 1 + 2 * len(PROBE_FRACS)) if probe else 0     # dark, spot, x…, y…
-    if full:
-        # checkerboard pair + one 4-exposure resolution probe + the finest sweep
-        n += 2 + 4 + 2 * len(gray_planes(*dmd_size)[0])
-    return n
-
-
 class CalibrationDialog(QDialog):
-    """Ask, then run the sweep, then offer to save what it measured.
-
-    Two runs, because they are two different decisions. **Probe** is twelve dim
-    exposures that answer "do the fields overlap, at what scale and angle" and
-    produce no calibration — the right first thing to do at a rig nobody has
-    registered yet. **Full** is that plus 42 more (2 checkerboard, 2x20 Gray
-    planes on a 1024x768 panel) and a saved transform.
-    """
+    """Ask, then run the stripe sweep, then offer to save what it measured."""
 
     def __init__(self, projector, grab_source, *, parent=None,
                  real: bool = True, on_saved=None):
@@ -133,48 +107,35 @@ class CalibrationDialog(QDialog):
         self._calib: DmdCalibration | None = None
         self._cancel = False
         self._running = False
-        self.setWindowTitle("DMD calibration sweep")
+        self.setWindowTitle("DMD calibration")
         self.resize(760, 520)
         self._build(real)
 
     # ── construction ─────────────────────────────────────────────────────────
     def _build(self, real: bool) -> None:
         w, h = self._proj.resolution
-        n_probe = sweep_exposures((w, h), full=False)
-        n_coarse = coarse_exposures((w, h))
-        n_full = sweep_exposures((w, h))
+        n = sweep_exposures()
         root = QVBoxLayout(self)
 
         head = QLabel(
-            f"<b>This projects light.</b> The sweep drives the DMD "
-            f"({w}x{h}) through a set of patterns and images each one with the "
-            f"voltage camera.<ul>"
-            f"<li><b>Probe</b> — {n_probe} exposures, none larger than the "
-            f"panel: a centre spot, then a bar grown along each axis. Measures "
-            f"where the DMD lands, its scale and its rotation. Saves nothing."
-            f"</li>"
-            f"<li><b>Coarse</b> — {n_coarse}. Steps a narrow stripe across "
-            f"each axis and fits a straight line to where it lands. "
-            f"<b>Nothing narrower than {100 * 0.05:.0f} % of the panel, so it "
-            f"works on a relay that cannot resolve single mirrors</b>, and a "
-            f"stripe that falls off the frame is dropped rather than biasing "
-            f"the fit. No keystone term.</li>"
-            f"<li><b>Full calibration</b> — up to {n_full}, including "
-            f"full-panel checkerboards and Gray-coded stripes. Adds keystone "
-            f"and a residual over thousands of points — when the optics resolve "
-            f"the stripes.</li>"
-            f"</ul>"
-            f"Before any: the voltage camera must be running, and "
+            f"<b>This projects light.</b> It steps a narrow stripe across the "
+            f"DMD ({w}x{h}) at {n - 1} known offsets, images each with the "
+            f"voltage camera, and fits a straight line to where they land — "
+            f"giving the affine between camera pixels and mirrors, and so "
+            f"which mirrors the camera can see.<br><br>"
+            f"<b>{n} exposures.</b> Nothing narrower than 5 % of the panel: "
+            f"this relay scatters enough to erase fine patterns, so coarse "
+            f"ones are all that survive.<br><br>"
+            f"First: the voltage camera must be running, and "
             f"<b>dmdGUI_project must be closed</b> — one process owns the USB.")
         head.setWordWrap(True)
         root.addWidget(head)
 
         if not real:
             warn = QLabel(
-                "<b>Emulate is on.</b> The mock projector emits nothing, so "
-                "the camera will see no modulation and the sweep will stop at "
-                "the probe. That exercises the whole path without light, which "
-                "is a useful thing to do — but it cannot register anything.")
+                "<b>Emulate is on.</b> The mock projector emits nothing, so no "
+                "stripe will be visible and this will stop with that as the "
+                "reason. It still exercises the whole path without light.")
             warn.setWordWrap(True)
             warn.setStyleSheet("color:#c86;")
             root.addWidget(warn)
@@ -185,7 +146,7 @@ class CalibrationDialog(QDialog):
         root.addWidget(self._log, 1)
 
         self._bar = QProgressBar()
-        self._bar.setRange(0, n_full)
+        self._bar.setRange(0, n)
         # Explicitly 0: a QProgressBar starts at -1 and draws an empty strip
         # with no text, which reads as a broken widget rather than "not started".
         self._bar.setValue(0)
@@ -193,17 +154,9 @@ class CalibrationDialog(QDialog):
         root.addWidget(self._bar)
 
         row = QHBoxLayout()
-        self._btn_probe = QPushButton(f"Probe ({n_probe})")
-        self._btn_probe.clicked.connect(lambda: self._run(mode="probe"))
-        self._btn_coarse = QPushButton(f"Coarse ({n_coarse})")
-        self._btn_coarse.setStyleSheet(style.solid_btn("dmd"))
-        self._btn_coarse.setToolTip(
-            "Rectangles only. Use this when the full sweep cannot decode — a "
-            "relay that does not resolve single mirrors makes the Gray stripes "
-            "useless while leaving the bars perfectly measurable.")
-        self._btn_coarse.clicked.connect(lambda: self._run(mode="coarse"))
-        self._btn_full = QPushButton(f"Full (up to {n_full})")
-        self._btn_full.clicked.connect(lambda: self._run(mode="full"))
+        self._btn_run = QPushButton(f"Calibrate ({n} exposures)")
+        self._btn_run.setStyleSheet(style.solid_btn("dmd"))
+        self._btn_run.clicked.connect(self._run)
         self._btn_stop = QPushButton("Stop")
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._request_cancel)
@@ -212,8 +165,7 @@ class CalibrationDialog(QDialog):
         self._btn_save.clicked.connect(self._save)
         self._btn_close = QPushButton("Close")
         self._btn_close.clicked.connect(self.reject)
-        for b in (self._btn_probe, self._btn_coarse, self._btn_full,
-                  self._btn_stop, self._btn_save):
+        for b in (self._btn_run, self._btn_stop, self._btn_save):
             row.addWidget(b)
         row.addStretch()
         row.addWidget(self._btn_close)
@@ -240,21 +192,18 @@ class CalibrationDialog(QDialog):
             raise SweepCancelled("stopped by the operator")
 
     # ── running ──────────────────────────────────────────────────────────────
-    def _run(self, *, mode: str) -> None:
+    def _run(self) -> None:
         if self._running:
             return
         self._running = True
         self._cancel = False
         self._calib = None
-        for b in (self._btn_probe, self._btn_coarse, self._btn_full,
-                  self._btn_save, self._btn_close):
+        for b in (self._btn_run, self._btn_save, self._btn_close):
             b.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._log.clear()
-        w, h = self._proj.resolution
-        self._bar.setRange(0, coarse_exposures((w, h)) if mode == "coarse"
-                           else sweep_exposures((w, h), full=mode == "full"))
         self._bar.setValue(0)
+        w, h = self._proj.resolution
 
         grabber = FreshGrabber(self._source, pump=self._pump)
 
@@ -268,29 +217,17 @@ class CalibrationDialog(QDialog):
 
         t0 = time.monotonic()
         try:
-            if mode == "full":
-                self._calib = run_calibration(project, grab, (w, h),
-                                              log=self.log)
-            elif mode == "coarse":
-                self._calib = coarse_calibration(project, grab, (w, h),
-                                                 log=self.log)
-            else:
-                steps = centre_out_probe(project, grab, (w, h), log=self.log)
-                self.log("")
-                self.log(probe_verdict(steps, steps[0].cam_shape, (w, h)))
-            if self._calib is not None:
-                self.log("")
-                self.log(self._calib.describe())
-                self._btn_save.setEnabled(True)
+            self._calib = calibrate(project, grab, (w, h), log=self.log)
+            self._btn_save.setEnabled(True)
         except SweepCancelled as e:
-            self.log(f"\n[sweep] {e}")
+            self.log(f"[sweep] {e}")
         except CalibrationError as e:
-            self.log(f"\nFAILED: {e}")
+            self.log(f"FAILED: {e}")
         except Exception as e:                      # noqa: BLE001
-            self.log(f"\nFAILED ({type(e).__name__}): {e}")
+            self.log(f"FAILED ({type(e).__name__}): {e}")
         finally:
-            # Always leave the panel dark: a sweep that ends holding its last
-            # Gray plane is a projector still on the sample.
+            # Always leave the panel dark: a run that ends holding its last
+            # stripe is a projector still on the sample.
             try:
                 self._proj.stop()
             except Exception as e:                  # noqa: BLE001
@@ -301,8 +238,7 @@ class CalibrationDialog(QDialog):
                      f"ms per frame waited)")
             self._running = False
             self._btn_stop.setEnabled(False)
-            for b in (self._btn_probe, self._btn_coarse, self._btn_full,
-                      self._btn_close):
+            for b in (self._btn_run, self._btn_close):
                 b.setEnabled(True)
 
     # ── result ───────────────────────────────────────────────────────────────

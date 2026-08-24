@@ -27,16 +27,10 @@ from _harness import Report
 # The simulated rig, imported rather than copied: a second camera model would
 # be a second set of assumptions to keep in step with this one. It is a plain
 # module — its own checks run only under __main__.
-from test_dmd_calibration import (CH, CW, DH, DW, footprint, image_through,
-                                  sample_field, true_transform)
+from test_dmd_calibration import CH, CW, DH, DW, make_camera, true_transform
 
-from acqApp.devices.dmd.calibration import PROBE_FRACS
-
-from acqApp.devices.dmd.calibration import (CalibrationError, apply_transform,
-                                            axis_angle_deg, axis_scale,
-                                            centre_out_probe,
-                                            coarse_calibration, gray_planes,
-                                            probe_verdict, run_calibration)
+from acqApp.devices.dmd.calibration import (STRIPE_OFFSETS, CalibrationError,
+                                            apply_transform, calibrate)
 from acqApp.devices.dmd.sweep import FreshGrabber, sweep_exposures
 
 
@@ -50,8 +44,8 @@ class LaggingRig:
     a settle count, so the model has to have it or the test is vacuous.
     """
 
-    def __init__(self, M, sample, rng, *, latency: int = 1, tick: int = 3):
-        self.M, self.sample, self.rng = M, sample, rng
+    def __init__(self, M, rng, *, latency: int = 1, tick: int = 3):
+        self.image = make_camera(M, rng)
         self.latency, self.tick = latency, tick
         self.pattern = np.zeros((DH, DW), np.uint8)
         self._queue: list = []              # patterns still in flight
@@ -70,7 +64,7 @@ class LaggingRig:
         self._queue.append(self.pattern)
         if len(self._queue) > self.latency:
             shown = self._queue.pop(0)
-            self._frame = image_through(shown, self.M, self.sample, self.rng)
+            self._frame = self.image(shown)
 
     def latest(self):
         return self._frame
@@ -78,7 +72,7 @@ class LaggingRig:
 
 def check_fresh_grabber(r: Report) -> None:
     rng = np.random.default_rng(3)
-    M, sample = true_transform(), sample_field(rng)
+    M = true_transform()
 
     # A pattern whose brightness names it, so a returned frame can be traced
     # back to the pattern that was up when it was exposed.
@@ -94,7 +88,7 @@ def check_fresh_grabber(r: Report) -> None:
         """
         return 255 if float(np.mean(frame)) > 1.5 * float(np.mean(dark_ref)) else 0
 
-    rig = LaggingRig(M, sample, rng, latency=1)
+    rig = LaggingRig(M, rng, latency=1)
     rig.project(marked(0))
     for _ in range(20):
         rig.pump()
@@ -108,7 +102,7 @@ def check_fresh_grabber(r: Report) -> None:
 
     # CONTROL: with no settle the in-flight frame gets through, so the check
     # above is testing the settle count and not the rig's own timing.
-    rig2 = LaggingRig(M, sample, rng, latency=1)
+    rig2 = LaggingRig(M, rng, latency=1)
     rig2.project(marked(0))
     for _ in range(20):
         rig2.pump()
@@ -149,310 +143,36 @@ def check_fresh_grabber(r: Report) -> None:
                 "an unchanging sample still yields real exposures")
 
 
-def check_probe(r: Report) -> None:
-    """The axis-wise probe measures what the transform actually does."""
-    rng = np.random.default_rng(7)
-    M, sample = true_transform(), sample_field(rng)
-    held = {"f": None}
+def check_end_to_end(r: Report) -> None:
+    """calibrate() through a camera that LAGS — the two halves meeting.
 
-    def project(f):
-        held["f"] = f
-
-    def grab():
-        return image_through(held["f"], M, sample, rng)
-
-    steps = centre_out_probe(project, grab, (DW, DH), log=lambda _s: None)
-    r.check(len(steps) == sweep_exposures((DW, DH), full=False) - 1,
-            f"{len(steps)} probe rows, one per exposure after the dark "
-            f"reference")
-    n_f = len(PROBE_FRACS)
-    r.check(all(s.axis == 0 for s in steps[1:1 + n_f])
-            and all(s.axis == 1 for s in steps[1 + n_f:]),
-            "x is swept to completion before y — each axis is established on "
-            "its own")
-
-    # Truth is the transform's Jacobian at the panel centre, NOT the 1.05/7deg
-    # it was written with: the keystone makes the local scale 1.006/1.030 and
-    # the local angle 6.03deg. Measuring against the parameters instead of the
-    # behaviour is how a correct probe gets called broken.
-    c = np.array([[DW / 2, DH / 2]], float)
-    truth = {}
-    for axis in (0, 1):
-        d = np.zeros((1, 2))
-        d[0, axis] = 1e-3
-        j = (apply_transform(M, c + d) - apply_transform(M, c - d))[0] / 2e-3
-        truth[axis] = (float(np.hypot(*j)),
-                       float(np.degrees(np.arctan2(j[1], j[0]))))
-
-    for axis, name in ((0, "x"), (1, "y")):
-        k = axis_scale(steps, axis)
-        want = truth[axis][0]
-        r.check(k is not None and abs(k - want) < 0.03 * want,
-                f"{name} scale {k:.3f} px/mirror against the Jacobian's "
-                f"{want:.3f}")
-    ang = axis_angle_deg(steps, 0)
-    r.check(ang is not None and abs(ang - truth[0][1]) < 1.0,
-            f"the rotation falls out of the x sweep alone: {ang:+.2f}deg "
-            f"against {truth[0][1]:+.2f}")
-
-    # An anisotropic relay is the case a disc CANNOT separate — its
-    # equivalent-area radius averages the two axes into one number. This is the
-    # reason the probe grows one axis at a time.
-    A = np.diag([1.6, 0.8, 1.0]).astype(float)
-    A[0, 2], A[1, 2] = 30.0, 40.0
-    aniso = {"f": None}
-
-    def grab_a():
-        return image_through(aniso["f"], A, sample, rng)
-
-    st = centre_out_probe(lambda f: aniso.__setitem__("f", f), grab_a,
-                          (DW, DH), log=lambda _s: None)
-    kx, ky = axis_scale(st, 0), axis_scale(st, 1)
-    r.check(kx is not None and ky is not None
-            and abs(kx - 1.6) < 0.08 and abs(ky - 0.8) < 0.08,
-            f"an anisotropic relay reads as two different scales "
-            f"({kx:.2f} and {ky:.2f} against 1.6 and 0.8)")
-    r.check("anisotropic" in probe_verdict(st, st[0].cam_shape, (DW, DH)),
-            "…and the verdict says so, rather than reporting one average scale")
-
-    # CONTROL: a projector the camera cannot see must be named as such, not
-    # fitted. This is the diagnosis the operator gets at a misaimed rig.
-    def grab_dark():
-        return sample + rng.normal(0, 4.0, sample.shape)
-
-    dark_steps = centre_out_probe(project, grab_dark, (DW, DH),
-                                  log=lambda _s: None)
-    v = probe_verdict(dark_steps, dark_steps[0].cam_shape, (DW, DH))
-    r.check(all(s.lit_px == 0 for s in dark_steps)
-            and "does not modulate" in v,
-            f"control: with no projector the probe reports it ({v[:50]}…)")
-
-
-def check_run_calibration(r: Report) -> None:
-    """The orchestrator, end to end, through a lagging camera.
-
-    Nothing had ever called `run_calibration` — the pure test imports the
-    pieces. Running it through `FreshGrabber` and a camera that lags is the
-    only way the two halves are shown to fit together.
+    Neither half proves this on its own: the maths is tested against an
+    instant camera, and `FreshGrabber` is tested against a rig with no
+    geometry. A wrong pairing of project and grab only shows up here.
     """
     rng = np.random.default_rng(11)
-    M, sample = true_transform(), sample_field(rng)
-    rig = LaggingRig(M, sample, rng, latency=1, tick=2)
+    M = true_transform()
+    rig = LaggingRig(M, rng, latency=1, tick=2)
     g = FreshGrabber(rig.latest, settle=1, timeout_s=2.0, pump=rig.pump)
-
-    n_projected = {"n": 0}
+    n = {"n": 0}
 
     def project(f):
-        n_projected["n"] += 1
+        n["n"] += 1
         rig.project(f)
 
-    calib = run_calibration(project, g.grab, (DW, DH), step=4,
-                            log=lambda _s: None)
-    r.check(calib.rms_px < 1.0,
+    c = calibrate(project, g.grab, (DW, DH), log=lambda _s: None)
+    r.check(c.rms_px < 2.0,
             f"a calibration comes back through a lagging camera "
-            f"(rms {calib.rms_px:.3f} px over {calib.n_points} points)")
-    r.check(calib.dmd_size == (DW, DH) and calib.cam_size == (CW, CH),
-            f"…knowing both sizes it was measured at {calib.dmd_size} -> "
-            f"{calib.cam_size}")
-    r.check("probe:" in calib.notes and "px/mirror" in calib.notes,
-            "…and carrying the probe's verdict, the only record of what the "
-            "fields looked like before the fit")
-
-    # The transform has to agree with the one we projected through.
-    probe_pts = np.array([[20, 20], [DW - 20, 20], [DW // 2, DH // 2]], float)
-    back = apply_transform(np.linalg.inv(calib.cam_to_dmd), probe_pts)
-    want = apply_transform(M, probe_pts)
-    r.check(np.abs(back - want).max() < 2.0,
-            f"…and it agrees with the true transform (max "
-            f"{np.abs(back - want).max():.2f} px)")
-
-    # The dialog's warning is a count of exposures. If it drifts from what the
-    # sweep really does, the operator is told a number about light emission
-    # that is not true.
-    r.check(n_projected["n"] <= sweep_exposures((DW, DH)),
-            f"sweep_exposures() bounds the real count "
-            f"({sweep_exposures((DW, DH))} quoted, {n_projected['n']} run)")
-    # …and it is a TIGHT bound, not a safe over-estimate that tells the operator
-    # nothing: the gap is only the planes a coarser code saved.
-    r.check(n_projected["n"] >= 0.6 * sweep_exposures((DW, DH)),
-            f"…tightly ({n_projected['n']} of {sweep_exposures((DW, DH))})")
-    # 12 probe + 2 checkerboard + 4 resolution + 2x20 Gray planes. Worth
-    # pinning: this is the number the dialog shows before any light is emitted.
-    n_real = sweep_exposures((1024, 768))
-    r.check(len(gray_planes(1024, 768)[0]) == 20 and n_real == 64,
-            f"…and on the rig's own 1024x768 panel it is at most {n_real}")
-
-    # A sweep that cannot be registered must say why, not return a bad matrix.
-    try:
-        run_calibration(project, lambda: sample + rng.normal(0, 4.0, sample.shape),
-                        (DW, DH), log=lambda _s: None)
-        r.check(False, "an unlit sweep raises rather than fitting noise")
-    except CalibrationError as e:
-        r.check("probe saw nothing" in str(e),
-                f"control: an unlit sweep raises at the PROBE, before the "
-                f"full-panel exposures ({str(e)[:45]}…)")
-
-
-def check_unresolved_planes(r: Report) -> None:
-    """The rig's 2026-08-24 failure: probe fine, checkerboard fine, decode 0.0 %.
-
-    At the measured 4.56 camera px per mirror a 1-mirror Gray stripe is 4.6 px,
-    and a relay that blurs even slightly averages it away. `decode` requires
-    EVERY plane, so one unresolved plane invalidated all 10.5 Mpx.
-
-    Simulated by imaging through a magnifying transform and blurring — which is
-    what the optics do — rather than by mocking `decode` into failing.
-    """
-    from acqApp.devices.dmd.calibration import (decode, gray_planes,
-                                                plane_coverage,
-                                                resolve_gray_step)
-
-    # A stand-in for the rig: the DMD magnified ~4.5x onto the camera, through a
-    # relay whose point spread is about TWO mirror widths. That blur is the
-    # premise, not a tuned number — it is what the rig's own data implies, since
-    # a relay that resolved single mirrors would not have returned 0.0 %.
-    dw, dh = 64, 48
-    k, psf = 5, 9              # px per mirror (integer); PSF half-width, px
-    cw, ch = dw * k, dh * k
-
-    def image(pattern):
-        cam = np.repeat(np.repeat(pattern.astype(np.float32), k, axis=0),
-                        k, axis=1)
-        assert cam.shape == (ch, cw), cam.shape
-        pad = np.pad(cam, psf, mode="edge")
-        blur = sum(pad[i:i + ch, j:j + cw]
-                   for i in range(2 * psf + 1)
-                   for j in range(2 * psf + 1)) / (2 * psf + 1) ** 2
-        return blur * 3.0 + 40.0          # a sample under it, plus an offset
-
-    def sweep(gstep):
-        planes, nbx, nby = gray_planes(dw, dh, step=gstep)
-        on = [image(p) for p in planes]
-        off = [image((255 - p).astype(np.uint8)) for p in planes]
-        _dx, _dy, valid = decode(on, off, nbx, nby)
-        return float(valid.mean()), plane_coverage(on, off), nbx, len(planes)
-
-    got, cov, nbx, n = sweep(1)
-    r.check(got < 0.05,
-            f"reproduced: at 1 mirror per code the sweep decodes "
-            f"{100 * got:.1f}% of the frame")
-    early = max(v for _t, v in cov[:max(1, nbx - 3)])
-    r.check(early > 0.5 and cov[-1][1] < 0.05,
-            f"…and the coverage table localises it — {100 * early:.0f}% still "
-            f"valid through the coarse planes, {100 * cov[-1][1]:.1f}% at the "
-            f"end. The FINE planes, not a dead field")
-
-    # The step is MEASURED, by projecting each candidate's finest stripe.
-    held = {}
-    field = 1.0                          # this stand-in fills the frame
-    gstep = resolve_gray_step(lambda f: held.__setitem__("f", f),
-                              lambda: image(held["f"]), (dw, dh),
-                              field=field, log=lambda _s: None)
-    r.check(gstep > 1, f"resolve_gray_step measured its way to {gstep} "
-                       f"mirror(s) per code, {gstep * k:.0f} camera px")
-    fixed, _cov, _nbx, n2 = sweep(gstep)
-    # Not "most of the frame" — under a PSF two mirrors wide only the stripe
-    # CENTRES survive every plane's intersection. Enough to register from is
-    # the bar that matters, and 0 % was the failure.
-    r.check(fixed > 0.2,
-            f"…and at that step it decodes {100 * fixed:.0f}% — thousands of "
-            f"correspondences, against none")
-    r.check(n2 < n, f"…on fewer planes too ({n2} against {n})")
-
-    # CONTROL: coarsening must NOT rescue a rig that sees nothing, or it would
-    # paper over a dark projector instead of a blurry one.
-    planes, nbx2, nby2 = gray_planes(dw, dh, step=gstep)
-    dark = [np.full((ch, cw), 50.0, np.float32) for _ in planes]
-    _dx, _dy, v_dark = decode(dark, dark, nbx2, nby2)
-    r.check(v_dark.mean() == 0.0,
-            "control: with no modulation at all, coarsening still decodes "
-            "nothing — it fixes unresolved stripes, not a dark rig")
-    dead = resolve_gray_step(lambda f: None,
-                             lambda: np.full((ch, cw), 50.0, np.float32),
-                             (dw, dh), field=field, log=lambda _s: None)
-    r.check(dead == 16,
-            f"control: against a dead rig it exhausts every candidate ({dead}) "
-            f"rather than reporting one as resolved")
-
-    planes, nbx3, _nby3 = gray_planes(dw, dh, step=4)
-    r.check(nbx3 == 4 and len(planes) == 4 + 4,
-            f"a 64x48 panel at step 4 needs {nbx3} x-bits, not 6 "
-            f"({len(planes)} planes total)")
-
-
-def check_coarse_calibration(r: Report) -> None:
-    """Stripes alone give a usable affine — the rig's answer when Gray fails.
-
-    The operator's question (2026-08-24): why not just run the rectangles and
-    read the edges and the tilt? Because a stripe stepped across the panel is a
-    direct (mirror -> camera) measurement per exposure, and signed offsets carry
-    the direction with them.
-
-    The rig is modelled with the two things that broke the FIRST attempt at
-    this — a field larger than the frame, so stripes fall off the edge, and
-    vignetting, so a wide region's centroid is pulled off-centre. Growing bars
-    scored rms 66 px against exactly this; stripes must not.
-    """
-    rng = np.random.default_rng(5)
-
-    def rig(M, *, clip=True, vignette=True):
-        """A camera that sees `M` applied to the pattern, clipped and vignetted."""
-        yy, xx = np.mgrid[:CH, :CW].astype(np.float64)
-        v = (0.25 + 0.75 * np.exp(-(((xx - CW * 0.35) ** 2
-                                     + (yy - CH * 0.45) ** 2)
-                                    / (2 * (0.45 * CW) ** 2)))
-             if vignette else np.ones((CH, CW)))
-        base = 300.0 * v
-
-        def grab_for(pattern):
-            lit = footprint(pattern, M) if clip else footprint(pattern, M)
-            img = base * np.where(lit, 3.0, 1.0)
-            return img + rng.normal(0, 4.0, img.shape)
-        return grab_for
-
-    for name, M in (("rotated + keystone", true_transform()),
-                    ("mirrored in x", np.array([[-1.05, 0.10, 300.0],
-                                                [0.08, 1.02, 22.0],
-                                                [0.0, 0.0, 1.0]]))):
-        held = {"f": None}
-        grab_for = rig(M)
-        c = coarse_calibration(lambda f: held.__setitem__("f", f),
-                               lambda: grab_for(held["f"])
-                               if held["f"] is not None else np.zeros((CH, CW)),
-                               (DW, DH), log=lambda _s: None)
-        r.check(c.model == "affine-coarse" and "COARSE" in c.notes,
-                f"[{name}] the file says it is coarse, so it cannot be "
-                f"mistaken for a Gray-coded fit later")
-        r.check(c.rms_px < 5.0,
-                f"[{name}] the stripe centroids fall on a straight line "
-                f"(residual {c.rms_px:.2f} px over {c.n_points} stripes)")
-        pts = np.array([[DW / 2, DH / 2], [DW / 4, DH / 4],
-                        [3 * DW / 4, 2 * DH / 3]], float)
-        got = apply_transform(np.linalg.inv(c.cam_to_dmd), pts)
-        want = apply_transform(M, pts)
-        err = float(np.abs(got - want).max())
-        r.check(err < 8.0,
-                f"[{name}] stripes alone place the panel to {err:.1f} px, "
-                f"through vignetting and a frame that clips the field")
-
-    # CONTROL: the mirrored case must really be mirrored, or the signed offsets
-    # are proving nothing about direction.
-    flip = np.array([[-1.05, 0.10, 300.0], [0.08, 1.02, 22.0], [0.0, 0.0, 1.0]])
-    d = (apply_transform(flip, np.array([[DW - 1, DH / 2]], float))
-         - apply_transform(flip, np.array([[0, DH / 2]], float)))[0]
-    r.check(d[0] < 0,
-            f"control: that transform really does run DMD +x towards camera -x "
-            f"({d[0]:+.0f} px), so a sign error would have been caught")
-
-    # CONTROL: too few usable stripes must raise, not fit two points.
-    try:
-        coarse_calibration(lambda f: None, lambda: np.full((CH, CW), 50.0),
-                           (DW, DH), log=lambda _s: None)
-        r.check(False, "a dark rig raises rather than fitting noise")
-    except CalibrationError as e:
-        r.check("usable stripe" in str(e),
-                f"control: a dark rig raises, naming the axis and the count "
-                f"({str(e)[:48]}...)")
+            f"(rms {c.rms_px:.2f} px over {c.n_points} stripes)")
+    pts = np.array([[DW / 2, DH / 2], [DW / 4, DH / 4]], float)
+    err = float(np.abs(apply_transform(np.linalg.inv(c.cam_to_dmd), pts)
+                       - apply_transform(M, pts)).max())
+    r.check(err < 4.0,
+            f"…and agrees with the transform we projected through ({err:.2f} px)")
+    r.check(n["n"] == sweep_exposures() == 1 + 2 * len(STRIPE_OFFSETS) == 19,
+            f"sweep_exposures() is what the run really costs "
+            f"({sweep_exposures()} quoted, {n['n']} run) — the operator is "
+            f"shown that number before any light is emitted")
 
 
 def check_project_frame(r: Report) -> None:
@@ -460,7 +180,7 @@ def check_project_frame(r: Report) -> None:
     trap twice, and it is invisible in the result: a warped calibration
     pattern still decodes, into the wrong geometry."""
     from acqApp.acq.devices import RawProjector
-    from acqApp.devices.dmd.calibration import axis_bar
+    from acqApp.devices.dmd.calibration import offset_stripe
     from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, DmdSettings,
                                             MockDmdController)
 
@@ -472,7 +192,7 @@ def check_project_frame(r: Report) -> None:
     r.check(isinstance(c, RawProjector),
             "the mock controller satisfies RawProjector")
 
-    pattern = axis_bar(DEFAULT_W, DEFAULT_H, 0, 200.0)
+    pattern = offset_stripe(DEFAULT_W, DEFAULT_H, 0, 200.0)
     c.project_frame(pattern)
     held = c._pattern
     r.check(np.array_equal(held, pattern),
@@ -573,10 +293,7 @@ def check_wiring(r: Report) -> None:
 def main() -> int:
     r = Report("dmd-sweep")
     check_fresh_grabber(r)
-    check_probe(r)
-    check_run_calibration(r)
-    check_unresolved_planes(r)
-    check_coarse_calibration(r)
+    check_end_to_end(r)
     check_project_frame(r)
     check_wiring(r)
     return r.finish()

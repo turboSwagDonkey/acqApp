@@ -111,8 +111,8 @@ devices/                one package per instrument
     _roi_editor.py      script: open roi_panel's editor alone, no rig, no light
     alp.py              all Vialux ALP knowledge, Qt-free; build_frame is the
                         one a mispositioned stimulus would come from
-    calibration.py      DMD↔camera registration: patterns, decode, fit. Pure,
-                        so the pipeline is testable before any light is emitted
+    calibration.py      DMD↔camera registration: stripes in, affine out. Pure,
+                        so it is testable before any light is emitted
     control.py          panel-facing controller + mock twin
     panel.py
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
@@ -172,7 +172,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_dmd.py
   test_dmd_calibration.py
   test_dmd_roi.py
-  test_dmd_sweep.py           the sweep against the rig: fresh grabs, the probe
+  test_dmd_sweep.py           the wiring: fresh grabs, untransformed patterns
   test_encoder_derive.py
   test_encoder_timing.py
   test_module_subsets.py
