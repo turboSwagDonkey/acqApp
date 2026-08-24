@@ -4,6 +4,45 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-22 (ah) — the pupil complaint was two settings, not the algorithm
+- **Both of §6 item 1's blockers dissolved on inspection, and neither needed the
+  operator.** "Get a clip that shows a dropout" — there are **six** clips on
+  `E:`, not one, and the operator's own (`E:\State\VF182.6B\…`) drops out
+  constantly. Four sessions had measured the first clip and generalised.
+- **Read `acqapp_local.json` first next time.** It is what the app loads at
+  launch, it is gitignored so it never shows in a diff, and it held the answer:
+  their `video_path` pointed at the State clip (not the one every measurement
+  used) and their tuning had `edge_select="strongest"` — the one value whose own
+  tooltip and `settings.py` comment say it "locks the eyelid margin, which
+  out-contrasts the pupil on real IR footage".
+- **One knob at a time, on the clip that tracks 151/151 stock:** `strongest`
+  → 44/151 with cx sd 28.7 px; `smooth_sigma=12` → 46/151, cx sd 20.0. The other
+  three of their five knobs are harmless alone (151, 150, 151). Table in §0.
+  On their own clip, `edge_select="first"` alone is **5/151 → 145/151**.
+- **`reseed_after=100` is the amplifier, not a cause** — it turns one bad frame
+  into 100 blind ones. Their three lost runs were 2, **102** and 42 frames.
+- **No clip contains a blink.** Every LOST frame in the montage is a wide-open,
+  clearly visible eye, so the dropouts were never the animal. That also means
+  §7 (ag)'s simulated-occlusion work still has no real footage behind it.
+- **A hand-placed first seed is not the fix**, though it helps once
+  `edge_select` is right: 145 → 150/151. With `"strongest"` still set a
+  *perfect* seed gives 18/151. **Caveat, and it matters: no human clicked
+  anything** — the "seed" was the tracker's own first fit fed back in, an
+  idealised click. The sensitivity is why: ±20 px horizontally is fine, but
+  +20 px vertically gives 46/151 and −20 px gives 3/151, because the lids are
+  above and below. Seed radius is one-sided too — half the true radius still
+  gives 106/151, 1.5× gives 27/151.
+- **`smooth_sigma` must not be given a default.** Best is 0.5 on the State clip
+  (141/151, vs 86 at 1.5) and 1.5–3.0 on pAce. From 4.0 the radius inflates
+  53.6 → 70 px *silently*, with the frame count still high — the dangerous mode.
+- **Shipped: `PupilSettings.risky()` and a warning line in the pupil tab**, in
+  the group box but outside the collapsible half so a fold cannot hide it. Only
+  `edge_select` qualifies; `smooth_sigma` is deliberately excluded, since a
+  cutoff would be invented. The tooltip already said all this and was not
+  enough — "8 changed" does not separate a harmless knob from a ruinous one.
+- Suite **787 → 798, 23/23**. §6 item 2 was found already **done** (`720a1b6`)
+  and its entry stale.
+
 ### 2026-08-21 (ag) — the lightweight tracker is measurably worse; ground truth built
 - **The operator named the symptoms: jitter and dropouts** (not a mis-placed
   outline, which is what I had been chasing). And chose hand-marked frames as

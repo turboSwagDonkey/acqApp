@@ -28,7 +28,8 @@ from PyQt6.QtWidgets import (
 from acqApp import style
 
 from acqApp.devices.dmd.calibration import (CalibrationError, DmdCalibration,
-                                            PROBE_FRACS, centre_out_probe,
+                                            PROBE_FRACS, STRIPE_OFFSETS,
+                                            centre_out_probe,
                                             coarse_calibration, gray_planes,
                                             probe_verdict, run_calibration)
 
@@ -91,9 +92,9 @@ class FreshGrabber:
             time.sleep(0.002)          # a bare spin starves the Qt thread
 
 
-def coarse_exposures(dmd_size: tuple[int, int]) -> int:
-    """Probe + the two handedness bars and their dark reference."""
-    return sweep_exposures(dmd_size, full=False) + 3
+def coarse_exposures(_dmd_size: tuple[int, int]) -> int:
+    """One dark reference plus a stripe per offset per axis."""
+    return 1 + 2 * len(STRIPE_OFFSETS)
 
 
 def sweep_exposures(dmd_size: tuple[int, int], *, probe: bool = True,
@@ -152,11 +153,12 @@ class CalibrationDialog(QDialog):
             f"panel: a centre spot, then a bar grown along each axis. Measures "
             f"where the DMD lands, its scale and its rotation. Saves nothing."
             f"</li>"
-            f"<li><b>Coarse</b> — {n_coarse}. The probe plus two bars that say "
-            f"which way each axis runs, turned straight into an affine "
-            f"transform. <b>Rectangles only — no fine stripes, so it works on "
-            f"a relay that cannot resolve single mirrors.</b> No keystone "
-            f"term.</li>"
+            f"<li><b>Coarse</b> — {n_coarse}. Steps a narrow stripe across "
+            f"each axis and fits a straight line to where it lands. "
+            f"<b>Nothing narrower than {100 * 0.05:.0f} % of the panel, so it "
+            f"works on a relay that cannot resolve single mirrors</b>, and a "
+            f"stripe that falls off the frame is dropped rather than biasing "
+            f"the fit. No keystone term.</li>"
             f"<li><b>Full calibration</b> — up to {n_full}, including "
             f"full-panel checkerboards and Gray-coded stripes. Adds keystone "
             f"and a residual over thousands of points — when the optics resolve "

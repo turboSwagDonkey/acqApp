@@ -569,138 +569,6 @@ def axis_scale_fit(steps: list[ProbeStep],
     return k, rms, len(use)
 
 
-def resolve_handedness(project: Callable[[np.ndarray], None],
-                       grab: Callable[[], np.ndarray],
-                       steps: list[ProbeStep], dmd_size: tuple[int, int], *,
-                       min_modulation: float = MIN_MODULATION,
-                       log: Callable[[str], None] = print):
-    """Which WAY each DMD axis runs in the camera → (u_x, u_y) or None.
-
-    **A centred bar cannot answer this and neither can the eigenvector**, whose
-    sign is arbitrary — so a calibration built from the probe alone would be
-    mirrored about the panel centre half the time, and a mirrored registration
-    aims every ROI at the wrong place while looking perfectly well fitted. This
-    is the same failure the checkerboard's 1/2/3/4-dot corner marks exist to
-    catch, answered in two exposures instead of a full pair.
-
-    One off-centre bar per axis: project the half of the panel on the POSITIVE
-    side and see which way its centroid moves.
-    """
-    w, h = int(dmd_size[0]), int(dmd_size[1])
-    centre = np.array([np.nanmean([s.cam_cx for s in steps if s.lit_px >= 3]),
-                       np.nanmean([s.cam_cy for s in steps if s.lit_px >= 3])])
-    if not np.all(np.isfinite(centre)):
-        return None
-
-    project(_blank(w, h))
-    dark = np.asarray(grab(), dtype=np.float32)
-
-    out = []
-    for axis in (0, 1):
-        u = axis_direction(steps, axis)
-        if u is None:
-            return None
-        y, x = np.ogrid[:h, :w]
-        cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-        # The positive half, inset so it stays inside the field the probe saw.
-        if axis == 0:
-            f = np.where((x > cx) & (x <= cx + w / 4) & (np.abs(y - cy) <= h / 8),
-                         ON, OFF).astype(np.uint8)
-        else:
-            f = np.where((y > cy) & (y <= cy + h / 4) & (np.abs(x - cx) <= w / 8),
-                         ON, OFF).astype(np.uint8)
-        project(f)
-        lit = np.asarray(grab(), dtype=np.float32)
-        m = field_mask(lit, dark, min_modulation=min_modulation)
-        if int(m.sum()) < 3:
-            log(f"[dmd-calib] the off-centre {'xy'[axis]} bar is invisible — "
-                f"handedness cannot be resolved")
-            return None
-        ys, xs = np.nonzero(m)
-        d = np.array([float(xs.mean()), float(ys.mean())]) - centre
-        sign = 1.0 if float(d @ u) >= 0 else -1.0
-        log(f"[dmd-calib] DMD +{'xy'[axis]} moves {float(d @ u):+.0f} px along "
-            f"the measured axis → {'as measured' if sign > 0 else 'FLIPPED'}")
-        out.append(sign * u)
-    return out[0], out[1]
-
-
-def coarse_calibration(project: Callable[[np.ndarray], None],
-                       grab: Callable[[], np.ndarray],
-                       dmd_size: tuple[int, int], *,
-                       fracs=PROBE_FRACS,
-                       min_modulation: float = MIN_MODULATION,
-                       log: Callable[[str], None] = print) -> DmdCalibration:
-    """An affine registration from the RECTANGLES ALONE — no Gray coding.
-
-    The probe already measures every parameter an affine needs: the panel
-    centre gives the translation, the two scales give the magnification, and the
-    two axis directions give rotation and shear. Six parameters, six
-    measurements, all of them from large bright regions.
-
-    **Prefer this when the Gray sweep cannot decode**, which is the normal case
-    on a relay that does not resolve single mirrors — on this rig at 4.6 camera
-    px per mirror the sweep returned 0.0 % while the probe was perfectly happy
-    (2026-08-24). What it gives up is real and worth knowing:
-
-      * **no keystone.** An affine has no perspective term, so if the panel is
-        tilted relative to the sample this is wrong towards the edges — by an
-        amount `run_calibration`'s residual would have told you and this cannot.
-      * **a thin residual.** It comes from the scale fits' own scatter over a
-        handful of unclipped steps, not from thousands of correspondences.
-
-    So it is a *coarse* calibration, named that in the file, and good enough to
-    aim an ROI when the alternative is nothing at all.
-    """
-    w, h = int(dmd_size[0]), int(dmd_size[1])
-    steps = centre_out_probe(project, grab, (w, h), fracs=fracs,
-                             min_modulation=min_modulation, log=log)
-    verdict = probe_verdict(steps, steps[0].cam_shape, (w, h))
-    log(f"[dmd-calib] probe: {verdict}")
-    if not any(s.lit_px for s in steps):
-        raise CalibrationError("the centre-out probe saw nothing: " + verdict)
-
-    fx, fy = axis_scale_fit(steps, 0), axis_scale_fit(steps, 1)
-    if fx is None or fy is None:
-        raise CalibrationError(
-            "not enough unclipped probe steps to measure a scale on both axes "
-            "— the DMD field may be much larger than the camera's view. Every "
-            "bar past the first few ran off the edge of the frame.")
-    kx, rms_x, n_x = fx
-    ky, rms_y, n_y = fy
-
-    hand = resolve_handedness(project, grab, steps, (w, h),
-                              min_modulation=min_modulation, log=log)
-    if hand is None:
-        raise CalibrationError(
-            "could not tell which way the DMD axes run. A centred bar is "
-            "symmetric, so without this the registration would be mirrored — "
-            "which aims every ROI at the wrong place while looking well fitted.")
-    ux, uy = hand
-
-    centre = np.array([np.nanmean([s.cam_cx for s in steps if s.lit_px >= 3]),
-                       np.nanmean([s.cam_cy for s in steps if s.lit_px >= 3])])
-    # dmd → cam, about the panel centre; then invert, since a calibration is
-    # stored camera → DMD.
-    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    A = np.eye(3)
-    A[:2, 0] = kx * ux
-    A[:2, 1] = ky * uy
-    A[:2, 2] = centre - kx * cx * ux - ky * cy * uy
-    cam_to_dmd = np.linalg.inv(A)
-
-    rms = float(np.hypot(rms_x, rms_y))
-    log(f"[dmd-calib] coarse affine: {kx:.3f} x {ky:.3f} px/mirror, "
-        f"residual {rms:.2f} px over {n_x + n_y} bar measurements")
-    ch, cw = steps[0].cam_shape
-    return DmdCalibration(
-        cam_to_dmd=cam_to_dmd, dmd_size=(w, h), cam_size=(int(cw), int(ch)),
-        model="affine-coarse", rms_px=rms, n_points=n_x + n_y,
-        created=datetime.now().isoformat(timespec="seconds"),
-        notes=f"COARSE — from the probe's rectangles, no Gray coding, no "
-              f"keystone term. probe: {verdict}")
-
-
 def axis_angle_deg(steps: list[ProbeStep], axis: int) -> float | None:
     """Clockwise angle from camera-x to DMD `axis`, in degrees.
 
@@ -760,6 +628,190 @@ def probe_verdict(steps: list[ProbeStep], cam_shape: tuple[int, int],
                      f"— the relay is anisotropic, so an affine model is the "
                      f"floor, not a homography's luxury")
     return "; ".join(parts)
+
+
+# Stripe offsets, as fractions of the half-extent along the axis being stepped.
+STRIPE_OFFSETS = (-0.80, -0.60, -0.40, -0.20, 0.0, 0.20, 0.40, 0.60, 0.80)
+STRIPE_WIDTH = 0.05         # stripe thickness, fraction of the panel's extent
+STRIPE_CROSS = 0.30         # its length across the other axis
+
+
+def offset_stripe(width: int, height: int, axis: int, offset: float, *,
+                  thick_frac: float = STRIPE_WIDTH,
+                  cross_frac: float = STRIPE_CROSS) -> np.ndarray:
+    """A narrow stripe `offset` mirrors from the panel centre along `axis`."""
+    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+    y, x = np.ogrid[:height, :width]
+    half = thick_frac * (width if axis == 0 else height) / 2.0
+    cross = cross_frac * (height if axis == 0 else width) / 2.0
+    if axis == 0:
+        m = (np.abs(x - cx - offset) <= half) & (np.abs(y - cy) <= cross)
+    else:
+        m = (np.abs(y - cy - offset) <= half) & (np.abs(x - cx) <= cross)
+    return np.where(m, ON, OFF).astype(np.uint8)
+
+
+def stripe_sweep(project: Callable[[np.ndarray], None],
+                 grab: Callable[[], np.ndarray],
+                 dmd_size: tuple[int, int], *,
+                 offsets=STRIPE_OFFSETS,
+                 min_modulation: float = MIN_MODULATION,
+                 log: Callable[[str], None] = print) -> dict:
+    """Step a narrow stripe across each axis → {axis: [(offset, cx, cy), …]}.
+
+    **This replaced growing bars, and the reason is worth keeping.** A centred
+    bar that grows should keep its centroid fixed; on the rig it drifted 527 px
+    across the sweep (2026-08-24), because the frame clips one side of it while
+    vignetting eats the other. Second moments of a lopsided region measure the
+    lopsidedness, and the scale fit inherited all of it — rms 66 px.
+
+    A narrow stripe has none of that. Its centroid is a *local* measurement, so
+    vignetting shifts it by a fraction of its own width; a stripe that falls off
+    the frame is simply dropped rather than silently biasing the fit; and
+    because the offsets are **signed**, the direction comes out of the fit with
+    its sign already attached — no eigenvector, and no handedness probe.
+    """
+    w, h = int(dmd_size[0]), int(dmd_size[1])
+    half = (w / 2.0, h / 2.0)
+
+    project(_blank(w, h))
+    dark = np.asarray(grab(), dtype=np.float32)
+
+    out: dict = {0: [], 1: []}
+    for axis in (0, 1):
+        for frac in offsets:
+            d = frac * half[axis]
+            project(offset_stripe(w, h, axis, d))
+            lit = np.asarray(grab(), dtype=np.float32)
+            m = field_mask(lit, dark, min_modulation=min_modulation)
+            n = int(m.sum())
+            box = bounding_box(m)
+            edge = bool(box is not None
+                        and (box[0] == 0 or box[1] == 0
+                             or box[2] == m.shape[1] or box[3] == m.shape[0]))
+            ys, xs = (np.nonzero(m) if n else (np.empty(0), np.empty(0)))
+            cx = float(xs.mean()) if n else float("nan")
+            cy = float(ys.mean()) if n else float("nan")
+            keep = n >= 50 and not edge
+            log(f"[dmd-stripe] {'xy'[axis]} {frac:+.2f} ({d:+7.1f} mirrors) -> "
+                + (f"{n:>8d} px at ({cx:7.1f}, {cy:7.1f})" if n else
+                   f"{'invisible':>28}")
+                + ("" if keep else "   [dropped: "
+                   + ("off the frame edge" if edge else "too little light")
+                   + "]"))
+            if keep:
+                out[axis].append((d, cx, cy))
+    return out
+
+
+def fit_axis_line(points: list[tuple]) -> tuple | None:
+    """[(offset, cx, cy)] → (origin, direction px/mirror, rms residual, n).
+
+    A straight line through signed offsets: `direction` carries both the scale
+    (its length) and which way the axis runs (its sign), which is the whole
+    reason stripes beat symmetric bars.
+    """
+    if len(points) < 3:
+        return None
+    d = np.array([p[0] for p in points], float)
+    P = np.array([[p[1], p[2]] for p in points], float)
+    A = np.column_stack([d, np.ones(len(d))])
+    sol, *_ = np.linalg.lstsq(A, P, rcond=None)
+    direction, origin = sol[0], sol[1]
+    resid = P - (A @ sol)
+    rms = float(np.sqrt(np.mean((resid ** 2).sum(axis=1))))
+    return origin, direction, rms, len(points)
+
+
+def coarse_calibration(project: Callable[[np.ndarray], None],
+                       grab: Callable[[], np.ndarray],
+                       dmd_size: tuple[int, int], *,
+                       offsets=STRIPE_OFFSETS,
+                       min_modulation: float = MIN_MODULATION,
+                       log: Callable[[str], None] = print) -> DmdCalibration:
+    """An affine registration from STRIPES ALONE — no Gray coding.
+
+    A narrow stripe stepped across each axis gives a direct
+    (mirror offset -> camera position) point per exposure. Two straight-line
+    fits then hand over everything an affine has: where the panel centre lands,
+    how far the image moves per mirror on each axis, and which way each axis
+    runs. Six parameters, ~19 exposures, none of them finer than the relay can
+    resolve.
+
+    **Prefer this when the Gray sweep cannot decode**, which is the normal case
+    on a relay that does not resolve single mirrors — on this rig at ~4.4 camera
+    px per mirror the sweep returned 0.0 % while stripes are perfectly legible.
+    What it gives up is real:
+
+      * **no keystone.** An affine has no perspective term, so if the panel is
+        tilted relative to the sample this is wrong towards the edges — by an
+        amount `run_calibration`'s residual would have told you and this cannot.
+      * **a residual over ~18 points**, not thousands. Read it: it is in camera
+        px and it is the scatter of the stripe centroids about a straight line,
+        so a few px is good and tens of px means the stripes are not being
+        measured cleanly.
+
+    So it is a *coarse* calibration, named that in the file, and good enough to
+    aim an ROI when the alternative is nothing at all.
+    """
+    w, h = int(dmd_size[0]), int(dmd_size[1])
+    seen = stripe_sweep(project, grab, (w, h), offsets=offsets,
+                        min_modulation=min_modulation, log=log)
+
+    fits = {}
+    for axis in (0, 1):
+        f = fit_axis_line(seen[axis])
+        if f is None:
+            raise CalibrationError(
+                f"only {len(seen[axis])} usable stripe(s) on the "
+                f"{'xy'[axis]} axis — need 3. Every other stripe was off the "
+                f"frame or too dim, which means the DMD field and the camera's "
+                f"view barely overlap on that axis.")
+        fits[axis] = f
+        origin, direction, rms, n = f
+        log(f"[dmd-calib] {'xy'[axis]}: {np.hypot(*direction):.3f} px/mirror "
+            f"along ({direction[0]:+.3f}, {direction[1]:+.3f}), "
+            f"residual {rms:.2f} px over {n} stripes")
+
+    ox, dx_dir, rms_x, n_x = fits[0]
+    oy, dy_dir, rms_y, n_y = fits[1]
+    # Both lines pass through the panel centre at offset 0, so their origins are
+    # two measurements of the same point. Disagreement is a real error bar.
+    gap = float(np.hypot(*(ox - oy)))
+    centre = (ox + oy) / 2.0
+    log(f"[dmd-calib] panel centre at ({centre[0]:.1f}, {centre[1]:.1f}); the "
+        f"two axes' estimates of it differ by {gap:.1f} px")
+
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    A = np.eye(3)
+    A[:2, 0] = dx_dir
+    A[:2, 1] = dy_dir
+    A[:2, 2] = centre - cx * dx_dir - cy * dy_dir
+    if abs(float(np.linalg.det(A[:2, :2]))) < 1e-9:
+        raise CalibrationError(
+            "the two measured axes are parallel, so the registration cannot be "
+            "inverted — one of them was not really measured")
+    cam_to_dmd = np.linalg.inv(A)
+
+    rms = float(np.sqrt((rms_x ** 2 + rms_y ** 2) / 2.0))
+    kx, ky = float(np.hypot(*dx_dir)), float(np.hypot(*dy_dir))
+    ang = float(np.degrees(np.arctan2(dx_dir[1], dx_dir[0])))
+    log(f"[dmd-calib] coarse affine: {kx:.3f} x {ky:.3f} px/mirror, DMD-x at "
+        f"{ang:+.1f}deg, residual {rms:.2f} px over {n_x + n_y} stripes")
+    if rms > 10.0:
+        log("[dmd-calib] WARNING: that residual is large. The stripe centroids "
+            "are not falling on a straight line, so an affine does not "
+            "describe this relay — check the log above for stripes that were "
+            "kept but look out of place.")
+    ch, cw = np.asarray(grab()).shape[:2]
+    return DmdCalibration(
+        cam_to_dmd=cam_to_dmd, dmd_size=(w, h), cam_size=(int(cw), int(ch)),
+        model="affine-coarse", rms_px=rms, n_points=n_x + n_y,
+        created=datetime.now().isoformat(timespec="seconds"),
+        notes=f"COARSE — stripes only, no Gray coding, no keystone term. "
+              f"{kx:.3f} x {ky:.3f} px/mirror, DMD-x {ang:+.1f}deg, "
+              f"panel centre ({centre[0]:.0f}, {centre[1]:.0f}), the two axes' "
+              f"centre estimates {gap:.1f} px apart")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

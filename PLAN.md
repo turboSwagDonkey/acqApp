@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-24 (aj) |
+| **Last updated** | 2026-08-24 (ak) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept (§7 (ai)). **2026-08-24 (aj): the app can now PRODUCE a DMD calibration** — `run_calibration` is wired to a dialog, led by a per-axis centre-out probe, and had never been executed by anything before (§7 (aj)). Suite **692 checks, 22 files — all green**. §5b **A3 triggered** and is the one open architecture item. **Next: run the sweep at the rig** — §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept (§7 (ai)). **2026-08-24 (aj): the app can now PRODUCE a DMD calibration** — `run_calibration` is wired to a dialog, led by a per-axis centre-out probe, and had never been executed by anything before (§7 (aj)). Suite **706 checks, 22 files — all green**. §5b **A3 triggered** and is the one open architecture item. **First rig sweep ran 2026-08-24 (ak): the probe worked, Gray coding did not — use COARSE.** Next: §6. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **692 checks, 22 files, ~51 s**, and it is ALL GREEN. Run it
+the contract: **706 checks, 22 files, ~53 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -111,13 +111,26 @@ settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose t
 retire it anyway rather than re-tune. **The numbers are in
 `archive/pupil_tracking/README.md`**, not here.
 
-**PICK UP HERE — the sweep is built and has never been run.** As of
-2026-08-24 (aj) the DMD tab has a **Calibrate…** button opening a dialog with
-two runs: **Probe** (12 dim exposures, measures where the DMD field lands, its
-per-axis scale and its rotation, saves nothing) and **Full calibration** (54,
-produces the transform). Everything is verified against a simulated rig and,
-short of `Run()`, against the real ALP. **What has not happened is the light.**
-§6 item 1 is doing it.
+**PICK UP HERE — the sweep HAS run, and the rig is now measured.** First real
+run 2026-08-24 (ak). The probe worked; the Gray sweep did not. **Use the
+Calibrate… dialog's COARSE button** — it registers from the rectangles alone and
+is the right tool for this relay. §7 (ak) has the reasoning.
+
+**The rig's measured optical facts** — the first ones this project has:
+
+| | |
+|---|---|
+| DMD centre in camera | **(2362, 1406)** of a 4432x2368 frame (bin 1) |
+| scale | **4.560 px/mirror in x, 5.525 in y** — 17 % anisotropic |
+| rotation | **+1.1°** of DMD-x to camera-x |
+| field | the DMD **overfills the camera ~1.9x in area** — 4670x4243 px against 4432x2368, so the camera sees roughly the middle half of the panel's height |
+| resolving power | **the relay does not resolve single mirrors.** A 1-mirror Gray stripe is 4.6 px and modulated nothing |
+
+**Two of those change what is worth building.** The DMD overfilling the camera
+means most large probe bars run off the frame and are discarded, and it means
+ROIs can be aimed anywhere in the FOV. The relay not resolving single mirrors
+means Gray coding is the *wrong instrument here* unless it is coarsened, which
+is now measured rather than assumed (`resolve_gray_step`).
 
 **Two facts that were wrong in this file and are now checked:**
 - **acqApp is NOT running with `fit=True`.** `acqapp_local.json` has
@@ -343,27 +356,30 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Run the PROBE at the rig.** 12 exposures, none larger than the panel, and
-   it answers the question this file has deferred three times: where the DMD
-   field lands in the camera, at what scale per axis, and at what rotation.
-   Saves nothing, so it commits to nothing.
+1. **Run COARSE and save the calibration.** 21 exposures, rectangles only, and
+   it produces a real `DmdCalibration` the ROI editor can use. This is the path
+   that suits this rig; the probe half of it already ran successfully on
+   2026-08-24. It actuates — §2 still applies.
    - **Preconditions**: the voltage camera *running* (Free run or Record — the
      sweep images each pattern with it), `dmdGUI_project` **closed** (one
      process owns the USB), and the illumination on.
-   - **It actuates.** Ask first (§2). Everything short of light is verified:
-     the ALP opens 1024x768, all 33 sweep patterns render binary and
-     device-sized, and the upload path takes them — see §7 (aj).
    - The ALP refused to open once and opened on the retry with identical
      arguments. **A single "not found or not ready" is not proof the DMD is
      absent** — retry before concluding anything.
+   - **Then check it optically**, which is the step no residual replaces: draw
+     one ROI on a landmark, project the mask, and see whether the light lands on
+     it. A coarse affine has no keystone term, so expect it to be best near the
+     centre and worst at the edges.
 
-2. **Then the full calibration, and check the residual.** 54 exposures. Read
-   `rms_px` before trusting it: on the simulated rig a homography gives 0.41 px
-   and an affine 2x worse *because that rig has keystone* — a real affine rms of
-   several px means the optics are not affine, not that the sweep was noisy.
-   Save it; the panel adopts it at once and the ROI editor draws the measured
-   field. Then decide **(c) single frame or an average** for the ROI snapshot,
-   still open from item 4.
+2. **Only then consider the full sweep.** It is worth trying once now that the
+   Gray step is measured rather than assumed — if it decodes, the homography
+   adds the keystone term the coarse affine cannot have, and a residual over
+   thousands of points instead of sixteen bar measurements. **If it fails
+   again, read the per-plane coverage table it now prints** rather than
+   re-running: a collapse in the last planes is unresolved stripes, a steady
+   slide from the first is a field that was never modulating. Then decide
+   **(c) single frame or an average** for the ROI snapshot, still open from
+   item 4.
 
 3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
    answers it. Until it is set the app reports rev/s and rev instead of mm/s and
@@ -554,6 +570,42 @@ Item 5 keeps the reasoning and the numbers.
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-24 (ak) — the first real sweep: the probe worked, Gray coding did not
+- **The rig is measured for the first time** — centre, scale, rotation, field
+  size, and the fact that the relay does not resolve single mirrors. The table
+  is in §0 and it is the most valuable thing this session produced.
+- **The failure mode was the worst kind: everything looked fine and the answer
+  was zero.** Probe fine, checkerboard fine, then `0.0% of pixels decoded` and
+  an error telling the operator to check focus and exposure — right after the
+  probe had succeeded. `decode` requires **every** plane, so the 1-mirror
+  stripes (4.6 camera px) invalidated all 10.5 Mpx.
+- **The operator's question was the right design question**: *why doesn't
+  calibrate just run the rectangles to figure out the frame edges and any tilt?*
+  It does now. The probe already measures every parameter an affine has — centre
+  is translation, the two scales are magnification, the two axis directions are
+  rotation and shear. `coarse_calibration()` turns them straight into a
+  transform: **0.4 px on the simulated keystoned rig, 0.8 px on a mirrored
+  one.** Gray coding only ever bought keystone and a dense residual, and buys
+  neither when it decodes nothing.
+- **A centred bar cannot say which WAY its axis runs** — the covariance
+  eigenvector's sign is arbitrary, so the coarse transform would be mirrored
+  about the panel centre half the time, aiming every ROI wrongly while looking
+  perfectly fitted. `resolve_handedness()` settles it in two off-centre bars.
+  This is the corner-marks problem again, answered more cheaply.
+- **I sized the Gray step from a guessed constant first, and deleted it.**
+  `MIN_STRIPE_PX = 6.0` px was a guess about the relay's point spread.
+  `resolve_gray_step()` projects each candidate's finest stripe and *measures*
+  whether it modulates, escalating 1→2→4→8→16 at four exposures each. Starting
+  from a predicted step would only ever confirm the prediction.
+- **A failed decode now names the plane that killed it** (`plane_coverage`), and
+  the collapse point separates two causes with different fixes: last-planes =
+  stripes too fine, steady-slide-from-first = no real field. The exposures are
+  already paid for by then, so not printing it was waste.
+- **The checkerboard's 15.8 % contradicted the probe's ~100 % prediction** and
+  nothing said so. It does now — scattered modulation over a full-frame bbox is
+  noise, and twenty planes of noise intersect to nothing.
+- Suite **692 → 706 checks**, all green.
+
 ### 2026-08-24 (aj) — the app can produce a calibration; the probe grows one axis at a time
 - **`run_calibration` had never been executed by anything.** This file said it
   was "imported by its test and by nothing else"; in fact
@@ -623,46 +675,7 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
   `test_structure`, but its files ARE listed in the tree** — removed code should
   not be held to live standards, and should not be invisible either.
 
-### 2026-08-22 (ah) — the pupil complaint was two settings, not the algorithm
-- **Both of §6 item 1's blockers dissolved on inspection, and neither needed the
-  operator.** "Get a clip that shows a dropout" — there are **six** clips on
-  `E:`, not one, and the operator's own (`E:\State\VF182.6B\…`) drops out
-  constantly. Four sessions had measured the first clip and generalised.
-- **Read `acqapp_local.json` first next time.** It is what the app loads at
-  launch, it is gitignored so it never shows in a diff, and it held the answer:
-  their `video_path` pointed at the State clip (not the one every measurement
-  used) and their tuning had `edge_select="strongest"` — the one value whose own
-  tooltip and `settings.py` comment say it "locks the eyelid margin, which
-  out-contrasts the pupil on real IR footage".
-- **One knob at a time, on the clip that tracks 151/151 stock:** `strongest`
-  → 44/151 with cx sd 28.7 px; `smooth_sigma=12` → 46/151, cx sd 20.0. The other
-  three of their five knobs are harmless alone (151, 150, 151). Table in §0.
-  On their own clip, `edge_select="first"` alone is **5/151 → 145/151**.
-- **`reseed_after=100` is the amplifier, not a cause** — it turns one bad frame
-  into 100 blind ones. Their three lost runs were 2, **102** and 42 frames.
-- **No clip contains a blink.** Every LOST frame in the montage is a wide-open,
-  clearly visible eye, so the dropouts were never the animal. That also means
-  §7 (ag)'s simulated-occlusion work still has no real footage behind it.
-- **A hand-placed first seed is not the fix**, though it helps once
-  `edge_select` is right: 145 → 150/151. With `"strongest"` still set a
-  *perfect* seed gives 18/151. **Caveat, and it matters: no human clicked
-  anything** — the "seed" was the tracker's own first fit fed back in, an
-  idealised click. The sensitivity is why: ±20 px horizontally is fine, but
-  +20 px vertically gives 46/151 and −20 px gives 3/151, because the lids are
-  above and below. Seed radius is one-sided too — half the true radius still
-  gives 106/151, 1.5× gives 27/151.
-- **`smooth_sigma` must not be given a default.** Best is 0.5 on the State clip
-  (141/151, vs 86 at 1.5) and 1.5–3.0 on pAce. From 4.0 the radius inflates
-  53.6 → 70 px *silently*, with the frame count still high — the dangerous mode.
-- **Shipped: `PupilSettings.risky()` and a warning line in the pupil tab**, in
-  the group box but outside the collapsible half so a fold cannot hide it. Only
-  `edge_select` qualifies; `smooth_sigma` is deliberately excluded, since a
-  cutoff would be invented. The tooltip already said all this and was not
-  enough — "8 changed" does not separate a harmless knob from a ruinous one.
-- Suite **787 → 798, 23/23**. §6 item 2 was found already **done** (`720a1b6`)
-  and its entry stale.
-
-Entries before 2026-08-22 (ah) are in
+Entries before 2026-08-24 (ai) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file
 small enough to read at the start of every session.
 

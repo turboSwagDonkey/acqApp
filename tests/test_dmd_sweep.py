@@ -27,8 +27,8 @@ from _harness import Report
 # The simulated rig, imported rather than copied: a second camera model would
 # be a second set of assumptions to keep in step with this one. It is a plain
 # module — its own checks run only under __main__.
-from test_dmd_calibration import (CH, CW, DH, DW, image_through, sample_field,
-                                  true_transform)
+from test_dmd_calibration import (CH, CW, DH, DW, footprint, image_through,
+                                  sample_field, true_transform)
 
 from acqApp.devices.dmd.calibration import PROBE_FRACS
 
@@ -381,45 +381,78 @@ def check_unresolved_planes(r: Report) -> None:
 
 
 def check_coarse_calibration(r: Report) -> None:
-    """Rectangles alone give a usable affine — the rig's answer when Gray fails.
+    """Stripes alone give a usable affine — the rig's answer when Gray fails.
 
     The operator's question (2026-08-24): why not just run the rectangles and
-    read the edges and the tilt? Because the probe already measures every
-    parameter an affine has. The one thing it cannot measure is which WAY each
-    axis runs, and that is what the off-centre bars are for.
+    read the edges and the tilt? Because a stripe stepped across the panel is a
+    direct (mirror -> camera) measurement per exposure, and signed offsets carry
+    the direction with them.
+
+    The rig is modelled with the two things that broke the FIRST attempt at
+    this — a field larger than the frame, so stripes fall off the edge, and
+    vignetting, so a wide region's centroid is pulled off-centre. Growing bars
+    scored rms 66 px against exactly this; stripes must not.
     """
     rng = np.random.default_rng(5)
-    sample = sample_field(rng)
+
+    def rig(M, *, clip=True, vignette=True):
+        """A camera that sees `M` applied to the pattern, clipped and vignetted."""
+        yy, xx = np.mgrid[:CH, :CW].astype(np.float64)
+        v = (0.25 + 0.75 * np.exp(-(((xx - CW * 0.35) ** 2
+                                     + (yy - CH * 0.45) ** 2)
+                                    / (2 * (0.45 * CW) ** 2)))
+             if vignette else np.ones((CH, CW)))
+        base = 300.0 * v
+
+        def grab_for(pattern):
+            lit = footprint(pattern, M) if clip else footprint(pattern, M)
+            img = base * np.where(lit, 3.0, 1.0)
+            return img + rng.normal(0, 4.0, img.shape)
+        return grab_for
 
     for name, M in (("rotated + keystone", true_transform()),
-                    ("mirrored in x", np.array([[-1.1, 0.10, 250.0],
-                                                [0.08, 1.05, 22.0],
+                    ("mirrored in x", np.array([[-1.05, 0.10, 300.0],
+                                                [0.08, 1.02, 22.0],
                                                 [0.0, 0.0, 1.0]]))):
         held = {"f": None}
+        grab_for = rig(M)
         c = coarse_calibration(lambda f: held.__setitem__("f", f),
-                               lambda: image_through(held["f"], M, sample, rng),
+                               lambda: grab_for(held["f"])
+                               if held["f"] is not None else np.zeros((CH, CW)),
                                (DW, DH), log=lambda _s: None)
         r.check(c.model == "affine-coarse" and "COARSE" in c.notes,
                 f"[{name}] the file says it is coarse, so it cannot be "
                 f"mistaken for a Gray-coded fit later")
-        # It must land where the transform really puts the mirrors.
+        r.check(c.rms_px < 5.0,
+                f"[{name}] the stripe centroids fall on a straight line "
+                f"(residual {c.rms_px:.2f} px over {c.n_points} stripes)")
         pts = np.array([[DW / 2, DH / 2], [DW / 4, DH / 4],
                         [3 * DW / 4, 2 * DH / 3]], float)
         got = apply_transform(np.linalg.inv(c.cam_to_dmd), pts)
         want = apply_transform(M, pts)
         err = float(np.abs(got - want).max())
-        r.check(err < 12.0,
-                f"[{name}] rectangles alone place the panel to {err:.1f} px "
-                f"(rms {c.rms_px:.2f} over {c.n_points} bar measurements)")
+        r.check(err < 8.0,
+                f"[{name}] stripes alone place the panel to {err:.1f} px, "
+                f"through vignetting and a frame that clips the field")
 
-    # CONTROL: the mirrored case must actually be mirrored, or the check above
-    # passes for free and the handedness bars are proving nothing.
-    flip = np.array([[-1.1, 0.10, 250.0], [0.08, 1.05, 22.0], [0.0, 0.0, 1.0]])
+    # CONTROL: the mirrored case must really be mirrored, or the signed offsets
+    # are proving nothing about direction.
+    flip = np.array([[-1.05, 0.10, 300.0], [0.08, 1.02, 22.0], [0.0, 0.0, 1.0]])
     d = (apply_transform(flip, np.array([[DW - 1, DH / 2]], float))
          - apply_transform(flip, np.array([[0, DH / 2]], float)))[0]
     r.check(d[0] < 0,
-            f"control: that transform really does run DMD +x towards camera −x "
+            f"control: that transform really does run DMD +x towards camera -x "
             f"({d[0]:+.0f} px), so a sign error would have been caught")
+
+    # CONTROL: too few usable stripes must raise, not fit two points.
+    try:
+        coarse_calibration(lambda f: None, lambda: np.full((CH, CW), 50.0),
+                           (DW, DH), log=lambda _s: None)
+        r.check(False, "a dark rig raises rather than fitting noise")
+    except CalibrationError as e:
+        r.check("usable stripe" in str(e),
+                f"control: a dark rig raises, naming the axis and the count "
+                f"({str(e)[:48]}...)")
 
 
 def check_project_frame(r: Report) -> None:
