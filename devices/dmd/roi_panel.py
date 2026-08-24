@@ -26,6 +26,41 @@ _ROI_PEN = pg.mkPen("#00d0ff", width=2)
 _ROI_HOVER = pg.mkPen("#4dff88", width=3)
 
 
+class _DrawViewBox(pg.ViewBox):
+    """A ViewBox where a left-drag can mean "make an ROI here" instead of "pan".
+
+    Placing an ROI used to take four gestures — pick a shape, press Add, drag
+    the result out of the middle of the field, then drag a handle to size it —
+    and it always started somewhere nobody asked for. Dragging where you want
+    it is one gesture.
+
+    Gated on a toggle rather than a modifier key: panning and zooming a 4432 px
+    frame is how you find the target in the first place, so the two cannot both
+    own an unqualified left-drag.
+    """
+
+    drawn = pyqtSignal(object, object)      # (x0, y0), (x1, y1) in image px
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._draw = False
+
+    def set_draw_mode(self, on: bool) -> None:
+        self._draw = bool(on)
+        self.setCursor(Qt.CursorShape.CrossCursor if on
+                       else Qt.CursorShape.ArrowCursor)
+
+    def mouseDragEvent(self, ev, axis=None) -> None:
+        if not self._draw or ev.button() != Qt.MouseButton.LeftButton:
+            super().mouseDragEvent(ev, axis=axis)
+            return
+        ev.accept()
+        if ev.isFinish():
+            a = self.mapToView(ev.buttonDownPos())
+            b = self.mapToView(ev.pos())
+            self.drawn.emit((a.x(), a.y()), (b.x(), b.y()))
+
+
 class RoiEditor(QWidget):
     """Create, move, resize and delete ROIs over a camera snapshot."""
 
@@ -44,17 +79,36 @@ class RoiEditor(QWidget):
         root = QVBoxLayout(self)
 
         self._gv = pg.GraphicsLayoutWidget()
-        self._vb = self._gv.addViewBox(lockAspect=True, invertY=True)
+        self._vb = _DrawViewBox(lockAspect=True, invertY=True)
+        self._gv.addItem(self._vb)
         self._img = pg.ImageItem(axisOrder="row-major")
         self._vb.addItem(self._img)
         self._field = pg.PlotCurveItem(pen=_FIELD_PEN)
         self._vb.addItem(self._field)
-        root.addWidget(self._gv, 1)
+        self._vb.drawn.connect(self._on_drawn)
+
+        # A LUT bar, as the live preview has. The percentile default is right
+        # far more often than not, but a dim ROI still needs a drag to find.
+        self._hist = pg.HistogramLUTWidget()
+        self._hist.setImageItem(self._img)
+        self._hist.setFixedWidth(86)
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.addWidget(self._hist)
+        view_row.addWidget(self._gv, 1)
+        root.addLayout(view_row, 1)
 
         bar = QHBoxLayout()
         self._cmb = QComboBox()
         self._cmb.addItems(["rectangle", "circle"])
         bar.addWidget(self._cmb)
+        self._btn_draw = QPushButton("Draw")
+        self._btn_draw.setCheckable(True)
+        self._btn_draw.setToolTip(
+            "Drag on the image to place an ROI where you want it.\n"
+            "Off, dragging pans the view as usual.")
+        self._btn_draw.toggled.connect(self._vb.set_draw_mode)
+        bar.addWidget(self._btn_draw)
         for label, slot in (("Add", self._on_add), ("Delete", self._on_delete),
                             ("Clear", self._on_clear)):
             b = QPushButton(label)
@@ -65,6 +119,9 @@ class RoiEditor(QWidget):
 
         self._list = QListWidget()
         self._list.currentRowChanged.connect(self._on_row)
+        # An index, not the main event: it used to take half the window while
+        # the image it describes was squeezed into the top.
+        self._list.setMaximumHeight(110)
         root.addWidget(self._list)
 
         self._status = QLabel("no calibration — ROIs cannot be projected")
@@ -74,9 +131,22 @@ class RoiEditor(QWidget):
 
     # ── inputs ───────────────────────────────────────────────────────────────
     def set_image(self, frame: np.ndarray) -> None:
-        """Show the snapshot ROIs are drawn on (taken with the DMD all-on)."""
+        """Show the snapshot ROIs are drawn on (taken with the DMD all-on).
+
+        Contrast from the 1st/99th percentile, **not** pyqtgraph's autoLevels.
+        autoLevels stretches to min/max, and every sCMOS has a few hot pixels:
+        on a real ORCA frame the signal lives in ~800 counts of 65535, so two
+        pixels at 65000 collapse the whole image to black. The live preview has
+        always used percentiles (`adapters/voltage_cam.py`); this did not, which
+        is why the editor looked far worse than the view it was opened from.
+        """
         self._image = np.asarray(frame)
-        self._img.setImage(self._image, autoLevels=True)
+        lo, hi = np.percentile(self._image, (1, 99))
+        if hi <= lo:                    # a flat frame — fall back to the range
+            lo, hi = float(self._image.min()), float(self._image.max()) or 1.0
+        self._img.setImage(self._image, autoLevels=False,
+                           levels=(float(lo), float(hi)))
+        self._hist.setLevels(float(lo), float(hi))
         self._vb.autoRange()
         self._refresh_status()
 
@@ -122,6 +192,23 @@ class RoiEditor(QWidget):
             roi = RectRoi(x=cx, y=cy, w=2 * s, h=2 * s)
         else:
             roi = CircleRoi(x=cx, y=cy, r=s)
+        self._set.add(roi)
+        self._rebuild_items()
+        self._list.setCurrentRow(len(self._set) - 1)
+        self._emit()
+
+    def _on_drawn(self, a, b) -> None:
+        """A drag on the image became an ROI. Ignores a stray click."""
+        x0, y0 = a
+        x1, y1 = b
+        w, h = abs(x1 - x0), abs(y1 - y0)
+        if w < 3 or h < 3:              # a click, not a drag
+            return
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        if self._cmb.currentText().startswith("rect"):
+            roi = RectRoi(x=cx, y=cy, w=w, h=h)
+        else:
+            roi = CircleRoi(x=cx, y=cy, r=max(w, h) / 2.0)
         self._set.add(roi)
         self._rebuild_items()
         self._list.setCurrentRow(len(self._set) - 1)

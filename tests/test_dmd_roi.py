@@ -251,6 +251,45 @@ def main() -> int:
     ed.set_image(np.random.default_rng(0).integers(0, 255, (CH, CW), dtype=np.uint8))
     r.check(len(ed.roi_set) == 0, "the editor starts empty")
 
+    # ── contrast: an ORCA frame is 16-bit with hot pixels ───────────────────
+    # autoLevels stretches to min/max, so two hot pixels collapse the whole
+    # image to black — the editor looked far worse than the live preview it is
+    # opened from, which has always used percentiles.
+    rng16 = np.random.default_rng(1)
+    frame16 = rng16.normal(1400, 60, (CH, CW)).astype(np.uint16)
+    frame16[3, 4] = 65000                       # every sCMOS has a few
+    ed.set_image(frame16)
+    lo, hi = ed._img.getLevels()
+    p1, p99 = np.percentile(frame16, (1, 99))
+    r.check(abs(lo - p1) < 1 and abs(hi - p99) < 1,
+            f"levels come from the 1st/99th percentile ({lo:.0f}-{hi:.0f}), "
+            f"not min/max")
+    r.check(hi < 0.1 * frame16.max(),
+            f"control: a hot pixel at {frame16.max()} would have stretched the "
+            f"range to it; the shown top is {hi:.0f}")
+    # A flat frame must not produce an inverted or zero-width range.
+    ed.set_image(np.full((CH, CW), 700, np.uint16))
+    flo, fhi = ed._img.getLevels()
+    r.check(fhi >= flo, f"a flat frame still gives a usable range ({flo}-{fhi})")
+    ed.set_image(frame16)
+
+    # ── drawing: a drag places an ROI where you put it ──────────────────────
+    before = len(ed.roi_set)
+    ed._on_drawn((100.0, 80.0), (160.0, 130.0))
+    if r.check(len(ed.roi_set) == before + 1, "a drag on the image adds an ROI"):
+        roi = list(ed.roi_set)[-1]
+        r.check(abs(roi.x - 130) < 1 and abs(roi.y - 105) < 1,
+                f"…centred on the drag, not on the middle of the field "
+                f"({roi.x:.0f}, {roi.y:.0f})")
+        r.check(abs(roi.w - 60) < 1 and abs(roi.h - 50) < 1,
+                f"…and sized by it ({roi.w:.0f}x{roi.h:.0f})")
+    # CONTROL: a stray click must not litter the set with zero-size ROIs.
+    n = len(ed.roi_set)
+    ed._on_drawn((200.0, 200.0), (200.5, 200.5))
+    r.check(len(ed.roi_set) == n,
+            "control: a click (not a drag) adds nothing")
+    ed._on_clear()
+
     seen: list = []
     ed.rois_changed.connect(seen.append)
     ed._cmb.setCurrentText("rectangle")
