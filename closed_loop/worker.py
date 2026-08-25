@@ -73,9 +73,6 @@ class ClosedLoopWorker(PullWorker):
         """
         return self._recorded
 
-    @property
-    def source_key(self) -> str:
-        return self._source.key
 
     # ── thread ───────────────────────────────────────────────────────────────
     def _run(self) -> None:

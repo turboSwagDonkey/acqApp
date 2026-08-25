@@ -207,10 +207,6 @@ class RoiEditor(QWidget):
         self._vb.autoRange()
         self._refresh_status()
 
-    def set_calibration(self, calib: DmdCalibration | None) -> None:
-        self._calib = calib
-        self._draw_field()
-        self._refresh_status()
 
     @property
     def roi_set(self) -> RoiSet:
