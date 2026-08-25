@@ -415,20 +415,6 @@ class SettingsPanel(QWidget):
             self.load_requested.emit(p)
             self._emit()
 
-    def _roi_preview(self, w: int, h: int):
-        """The ROI mask, memoised on what it depends on.
-
-        `_update_preview` runs on every resize event and every settings change,
-        and building this reloads the calibration JSON and rasterises ~786k
-        mirrors — tens of ms each, which a window drag would pay on every frame.
-        """
-        key = (self.mode, self._rois, self._calib_path, w, h)
-        if getattr(self, "_roi_cache_key", None) != key:
-            from acqApp.devices.dmd.control import roi_frame
-            self._roi_cache_key = key
-            self._roi_cache = roi_frame(self.settings, w, h)
-        return self._roi_cache
-
     def _update_preview(self) -> None:
         """Renders the pattern array with a padded thatched magenta border around DMD bounds."""
         pw = self._preview.width()
@@ -449,7 +435,8 @@ class SettingsPanel(QWidget):
             # `control.roi_frame` already assembles — reuse it rather than
             # keeping a second, subtly different renderer in the panel.
             n = len(self._rois)
-            frame = self._roi_preview(w, h)
+            from acqApp.devices.dmd.control import roi_frame
+            frame = roi_frame(self.settings, w, h)
             if frame is None:
                 frame = np.zeros((h, w), dtype=np.uint8)
                 self._lbl_pattern.setText(

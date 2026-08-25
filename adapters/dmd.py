@@ -47,23 +47,13 @@ class DmdModule(ModuleAdapter):
 
     # ── the camera↔DMD registration ──
     def calibrate(self) -> None:
-        """Open the sweep dialog: project patterns, image them, fit a transform.
+        """Open the sweep dialog: project stripes, image them, fit a transform.
 
-        The two hardware operations `run_calibration` wants are exactly the two
-        this adapter can reach — `project_frame` on its own controller, and the
-        **voltage** camera's newest frame through the host. Nothing narrower
-        would do: the DMD images through that camera, so the registration is in
-        ORCA pixels.
-
-        This is the app's only actuating path that is not a Display. The dialog
-        states what it will emit and does nothing until a button is pressed
-        (§2).
-
-        It needs no setup from the operator: `set_live` starts the camera and
-        puts it back, and `project_frame` drives the DMD directly, so neither
-        Live view nor Display has to be pressed first. Requiring them was
-        friction with no safety value — the actuation decision is the dialog's
-        button, not whether a preview happened to be running.
+        Here because only the adapter can reach both halves — its own
+        controller and, through the host, the VOLTAGE camera the DMD images
+        through. The dialog drives the camera (`set_live`) and the DMD
+        (`project_frame`) itself, so neither has to be started first; the
+        actuation decision is its button, not whether a preview was running.
         """
         from PyQt6.QtWidgets import QMessageBox
 
@@ -86,12 +76,8 @@ class DmdModule(ModuleAdapter):
         dlg.exec()
 
     def _adopt_calibration(self, path: str) -> None:
-        """Point the panel at the calibration the sweep just wrote.
-
-        Measuring one and then leaving the ROI editor on the old one is the
-        failure this exists to prevent — the editor would draw a field outline
-        that no longer describes the projector.
-        """
+        """Point the panel at the calibration the sweep just wrote — otherwise
+        the ROI editor keeps drawing a field outline for the old one."""
         self.panel.set_calib_path(path)
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
@@ -100,13 +86,9 @@ class DmdModule(ModuleAdapter):
     def edit_rois(self) -> None:
         """Open `RoiEditor` on the voltage camera's newest frame.
 
-        Here rather than in the panel because only the adapter can reach
-        another module (`ModuleHost.latest_frame`), and the DMD images through
-        the **voltage** camera — that is the optical path it projects into.
-
-        Nothing in this path commands a camera or the projector: it draws on
-        the frame that already exists. Putting the DMD all-on first is the
-        operator's step, and it is the one that emits light.
+        Draws on the frame that already exists — nothing here commands a camera
+        or the projector. Putting the DMD all-on first is the operator's step,
+        and it is the one that emits light.
         """
         from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
                                      QVBoxLayout)
@@ -151,12 +133,11 @@ class DmdModule(ModuleAdapter):
             self.win.status(f"{len(rois)} photostimulation ROI(s) saved")
 
     def _calibration(self):
-        """The saved camera↔DMD registration -> (calib | None, complaint).
+        """The saved registration -> (calib | None, complaint).
 
-        A missing or unreadable one is not fatal: ROIs can still be drawn and
-        saved, and the editor says so itself. What must not happen is a
-        *silently* absent calibration, because the field outline is then simply
-        not drawn and everything looks fine.
+        Missing is not fatal — ROIs can still be drawn. But it must not be
+        SILENT: the field outline would just not be drawn, and all would look
+        well.
         """
         path = self.panel.calib_path if self.panel is not None else ""
         if not path:
@@ -234,12 +215,9 @@ class DmdModule(ModuleAdapter):
             self.controller.stop()
 
     def on_trigger(self, name: str, duration: float) -> None:
-        """Project on a trigger — the closed loop's other output.
-
-        The DMD has no pulse of its own: the ALP free-runs its sequence once
-        started and holds until Stop. So a *timed* stimulus is display-now plus
-        a single-shot stop, and `duration <= 0` leaves the pattern up.
-        """
+        """Project on a trigger. The ALP has no pulse of its own — it holds
+        until Stop — so a timed stimulus is display-now plus a single-shot
+        stop, and `duration <= 0` leaves the pattern up."""
         if name != self.key:
             return
         self.display()

@@ -1,24 +1,19 @@
 """Where the camera's view lands on the DMD.
 
-An ROI is drawn in *camera* pixels; a mask is in *DMD mirrors*. This measures
-the affine between the two, so `mask_from_roi` can turn one into the other and
-`visible_mirrors` can say which part of the panel the camera actually sees.
+An ROI is drawn in *camera* px, a mask is in *DMD mirrors*; this measures the
+affine between them. Project a narrow stripe at nine signed offsets per axis,
+fit a line to where each lands, and the two lines are the whole transform —
+signed offsets carry the direction, so a mirror flip cannot pass.
 
-**Coarse patterns only, and that is a measurement, not a shortcut.** On this rig
-(2026-08-24) a solid bar modulates the camera cleanly while a 280 px
-checkerboard modulates 13 % of the frame and a 70 px stripe pattern 9 %. The
-relay and the sample scatter enough to erase fine structure at any pitch, so
-Gray coding cannot work here — it was tried down to 16 mirrors per code and
-still decoded 0.0 %. Nothing here projects a pattern finer than 5 % of the panel.
+**Coarse patterns only, and that is a measurement.** On this rig (2026-08-24) a
+solid bar images cleanly while a 280 px checkerboard modulates 13 % of the frame
+and a 70 px stripe pattern 9 %: the relay and sample scatter erase fine
+structure at any pitch. Gray coding was tried down to 16 mirrors per code and
+still decoded 0.0 %. Nothing here is finer than 5 % of the panel.
 
-The method: project a narrow stripe at nine known offsets along each axis, find
-where each lands, fit a straight line. Two lines give the whole affine —
-position, scale, rotation and shear — and because the offsets are signed, the
-direction comes out with its sign attached.
-
-Patterns are device-sized and go to `AlpDevice.project()` **directly**. Never
-through `build_frame`: its scale/rotation/offset, and `fit` which overrides all
-three, would transform the geometry being measured.
+Patterns go to `AlpDevice.project()` **directly** — never `build_frame`, whose
+scale/rotation/offset (and `fit`, which overrides them) would transform the
+geometry being measured.
 """
 from __future__ import annotations
 
@@ -78,12 +73,6 @@ def modulation(on: np.ndarray, off: np.ndarray) -> np.ndarray:
     return (a - b) / np.maximum(a + b, 1e-9)
 
 
-def field_mask(on: np.ndarray, off: np.ndarray, *,
-               min_modulation: float = MIN_MODULATION) -> np.ndarray:
-    """Camera pixels this pattern lit, against a dark reference."""
-    return np.abs(modulation(on, off)) >= min_modulation
-
-
 def bounding_box(mask: np.ndarray) -> tuple[int, int, int, int] | None:
     """(x0, y0, x1, y1) of the True region, end-exclusive; None if empty."""
     ys, xs = np.nonzero(mask)
@@ -100,11 +89,10 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
                  log: Callable[[str], None] = print) -> dict:
     """Step a stripe across each axis → {axis: [(offset, cam_x, cam_y), …]}.
 
-    A narrow stripe rather than a growing bar. A *centred* bar's image should
-    hold still as it grows; on the rig it drifted 527 px, because the frame
-    clips one side while vignetting eats the other, and a lopsided region's
-    centroid measures the lopsidedness. A stripe's centroid is local, and one
-    that runs off the frame is dropped instead of biasing the fit.
+    A stripe, not a growing bar: a centred bar's image should hold still as it
+    grows, and on the rig it drifted 527 px — the frame clips one side while
+    vignetting eats the other, so its centroid measures the lopsidedness. A
+    stripe's centroid is local, and one off the frame is dropped.
     """
     w, h = int(dmd_size[0]), int(dmd_size[1])
     half = (w / 2.0, h / 2.0)
@@ -149,15 +137,10 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
 def fit_axes(seen: dict) -> tuple | None:
     """All stripes at once → (centre, vx, vy, rms, n).
 
-    **One fit with ONE shared centre**, not a line per axis. Both axes pass
-    through the panel centre at offset 0, so fitting them separately gives two
-    intercepts that disagree — on the rig they disagreed by 67 px, because the
-    DMD overfills the camera and the surviving stripes sit to one side, making
-    each intercept an extrapolation. That error then reappears as shear, which
-    is the parameter loose enough to absorb it.
-
-    Separable by coordinate: camera x depends on (cx, vx.x, vy.x) and camera y
-    on (cy, vx.y, vy.y), so it is two 3-parameter least squares, not one 6.
+    **ONE shared centre**, not a line per axis. Both axes pass through the
+    panel centre at offset 0, so separate intercepts disagree — by 67 px on the
+    rig, where the DMD overfills the camera and the surviving stripes sit to
+    one side, making each an extrapolation. Shear then absorbs that error.
     """
     pts = [(axis, d, cx, cy) for axis in (0, 1) for d, cx, cy in seen[axis]]
     if len(seen[0]) < 2 or len(seen[1]) < 2 or len(pts) < 5:
@@ -212,10 +195,9 @@ def _solve(pts, keep):
 def holdout_error(seen: dict) -> float | None:
     """Refit without one stripe per axis and see how far off it predicts them.
 
-    **The residual cannot tell you this.** A least-squares fit is closest to the
-    points it was given, so its rms is optimistic by construction; leaving a
-    stripe out and predicting it is the honest version, and on data already in
-    hand it costs nothing to project.
+    **The residual cannot tell you this** — least squares sits closest to the
+    points it was handed, so its rms is optimistic by construction. Free: the
+    stripes are already measured.
     """
     trial = {a: list(seen[a]) for a in (0, 1)}
     held = []
@@ -241,16 +223,13 @@ def deshear(vx: np.ndarray, vy: np.ndarray,
             weights: tuple = (1.0, 1.0)) -> tuple:
     """Force the two axes perpendicular, keeping both scales and the handedness.
 
-    A relay is a rotation plus a magnification per axis; shear only appears with
-    tilt, and an affine cannot represent tilt properly anyway (that is keystone,
-    a perspective term). What shear CAN do is soak up measurement error, so it
-    is off unless asked for. The measured value is logged either way.
+    A relay is a rotation plus a per-axis magnification; shear comes only from
+    tilt, which is keystone — a perspective term an affine cannot hold anyway.
+    What shear CAN do is soak up measurement error, so it is off unless asked.
 
-    Each axis gives its own estimate of the rotation and they are averaged
-    **by evidence**, not equally: a slope's precision goes as the lever arm
-    `sqrt(sum(d^2))`, and on this rig the DMD overfills the camera so one axis
-    routinely keeps far fewer stripes than the other. Splitting the difference
-    evenly would drag the well-measured axis towards the badly-measured one.
+    The two axes' rotation estimates are averaged **by evidence** (lever arm
+    `sqrt(sum(d^2))`): one axis routinely keeps far fewer stripes, and an even
+    split would drag the good one towards it.
     """
     kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
     turn = 1.0 if float(vx[0] * vy[1] - vx[1] * vy[0]) >= 0 else -1.0
@@ -507,24 +486,3 @@ class DmdCalibration:
                 + (f", hold-out {self.holdout_px:.2f} px"
                    if self.holdout_px else "")
                 + (f" ({self.created})" if self.created else ""))
-
-
-def mask_from_roi(roi_cam: np.ndarray, dmd_to_cam: np.ndarray,
-                  width: int, height: int) -> np.ndarray:
-    """Camera-space ROI mask → the DMD frame that illuminates it.
-
-    Iterates over *mirrors* and asks where each lands. A forward map leaves
-    holes wherever the DMD is coarser than the camera, and a mask with holes is
-    a stimulus with holes.
-    """
-    roi = np.asarray(roi_cam)
-    yy, xx = np.mgrid[:height, :width]
-    cam = apply_transform(dmd_to_cam,
-                          np.column_stack((xx.ravel(), yy.ravel())))
-    cx = np.rint(cam[:, 0]).astype(np.int64)
-    cy = np.rint(cam[:, 1]).astype(np.int64)
-    inside = ((cx >= 0) & (cx < roi.shape[1])
-              & (cy >= 0) & (cy < roi.shape[0]))
-    out = np.zeros(width * height, dtype=bool)
-    out[inside] = roi[cy[inside], cx[inside]].astype(bool)
-    return np.where(out.reshape(height, width), ON, OFF).astype(np.uint8)

@@ -25,7 +25,7 @@ from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
                                             deshear, fit_axes,
-                                            holdout_error, mask_from_roi,
+                                            holdout_error,
                                             offset_stripe, stripe_sweep)
 
 DW, DH = 256, 192          # a small DMD
@@ -145,9 +145,11 @@ def main() -> int:
             f"usable region and not an extrapolation")
 
     # ── 4. ROI → mask, the thing the transform is for ────────────────────────
-    roi = np.zeros((CH, CW), bool)
-    roi[110:150, 150:210] = True
-    frame = mask_from_roi(roi, np.linalg.inv(c.cam_to_dmd), DW, DH)
+    from acqApp.devices.dmd.roi import RectRoi, RoiSet
+    rs = RoiSet()
+    rs.add(RectRoi(x=180.0, y=130.0, w=60.0, h=40.0))
+    roi = rs.mask((CH, CW))
+    frame = rs.dmd_frame(c)
     r.check(frame.shape == (DH, DW) and set(np.unique(frame)) <= {0, 255},
             "the ROI becomes a device-sized binary frame")
     r.check(frame.max() == ON, "…emitted at full-on, not scaled")
@@ -159,10 +161,12 @@ def main() -> int:
             f"{100 * spill:.0f}% spill)")
     # CONTROL: aim with the wrong transform and it must miss, or the check
     # above would pass on any mask at all.
-    bad = c.cam_to_dmd.copy()
-    bad[0, 2] += 40.0
-    hit_bad = (footprint(mask_from_roi(roi, np.linalg.inv(bad), DW, DH), M)
-               & roi).sum() / max(1, roi.sum())
+    bad = DmdCalibration(cam_to_dmd=c.cam_to_dmd.copy(), dmd_size=c.dmd_size,
+                         cam_size=c.cam_size)
+    off = c.dmd_to_cam.copy()
+    off[0, 2] += 40.0
+    bad.cam_to_dmd = np.linalg.inv(off)
+    hit_bad = (footprint(rs.dmd_frame(bad), M) & roi).sum() / max(1, roi.sum())
     r.check(hit_bad < 0.6,
             f"control: a 40 px error in the transform misses "
             f"({100 * hit_bad:.0f}% covered)")

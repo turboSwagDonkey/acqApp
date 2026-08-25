@@ -20,8 +20,7 @@ import numpy as np
 
 from _harness import Report, isolate_user_state, qt_app
 
-from acqApp.devices.dmd.calibration import (DmdCalibration, apply_transform,
-                                            mask_from_roi)
+from acqApp.devices.dmd.calibration import DmdCalibration, apply_transform
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet, roi_from_dict
 
 DW, DH = 256, 192
@@ -223,9 +222,12 @@ def main() -> int:
             f"{100*spill:.0f}% spill)")
 
     # CONTROL: aim through a wrong transform and it must miss.
-    bad = c.dmd_to_cam.copy()
-    bad[0, 2] += 40.0
-    frame_bad = mask_from_roi(want, bad, DW, DH)
+    bad_cal = DmdCalibration(cam_to_dmd=c.cam_to_dmd.copy(),
+                             dmd_size=c.dmd_size, cam_size=c.cam_size)
+    off = c.dmd_to_cam.copy()
+    off[0, 2] += 40.0
+    bad_cal.cam_to_dmd = np.linalg.inv(off)
+    frame_bad = near.dmd_frame(bad_cal)
     lit_bad = np.zeros(CW * CH, bool)
     lit_bad[ok] = frame_bad[dyi[ok], dxi[ok]] > 127
     hit_bad = (lit_bad.reshape(CH, CW) & want).sum() / max(1, want.sum())

@@ -18,7 +18,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from acqApp.devices.dmd.calibration import (OFF, ON, DmdCalibration,
-                                            apply_transform, mask_from_roi)
+                                            apply_transform)
 
 
 @dataclass
@@ -202,15 +202,10 @@ class RoiSet:
         return out
 
     def clipped_mask(self, calib: DmdCalibration) -> tuple[np.ndarray, float]:
-        """The mask restricted to what the DMD can reach → (mask, kept fraction).
+        """Camera-space mask clipped to the reachable field -> (mask, kept).
 
-        The fraction is returned rather than silently dropping the remainder:
-        an ROI half outside the projector's field still *looks* drawn, and the
-        operator has to be told that half of it will never be illuminated.
-
-        **In camera space, and no longer on the projection path** — `dmd_frame`
-        clips per mirror instead, which is both exact and ~100x cheaper. This
-        is the camera-space answer, for a caller that wants the mask itself.
+        The exact answer `reach_fraction` estimates, and the reference its test
+        checks against. Not on the projection path: `dmd_frame` clips per mirror.
         """
         shape = (calib.cam_size[1], calib.cam_size[0])
         want = self.mask(shape)
@@ -224,8 +219,7 @@ class RoiSet:
 
         For the status line, which shows a whole-number percentage. Evaluated on
         a grid capped at `max_side`, and only at the pixels an ROI actually
-        covers, so it costs the ROI's area rather than the camera's. Use
-        `clipped_mask` when the camera-space mask itself is wanted.
+        covers, so it costs the ROI's area rather than the camera's.
         """
         w, h = calib.cam_size
         step = max(1, int(np.ceil(max(int(w), int(h)) / max(1, max_side))))
