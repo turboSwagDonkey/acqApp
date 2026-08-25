@@ -92,14 +92,14 @@ class ClosedLoopModule(ModuleAdapter):
         """The rule fired. Runs on the GUI thread — but keep it to one emit.
 
         `fired` comes from the loop's thread and a `ModuleAdapter` is not a
-        QObject, so this looks like a direct call on the emitting thread.
-        Measured on PyQt6 it is not: a slot that is not a QObject's bound method
-        runs on the thread where `connect()` was called — `build_session`, on
-        the GUI thread — so it arrives queued.
+        QObject, so this LOOKS like a direct call on the emitting thread.
+        Measured on PyQt6 it is not: a slot that is not a QObject bound method
+        runs on the thread `connect()` was called from — `build_session`, on the
+        GUI thread — so it arrives queued.
 
-        That guarantee lives in the caller, so move the `connect()` onto a
-        worker thread and this silently becomes a cross-thread GUI call. Hence
-        the status line stays in `update_display()`.
+        The guarantee is in the CALLER: move that `connect()` onto a worker
+        thread and this silently becomes a cross-thread GUI call. Hence the
+        status line stays in `update_display()`.
         """
         self.win.sync.fire(target, duration)
 

@@ -1,10 +1,10 @@
 """
 Device connection probes.
 
-Enumeration only — never open, hold or reconfigure a device — so these are safe
-to run mid-session without fighting a worker for the camera / DAQ / serial port.
+Enumeration only — never open, hold or reconfigure — so these are safe
+mid-session, with a worker already holding the camera / DAQ / serial port.
 
-Each probe returns a ProbeResult(status, detail):
+Each returns a ProbeResult(status, detail):
     "ok"      device detected
     "missing" driver present but no device found
     "error"   couldn't check (driver/import missing, or the check raised)

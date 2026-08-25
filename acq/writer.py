@@ -1,10 +1,10 @@
 """Writer ABC + HDF5Writer.
 
-A Writer takes (stream, timestamp, data) tuples and persists them, swappable
-without touching acquisition code. Timestamps all come from the session-wide
-SessionClock, so every stream shares one origin.
+A Writer persists (stream, timestamp, data) tuples, swappable without touching
+acquisition code. Timestamps all come from the SessionClock, so every stream
+shares one origin.
 
-Metadata lands in the root attributes in its OWN type (see `attr_value`), so
+Metadata lands in the root attributes in its OWN type (`attr_value`), so
 analysis reads `f.attrs["wheel_volts_per_rev"] * x` instead of parsing strings.
 
 Layout, one group per stream, created lazily on first write:
@@ -73,8 +73,9 @@ class HDF5Writer(Writer):
     16-bit data, stalling the writer and backing up the ring. `compression=`
     also gives up the direct-chunk path below, which is the fast one.
 
-    Full frame on D: (KC3000 NVMe), 2026-08-25. A plain file writes 2700 MB/s,
-    so the disk was never the wall — the slice assignment was:
+    Full frame on D: (KC3000 NVMe), 2026-08-25; the rig kept 53 % of a bin-1
+    stream before it (2026-08-17). A plain file writes 2700 MB/s, so the disk
+    was never the wall — the slice assignment was:
 
         `dset[i] = frame`              1304 MB/s
         direct chunk write             2696 MB/s

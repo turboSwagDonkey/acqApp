@@ -1,10 +1,9 @@
 """
 PullWorker — shared scaffolding for pull-based acquisition workers.
 
-Every device worker runs on its own QThread, keeps only the newest sample for a
-~30 Hz GUI preview, and optionally feeds every sample to a recording sink. The
-lock-guarded snapshot, the sink handle and stop()/wait() live here, so a worker
-implements only _run().
+Each worker runs on its own QThread, keeps the newest sample for a ~30 Hz GUI
+preview, and optionally feeds every sample to a recording sink. The snapshot,
+the sink handle and stop()/wait() live here; a worker implements only _run().
 
 Subclass contract:
     class FooWorker(PullWorker):

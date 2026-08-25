@@ -1,15 +1,14 @@
 """Console output that can never take a device down.
 
-Diagnostic prints here use "→ ≤ ⚠ Δ ─", which a legacy Windows code page
-(cp1252) cannot encode — and Python falls back to it whenever stdout is a pipe
-or a non-UTF-8 terminal. The raise lands *at the print*, inside an acquisition
-loop, so `PullWorker.run()` reports it as a device failure and the status bar
-blames the hardware. The voltage cam's "shorten exposure to ≤N µs" notice trips
-this on the default configuration.
+Diagnostic prints use "→ ≤ ⚠ Δ ─", which cp1252 cannot encode — and Python
+falls back to it whenever stdout is a pipe or a non-UTF-8 terminal. The raise
+lands *at the print*, inside an acquisition loop, so `PullWorker.run()` reports
+it as a device failure and the status bar blames the hardware. The voltage
+cam's "shorten exposure to ≤N µs" notice trips it on the default config.
 
-Called explicitly by every entry point rather than on package import, so
-`import acqApp.…` for the tracking or preset maths does not silently rewrite
-someone's stdout. `tests/test_console_safety.py` enforces the call.
+Called by every entry point rather than on import, so `import acqApp.…` for the
+preset maths does not silently rewrite someone's stdout.
+`tests/test_console_safety.py` enforces the call.
 """
 from __future__ import annotations
 

@@ -106,15 +106,14 @@ class StageController:
         twice to re-measure `enc = slope·cmd + offset`, restoring absolute
         positioning after a limit hit.
 
-        Never invents an origin. The driver's geometric centre (reverse limit +
-        half travel) is NOT where anyone wants 0,0 on this hardware, and
-        overwriting a user-set origin with it silently moves the coordinate
-        system. 0,0 comes from `set_center_here()` only.
+        Never invents an origin: the driver's geometric centre is not where
+        anyone wants 0,0 here, and overwriting a user-set one silently moves the
+        coordinate system. 0,0 comes from `set_center_here()` only.
 
         An existing origin is KEPT if it still falls inside the freshly measured
-        travel and DROPPED if not — a limit hit can re-reference the encoder
-        readout too, leaving `true_center` pointing at nothing. Dropping forces a
-        deliberate re-zero instead of quietly reporting wrong microns.
+        travel, DROPPED if not — a limit hit can re-reference the encoder too,
+        leaving `true_center` pointing at nothing. Dropping forces a deliberate
+        re-zero rather than quietly wrong microns.
 
         Blocks for a minute or more per axis — call it off the GUI thread.
         """

@@ -1,8 +1,8 @@
 """Running the calibration sweep against the real rig, and the dialog that does.
 
 `calibration.py` is the pure half, taking `project` and `grab` as callables.
-This is the other half: those two callables, and the window that asks before
-emitting light.
+This is the other: those callables, and the window that asks before emitting
+light.
 
 **The whole difficulty is `grab`.** `ModuleHost.latest_frame` returns the frame
 the camera last *displayed*, by definition older than the pattern just

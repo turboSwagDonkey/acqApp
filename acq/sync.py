@@ -1,10 +1,9 @@
 """
 Master synchronisation controller.
 
-Owns the session-wide SessionClock, drives a QTimer for periodic ticks, and
-schedules named trigger events (fire the puffer at t+5 s). Every device
-timestamps against this same clock via the Recorder, so all streams share one
-time origin.
+Owns the SessionClock, drives a QTimer for periodic ticks, and schedules named
+trigger events (fire the puffer at t+5 s). Every device timestamps against this
+clock via the Recorder, so all streams share one origin.
 
     sync = SyncController(SessionClock())
     sync.tick.connect(...); sync.trigger_fired.connect(puffer.fire)

@@ -146,11 +146,11 @@ def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
 # Sustained end-to-end write rate, MiB/s (worker → Recorder → HDF5Writer →
 # NVMe). Here because the worker and the panel must agree what can be recorded.
 #
-# THE ONE FIGURE HERE THAT IS NOT A RIG MEASUREMENT. It was 1000, measured with
-# the camera; the direct-chunk writer then took the same bench to 2464 MB/s
-# saturated (2350 MiB/s), derated by the 0.77 that run showed against its own
-# bench (1004/1305) for ORCA grab-thread contention. Deliberately low — too high
-# and frames drop unwarned. Re-measure with the camera and replace it.
+# THE ONE FIGURE HERE THAT IS NOT A RIG MEASUREMENT. It was 1000, measured
+# 2026-08-17 with the camera; the direct-chunk writer then took the same bench
+# to 2464 MB/s saturated (2350 MiB/s), derated by the 0.77 that run showed
+# against its own bench (1004/1305) for ORCA grab-thread contention.
+# Deliberately low — too high and frames drop unwarned. Re-measure and replace.
 WRITER_MBPS: float = 1800.0
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]

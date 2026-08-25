@@ -1,12 +1,11 @@
 """
 The shell's three modal windows.
 
-Split out of `main.py`: none of these knows about the clock, the recorder or a
-device.
+Split out of `main.py`; none knows about the clock, the recorder or a device.
 
 `SettingsDialog` reads and writes `QSettings` for its geometry, so
 `tests/_harness.isolate_user_state()` substitutes `QSettings` **here** too —
-without that the suite overwrites the operator's real window geometry.
+without it the suite overwrites the operator's real window geometry.
 """
 from __future__ import annotations
 

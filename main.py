@@ -35,10 +35,8 @@ faulthandler.enable()
 # ── Environment bootstrap (must run before any third-party import) ────────────
 def _bootstrap() -> None:
     """
-    Survive being launched from anywhere, WITHOUT ever touching an environment
-    other than `acqApp/.venv`:
-      1. parent dir on sys.path (so a direct run resolves `import acqApp`), then
-         harden the console — both before anything is printed.
+    Launchable from anywhere, never touching an environment but `acqApp/.venv`:
+      1. parent dir on sys.path, then harden the console — both before any print.
       2. not in the project venv → create it if missing and re-exec into it.
       3. a core dependency missing → install requirements.txt, but ONLY from
          inside the venv, so pip never reaches an unrelated Python.
@@ -100,9 +98,9 @@ from datetime import datetime
 from typing import Any
 
 # ── Hardware pre-init ─────────────────────────────────────────────────────────
-# Open the camera ONCE and keep the handle — the worker reuses it. Re-opening a
-# just-closed DCAM device crashes the driver natively (docs/HANDOFF.md), and a
-# fresh open costs ~6.7 s. Closed in MainWindow.closeEvent.
+# Open the camera ONCE and keep the handle; the worker reuses it. Re-opening a
+# just-closed DCAM device crashes natively (docs/HANDOFF.md), and a fresh open
+# costs ~6.7 s. Closed in MainWindow.closeEvent.
 _cam_info = None
 _cam_handle = None
 _cam_thread = None
@@ -116,12 +114,9 @@ def _open_camera() -> None:
     dcam = None
     try:
         from pylablib.devices import DCAM as dcam
-        # Open OPTIMISTICALLY. `get_cameras_number()` costs ~6.5 s on this SDK
-        # and does so on EVERY call — it re-enumerates, it is not one-time DLL
-        # init (measured: three consecutive calls, 6.5/5.3/5.3 s). Asking it
-        # before opening added ~5.3 s to every launch. If the open fails we ask
-        # then, where a few seconds is free and the answer is what the operator
-        # needs.
+        # Open OPTIMISTICALLY: `get_cameras_number()` re-enumerates on EVERY
+        # call, not once (measured 6.5/5.3/5.3 s), so asking first added ~5.3 s
+        # to every launch. Ask only if the open fails, where it is free.
         handle = dcam.DCAMCamera(idx=0)
         _cam_info = handle.get_device_info()
         _cam_handle = handle
@@ -145,13 +140,10 @@ def _open_camera() -> None:
 
 
 if not _mock:
-    # On a thread, so the ~7.9 s open overlaps the Qt/pyqtgraph import below and
-    # the module picker the operator is reading. Verified on the real camera:
-    # opening on a worker and then driving the handle from the GUI thread — the
-    # way MainWindow and OrcaFireWorker already do — works and closes cleanly.
-    # The load-bearing rule is unchanged and is about lifetime, not threads:
-    # open ONCE and keep the handle, because re-opening a just-closed DCAM
-    # device segfaults below Python (docs/HANDOFF.md).
+    # Threaded, so the ~7.9 s open overlaps the Qt import and the module
+    # picker. Verified on the real camera: opening on a worker and driving the
+    # handle from the GUI thread works and closes cleanly. The load-bearing
+    # rule is lifetime, not threads — see the pre-init note above.
     _cam_thread = threading.Thread(target=_open_camera, name="cam-open")
     _cam_thread.start()
 
@@ -431,12 +423,10 @@ class MainWindow(QMainWindow):
         self._btn_run.setToolTip("Show live signals from all devices (not saved)")
         self._btn_run.toggled.connect(self._on_run_toggled)
 
-        # Free run: devices and previews with NO session clock — what the
-        # `_toy.py` harnesses did, without a second copy of every panel. It
-        # answers "is it the camera or my session code?" on a rig with limited
-        # time. Recording is impossible here and the button says so: with no
-        # clock started, `SessionClock.at()` raises rather than invent a
-        # timebase.
+        # Devices and previews with NO session clock — what the `_toy.py`
+        # harnesses did, without a second copy of every panel. Answers "camera
+        # or my session code?" on limited rig time. Recording is impossible
+        # here: with no clock, `SessionClock.at()` raises.
         self._btn_free = QPushButton("Free run")
         self._btn_free.setCheckable(True)
         self._btn_free.setStyleSheet(style.toggle_btn("stage"))
@@ -455,10 +445,8 @@ class MainWindow(QMainWindow):
         self._btn_rec.setToolTip("Live view and save every stream to disk")
         self._btn_rec.toggled.connect(self._on_record_toggled)
 
-        # How the recording is actually going: elapsed, size on disk, drops.
-        # The status message is transient — every tick overwrites it, and any
-        # module calling `status()` wipes it — so a recording readout cannot
-        # live there. This one is permanent and updated on the tick.
+        # Elapsed, size on disk, drops. Not in the status message: that is
+        # transient, and any module calling `status()` wipes it.
         self._lbl_rec = QLabel("")
         self._lbl_rec.setStyleSheet("color:#9aa0a6;")
 
@@ -621,11 +609,10 @@ class MainWindow(QMainWindow):
             self._btn_rec.setChecked(False)   # triggers _on_record_toggled(False)
 
         self._disp_timer.stop()
-        # Guarded per module, because teardown touches hardware. Unguarded, one
-        # raise skips every module after it — threads still running — and skips
-        # stop_all(), leaving the clock alive with the UI saying "Stopped".
-        # Through closeEvent it also skips the DCAM close: the native crash the
-        # pre-init note describes.
+        # Guarded per module: teardown touches hardware, and unguarded one
+        # raise strands every module after it — threads running, stop_all()
+        # skipped, clock alive with the UI saying "Stopped". Via closeEvent it
+        # also skips the DCAM close, which is the native crash.
         for m in self._modules:
             try:
                 m.stop()

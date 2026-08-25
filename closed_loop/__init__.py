@@ -1,8 +1,8 @@
 """Closed loop (phase 5) — fire an output from what an instrument is measuring.
 
-`acq/sync.py`'s bus fires events at a *time*; this fires on what the animal is
-doing. `settings.py` is the decision (Qt-free), `worker.py` its thread at
-POLL_HZ, `panel.py` the widgets and the arming switch.
+`acq/sync.py`'s bus fires at a *time*; this fires on what the animal is doing.
+`settings.py` is the decision (Qt-free), `worker.py` its thread at POLL_HZ,
+`panel.py` the widgets and the arming switch.
 
 - **Its own thread**, because a rule on the 30 Hz display tick inherits every
   preview stall. It polls a non-consuming snapshot — `get_latest()` hands each

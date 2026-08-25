@@ -2,15 +2,15 @@
 Bounded ring buffer for acquisition samples.
 
 Producer (acquisition thread) puts, consumer (writer thread) gets. On overflow
-the oldest item goes and `drop_count` rises, which the GUI polls for a warning.
+the oldest goes and `drop_count` rises, which the GUI polls for a warning.
 
-Two independent bounds: `maxlen` (item count) and `maxbytes` (buffered payload,
-so a handful of 20 MB frames cannot balloon RAM inside any sane item count).
+Two bounds: `maxlen` (items) and `maxbytes` (payload, so a handful of 20 MB
+frames cannot balloon RAM inside any sane item count).
 
-Under EITHER, the buffer sheds the oldest *sized* item — a frame — before a
-zero-byte one. Frames are plentiful and redundant with the preview; a sparse
-stimulus/behaviour event is not, so events survive a frame backlog. One item is
-always kept, so an item larger than `maxbytes` is buffered rather than dropped.
+Under either, it sheds the oldest *sized* item — a frame — before a zero-byte
+one: frames are plentiful and redundant with the preview, a sparse
+stimulus/behaviour event is not. One item is always kept, so an item larger
+than `maxbytes` is buffered rather than dropped.
 """
 from __future__ import annotations
 

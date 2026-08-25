@@ -70,11 +70,10 @@ def roi_frame(settings, width: int, height: int):
 class DmdSettings:
     pattern_path:  Path | None = None   # .png / .bmp to upload
     on_time_ms:    float       = 100.0  # illumination on-time per pattern (ms)
-    # The panel no longer exposes the timing controls and hardcodes this True:
-    # the DMD holds one image until Stop. `on_time_ms` / `n_repeats` below are
-    # only read on the cycling path, which is now reachable from code (and the
-    # tests) but not from the UI — kept because the ALP timing rules it encodes
-    # were expensive to establish, not because anything drives it today.
+    # Hardcoded True by the panel: the DMD holds one image until Stop.
+    # `on_time_ms` / `n_repeats` are read only on the cycling path, reachable
+    # from code and the tests but not the UI — kept because the ALP timing
+    # rules it encodes were expensive to establish, not because it is used.
     static_hold:   bool        = True   # True = project one image, held
     trigger_mode:  str         = "Internal"   # Internal | External | Software
     n_repeats:     int         = 0      # 0 = loop forever
@@ -84,17 +83,16 @@ class DmdSettings:
     offset_x:      float       = 0.0    # device px from the panel centre
     offset_y:      float       = 0.0
     invert:        bool        = False  # swap on/off mirrors
-    # What gets projected. `all_on` is kept in step with it because the session
-    # metadata and the geometry checks below have always read that field.
+    # `all_on` is kept in step because the session metadata and the geometry
+    # checks below have always read that field.
     display_mode:  str         = MODE_PATTERN   # pattern | all_on | roi
     all_on:        bool        = False  # turn all mirrors on
     fit:           bool        = False  # scale to fit and centre
     lib_dir:       str         = ""     # ALP API location
     # ── photostimulation ROIs ──
-    # Drawn on a VOLTAGE-camera frame (that is the imaging path the DMD
-    # projects into) and stored as `RoiSet.to_list()` so they survive JSON.
-    # `calib_path` is the measured camera↔DMD registration; without one the
-    # ROIs can be drawn and saved but not turned into a mask.
+    # Drawn on a VOLTAGE-camera frame — the imaging path the DMD projects
+    # into — and stored as `RoiSet.to_list()` to survive JSON. Without a
+    # `calib_path` registration they can be drawn and saved, not projected.
     rois:          tuple       = ()
     calib_path:    str         = ""
 

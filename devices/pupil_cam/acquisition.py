@@ -1,15 +1,14 @@
 """Pupil-tracking camera — acquisition worker (Basler via pypylon).
 
-The rig camera is a **Basler acA1920-40umMED — USB3 Vision**, not GigE, and it
-*must* be on a USB 3.0 port: pylon refuses otherwise and there is no
-reduced-speed fallback. Watch for USB2 Micro-B cables and hubs — a USB3 Micro-B
-socket accepts a USB2 cable that carries only the USB2 pins.
+A **Basler acA1920-40umMED — USB3 Vision**, not GigE, and it *must* be on a
+USB 3.0 port: pylon refuses otherwise, with no reduced-speed fallback. Watch
+for USB2 cables — a USB3 Micro-B socket accepts one carrying only USB2 pins.
 
-Open the camera BEFORE importing PyQt6/pyqtgraph, to avoid Windows DLL-path
+Open the camera BEFORE importing PyQt6/pyqtgraph, against Windows DLL-path
 conflicts (as with DCAM in voltage_cam).
 
 Both workers share `acq.worker.PullWorker`: `get_latest()` is the newest frame,
-and the recording sink receives every frame.
+the recording sink receives every frame.
 """
 
 from __future__ import annotations

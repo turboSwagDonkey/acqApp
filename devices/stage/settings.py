@@ -1,8 +1,7 @@
 """XY stage — the calibration model and its file format.
 
-The calibration is SHARED with the standalone `stage_control` app: a coordinate
-frame can only be created in one place, so both programs read *and write* the
-same file rather than keeping copies that drift.
+SHARED with the standalone `stage_control` app: a coordinate frame can only be
+created in one place, so both read *and write* this file rather than drift.
 
 Two halves, expiring differently:
   * frame-INDEPENDENT — `counts_per_um`, `span_counts`. Stable forever.
@@ -10,7 +9,7 @@ Two halves, expiring differently:
     Valid only until the next HARD LIMIT hit, which re-references the
     controller's command origin. `establish_frame` remakes them.
 
-No Qt: the widgets are in `panel.py`, so this is testable without a QApplication.
+No Qt (widgets are in `panel.py`), so this is testable without a QApplication.
 """
 from __future__ import annotations
 import json

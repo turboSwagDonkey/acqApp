@@ -1,15 +1,13 @@
 """Per-subsystem wiring for the main window.
 
-Each instrument is one `ModuleAdapter` subclass owning its whole lifecycle and
-`MainWindow` just iterates, replacing six near-identical `if "foo" in enabled:`
-branches in each of four methods.
+One `ModuleAdapter` subclass per instrument, owning its whole lifecycle, and
+`MainWindow` just iterates — replacing six near-identical `if "foo" in enabled:`
+branches in each of four methods. Adapters share only `base.py` and never
+import each other.
 
-Adapters reach the window only through `devices.ModuleHost` — the surface is
-written down *there*, since this docstring once listed it and was already wrong.
-`test_device_contracts` checks every `self.win.X` in this package against it.
-
-One file per instrument; adapters share only `base.py` and never import each
-other.
+They reach the window only through `devices.ModuleHost`, and the surface is
+written down *there* because this docstring once listed it and was wrong.
+`test_device_contracts` checks every `self.win.X` here against it.
 
 Lifecycle, in call order:
 

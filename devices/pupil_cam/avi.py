@@ -1,15 +1,15 @@
 """Uncompressed-AVI reader — enough of RIFF to replay recorded pupil footage.
 
-Not a video library. It handles the formats the rig's own capture software
-writes, all of which store raw pixels per frame, so the "decode" is a reshape:
+Not a video library — only the formats the rig's capture software writes, all
+of which store raw pixels per frame, so the "decode" is a reshape:
 
     IYUV / I420 / YV12   planar YUV 4:2:0 — the Y plane IS the grayscale frame
     Y800 / GREY / Y8     8-bit luma, already what the tracker wants
     BI_RGB 8/24/32       uncompressed DIB, bottom-up, BGR → luma
 
 Anything genuinely compressed (MJPG, H.264, …) raises with the FourCC named:
-this venv is Python 3.14, where cv2 has no wheels and imageio/av are absent, so
-there is nothing to hand it to. See PLAN.md §6.
+on 3.14 cv2 has no wheels and imageio/av are absent, so there is nothing to
+hand it to.
 
 numpy memmap, so a 500 MB clip costs nothing to open and frames are views.
 """
