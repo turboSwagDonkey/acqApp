@@ -33,10 +33,8 @@ _WAIT_MSG_EVERY = 5.0
 
 
 class OrcaFireWorker(PullWorker):
-    """Captures 16-bit frames from a Hamamatsu ORCA-Fire via pylablib.
-
-    Opened and closed inside run() so the worker is restartable. AcqConfig is
-    read once at start; exposure can change hot via set_exposure().
+    """Opened and closed inside run() so the worker is restartable. AcqConfig
+    is read once at start; exposure can change hot via set_exposure().
     """
     fps_update = pyqtSignal(int, float)   # (total_frames, fps over recent window)
     # The camera's OWN answer for the configured ROI/binning/exposure.

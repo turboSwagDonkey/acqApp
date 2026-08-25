@@ -17,7 +17,7 @@ from acqApp.adapters.base import ModuleAdapter
 
 
 class ClosedLoopModule(ModuleAdapter):
-    """Phase 5: fire an output from what another instrument is measuring.
+    """Wires `closed_loop/` into this window.
 
     Owns no device, but needs exactly what a `ModuleAdapter` provides: a
     settings tab, a per-session worker, a sink and metadata. **Last** in

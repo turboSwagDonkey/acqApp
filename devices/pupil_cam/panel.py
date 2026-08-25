@@ -1,7 +1,6 @@
 """Pupil camera — the Qt settings panel. The model is in `settings.py`.
 
-Camera, frame source, eye region and LED. The tracking controls went with the
-tracker (2026-08-24, PLAN §7 (ai)) — see `archive/pupil_tracking/`.
+Camera, frame source, eye region and LED.
 """
 from __future__ import annotations
 

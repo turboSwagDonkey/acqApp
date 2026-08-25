@@ -180,10 +180,8 @@ class WheelModule(ModuleAdapter):
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        # Known only once the worker has configured the board, and it decides
-        # whether the recorded speed is a measurement or a scheduler artefact.
-        # Read off the worker, never defaulted: "software" and "unknown" differ,
-        # and a defaulted 0.0 Hz would read as a measured stall.
+        # Read off the worker, never defaulted: "software" and "unknown"
+        # differ, and a defaulted 0.0 Hz would read as a measured stall.
         if self.worker is None:
             return {"wheel_timestamp_source": "unknown",
                     "wheel_rate_actual_hz":   0.0}

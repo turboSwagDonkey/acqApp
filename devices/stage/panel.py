@@ -6,8 +6,7 @@ calibration, soft limits and origin **shared with the standalone
 `stage_control` app**. That half has no Qt in it and is the half worth reading
 when the question is "where does 0,0 come from"; this half is widgets.
 
-`CalibrationDialog` drives both axes into their reverse hard limits, so it runs
-`establish_frame()` on a `_FrameWorker` thread — it can block for minutes.
+`CalibrationDialog` runs `establish_frame()` on a `_FrameWorker` thread.
 """
 from __future__ import annotations
 

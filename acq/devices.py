@@ -149,8 +149,7 @@ class ModuleHost(Protocol):
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """Feed the acquisition rate, and what the write path sustains, to the
-        Save tab. Two numbers because they differ by 2x at full frame, and the
-        disk fills at the smaller one."""
+        Save tab. Two numbers because the disk fills at the smaller one."""
 
     def on_worker_error(self, msg: str) -> None:
         """Surface a device thread's exception instead of letting it abort the

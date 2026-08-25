@@ -303,21 +303,11 @@ class MainWindow(QMainWindow):
         return was
 
     def latest_frame(self, key: str):
-        """The newest frame from module `key`'s camera, or None.
+        """The newest frame from module `key`'s camera, or None. Why it exists:
+        `devices.ModuleHost`. Why it reads the cache: `ModuleAdapter.last_frame`.
 
-        For the DMD's ROI editor, which draws on an ORCA frame because the
-        voltage camera is the imaging path the DMD projects into. Reading it
-        here keeps `adapters/dmd.py` and `adapters/voltage_cam.py` from
-        importing each other (§5b A4).
-
-        Never commands the camera — it hands back the frame that module last
-        displayed. Grabbing on demand would mean deciding when the DMD is
-        all-on, and that is the operator's call, not this method's.
-
-        Reads the adapter's cached frame, never the worker: `get_latest()`
-        *consumes*, so asking the worker would usually return None (the display
-        tick got there first) and would otherwise steal a frame from that
-        module's own preview.
+        Never commands the camera. Grabbing on demand would mean deciding when
+        the DMD is all-on, and that is the operator's call, not this method's.
         """
         for m in self._modules:
             if m.key == key:
@@ -325,12 +315,10 @@ class MainWindow(QMainWindow):
         return None
 
     def register_pg_view(self, view) -> None:
-        """Track a pyqtgraph view so the theme toggle can recolour it."""
         self._pg_views.append(view)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
-        """Feed the acquisition rate — and what the write path sustains — to the
-        Save tab's capacity estimate. The disk fills at the smaller of the two."""
+        """See `devices.ModuleHost.set_expected_rate`."""
         if self._save_panel is not None:
             self._save_panel.set_expected_rate(mbps, writer_mbps)
 

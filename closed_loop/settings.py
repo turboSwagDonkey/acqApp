@@ -2,7 +2,7 @@
 
 `LoopRule` is the whole decision, as a function of (value, time): the semantics
 live here, and `tests/test_closed_loop.py` drives this file directly.
-`LoopSettings` is what persists — note what is *not* in it: `armed`.
+`LoopSettings` is what persists.
 """
 from __future__ import annotations
 
