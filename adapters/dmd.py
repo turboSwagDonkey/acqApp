@@ -27,16 +27,15 @@ class DmdModule(ModuleAdapter):
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        # Whether the ALP really opened. Not re-derived from the class, because
-        # a real DmdController that failed and fell back is the case that
-        # matters, and only build_controller knows.
+        # Whether the ALP really opened — not derived from the class, since a
+        # real DmdController that failed and fell back is the case that matters
+        # and only build_controller knows.
         self._real = False
 
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
-        # Route through this adapter, not straight to the controller: the
-        # controller is rebuilt whenever Emulate is toggled, and the panel binds
-        # its signals only once.
+        # Via the adapter, not the controller: the controller is rebuilt on
+        # every Emulate toggle, and the panel binds its signals once.
         self.panel.load_requested.connect(self.load)
         self.panel.display_requested.connect(self.display)
         self.panel.stop_requested.connect(self.stop_display)

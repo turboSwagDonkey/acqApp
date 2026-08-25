@@ -253,11 +253,11 @@ class RoiSet:
         return float(calib.accessible(pts).mean())
 
     def outside(self, calib: DmdCalibration) -> list[str]:
-        """Names of ROIs that are not wholly inside the DMD's field.
+        """Names of ROIs not wholly inside the DMD's field.
 
-        Geometric, not rasterised. This used to build a full-camera mask **per
-        ROI** and index it with another — ~90 ms each at ORCA full frame, on
-        every drag — and pixel quantisation made it less accurate, not more.
+        Geometric, not rasterised: the old per-ROI full-camera mask cost ~90 ms
+        each at full frame on every drag, and quantisation made it less
+        accurate, not more.
         """
         return [r.name for r in self.rois
                 if r.enabled and not calib.accessible(r.boundary()).all()]
@@ -276,18 +276,14 @@ class RoiSet:
                   enabled_only: bool = True) -> np.ndarray:
         """The device-sized binary frame that illuminates these ROIs.
 
-        Asks each MIRROR where it lands and whether an ROI is there, rather
-        than rasterising a camera-sized mask and sampling it — the old way built
-        a 4432x2368 bool per ROI to read 786k values out of.
+        Asks each MIRROR where it lands and whether an ROI is there, not the
+        reverse: a forward map leaves holes wherever the DMD is coarser than the
+        camera, and a mask with holes is a stimulus with holes. The old way also
+        built a 4432x2368 bool per ROI to read 786k values out of.
 
-        And only the mirrors that could possibly be in each ROI: its camera
-        boundary is mapped into mirror space and the search is confined to that
-        block. ROIs cover a small share of the panel, so this is the difference
-        between evaluating 786k mirrors per ROI and a few tens of thousands.
-
-        Iterating mirrors (not ROI pixels) is still the point: a forward map
-        leaves holes wherever the DMD is coarser than the camera, and a mask
-        with holes is a stimulus with holes.
+        Only the mirrors that could be in each ROI: its camera boundary is
+        mapped into mirror space and the search confined to that block — tens of
+        thousands of mirrors per ROI instead of 786k.
         """
         w, h = int(calib.dmd_size[0]), int(calib.dmd_size[1])
         cw, ch = calib.cam_size

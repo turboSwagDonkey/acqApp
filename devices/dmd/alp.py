@@ -1,16 +1,15 @@
 """Vialux ALP device layer — no Qt, no app state.
 
-The rig's DMD is a **1024x768 Vialux ALP-4.2** driven through `ALP4lib` over the
-vendor's high-speed API (a separate non-pip install, like NI-DAQmx and DCAM).
-All the hardware knowledge lives here: where that API is, image → binary frame,
-and the open/project/halt/close lifecycle. Separate from `control.py` so
-`build_frame` — pure numpy/PIL, and where a misplaced stimulus comes from — is
-testable without Qt or the device.
+A **1024x768 Vialux ALP-4.2** through `ALP4lib` over the vendor's high-speed
+API (a separate non-pip install, like NI-DAQmx and DCAM). Where that API is,
+image → binary frame, and the open/project/halt/close lifecycle. Split from
+`control.py` so `build_frame` — pure numpy/PIL, and where a misplaced stimulus
+comes from — is testable without Qt or the device.
 
 The maths is a port of `dmdGUI_project`'s `dmdCommandLine.buildFrame`, the path
 the optics are aligned with; keeping the two identical is the point.
 
-**One process at a time** — whoever opened the ALP holds it over USB, so acqApp
+**One process at a time**: whoever opened the ALP holds it over USB, so acqApp
 and `dmdGUI_project` cannot both connect. `open()` raises rather than waiting.
 """
 from __future__ import annotations
@@ -22,15 +21,14 @@ from typing import Any
 
 import numpy as np
 
-# Vendor cap on the time between pictures (ALP-4 doc, AlpSeqTiming). The panel
-# allows longer, so on-times are clamped here and reported rather than silently
-# truncated by the driver.
+# Vendor cap between pictures (ALP-4 doc, AlpSeqTiming). The panel allows
+# longer, so clamp and report here rather than let the driver truncate.
 MAX_PICTURE_US = 10_000_000
 
 # A hint only — see resolve_lib_dir().
 _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
-# The standalone app's config carries the operator's libDir and aligned
-# scale/rotation — the arrangement the stage has with stage_control/.
+# Carries the operator's libDir and aligned scale/rotation — the same
+# arrangement the stage has with stage_control/.
 _SIBLING_CONFIG = Path("dmdGUI_project") / "dmd_config.json"
 
 _ROOT = Path(__file__).resolve().parents[3]        # …/python
@@ -48,9 +46,9 @@ def sibling_config() -> dict[str, Any]:
 def resolve_lib_dir(explicit: str = "") -> tuple[str | None, str]:
     """Find the ALP-4.2 high-speed API → (path or None, where it came from).
 
-    `None` = let ALP4lib look in the registry, right for a normal vendor
-    install. The earlier sources exist because this rig's copy sits beside the
-    repo and the standalone app already records where.
+    `None` lets ALP4lib use the registry, right for a normal vendor install.
+    The earlier sources exist because this rig's copy sits beside the repo and
+    the standalone app already records where.
     """
     if explicit:
         return explicit, "panel setting"
@@ -74,21 +72,21 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
                 scale_pct: float = 100.0, rotation_deg: float = 0.0,
                 offset_x: float = 0.0, offset_y: float = 0.0,
                 invert: bool = False, fit: bool = False) -> np.ndarray:
-    """Render a pattern into the (height, width) uint8 {0,255} frame to project.
+    """Render a pattern into the (height, width) uint8 {0,255} frame.
 
     Order — binarize, invert, scale, rotate, place — is the standalone app's,
     and so is every convention in it:
 
-      * threshold >127, applied to the source AND again after the interpolating
+      * threshold >127, on the source AND again after the interpolating
         scale/rotate, so the frame really is binary (mirrors have no grey);
-      * rotation is **clockwise-positive**, matching Qt and the standalone GUI's
-        dial, which is the opposite of PIL's;
+      * rotation **clockwise-positive**, matching Qt and the standalone dial,
+        which is the opposite of PIL's;
       * `offset_x/offset_y` move the pattern's centre off the DMD's in device
-        pixels, so 0,0 is centred whatever the image size;
-      * `fit` scales to the largest size that fits and re-centres, **overriding
-        scale, rotation and offset** — so a calibration sweep must not use it.
+        px, so 0,0 is centred whatever the image size;
+      * `fit` overrides scale, rotation AND offset — a calibration sweep must
+        not use it.
 
-    Anything outside the panel is cropped: the DMD cannot project it.
+    Anything off the panel is cropped.
     """
     from PIL import Image
 

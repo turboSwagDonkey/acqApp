@@ -1,17 +1,16 @@
 """Rotary wheel encoder — NI DAQ acquisition worker.
 
-The channel voltage encodes wheel angle (`volts_per_rev` per turn). Both workers
-turn every sample into a (voltage, speed, distance) triple at the full rate:
+Channel voltage encodes angle (`volts_per_rev` per turn); both workers derive a
+(voltage, speed, distance) triple per sample:
 
     get_latest()  -> (voltage, speed, distance, elapsed_s)   # newest, for the GUI
     sink receives    (voltage, speed, distance, acquired_at)
 
-`acquired_at` is when the DAQ *sampled*, not when the block reached us, so the
-Recorder stamps it at its true time.
+`acquired_at` is when the DAQ sampled, not when the block reached us.
 
-Distance is net signed rotation with wrap correction (`_EncoderBase` says why
-resets are rejected, not unwrapped) and lags the live voltage by ~1 s. Units are
-mm/s and mm with a wheel diameter set, else rev/s.
+Distance is net signed rotation, lagging the live voltage by ~1 s. Units are
+mm/s and mm with a wheel diameter set, else rev/s. `_EncoderBase` says why
+resets are rejected rather than unwrapped.
 """
 
 from __future__ import annotations
@@ -26,14 +25,13 @@ from acqApp.acq.worker import PullWorker
 
 
 class _EncoderBase(PullWorker):
-    """Shared position→motion derivation for the real and mock encoders.
+    """Shared position→motion derivation, real and mock.
 
     The channel carries single-turn POSITION: voltage ramps 0→volts_per_rev then
-    resets. That reset smears over a few samples, too small for a half-turn
-    unwrap to catch, so any step implying an impossible speed (> `_MAX_REV_S`)
-    is coasted through instead — which is what stops distance sawtoothing back
-    to zero every revolution. Speed/distance are reported `_LAG_S` in the past,
-    buffered, so the trace is smooth.
+    resets, and that reset smears over a few samples — each sub-step too small
+    for a half-turn unwrap to catch. So a step implying more than `_MAX_REV_S`
+    is coasted through, which is what stops distance sawtoothing back once per
+    revolution. Reported `_LAG_S` in the past, buffered, so the trace is smooth.
     """
     fps_update = pyqtSignal(float)      # samples / second
 
@@ -121,14 +119,14 @@ class _EncoderBase(PullWorker):
 
         ts = np.fromiter((b[0] for b in self._buf), float, n)
         ps = np.fromiter((b[1] for b in self._buf), float, n)
-        # Times are ascending, so the window is a contiguous slice — no mask.
-        # left/right keep both ends inclusive, as the old comparison pair was.
+        # Ascending times → the window is a contiguous slice, no mask.
+        # left/right keep both ends inclusive, as the old comparisons were.
         lo = int(np.searchsorted(ts, td - self._SLOPE_WIN_S, side="left"))
         hi = int(np.searchsorted(ts, td + self._SLOPE_WIN_S, side="right"))
         tw, pw = ts[lo:hi], ps[lo:hi]
-        # Closed-form LSQ slope, not np.polyfit: identical for degree 1, but
-        # this runs once per SAMPLE at 120 Hz and polyfit is an SVD behind a
-        # Vandermonde. Centring also conditions it better than polyfit does.
+        # Closed-form LSQ slope, not polyfit: identical at degree 1, but this
+        # runs per sample at 120 Hz and polyfit is an SVD behind a Vandermonde.
+        # Centring conditions it better too.
         rev_s = 0.0
         if tw.size >= 2:
             dt_ = tw - tw.mean()
@@ -145,21 +143,21 @@ class _EncoderBase(PullWorker):
     # ── watchers (the closed loop) ───────────────────────────────────────────
 
     def snapshot(self) -> tuple[float, float, float, float] | None:
-        """Newest `(voltage, speed, live_speed, acquired_at)` WITHOUT consuming
-        it — `get_latest()` hands each sample out once and the display tick is
-        already that consumer. None until the first sample.
+        """Newest `(voltage, speed, live_speed, acquired_at)`, non-consuming
+        (`get_latest()` hands each sample out once, and the display tick is
+        already that consumer). None until the first sample.
 
         Which speed a rule watches is an experimental decision:
           `speed`       matches `wheel_speed` in the file, but is ~1 s old.
-          `live_speed`  the EMA behind it: noisier, current. For a rule that
+          `live_speed`  the EMA behind it: noisier, current, for a rule that
                         must act *while* the animal runs.
         """
         with self._lock:
             return self._snap
 
     def _live_speed(self) -> float:
-        """Current EMA velocity in the reported units. Same sign and deadband as
-        `_report`, so a threshold read off one readout holds on the other."""
+        """Current EMA velocity, reported units. Same sign and deadband as
+        `_report`, so a threshold read off one holds on the other."""
         with self._scale_lock:
             vpr, dia = self._vpr, self._dia
         if not vpr or abs(self._vel) < self._DEADBAND_REV_S:
@@ -169,8 +167,8 @@ class _EncoderBase(PullWorker):
 
     def _emit_sample(self, v: float, t: float, mono: float | None = None) -> None:
         speed, dist = self._derive(v, t)
-        # Watchers get the acquisition instant, not `t` (elapsed-since-start):
-        # that is not the domain Recorder.put(at=) stamps in.
+        # Watchers get the acquisition instant, not `t` (elapsed-since-start),
+        # which is not the domain Recorder.put(at=) stamps in.
         with self._lock:
             self._snap = (v, speed, self._live_speed(),
                           time.perf_counter() if mono is None else mono)
@@ -180,17 +178,17 @@ class _EncoderBase(PullWorker):
 
 
 class EncoderWorker(_EncoderBase):
-    """Analog input clocked by the DAQ board, not by a Python sleep loop.
+    """Analog input clocked by the board, not by a Python sleep loop.
 
     Speed is a SLOPE, so every millisecond of jitter in the old single-sample
-    `task.read()` loop went straight into it. Sample TIMES are reconstructed the
-    way the camera's are (#1): the device knows the spacing but not our epoch,
-    so the first block anchors index 0 into the perf_counter domain and the rest
-    are `anchor + i/rate` — one constant offset, that read's driver latency.
+    `task.read()` loop went straight into it. Times are reconstructed as the
+    camera's are (#1): the device knows the spacing but not our epoch, so the
+    first block anchors index 0 into perf_counter and the rest are
+    `anchor + i/rate`.
 
-    If the board refuses the timing configuration, this falls back to the
-    software-paced loop rather than losing the wheel — loudly, and in the
-    session file via `timestamp_source`.
+    A board that refuses the timing configuration falls back to the
+    software-paced loop rather than losing the wheel — loudly, and in the file
+    via `timestamp_source`.
     """
 
     _BLOCK_S = 0.05         # seconds of samples per read: 20 GUI updates/s

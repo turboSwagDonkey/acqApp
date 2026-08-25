@@ -12,10 +12,10 @@ Layout, one group per stream, created lazily on first write:
   /<stream>/frames       <dtype> (N, H, W)    image streams (camera, pupil)
   /<stream>/values       float64 (N,)         scalar streams (encoder, puffer)
 
-Datasets grow a *block* at a time to amortise the resize cost, but each sample
-is written immediately. `timestamps` has a NaN fill, so a process killed
-mid-block leaves identifiable tail rows and every written row is recoverable; a
-clean close trims to exact length, so a normally-closed file has no NaNs.
+Datasets grow a block at a time to amortise the resize, but each sample is
+written immediately. `timestamps` has a NaN fill, so a killed process leaves
+identifiable tail rows and every written row is recoverable; a clean close
+trims to exact length, so a normal file has no NaNs.
 """
 from __future__ import annotations
 
@@ -69,23 +69,20 @@ class Writer(ABC):
 class HDF5Writer(Writer):
     """Streams any number of named image/scalar channels into one HDF5 file.
 
-    Images are UNCOMPRESSED by default: single-threaded gzip manages a fraction
-    of the rate on noisy 16-bit data, so it stalls the writer, backs up the ring
-    and drops frames. Pass `compression="gzip"` only for slow streams. Doing so
-    also gives up the direct-chunk path in `write()`, which is the fast one.
+    Images are UNCOMPRESSED: gzip manages a fraction of the rate on noisy
+    16-bit data, stalling the writer and backing up the ring. `compression=`
+    also gives up the direct-chunk path below, which is the fast one.
 
-    Full-frame throughput on D: (KC3000 NVMe). A plain file writes 2700 MB/s
-    there, so the disk was never the wall — the slice assignment was:
+    Full frame on D: (KC3000 NVMe), 2026-08-25. A plain file writes 2700 MB/s,
+    so the disk was never the wall — the slice assignment was:
 
-        writer alone, `dset[i] = frame`             1304 MB/s
-        writer alone, direct chunk write            2696 MB/s
-        via Recorder + ring, offered 106 fps        2225 MB/s   100 % kept
-        via Recorder + ring, saturated              2464 MB/s   (117 fps)
+        `dset[i] = frame`              1304 MB/s
+        direct chunk write             2696 MB/s
+        + Recorder/ring, 106 fps       2225 MB/s   100 % kept (was 59)
+        + Recorder/ring, saturated     2464 MB/s
 
-    Before this, the same bench kept 59 % of a bin-1 stream and the rig kept
-    53 % (2026-08-17, with the camera). Chunk cache size, growth block, dataset
-    preallocation, 1 MB/4 MB file alignment, the Windows VFD and multi-frame
-    chunks were each measured: none moves it more than 3 %.
+    Chunk cache size, growth block, preallocation, 1/4 MB alignment, the Windows
+    VFD and multi-frame chunks were each measured: none moves it over 3 %.
     """
 
     _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
@@ -138,10 +135,9 @@ class HDF5Writer(Writer):
             if not st["image"]:
                 st["data"][i] = float(data)
             elif st["direct"] and self._writable_chunk(st, data):
-                # One frame IS one chunk here, so hand HDF5 the frame's own
-                # buffer: no cache copy, no type conversion. Measured 1305 ->
-                # 2696 MB/s at full frame (2026-08-24) — the slice assignment
-                # below is the whole reason bin 1 dropped half its frames.
+                # One frame IS one chunk, so hand HDF5 the frame's own
+                # buffer: no cache copy, no conversion. The slice assignment
+                # below is why bin 1 dropped half its frames.
                 st["data"].id.write_direct_chunk(
                     (i,) + (0,) * len(st["shape"]), memoryview(data).cast("B"))
             else:
@@ -152,9 +148,9 @@ class HDF5Writer(Writer):
     def _writable_chunk(st: dict[str, Any], data: Any) -> bool:
         """Is `data` byte-for-byte what this dataset's chunk holds?
 
-        A direct chunk write does no conversion, so anything but an exact match
-        would write garbage that reads back as a valid frame. Fall through to
-        the slice assignment instead, which converts (or raises).
+        A direct write converts nothing, and an undersized one is accepted
+        silently — the file then kills whatever reads it (access violation,
+        `test_writer_chunks`). Anything else falls to the slice assignment.
         """
         return (data.shape == st["shape"] and data.dtype == st["dtype"]
                 and data.flags.c_contiguous)
@@ -170,9 +166,8 @@ class HDF5Writer(Writer):
             chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // max(frame_bytes, 1)))
             chunk_bytes = chunk_frames * frame_bytes
             # A multi-frame chunk is touched once per frame before it is
-            # complete, so hold a few whole chunks or every write evicts and
-            # re-reads (and, if compressed, re-deflates) the chunk. Unused on
-            # the direct path below, which never enters the cache.
+            # complete, so hold a few or every write evicts and re-reads it.
+            # Unused on the direct path, which never enters the cache.
             dset = g.create_dataset(
                 "frames", shape=(0,) + shape, maxshape=(None,) + shape,
                 dtype=data.dtype, chunks=(chunk_frames,) + shape,
@@ -180,9 +175,8 @@ class HDF5Writer(Writer):
                 compression_opts=self._compression_opts,
                 rdcc_nbytes=max(4 * chunk_bytes, 8 << 20),
                 rdcc_nslots=4093)
-            # Growth block is independent of the chunk size: resizing is a
-            # metadata operation on the whole dataset, so doing it every 16
-            # frames costs hundreds of resizes/s at the fast presets.
+            # Independent of chunk size: a resize is dataset-wide metadata,
+            # so every 16 frames would cost hundreds of resizes/s.
             grow = max(chunk_frames,
                        (self._MIN_GROW_BYTES // max(frame_bytes, 1)) or 1)
             grow = (grow // chunk_frames) * chunk_frames or chunk_frames

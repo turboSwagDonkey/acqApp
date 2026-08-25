@@ -1,12 +1,11 @@
 """Drawing and editing stimulation ROIs over a snapshot. Model: `roi.py`.
 
-Self-contained on purpose — it owns its image view rather than reaching into
-the voltage camera's dock. The snapshot is handed in (`set_image`), so this
-widget never knows which camera took it, and the DMD adapter can host it in a
-dialog without the two modules importing each other.
+Owns its image view rather than reaching into the voltage camera's dock. The
+snapshot is handed in (`set_image`), so this never knows which camera took it
+and the DMD adapter can host it without the two modules importing each other.
 
-The DMD's reachable field is drawn as an outline and enforced on drag: an ROI
-outside it is not a small error, it is a stimulus that never arrives.
+The reachable field is outlined and enforced on drag: an ROI outside it is not
+a small error, it is a stimulus that never arrives.
 """
 from __future__ import annotations
 
@@ -34,12 +33,11 @@ _BAND_FILL = pg.mkBrush(0, 208, 255, 40)
 
 
 class _DrawViewBox(pg.ViewBox):
-    """A ViewBox where a left-drag can mean "make an ROI here" instead of "pan".
+    """A ViewBox where a left-drag can mean "make an ROI here", not "pan".
 
-    Placing an ROI used to take four gestures — pick a shape, press Add, drag
-    the result out of the middle of the field, then drag a handle to size it —
-    and it always started somewhere nobody asked for. Dragging where you want
-    it is one gesture.
+    Placing an ROI used to take four gestures — pick a shape, press Add, drag it
+    out of the middle of the field, size a handle — and it always started
+    somewhere nobody asked for. Dragging where you want it is one.
 
     Gated on a toggle rather than a modifier key: panning and zooming a 4432 px
     frame is how you find the target in the first place, so the two cannot both
@@ -186,18 +184,16 @@ class RoiEditor(QWidget):
     def set_image(self, frame: np.ndarray) -> None:
         """Show the snapshot ROIs are drawn on (taken with the DMD all-on).
 
-        Contrast from the 1st/99th percentile, **not** pyqtgraph's autoLevels.
-        autoLevels stretches to min/max, and every sCMOS has a few hot pixels:
-        on a real ORCA frame the signal lives in ~800 counts of 65535, so two
-        pixels at 65000 collapse the whole image to black. The live preview has
-        always used percentiles (`adapters/voltage_cam.py`); this did not, which
-        is why the editor looked far worse than the view it was opened from.
+        Contrast from the 1st/99th percentile, NOT pyqtgraph's autoLevels,
+        which stretches to min/max: on a real ORCA frame the signal lives in
+        ~800 counts of 65535, so two hot pixels at 65000 collapse the image to
+        black. That is why the editor looked far worse than the view it was
+        opened from.
         """
         self._image = np.asarray(frame)
-        # Percentiles off a strided view, not the whole frame: np.percentile
-        # sorts, and at ORCA full frame that is 87 ms for a number that is a
-        # contrast estimate. 1/16 of 10.5 Mpx is still 650k samples, and the
-        # live preview has always taken its levels from the downsampled copy.
+        # Strided, not the whole frame: np.percentile sorts, and at full
+        # frame that is 87 ms for a contrast estimate. 1/16 of 10.5 Mpx is
+        # still 650k samples, and the live preview does the same.
         lo, hi = np.percentile(self._image[::4, ::4], (1, 99))
         if hi <= lo:                    # a flat frame — fall back to the range
             lo, hi = float(self._image.min()), float(self._image.max()) or 1.0

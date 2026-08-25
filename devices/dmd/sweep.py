@@ -1,18 +1,16 @@
 """Running the calibration sweep against the real rig, and the dialog that does.
 
-`calibration.py` is the pure half — it takes `project` and `grab` as callables
-and never touches hardware. This is the other half: the two callables, and the
-window that asks before emitting light.
+`calibration.py` is the pure half, taking `project` and `grab` as callables.
+This is the other half: those two callables, and the window that asks before
+emitting light.
 
-**The whole difficulty is `grab`.** `ModuleHost.latest_frame` hands back the
-frame the voltage camera last *displayed*, which is by definition older than the
-pattern just projected. Decode forty planes from the frame before each and the
-fit comes back confident and wrong — an rms of 0.4 px on garbage looks exactly
-like an rms of 0.4 px on a registration. `FreshGrabber` is what makes the
-project→grab pairing mean what it says.
+**The whole difficulty is `grab`.** `ModuleHost.latest_frame` returns the frame
+the camera last *displayed*, by definition older than the pattern just
+projected — and a fit off stale planes comes back confident and wrong, since an
+rms of 0.4 px on garbage looks like one on a registration. `FreshGrabber` makes
+the project→grab pairing mean what it says.
 
-Nothing here decides to actuate; `CalibrationDialog` asks, and the operator
-answers (PLAN §2).
+Nothing here decides to actuate; `CalibrationDialog` asks (PLAN §2).
 """
 from __future__ import annotations
 

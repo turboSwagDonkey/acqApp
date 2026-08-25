@@ -1,17 +1,17 @@
 """Where the camera's view lands on the DMD.
 
-An ROI is drawn in *camera* px, a mask is in *DMD mirrors*; this measures the
-affine between them. Project a narrow stripe at nine signed offsets per axis,
-fit a line to where each lands, and the two lines are the whole transform —
-signed offsets carry the direction, so a mirror flip cannot pass.
+ROIs are camera px, masks are DMD mirrors; this measures the affine between
+them. A narrow stripe at nine signed offsets per axis, a line fit to where each
+lands, and the two lines are the transform. Signed offsets carry direction, so
+a mirror flip cannot pass.
 
-**Coarse patterns only, and that is a measurement.** On this rig (2026-08-24) a
-solid bar images cleanly while a 280 px checkerboard modulates 13 % of the frame
-and a 70 px stripe pattern 9 %: the relay and sample scatter erase fine
-structure at any pitch. Gray coding was tried down to 16 mirrors per code and
-still decoded 0.0 %. Nothing here is finer than 5 % of the panel.
+**Coarse patterns only, and that is measured.** On this rig (2026-08-24) a solid
+bar images cleanly, a 280 px checkerboard modulates 13 % of the frame and a
+70 px stripe pattern 9 % — scattering erases fine structure at any pitch, and
+Gray coding down to 16 mirrors per code still decoded 0.0 %. Nothing here is
+finer than 5 % of the panel.
 
-Patterns go to `AlpDevice.project()` **directly** — never `build_frame`, whose
+Patterns go to `AlpDevice.project()` directly, never `build_frame`, whose
 scale/rotation/offset (and `fit`, which overrides them) would transform the
 geometry being measured.
 """
@@ -89,10 +89,10 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
                  log: Callable[[str], None] = print) -> dict:
     """Step a stripe across each axis → {axis: [(offset, cam_x, cam_y), …]}.
 
-    A stripe, not a growing bar: a centred bar's image should hold still as it
-    grows, and on the rig it drifted 527 px — the frame clips one side while
-    vignetting eats the other, so its centroid measures the lopsidedness. A
-    stripe's centroid is local, and one off the frame is dropped.
+    A stripe, not a growing bar: a centred bar should hold still as it grows and
+    on the rig it drifted 527 px, the frame clipping one side while vignetting
+    ate the other, so its centroid measured the lopsidedness. A stripe's is
+    local, and one off the frame is dropped.
     """
     w, h = int(dmd_size[0]), int(dmd_size[1])
     half = (w / 2.0, h / 2.0)
@@ -137,10 +137,10 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
 def fit_axes(seen: dict) -> tuple | None:
     """All stripes at once → (centre, vx, vy, rms, n).
 
-    **ONE shared centre**, not a line per axis. Both axes pass through the
-    panel centre at offset 0, so separate intercepts disagree — by 67 px on the
-    rig, where the DMD overfills the camera and the surviving stripes sit to
-    one side, making each an extrapolation. Shear then absorbs that error.
+    **ONE shared centre**, not a line per axis: both axes pass through the panel
+    centre at offset 0, and separate intercepts disagreed by 67 px on the rig,
+    where the DMD overfills the camera so the survivors sit to one side and each
+    fit is an extrapolation. Shear then absorbs that error.
     """
     pts = [(axis, d, cx, cy) for axis in (0, 1) for d, cx, cy in seen[axis]]
     if len(seen[0]) < 2 or len(seen[1]) < 2 or len(pts) < 5:
@@ -173,10 +173,10 @@ def fit_axes(seen: dict) -> tuple | None:
 
 
 def _solve(pts, keep):
-    """Least squares over the kept points → (centre, vx, vy, rms, per-point err).
+    """Least squares over the kept points → (centre, vx, vy, rms, err).
 
-    Separable by coordinate: camera x depends on (cx, vx.x, vy.x) and camera y
-    on (cy, vx.y, vy.y), so it is two 3-parameter fits, not one 6.
+    Separable by coordinate — camera x depends on (cx, vx.x, vy.x) and y on
+    (cy, vx.y, vy.y) — so two 3-parameter fits, not one 6.
     """
     if int(np.sum(keep)) < 5:
         return None
@@ -193,11 +193,11 @@ def _solve(pts, keep):
 
 
 def holdout_error(seen: dict) -> float | None:
-    """Refit without one stripe per axis and see how far off it predicts them.
+    """Refit without one stripe per axis, then predict it.
 
-    **The residual cannot tell you this** — least squares sits closest to the
-    points it was handed, so its rms is optimistic by construction. Free: the
-    stripes are already measured.
+    The residual cannot tell you this: least squares sits closest to the points
+    it was handed, so its rms is optimistic by construction. Free — the stripes
+    are already measured.
     """
     trial = {a: list(seen[a]) for a in (0, 1)}
     held = []
@@ -221,15 +221,15 @@ def holdout_error(seen: dict) -> float | None:
 
 def deshear(vx: np.ndarray, vy: np.ndarray,
             weights: tuple = (1.0, 1.0)) -> tuple:
-    """Force the two axes perpendicular, keeping both scales and the handedness.
+    """Force the axes perpendicular, keeping both scales and the handedness.
 
     A relay is a rotation plus a per-axis magnification; shear comes only from
-    tilt, which is keystone — a perspective term an affine cannot hold anyway.
-    What shear CAN do is soak up measurement error, so it is off unless asked.
+    tilt, which is keystone — a term an affine cannot hold anyway. What shear
+    can do is soak up measurement error, so it is off unless asked.
 
-    The two axes' rotation estimates are averaged **by evidence** (lever arm
+    The two rotation estimates are averaged **by evidence** (lever arm
     `sqrt(sum(d^2))`): one axis routinely keeps far fewer stripes, and an even
-    split would drag the good one towards it.
+    split drags the good one towards it.
     """
     kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
     turn = 1.0 if float(vx[0] * vy[1] - vx[1] * vy[0]) >= 0 else -1.0
@@ -353,7 +353,7 @@ def calibrate(project: Callable[[np.ndarray], None],
 class DmdCalibration:
     """A measured DMD↔camera registration, and what it took to get it.
 
-    The residual and point count travel with the matrix: a transform with no
+    Residual and point count travel with the matrix: a transform with no
     provenance cannot be judged later, and "0.4 px over 18 stripes" is the
     difference between trusting it and re-running it.
     """

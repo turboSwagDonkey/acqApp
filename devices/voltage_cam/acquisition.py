@@ -101,13 +101,12 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _maximise_readout_speed(cam) -> str:
-        """Force the fastest readout speed — the ORCA can sit in slow
-        (ultra-quiet) mode, which costs frame rate with no sign of it in the ROI
-        or exposure settings.
+        """Force the fastest readout: the ORCA can sit in slow (ultra-quiet)
+        mode, which costs frame rate with no sign of it in the ROI or exposure.
 
-        Returns what happened, including when the control does not exist: on
-        this C16240 `get_all_readout_speeds()` returns `[]`, so this did nothing
-        and looked like it had worked.
+        Returns what happened, including "absent" — on this C16240
+        `get_all_readout_speeds()` returns `[]`, so this did nothing and looked
+        like it had worked.
         """
         try:
             speeds = cam.get_all_readout_speeds()
@@ -133,17 +132,16 @@ class OrcaFireWorker(PullWorker):
         print(f"[voltage_cam] readout speed: {current} → fast")
         return "set"
 
-    # NOTE: pylablib's "chunks" format is the fastest read path but is NOT safe
-    # with a per-frame sink: it returns 3D blocks, so each frame handed on is a
-    # view pinning the whole block while RingBuffer.sizeof sees only the view's
-    # nbytes. Cutting per-frame overhead needs the sink to take whole blocks
-    # (CAMERA_TRANSFER.md open question 9), not a format flag.
+    # pylablib's "chunks" format is the fastest read path but is unsafe with a
+    # per-frame sink: each frame is a view pinning a whole 3D block, while
+    # RingBuffer.sizeof sees only the view's nbytes. Cutting per-frame overhead
+    # needs the sink to take blocks (CAMERA_TRANSFER.md Q9), not a format flag.
 
     def _query_timings(self, cam, cfg, verbose: bool = True) -> float:
-        """The camera's own sustainable frame period, falling back to the
-        datasheet estimate. `verbose=False` for hot exposure changes — dragging
-        the control calls this every tick, and printing would put console I/O in
-        the capture path.
+        """The camera's own sustainable frame period, else the datasheet
+        estimate. `verbose=False` for hot exposure changes: dragging the control
+        calls this every tick, and printing would put console I/O in the capture
+        path.
         """
         fps = cfg.expected_fps
         try:
@@ -169,11 +167,11 @@ class OrcaFireWorker(PullWorker):
         return fps
 
     def _buffer_frames(self, cfg, fps: float) -> int:
-        """DCAM ring depth: _BUFFER_SECONDS of frames, capped by a memory budget.
+        """DCAM ring depth: _BUFFER_SECONDS of frames, capped by memory.
 
-        Says which bound won. At full frame the byte cap wins by a wide margin —
-        38 frames, 0.33 s, not the 2 s advertised — and that silent shortfall is
-        the difference between absorbing a GC pause and dropping through it.
+        Prints which bound won. At full frame the byte cap wins hard — 38
+        frames, 0.33 s, not 2 s — and that shortfall is the difference between
+        absorbing a GC pause and dropping through it.
         """
         by_time  = int(max(fps, 1.0) * self._BUFFER_SECONDS)
         by_bytes = self._BUFFER_BYTES // cfg.frame_bytes
@@ -194,14 +192,13 @@ class OrcaFireWorker(PullWorker):
     # ── per-frame timing ─────────────────────────────────────────────────────
 
     def _frame_time(self, info) -> float | None:
-        """This frame's acquisition time in the `perf_counter()` domain, or None
-        to let the Recorder stamp it on arrival.
+        """This frame's acquisition time in the `perf_counter()` domain, or
+        None to let the Recorder stamp it on arrival.
 
-        Frames are read in batches, so arrival stamping gives a whole batch one
-        timestamp and then a gap, quantising the timebase to the read cadence.
-        The camera stamps each frame itself; its epoch is arbitrary, so it is
-        anchored to perf_counter on the session's first frame — intervals exact,
-        one constant offset on the stream.
+        Frames arrive in batches, so arrival stamping quantises the timebase to
+        the read cadence. The camera's own stamps have an arbitrary epoch, so
+        they are anchored to perf_counter on the first frame: intervals exact,
+        one constant offset.
         """
         if not self._use_cam_time or info is None:
             return None
@@ -232,17 +229,16 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _frame_index(info) -> int | None:
-        """The camera's own frame counter, so a dropped frame is visible in the
-        file rather than implied by a hole in the timestamps."""
+        """The camera's frame counter — a drop shows in the file directly,
+        not as a hole in the timestamps."""
         return None if info is None else getattr(info, "frame_index", None)
 
     def _emit_frames(self, imgs, infos, sink) -> tuple[int, Any]:
-        """Feed every frame to the sink as (frame, acquired_at, index).
-        -> (frames emitted, newest frame).
+        """-> (frames emitted, newest frame), feeding the sink
+        (frame, acquired_at, index).
 
-        The 3D branch is defensive in case the format is ever changed to chunks
-        (see the note above); those carry no per-frame info, so they fall back
-        to arrival stamping.
+        The 3D branch is for the chunks format (see the note above): no
+        per-frame info, so arrival stamping.
         """
         n, last = 0, None
         for i, block in enumerate(imgs):
@@ -262,12 +258,10 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _skip_report(st) -> str:
-        """What a camera-side skip means — which is NOT "the writer".
-
-        The sink only enqueues (`Recorder.put` → ring, no disk I/O), so a slow
-        writer sheds in the Recorder's ring and is counted there. A skip here
-        means *this* loop did not drain the driver buffer in time. Different
-        fixes, and the old message named the wrong one.
+        """A camera-side skip is NOT the writer, and the old message said it
+        was. The sink only enqueues (`Recorder.put` → ring, no disk I/O), so a
+        slow writer sheds in the ring and is counted there; a skip here is this
+        loop not draining the driver buffer.
         """
         return (f"[voltage_cam] DROPPED {st.skipped} frames (driver buffer "
                 f"{st.unread}/{st.buffer_size} unread) — the read loop is not "
@@ -276,13 +270,11 @@ class OrcaFireWorker(PullWorker):
                 f"count (recorder drops), not this one.")
 
     def _warn_data_rate(self, cfg, fps: float) -> None:
-        """Flag a configuration producing data faster than it can be written.
+        """Say before the run, not after, that this rate sheds frames however
+        the buffers are tuned. Preview is unaffected.
 
-        Preview is unaffected, but a recording at this rate sheds frames however
-        the buffers are tuned. Say so before, not after.
-
-        Not the disk: D: writes 2700 MB/s and the writer 2464 (2026-08-24). The
-        wall is whatever `WRITER_MBPS` currently is, and it moved once already.
+        Not the disk: D: writes 2700 MB/s, the writer 2464 (2026-08-25). The
+        wall is `WRITER_MBPS`, and it has moved once.
         """
         mbps = cfg.frame_bytes * fps / (1 << 20)
         print(f"[voltage_cam] data rate: {mbps:.0f} MB/s "
