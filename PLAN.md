@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-24 (an) |
+| **Last updated** | 2026-08-25 (ao) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). Suite **716 checks, 22 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **737 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
 
 ---
 
@@ -111,11 +111,18 @@ settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose t
 retire it anyway rather than re-tune. **The numbers are in
 `archive/pupil_tracking/README.md`**, not here.
 
-**PICK UP HERE — calibration works and has run at the rig.** DMD tab →
-Photostimulation ROIs → **Calibrate…** → one button, 19 exposures, ~9 s. It
-steps a narrow stripe across each axis, fits a line to where each lands, and
-writes an affine. Then draw an ROI and check optically where the light falls —
-no residual replaces that.
+**PICK UP HERE — one 30 s recording answers the open question.** Full-frame
+bin 1 now keeps 100 % of its frames in the bench (2026-08-25); nothing has run
+it with the camera in the loop, and `WRITER_MBPS = 1800` is a derate, not a
+measurement. Record 30 s at bin 1, count the frames off the closed file,
+replace the number. §6 item 1. **Nothing about this actuates** — it is the
+Record button.
+
+**Calibration also works and has run at the rig.** DMD tab → Photostimulation
+ROIs → **Calibrate…** → one button, 19 exposures, ~9 s. It steps a narrow
+stripe across each axis, fits a line to where each lands, and writes an affine.
+Then draw an ROI and check optically where the light falls — no residual
+replaces that.
 
 **The rig's measured optical facts** — the first ones this project has:
 
@@ -340,7 +347,20 @@ because two of them are how a future wrong-data bug gets in.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Save a calibration and check it optically.** The sweep runs; what has not
+1. **Re-measure the writer with the camera running.** Full-frame bin 1 now
+   records complete *in the bench* — 2464 MB/s saturated against 2223 offered,
+   100 % kept over 60 s / 133 GB — but no ORCA was in the loop. The one number
+   that is a guess is `WRITER_MBPS = 1800`: the bench derated by 0.77, which is
+   the camera contention the 2026-08-17 run showed against its own bench
+   (1004/1305). **Run a 30 s full-frame bin-1 recording, count the frames off
+   the closed file, and replace 1800 with what it says.**
+   - If it sheds frames, the next lever is DCAM's own recorder (`.dcimg`) —
+     the cost is the one-file/one-clock invariant and hand-written ctypes,
+     since pylablib binds no `dcamrec_*`. Details in DECISIONS.md item 7.
+   - If it does not, say so and the throughput work is finished.
+   - Nothing to configure: it is the ordinary Record button at bin 1.
+
+2. **Save a calibration and check it optically.** The sweep runs; what has not
    happened is anyone confirming where the light actually lands. Run
    Calibrate…, save the JSON (the panel adopts it at once), then draw one ROI on
    a landmark, project the mask, and look. **An affine has no keystone term**,
@@ -354,7 +374,7 @@ kept for its reasoning, not a queue.
    - The ALP refused to open once and opened on an identical retry. **A single
      "not found or not ready" is not proof the DMD is absent.**
 
-2. **Then judge the fit from its hold-out, and decide whether to widen the
+3. **Then judge the fit from its hold-out, and decide whether to widen the
    sweep.** `holdout_px` (refit without a stripe, then predict it) is the honest
    number; the residual is optimistic by construction. If it is poor, the known
    cause is that ~6 of 18 stripes run off the frame and the survivors bunch to
@@ -362,7 +382,7 @@ kept for its reasoning, not a queue.
    9 across it) would fix that for ~6 extra exposures and ~20 lines. Not built:
    re-run first and see whether it is needed.
 
-3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
+4. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
    answers it. Until it is set the app reports rev/s and rev instead of mm/s and
    mm, and the closed loop's threshold has to be set in revolutions.
    `volts_per_rev` is a measured 4.912 and the sign is settled, so this is the
@@ -388,41 +408,46 @@ intact. Two are still worth doing and are listed there under "Still open".
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
-### 2026-08-24 (aj–an) — DMD calibration, built and run at the rig
+### 2026-08-25 (ao) — the writer, and bin 1 stops dropping half its frames
 
-One day, several wrong turns; only what survived is here. The discarded designs
-are in the commits (`eb5cb77` onward) if the reasoning is ever needed again.
+The operator confirmed full-frame bin 1 is wanted, so the writer was worth
+fixing rather than working around.
 
-- **`run_calibration` had never been executed by anything** — not even its own
-  test, which imports the pieces. The feature's one function had zero coverage.
-- **The rig cannot do Gray coding, and that is measured, not assumed.** A solid
-  bar images cleanly; a 280 px checkerboard modulates **13 %** of the frame and
-  a 70 px stripe pattern **9 %**. Scattering erases fine structure at *any*
-  pitch — a coarsened code was tried down to 16 mirrors and still decoded
-  0.0 %. So the Gray/checkerboard/homography machinery was deleted rather than
-  kept as a switch nobody can use: `calibration.py` 1172 → ~500 lines.
-- **What works: a narrow stripe at nine signed offsets per axis**, a line fit to
-  where each lands, and the two lines are the affine. Signed offsets carry the
-  direction, so a mirror flip cannot pass.
-- **Three fitting bugs, each found from the rig's own numbers, not by reading:**
-  growing a centred bar and reading its second moments scored rms 65.8 px
-  because the frame clips one side while vignetting eats the other; fitting each
-  axis with its *own* intercept made the two disagree about the panel centre by
-  67 px, which shear then absorbed; and averaging the two axes' rotation
-  estimates evenly dragged the well-measured axis toward the badly-measured one.
-- **The residual is not the number to trust.** Least squares sits closest to the
-  points it was handed, so `holdout_px` refits without a stripe and predicts it.
-- **The UI, after the operator used it:** three display modes (All ON / Image /
-  ROIs), drag-to-draw with a rubber band, percentile contrast (the editor was
-  showing a near-black frame because `autoLevels` stretches to a hot pixel), and
-  the calibration starts the camera itself instead of demanding setup.
-- **`RoiSet.dmd_frame` 107 ms → 1 ms** by bounding each ROI in mirror space
-  instead of rasterising a camera-sized mask per ROI.
-- Suite **660 → 716 checks, 21 → 22 files**, all green.
+- **The disk was never the wall, and a note in DECISIONS.md said it was.** D:
+  writes **2700 MB/s** from a plain file. The writer did 1004. That gap was one
+  line — `dset[i] = frame`, which copies through the HDF5 chunk cache and
+  converts. Where a frame is exactly one chunk, handing HDF5 the frame's own
+  buffer instead gives **1304 → 2696 MB/s**, and **2464 through the whole path,
+  100 % kept over 60 s / 133 GB**. *The struck-through "already at hardware
+  limits" note is left in DECISIONS.md on purpose: it was inferred from one
+  end-to-end number with nothing measuring the hardware underneath it, and it
+  is why nobody looked.*
+- **Then the ring became the constraint.** 512 MB is 25 full frames, 0.24 s of
+  slack — it shed 14–54 frames per 30 s run. 2 GB sheds none; 4 GB adds
+  nothing.
+- **Measured and worthless, so nobody repeats them:** chunk cache size, growth
+  block, preallocation, 1/4 MB alignment, `meta_block_size`, the Windows VFD —
+  all within 3 % of 1300. Multi-frame chunks are *slower*. No fast compressor
+  exists in this venv and none is needed.
+- **The guard is the dangerous part.** A direct write converts nothing, and an
+  undersized one is accepted **silently** — the write returns, the file closes,
+  and *reading it back kills the process with an access violation*. Not
+  corruption you can see: a file that murders the reader. `test_writer_chunks`
+  proves the guard earns its place by running the unguarded case in a child.
+- Cleanup: 2 unreachable methods gone (a name-occurrence scan, not an import
+  graph — 5 of the 7 candidates were the excluded stage driver and a Qt
+  override); 4 stale counts; 9 stale writer facts across 5 docs. **Negative
+  result: every backticked identifier in every code comment still exists — the
+  prose is dense fact, and nothing was cut.** The 30 Hz preview tick measured
+  1.20 ms (3.6 % of budget) and was deliberately left alone.
+- **`closed-loop` failed once in eight suite runs and I did not capture the
+  message before it scrolled.** It then passed alone and 6/6 in a dedicated
+  hunt. Unexplained, like the `session` flake before it — two now.
+- Suite **716 → 737 checks, 22 → 23 files**, all green.
 
-Entries before 2026-08-24 (aj) are in
-**[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file
-small enough to read at the start of every session.
+Entries before 2026-08-25 (ao) are in
+**[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file small
+enough to read at the start of every session.
 
 ## 8. How to keep this file useful
 

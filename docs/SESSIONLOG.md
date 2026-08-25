@@ -4,6 +4,38 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-24 (aj–an) — DMD calibration, built and run at the rig
+
+One day, several wrong turns; only what survived is here. The discarded designs
+are in the commits (`eb5cb77` onward) if the reasoning is ever needed again.
+
+- **`run_calibration` had never been executed by anything** — not even its own
+  test, which imports the pieces. The feature's one function had zero coverage.
+- **The rig cannot do Gray coding, and that is measured, not assumed.** A solid
+  bar images cleanly; a 280 px checkerboard modulates **13 %** of the frame and
+  a 70 px stripe pattern **9 %**. Scattering erases fine structure at *any*
+  pitch — a coarsened code was tried down to 16 mirrors and still decoded
+  0.0 %. So the Gray/checkerboard/homography machinery was deleted rather than
+  kept as a switch nobody can use: `calibration.py` 1172 → ~500 lines.
+- **What works: a narrow stripe at nine signed offsets per axis**, a line fit to
+  where each lands, and the two lines are the affine. Signed offsets carry the
+  direction, so a mirror flip cannot pass.
+- **Three fitting bugs, each found from the rig's own numbers, not by reading:**
+  growing a centred bar and reading its second moments scored rms 65.8 px
+  because the frame clips one side while vignetting eats the other; fitting each
+  axis with its *own* intercept made the two disagree about the panel centre by
+  67 px, which shear then absorbed; and averaging the two axes' rotation
+  estimates evenly dragged the well-measured axis toward the badly-measured one.
+- **The residual is not the number to trust.** Least squares sits closest to the
+  points it was handed, so `holdout_px` refits without a stripe and predicts it.
+- **The UI, after the operator used it:** three display modes (All ON / Image /
+  ROIs), drag-to-draw with a rubber band, percentile contrast (the editor was
+  showing a near-black frame because `autoLevels` stretches to a hot pixel), and
+  the calibration starts the camera itself instead of demanding setup.
+- **`RoiSet.dmd_frame` 107 ms → 1 ms** by bounding each ROI in mirror space
+  instead of rasterising a camera-sized mask per ROI.
+- Suite **660 → 716 checks, 21 → 22 files**, all green.
+
 ### 2026-08-24 (ai) — the pupil tracker is archived; the eye region stays
 - **Operator's call: "ditch the pupil tracking for now — archive it, but remove
   it from the live code, keep the seed limiting circle."** Done as asked, and as
