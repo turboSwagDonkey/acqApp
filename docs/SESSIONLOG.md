@@ -4,6 +4,32 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-24 (ai) — the pupil tracker is archived; the eye region stays
+- **Operator's call: "ditch the pupil tracking for now — archive it, but remove
+  it from the live code, keep the seed limiting circle."** Done as asked, and as
+  an archive rather than a delete: `archive/pupil_tracking/` holds `tracking.py`,
+  `rays.py`, `fits.py`, `track_worker.py`, both diagnostic scripts and the two
+  test files, with a **README carrying the measurements and the restore steps**
+  — including the `PupilSettings` fields that were removed with the panel
+  controls that set them, which is the part that would be reconstructed wrongly.
+- **What the pupil camera still does:** opens, previews, records to HDF5, drives
+  the LED, replays a clip. What it no longer does: fit, trace a radius, draw the
+  search overlay, seed on click, find lids.
+- **The eye region survives intact** — two-click placement on the preview, the
+  rubber band, the spinboxes, persistence, and `pupil_limit_x/y/r` in the
+  session metadata. It bounds nothing now; it is operator-set geometry.
+- **The panel went from ~14 controls to three groups** (Camera, Eye region,
+  Illumination) — checked by rendering it offscreen, not by reading the diff.
+- **Suite 798 → 660 checks, 23 → 21 files, all green.** The 138 checks went with
+  the code they covered. Four live tests needed edits rather than deletion:
+  `test_pupil_limit` (kept the region half, dropped the tracker half),
+  `test_pupil_video` (kept the reader/worker/adapter), `test_settings_persistence`
+  (its pupil rows drove tracking spinboxes) and `test_session_recording` (it
+  asserted the radius trace filled; now it asserts frames reach the preview).
+- **`archive/` is excluded from `test_undefined_names` and undrawn in
+  `test_structure`, but its files ARE listed in the tree** — removed code should
+  not be held to live standards, and should not be invisible either.
+
 ### 2026-08-22 (ah) — the pupil complaint was two settings, not the algorithm
 - **Both of §6 item 1's blockers dissolved on inspection, and neither needed the
   operator.** "Get a clip that shows a dropout" — there are **six** clips on

@@ -273,3 +273,176 @@ a measured 4.912, and the encoder voltage does wrap.
    overrides scale, rotation and offset** by design, so a sweep with `fit` on
    measures nothing. The panel is honest about the second: it greys those
    spinboxes out.
+
+
+## Moved from PLAN.md §6 on 2026-08-24
+
+Closed items kept for their reasoning, plus the long-tail open ones. The
+plan's §6 holds the next three actions only; anything here that is still
+open says so.
+
+**Closed — kept for the reasoning, not the tick:**
+
+0. ~~Group the root modules.~~ **Done 2026-08-14** (§7 (r)).
+1. ~~Raise the capture rate.~~ **Closed 2026-08-17 — the premise was
+   wrong**; the grab path was already at 92 % of the camera (§7 (t)). It
+   left three *diagnostic* fixes, because a loss reported with the wrong
+   cause sends the next session after the wrong fix — see
+   [docs/DECISIONS.md](docs/DECISIONS.md).
+
+**Open, in order:**
+
+4. **DMD ROI photostimulation: image → draw ROIs → project the mask.** The
+   operator's stated next big addition (2026-08-18). The workflow is: put the
+   DMD in **all-on** (full mirror) mode, grab a frame with the imaging camera,
+   **draw ROIs on that frame**, turn them into a DMD mask, and re-image with
+   only those mirrors on.
+   - **The blocker is registration, not drawing.** An ROI is drawn in *camera*
+     pixels; a mask is in *DMD mirror* coordinates (1024×768). Converting one to
+     the other needs a measured camera↔DMD transform. **Closed 2026-08-24 (aj)
+     as far as it can be closed off the rig**: the sweep is built, wired to a
+     Calibrate… button and tested end to end, and it emits light, so items 1
+     and 2 above are the rest of it. The hand alignment in
+     `acqapp_local.json` (104 %, −7 px, `fit` off) is not a substitute — it was
+     set by eye, and nothing measured where it lands.
+   - **Actuation applies at two points** (§2): the calibration projection *and*
+     every stimulation. Verify open → render → upload → release first, which
+     projects nothing, then ask.
+   - **The offline half is built and verified (2026-08-18), and nothing in it
+     projects or grabs** — the point being that the pipeline is held to a
+     transform *we chose* before any light is emitted.
+     `devices/dmd/calibration.py` (`calibrate(project, grab, …)` takes the two
+     hardware operations **as callables**; signed stripe offsets, so a **mirror
+     flip cannot pass as a valid registration**) and `devices/dmd/roi.py` + `roi_panel.py` (rect and circle ROIs
+     in camera px, the reachable field outlined, ROIs outside it named rather
+     than silently clipped). Measured on the simulated rig: decode median
+     **0.40 px**, homography **rms 0.41 px** over 3169 points, ROI round trip
+     **100 %** on target with 0 % spill. 51 checks, each with a control.
+   - **What is left needs the rig**: (a) run the probe, then the sweep — items
+     1 and 2 above; (c) single frame or an average for the ROI snapshot.
+     ~~(b) wire `RoiEditor` into the adapter~~ done (`720a1b6`).
+   - **Two traps, both now handled in code — do not re-introduce them.**
+     Calibration patterns **must bypass `build_frame`**: hence
+     `project_frame()` and the `RawProjector` protocol, with a test whose
+     control shows `build_frame` really would move the pattern. And
+     `alp.project()` uploads **one** frame (`SeqAlloc(nbImg=1)`), so the sweep
+     is software-timed, project→grab per plane — which is why `FreshGrabber`
+     exists; a hardware-timed sweep would need `project_sequence()`.
+
+5. **Comment-verbosity trim + optimisation pass** (operator, 2026-08-18).
+   Two jobs in one sweep over the tree, worst-first by comment+docstring ratio.
+   **Recommend closing it.** Tree total **23.2 % → 22.5 %** (4107 → 3951 of
+   ~17.6k lines) with no fact lost — only prose.
+
+   **Why close it (2026-08-19).** Nine more files moved the tree **4008 → 3981
+   comment lines, 25.3 % → 25.2 %**. The done half was genuinely verbose; what
+   is left is dense fact — `acq/devices.py` reads 47 % only because it is a file
+   of `Protocol`s whose docstrings *are* the content. **`stage/driver.py` is
+   deliberately excluded**: a verbatim copy of `stage_control`'s, which editing
+   would make diverge. The pass was worth more for the **stale facts** it found
+   than the lines (three of them, §7 (ae)).
+
+   **The rule, which still applies to new code:** state the non-obvious *why* in
+   a line and stop. Keep every measured number, every "this cost a session"
+   note, every why-not-the-obvious-thing. Drop restatements of the code, second
+   explanations of the same point, and adjectives.
+
+   **File lists, the measured optimisations (the 1633 ms → 7 ms homography, the
+   tracker's 9.27 → 1.78 ms/frame, `np.nanmedian`'s masked array, the `avi.py`
+   stride bug) and what was deliberately NOT optimised are in**
+   [docs/DECISIONS.md](docs/DECISIONS.md).
+
+6. ~~Test the pupil tracker on a sample video.~~ **Done 2026-08-18** (§7 (u)) —
+   it found a real bug, not a tuning problem. Two durable findings:
+   - **`_test_tracking.py` could not have caught it**, and that is the lesson.
+     It validates against *synthetic* eyes, where the pupil edge is the
+     highest-contrast thing in frame; real IR footage inverts that — the
+     orbit→fur margin is a ~200 grey-level step against the pupil's ~30. A
+     synthetic suite passing 15/15 said nothing about it. **Re-run both** after
+     any `tracking.py` change: the script for accuracy, a clip for realism.
+   - **The rig's clip needs no decoder** — it is uncompressed `IYUV`, where the
+     Y plane *is* the grayscale frame. `devices/pupil_cam/avi.py` reads
+     IYUV/I420/YV12, Y800 and BI_RGB and **refuses anything compressed by
+     name**, since cv2/imageio/av are all absent on 3.14.
+     (`../rig_captures/` holds encoder CSVs only — no pupil footage there.)
+   - ~~**Auto-seeding cannot work on this rig's framing.**~~ **Overstated,
+     corrected 2026-08-19 (ae)** — the observation was right (`coarse_seed`
+     returns `None` on every frame, the dark mask being 53 % of the sensor at
+     threshold 60), the conclusion was not. See §0's search-limit paragraph.
+
+7. **Make full-frame recording fit the writer** — the one remaining throughput
+   constraint: ~2223 MB/s acquired against ~1004 written, so about half the
+   frames cannot be stored. **Measured 2026-08-17 through the real path** (ORCA
+   → `OrcaFireWorker` → `Recorder` → `HDF5Writer` → D:), 10 s per run, frames
+   counted **off the closed file** rather than off a counter:
+
+   | run | offered | on disk | kept | sustained |
+   |---|---|---|---|---|
+   | full frame, bin 1 | 957 | 506 | **52.9 %** | 1004 MB/s (47.9 fps) |
+   | full frame, bin 2 | 1153 | 1153 | **100 %** | 603 MB/s (114.9 fps) |
+
+   - **Binning does not cost frame rate on this camera** — the frame period is
+     **8.68 ms at bin 1, 2 and 4**, so binning cuts bytes, not time. 2×2 gives ¼
+     the data at the same 115 fps. **If the science tolerates 2216×1184 this is
+     the whole answer and needs no code**; otherwise cap the rate (the panel
+     warns and names the exposure) or take a smaller ROI.
+   - **1004 MB/s, not the 1165 benchmark** — a benchmark measures the writer,
+     this measures the path. `_WRITER_MBPS` is now 1000, moving the advised cap
+     from a wrong 60 fps to a right 48.
+   - **Done 2026-08-17: the offered presets stop at `4432x512`**, below which a
+     preset could only produce an unrecordable session. `MIN_PRESET_ROWS` trims
+     the *dropdown* only — the datasheet table keeps all nine rows, because
+     `readout_fps()` interpolates them for binned ROIs (512 rows at bin 4 reads
+     out like 128). Four checks in `test_readout_fps` hold that line apart.
+
+8. **Project through the full app.** *Half closed 2026-08-12*: everything
+   short of emitting light runs through the app's own path, and the geometry
+   was swept against the real 1024×768 panel. **What is left needs someone at
+   the hardware** — that Display projects, that Stop halts, and that `/dmd`
+   carries 0 and −1 around it. **Close `dmdGUI_project` first**; one process
+   owns the USB. Two traps, both live: a **checkerboard cannot show a
+   geometry error**, and **`fit` overrides scale, rotation and offset**, so a
+   sweep with `fit` on measures nothing. Detail in
+   [docs/DECISIONS.md](docs/DECISIONS.md).
+9. **Close the loop on the rig.** Phase 5 is built and mock-verified but has
+   never seen an animal, and the one number it needs cannot be guessed here:
+   **what wheel speed counts as "running"** for this rig's V/rev and diameter.
+   The tab is designed for finding it — disarmed, the rule still evaluates and
+   the readout shows whether the condition is met, so the threshold can be set
+   against a live animal without actuating anything. Arm only after that reads
+   sensibly. Start with the puffer (a puff is recoverable; a stimulus train
+   mid-experiment is not), `retrigger` off, and a `max_fires` ceiling.
+10. **Decide which wheel speed a rule should watch.** The panel offers both and
+   the file records the choice, but the default is `wheel_speed_live` on the
+   grounds that a closed loop should act while the animal runs. Measured this
+   session: the recorded speed crosses the same threshold **1.15 s** after the
+   live one. If the paradigm wants the rule to agree exactly with the recorded
+   trace, switch it — this is a scientific call, not a default worth inheriting.
+
+**Needs the rig — but check first, since 2026-08-14 found most of it here:**
+- The DMD's *optical* alignment: the electrical path is proven and the geometry
+  math is now verified against the real panel, but nothing has confirmed where
+  the projected pattern lands **on the sample**. That is what `dmdGUI_project`
+  is for.
+  **Superseded 2026-08-24 (aj).** The 2026-08-12 note here said acqApp stays on
+  `fit = True` deliberately. **That is no longer what the app is running**: the
+  live `acqapp_local.json` has `fit: false, scale_pct: 104.0, offset_x: -7`, so
+  the operator hand-aligned it at some point without updating this file.
+  `dmdGUI_project` is at **132.4 %**. Either way both are alignments set by eye;
+  the sweep in items 1–2 is the measurement, and it is what the ROI path needs.
+- ~~Phase 0's camera throughput number.~~ **Closed, re-measured 2026-08-17
+  through `OrcaFireWorker`: 105.92 fps, 2223 MB/s** at full frame (4432×2368,
+  20.99 MB/frame), against a camera offering 115.26 — 92 % of the link. **The
+  read path is not the limit; the writer is.** Size the ring buffer (#14) from
+  2223 MB/s. The 2026-08-14 figure of 46.17 fps / 969 MB/s is **withdrawn**.
+- Encoder **wheel diameter** — still unmeasured; until it is set the app reports
+  rev/s and rev rather than mm/s and mm. The panel keeps whatever is typed in,
+  so measure once. (`volts_per_rev` is *not* open: **4.912**, measured from a
+  rig capture — [docs/HANDOFF.md](docs/HANDOFF.md) "Hardware facts".)
+- **#13 on a real board:** the first session should report
+  `wheel_timestamp_source = "hardware"` and a `wheel_rate_actual_hz` at or very
+  near the requested rate. `"software"` means the 6363 refused
+  `cfg_samp_clk_timing` on that channel — the run is still valid, but the speed
+  carries scheduler jitter and the printed reason is in the console.
+- Real-hardware validation of *everything* in phases 2–4: no rig hardware has
+  ever run this code.
