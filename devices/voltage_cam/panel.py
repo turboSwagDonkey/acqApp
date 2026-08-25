@@ -133,10 +133,11 @@ class SettingsPanel(QWidget):
     def _refresh_recordability(self) -> None:
         """Say whether a recording of this configuration fits the writer.
 
-        `WRITER_MBPS` is the measured end-to-end rate (worker → Recorder →
-        HDF5Writer → NVMe), not a disk benchmark — see OrcaFireWorker. Binning
-        is the lever: on this camera it cuts bytes, not time, so 2×2 keeps the
-        full frame rate at a quarter of the data.
+        `WRITER_MBPS` is the whole path (worker → Recorder → HDF5Writer →
+        NVMe), not a disk benchmark, and it is deliberately pessimistic — see
+        presets.py for what it is and is not. Binning is the lever: on this
+        camera it cuts bytes, not time, so 2×2 keeps the full frame rate at a
+        quarter of the data.
         """
         cfg = self.get_config()
         fps = self._measured[0] if self._measured is not None else cfg.expected_fps

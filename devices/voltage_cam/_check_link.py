@@ -23,6 +23,10 @@ W, H = 4432, 2368
 
 
 def main() -> int:
+    # Imported here, not at module scope: this file is run as a script and the
+    # path to `acqApp` is only set up in the __main__ block below.
+    from acqApp.devices.voltage_cam.presets import WRITER_MBPS
+
     n = DCAM.get_cameras_number()
     print(f"DCAM cameras: {n}")
     if not n:
@@ -40,9 +44,10 @@ def main() -> int:
               f"({W * H * 2 * fps / (1 << 20):.0f} MB/s)")
         if fps > 40:
             print("LINK: CoaXPress")
-            print("NOTE: recording full frame needs ~2300 MB/s; the write path "
-                  "sustains ~1004 MB/s end to end (measured), so recording caps "
-                  "near 48 fps. 2x2 binning records all of it.")
+            print(f"NOTE: recording full frame needs ~2300 MB/s; the write "
+                  f"path is budgeted at ~{WRITER_MBPS:.0f} MB/s, so recording "
+                  f"caps near {WRITER_MBPS / (W * H * 2 / (1 << 20)):.0f} fps. "
+                  f"2x2 binning records all of it either way.")
         else:
             print("LINK: USB3  — CoaXPress is NOT in use")
             print("To switch: unplug USB, power-cycle the camera, re-run this.")

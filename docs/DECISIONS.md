@@ -249,9 +249,15 @@ a measured 4.912, and the encoder voltage does wrap.
    - `_EncoderBase._report` still builds two arrays per sample with
      `np.fromiter`. Removing that needs a preallocated ring in place of the
      deque; not worth the complexity in load-bearing code at 120 Hz.
-   - The **camera read path and the writer are already at hardware limits**
-     (92 % of the link, 1004 MB/s measured), so neither is an optimisation
-     target — §6 item 4 is about fitting *within* the writer, not speeding it.
+   - ~~The **camera read path and the writer are already at hardware
+     limits** (92 % of the link, 1004 MB/s measured), so neither is an
+     optimisation target.~~ **Half of that was wrong, and it cost a week of
+     dropped frames.** The read path really is at 92 % of the link. The writer
+     was nowhere near a hardware limit: the same disk writes 2700 MB/s from a
+     plain file, and the 1004 was one line of Python — `dset[i] = frame`
+     (2026-08-25, item 7). *"Already at a hardware limit" was inferred from a
+     single end-to-end number, with nothing measuring the hardware underneath
+     it.* Measure the floor before calling something floor-bound.
 
 
 ## §6 item 8 — projecting through the full app (half closed 2026-08-12)
@@ -370,10 +376,13 @@ open says so.
      returns `None` on every frame, the dark mask being 53 % of the sensor at
      threshold 60), the conclusion was not. See §0's search-limit paragraph.
 
-7. **Make full-frame recording fit the writer** — the one remaining throughput
-   constraint: ~2223 MB/s acquired against ~1004 written, so about half the
-   frames cannot be stored. **Measured 2026-08-17 through the real path** (ORCA
-   → `OrcaFireWorker` → `Recorder` → `HDF5Writer` → D:), 10 s per run, frames
+7. ~~**Make full-frame recording fit the writer.**~~ **Closed 2026-08-25 —
+   the writer was made to fit the camera instead.** The operator confirmed
+   full-frame bin 1 is wanted, so the constraint was worth removing rather
+   than working around.
+
+   What it was. **Measured 2026-08-17 through the real path** (ORCA →
+   `OrcaFireWorker` → `Recorder` → `HDF5Writer` → D:), 10 s per run, frames
    counted **off the closed file** rather than off a counter:
 
    | run | offered | on disk | kept | sustained |
@@ -381,14 +390,60 @@ open says so.
    | full frame, bin 1 | 957 | 506 | **52.9 %** | 1004 MB/s (47.9 fps) |
    | full frame, bin 2 | 1153 | 1153 | **100 %** | 603 MB/s (114.9 fps) |
 
+   **What it was not: the disk.** A plain file on the same D: writes
+   **2700 MB/s**. That measurement should have come first — see the withdrawn
+   "already at hardware limits" note above.
+
+   **The fix is one branch.** Where a frame is exactly one chunk and no filter
+   is configured, hand HDF5 the frame's own buffer (`write_direct_chunk`)
+   instead of assigning through the dataset. No cache copy, no type
+   conversion. Full frame, on D:, 2026-08-25:
+
+   | path | MB/s | kept |
+   |---|---|---|
+   | writer alone, `dset[i] = frame` | 1304 | — |
+   | writer alone, direct chunk write | **2696** | — |
+   | whole path, offered 106 fps | 2225 | **100 %** |
+   | whole path, saturated | 2464 (117 fps) | — |
+   | whole path, 60 s / 133 GB | 2220 | 99.9 % |
+
+   Then the ring became the constraint and 512 MB → 2 GB took the last of it
+   (25 → 102 frames of slack; 14–54 frames lost per 30 s run → 0, twice).
+
+   **Measured and worthless, recorded so nobody repeats them** — all within
+   3 % of 1300: chunk cache size, growth block size, preallocating the whole
+   dataset, 1 MB and 4 MB file alignment, `meta_block_size`, and the Windows
+   VFD. Multi-frame chunks are actively *slower* (2 frames 2001, 4 frames
+   1795). No fast compressor exists in this venv — h5py has deflate and
+   shuffle only, no blosc/lz4/zstd — and none is needed now.
+
+   **The guard is the dangerous part, not the speed.** A direct write converts
+   nothing, and an undersized one (a uint8 frame into a uint16 chunk) is
+   accepted silently: the write returns, the file closes, and *reading it back
+   kills the process with an access violation*. `_writable_chunk` checks
+   shape, dtype and C-contiguity; `test_writer_chunks` proves the guard earns
+   its place by running the unguarded case in a child process and requiring it
+   to die.
+
+   **Still open: this has not run against the camera.** `WRITER_MBPS` is now
+   1800, which is the saturated bench derated by the 0.77 the 2026-08-17 run
+   showed against its own bench. That derate is a guess. Re-measure with the
+   ORCA running and replace it. If the grab thread still costs enough to shed
+   frames, the next lever is DCAM's own recorder (`dcamrec_*` → `.dcimg`):
+   pylablib copies the `DCAMREC_*` enums but binds none of the functions, so
+   it means hand-written ctypes, and it costs the one-file/one-clock
+   invariant — the camera would land in its own file on DCAM's timebase.
+
    - **Binning does not cost frame rate on this camera** — the frame period is
      **8.68 ms at bin 1, 2 and 4**, so binning cuts bytes, not time. 2×2 gives ¼
      the data at the same 115 fps. **If the science tolerates 2216×1184 this is
      the whole answer and needs no code**; otherwise cap the rate (the panel
      warns and names the exposure) or take a smaller ROI.
    - **1004 MB/s, not the 1165 benchmark** — a benchmark measures the writer,
-     this measures the path. `_WRITER_MBPS` is now 1000, moving the advised cap
-     from a wrong 60 fps to a right 48.
+     this measures the path, and the gap between them is the camera. That set
+     `WRITER_MBPS` to 1000 (advised cap 48 fps); it is **1800 since
+     2026-08-25**, and the same bench/path gap is what that number is derated
+     by.
    - **Done 2026-08-17: the offered presets stop at `4432x512`**, below which a
      preset could only produce an unrecordable session. `MIN_PRESET_ROWS` trims
      the *dropdown* only — the datasheet table keeps all nine rows, because
@@ -433,8 +488,10 @@ open says so.
 - ~~Phase 0's camera throughput number.~~ **Closed, re-measured 2026-08-17
   through `OrcaFireWorker`: 105.92 fps, 2223 MB/s** at full frame (4432×2368,
   20.99 MB/frame), against a camera offering 115.26 — 92 % of the link. **The
-  read path is not the limit; the writer is.** Size the ring buffer (#14) from
-  2223 MB/s. The 2026-08-14 figure of 46.17 fps / 969 MB/s is **withdrawn**.
+  read path is not the limit.** The writer was, until 2026-08-25 (item 7);
+  now nothing in the path is, at full frame bin 1. Size the ring buffer from
+  2223 MB/s — it is 2 GB. The 2026-08-14 figure of 46.17 fps / 969 MB/s is
+  **withdrawn**.
 - Encoder **wheel diameter** — still unmeasured; until it is set the app reports
   rev/s and rev rather than mm/s and mm. The panel keeps whatever is typed in,
   so measure once. (`volts_per_rev` is *not* open: **4.912**, measured from a

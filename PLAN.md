@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **716 checks, 22 files, ~51 s**, and it is ALL GREEN. Run it
+the contract: **737 checks, 23 files, ~53 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -136,16 +136,27 @@ does.** It is scattering in the sample and relay, not defocus — it does not
 improve with a coarser code. Gray coding, checkerboards, homography fitting and
 the decode were all built, run at the rig, failed, and **deleted** (§7 (al)).
 Do not rebuild them for this rig without new evidence that fine patterns survive.
-`calibration.py` is 379 lines and has one entry point, `calibrate()`.
+`calibration.py` is 488 lines and has one entry point, `calibrate()`.
 
 The rest of this section is context; nothing below is blocking.
 
-**The camera numbers, settled 2026-08-17 (§7 (t), table in §6 item 7).**
-Acquisition is **not** the constraint — the grab path runs at 92 % of the link
-(105.92 fps / 2223 MB/s at full frame). **The writer is:** a measured 1004 MB/s
-end to end caps recording near **48 fps**, so a bin-1 session stores 52.9 % of
-its frames. **2×2 binning stores 100 % at the full 114.9 fps** and is the
-standing recommendation.
+**The camera numbers. Nothing in the path is the constraint any more.** The
+grab path runs at 92 % of the link (105.92 fps / 2223 MB/s at full frame,
+2026-08-17). The writer used to cap recording near 48 fps — a bin-1 session
+stored 52.9 % of its frames — and **that is fixed as of 2026-08-25**: the
+direct-chunk write took it 1304 → 2696 MB/s and the ring 512 MB → 2 GB, so
+**full-frame bin 1 records complete in the bench** (100 % of 106 fps offered,
+2464 MB/s saturated). 2×2 binning is no longer a requirement, only a way to
+use a quarter of the disk.
+
+**But this has not run against the camera.** `WRITER_MBPS` is 1800, the bench
+derated by a guessed 0.77 for the ORCA grab thread. That number is the one
+thing here that is not measured — see §6.
+
+**The disk was never the constraint, and a note in DECISIONS.md said it was
+"already at a hardware limit" for a week.** D: writes 2700 MB/s from a plain
+file. The 1004 was one line of Python. Measure the floor before calling
+something floor-bound.
 
 **Two standing instructions from the operator:**
 - **Write comments terser than the surrounding style** — the non-obvious *why*
@@ -169,7 +180,7 @@ core (clock, recorder, ring, worker, writer, `sync`, `devices` protocols) in
 **`main.py` is the operator's active file.** The settings-window work is theirs
 and ongoing: **ask before touching its dock/settings code**, and don't
 restructure it (that is why §5b A5 split `modules.py` and deliberately left
-`main.py` alone; it is 787 lines).
+`main.py` alone; it is 889 lines).
 
 **A warning that cost most of a session.** An editing pass aimed at "the
 settings" rewrote every file with *settings* in its name, reducing

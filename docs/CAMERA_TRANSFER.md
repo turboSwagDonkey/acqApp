@@ -239,11 +239,13 @@ CoaXPress rates is storage-hungry — plan capacity per session, and point the
 session directory at D:.
 
 **If CXP does come up, two things in this app become wrong:**
-1. **The writer becomes the bottleneck.** CXP full frame needs **2300 MB/s**;
-   the uncompressed `HDF5Writer` benchmarks at **1165 MB/s**, so recording would
-   sustain only ~58 of the 115 fps. Options: record a smaller-Y preset, bin,
-   stripe across NVMe drives, or accept preview-rate-only for full frame.
-   *Live preview and the DCAM ring buffer are unaffected — this caps recording.*
+1. ~~**The writer becomes the bottleneck.**~~ **It did, and it no longer
+   does.** CXP came up, CXP full frame needs **2300 MB/s**, and the writer
+   sustained 1004 — half the frames were dropped for a week. Fixed 2026-08-25
+   by handing HDF5 the frame's own buffer instead of assigning through the
+   dataset: **1304 -> 2696 MB/s**, 2464 through the whole path, so full frame
+   bin 1 now records complete. The 1165 figure below is a superseded benchmark.
+   *Live preview and the DCAM ring buffer were never affected by any of this.*
 2. **Buffer sizing.** `_buffer_frames` uses the camera-reported fps, so it
    self-corrects — but the *datasheet fallback* would under-size by 7× if
    `get_frame_timings()` ever fails.
@@ -337,10 +339,13 @@ session directory at D:.
 3. **Apply open-once to the main app** — `main.py` still opens the camera per
    Start (and pre-detects with an open/close probe). Give it the same
    open-once-and-reuse treatment as the toy.
-4. ~~**Throughput / recording**~~ — **measured and fixed.** gzip-1 sustained only
-   **37 MB/s (1.9 fps)** at full frame against the required 330 MB/s — recording
-   was discarding ~88% of frames. Image streams are now written **uncompressed**:
-   **1165 MB/s (58 fps)**, ample headroom. `hdf5plugin` is *not* installed, so
+4. ~~**Throughput / recording**~~ — **measured and fixed, twice.** gzip-1
+   sustained only **37 MB/s (1.9 fps)** at full frame against the required
+   330 MB/s — recording was discarding ~88% of frames. Image streams are now
+   written **uncompressed**, which benchmarked at 1165 MB/s here and 1304 on
+   the rig's D: — *not* ample headroom once CXP raised the requirement to 2300,
+   which is what the direct-chunk write (2026-08-25) fixed. `hdf5plugin` is
+   *not* installed, so
    lz4/blosc would need a new dependency; uncompressed is fast enough that it
    isn't worth it. `HDF5Writer(compression=…)` re-enables it per-session if disk
    space ever matters more than keeping up.

@@ -155,9 +155,11 @@ The camera throughput test has been run, and on the *dev* machine, not the rig:
 the ring buffer from that. `scratch/cam_grab.py` was deleted with phase 0, as
 the note below always said it would be.
 
-The three figures bracketing the pipeline disagree usefully — link 115.3 fps,
-HDF5 writer ~1165 MB/s, achieved 969 MB/s — so the limit is the **read path**,
-not the cable or the disk. See PLAN §6.
+**Both figures above are withdrawn.** Re-measured 2026-08-17 through
+`OrcaFireWorker` on the rig: **105.92 fps, 2223 MB/s**, 92 % of the link — the
+read path was never the limit. The writer was, until 2026-08-25 (direct chunk
+write, 1304 -> 2696 MB/s); now neither is, and full-frame bin 1 records without
+shedding in the bench. See `acq/writer.py` for the table.
 
 ## Repo / transfer workflow
 
