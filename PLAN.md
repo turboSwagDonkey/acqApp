@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-25 (aq) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **802 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. Suite **802 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
 
 ---
 
@@ -374,15 +374,14 @@ kept for its reasoning, not a queue.
    - The ALP refused to open once and opened on an identical retry. **A single
      "not found or not ready" is not proof the DMD is absent.**
 
-3. **Then judge the fit from its hold-out, and decide whether to widen the
-   sweep.** `holdout_px` (refit without a stripe, then predict it) is the honest
-   number; the residual is optimistic by construction. If it is poor, the known
-   cause is that ~6 of 18 stripes run off the frame and the survivors bunch to
-   one side — a two-pass sweep (3 coarse stripes to find the visible range, then
-   9 across it) would fix that for ~6 extra exposures and ~20 lines. Not built:
-   re-run first and see whether it is needed.
+   - **Then judge the fit from its hold-out.** `holdout_px` (refit without a
+     stripe, then predict it) is the honest number; the residual is optimistic
+     by construction. If it is poor, the known cause is that ~6 of 18 stripes
+     run off the frame and the survivors bunch to one side — a two-pass sweep
+     (3 coarse stripes to find the visible range, then 9 across it) would fix
+     it for ~6 extra exposures and ~20 lines. Not built: re-run first.
 
-4. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
+3. **Measure the wheel diameter** — the last unmeasured constant, and a ruler
    answers it. Until it is set the app reports rev/s and rev instead of mm/s and
    mm, and the closed loop's threshold has to be set in revolutions.
    `volts_per_rev` is a measured 4.912 and the sign is settled, so this is the
