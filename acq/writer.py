@@ -71,11 +71,21 @@ class HDF5Writer(Writer):
 
     Images are UNCOMPRESSED by default: single-threaded gzip manages a fraction
     of the rate on noisy 16-bit data, so it stalls the writer, backs up the ring
-    and drops frames. Pass `compression="gzip"` only for slow streams.
+    and drops frames. Pass `compression="gzip"` only for slow streams. Doing so
+    also gives up the direct-chunk path in `write()`, which is the fast one.
 
-    Measured end to end 2026-08-17 (ORCA → Recorder → here → NVMe): **1004 MB/s
-    sustained**, against ~2100 MB/s offered at full frame — so bin 1 keeps ~53 %
-    of its frames and 2×2 binning keeps 100 %.
+    Full-frame throughput on D: (KC3000 NVMe). A plain file writes 2700 MB/s
+    there, so the disk was never the wall — the slice assignment was:
+
+        writer alone, `dset[i] = frame`             1304 MB/s
+        writer alone, direct chunk write            2696 MB/s
+        via Recorder + ring, offered 106 fps        2225 MB/s   100 % kept
+        via Recorder + ring, saturated              2464 MB/s   (117 fps)
+
+    Before this, the same bench kept 59 % of a bin-1 stream and the rig kept
+    53 % (2026-08-17, with the camera). Chunk cache size, growth block, dataset
+    preallocation, 1 MB/4 MB file alignment, the Windows VFD and multi-frame
+    chunks were each measured: none moves it more than 3 %.
     """
 
     _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
@@ -125,11 +135,29 @@ class HDF5Writer(Writer):
                 st["cap"] = cap
 
             st["ts"][i] = timestamp
-            if st["image"]:
-                st["data"][i] = data
-            else:
+            if not st["image"]:
                 st["data"][i] = float(data)
+            elif st["direct"] and self._writable_chunk(st, data):
+                # One frame IS one chunk here, so hand HDF5 the frame's own
+                # buffer: no cache copy, no type conversion. Measured 1305 ->
+                # 2696 MB/s at full frame (2026-08-24) — the slice assignment
+                # below is the whole reason bin 1 dropped half its frames.
+                st["data"].id.write_direct_chunk(
+                    (i,) + (0,) * len(st["shape"]), memoryview(data).cast("B"))
+            else:
+                st["data"][i] = data
             st["idx"] = i + 1
+
+    @staticmethod
+    def _writable_chunk(st: dict[str, Any], data: Any) -> bool:
+        """Is `data` byte-for-byte what this dataset's chunk holds?
+
+        A direct chunk write does no conversion, so anything but an exact match
+        would write garbage that reads back as a valid frame. Fall through to
+        the slice assignment instead, which converts (or raises).
+        """
+        return (data.shape == st["shape"] and data.dtype == st["dtype"]
+                and data.flags.c_contiguous)
 
     def _create_stream(self, stream: str, data: Any, is_image: bool) -> dict[str, Any]:
         g = self._file.require_group(stream)
@@ -141,10 +169,10 @@ class HDF5Writer(Writer):
             frame_bytes = data.dtype.itemsize * int(np.prod(shape))
             chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // max(frame_bytes, 1)))
             chunk_bytes = chunk_frames * frame_bytes
-            # Samples arrive one frame at a time, so a multi-frame chunk is
-            # touched repeatedly before it is complete. Size the per-dataset
-            # chunk cache to hold a few whole chunks, otherwise every write
-            # evicts and re-reads (and, if compressed, re-deflates) the chunk.
+            # A multi-frame chunk is touched once per frame before it is
+            # complete, so hold a few whole chunks or every write evicts and
+            # re-reads (and, if compressed, re-deflates) the chunk. Unused on
+            # the direct path below, which never enters the cache.
             dset = g.create_dataset(
                 "frames", shape=(0,) + shape, maxshape=(None,) + shape,
                 dtype=data.dtype, chunks=(chunk_frames,) + shape,
@@ -158,14 +186,19 @@ class HDF5Writer(Writer):
             grow = max(chunk_frames,
                        (self._MIN_GROW_BYTES // max(frame_bytes, 1)) or 1)
             grow = (grow // chunk_frames) * chunk_frames or chunk_frames
-            st = {"image": True, "shape": shape, "ts": ts, "data": dset,
-                  "idx": 0, "cap": 0, "block": grow}
+            st = {"image": True, "shape": shape, "dtype": data.dtype,
+                  "ts": ts, "data": dset, "idx": 0, "cap": 0, "block": grow,
+                  # write_direct_chunk writes one chunk of raw bytes: only
+                  # valid where a frame is exactly a chunk and no filter is
+                  # meant to run on it.
+                  "direct": chunk_frames == 1 and self._compression is None}
         else:
             dset = g.create_dataset(
                 "values", shape=(0,), maxshape=(None,),
                 dtype="float64", chunks=(self._CHUNK_SCALAR,))
-            st = {"image": False, "shape": (), "ts": ts, "data": dset,
-                  "idx": 0, "cap": 0, "block": self._CHUNK_SCALAR}
+            st = {"image": False, "shape": (), "dtype": np.dtype("float64"),
+                  "ts": ts, "data": dset, "idx": 0, "cap": 0,
+                  "block": self._CHUNK_SCALAR, "direct": False}
         self._streams[stream] = st
         return st
 

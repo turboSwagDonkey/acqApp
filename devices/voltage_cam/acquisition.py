@@ -281,7 +281,10 @@ class OrcaFireWorker(PullWorker):
         """Flag a configuration producing data faster than it can be written.
 
         Preview is unaffected, but a recording at this rate sheds frames however
-        the buffers are tuned — the disk is the wall. Say so before, not after.
+        the buffers are tuned. Say so before, not after.
+
+        Not the disk: D: writes 2700 MB/s and the writer 2464 (2026-08-24). The
+        wall is whatever `WRITER_MBPS` currently is, and it moved once already.
         """
         mbps = cfg.frame_bytes * fps / (1 << 20)
         print(f"[voltage_cam] data rate: {mbps:.0f} MB/s "

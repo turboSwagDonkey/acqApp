@@ -143,12 +143,20 @@ def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
             return math.exp(math.log(f0) + w * (math.log(f1) - math.log(f0)))
     return tbl[-1][1]
 
-# Sustained END-TO-END write rate, MB/s: worker → Recorder → HDF5Writer → NVMe,
-# measured 2026-08-17 over a 10 s full-frame run with frames counted off the
-# closed file. NOT a disk benchmark (that said 1165) — this is the path. It
-# lives here, with the other rig facts, because both the acquisition worker and
-# the settings panel have to agree about what can be recorded.
-WRITER_MBPS: float = 1000.0
+# Sustained END-TO-END write rate, MiB/s: worker → Recorder → HDF5Writer → NVMe.
+# It lives here, with the other rig facts, because both the acquisition worker
+# and the settings panel have to agree about what can be recorded.
+#
+# 1000 until 2026-08-24, measured on the rig with the camera. The writer's
+# direct-chunk path then took the same bench from 1305 to 2464 MB/s saturated
+# (= 2350 MiB/s), so that number is stale. 1800 is it derated by 0.77 — the
+# camera-contention factor the 2026-08-17 rig run showed against its own bench
+# (1004/1305), the ORCA grab thread costing that much of the path.
+#
+# So this is the one figure here that is NOT a rig measurement. It is
+# deliberately low: too high and frames drop with no warning, too low and the
+# panel nags. Re-measure with the camera running and replace it.
+WRITER_MBPS: float = 1800.0
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1
