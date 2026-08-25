@@ -188,7 +188,11 @@ from acqApp.acq.writer import HDF5Writer
 pg.setConfigOptions(imageAxisOrder="row-major")
 
 RING_FRAMES  = 512          # recording ring-buffer item cap (scalar streams)
-RING_BYTES   = 512 << 20    # …and a 512 MB payload cap so full frames can't OOM
+# …and a payload cap so full frames can't OOM. 2 GB is 102 full-frame bin-1
+# frames, ~0.97 s of slack. 512 MB (25 frames, 0.24 s) was too tight to ride out
+# a transient writer stall: measured 2026-08-25 over 30 s at 106 fps, it shed
+# 14-54 frames a run where 2 GB shed none, twice. 4 GB buys nothing more.
+RING_BYTES   = 2048 << 20
 
 
 def _sample_nbytes(item) -> int:
