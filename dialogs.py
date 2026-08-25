@@ -21,15 +21,22 @@ from acqApp import config, probe, style, widgets
 
 
 class ModuleSelectDialog(QDialog):
-    """Startup popup: a checkbox per subsystem, pre-checked from last use."""
+    """A checkbox per subsystem, pre-checked from what is loaded now.
 
-    def __init__(self, enabled: list[str], parent=None):
+    Used twice: at startup, and from the sidebar's Modules button, where the
+    change applies to the running window (`MainWindow.set_modules`). Hence the
+    caller supplies the wording — "this session" is a lie mid-session.
+    """
+
+    def __init__(self, enabled: list[str], parent=None, *,
+                 title: str = "Select modules to load",
+                 prompt: str = "Load these instruments this session:"):
         super().__init__(parent)
-        self.setWindowTitle("Select modules to load")
+        self.setWindowTitle(title)
         self.setMinimumWidth(300)
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("Load these instruments this session:"))
+        root.addWidget(QLabel(prompt))
 
         self._boxes: dict[str, QCheckBox] = {}
         for key, label in config.MODULES.items():
@@ -125,17 +132,32 @@ class SettingsDialog(QDialog):
                 self.resize(self.default_size())
         super().showEvent(event)
 
-    def add_panel(self, panel: QWidget, label: str, key: str) -> None:
+    def add_panel(self, panel: QWidget, label: str, key: str,
+                  index: int | None = None) -> None:
         """Add a settings tab wearing its subsystem accent (tab + group box).
 
         Every group box is made collapsible here rather than in the panels, so
         a new instrument gets it for free and the panels stay about their
         instrument. Which are shut is remembered per tab.
+
+        `index` places the tab, for a module loaded mid-session that has to land
+        in `config.MODULES` order rather than at the end.
         """
-        idx = self.tabs.addTab(panel, label)
+        idx = (self.tabs.addTab(panel, label) if index is None
+               else self.tabs.insertTab(index, panel, label))
         self.tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
         panel.setStyleSheet(style.accent_panel(key))
         widgets.collapsible_groups(panel, key)
+
+    def remove_panel(self, panel: QWidget) -> None:
+        """Drop an unloaded module's tab. Not deleted here — the adapter owns
+        the panel and disposes of it once its controller is closed."""
+        idx = self.tabs.indexOf(panel)
+        if idx >= 0:
+            self.tabs.removeTab(idx)
+
+    def panel_index(self, panel: QWidget) -> int:
+        return self.tabs.indexOf(panel)
 
     def save_geometry(self) -> None:
         QSettings("acqApp", "acqApp").setValue(self._GEOM_KEY, self.saveGeometry())

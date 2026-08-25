@@ -4,6 +4,77 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-25 (ap) — the sweep: two interactive paths, and real duplication
+
+Asked for a prose/optimisation sweep after (ao). Both halves found things (ao)
+had not, because (ao) sampled four files and called it a sweep.
+
+- **`reach_fraction` 2903 -> 436 us (~8x).** `_refresh_status` runs it on every
+  drag event, and it evaluated every ROI over the whole grid when ROIs cover
+  ~1 % of it. Bounded twice, as `dmd_frame` already was.
+- **The first test for that was WRONG and passed a broken bbox three ways** —
+  comparing to `clipped_mask` within 0.05, where one grid cell is far under
+  5 %. It now compares to an unbounded reference in the test file and demands
+  exact equality. Re-verified by breaking the bbox four ways; all four caught.
+  *A tolerance is not a control.*
+- **DMD preview 22.6 -> 18.2 ms and 20 disk reads/s -> 0.** The panel handed
+  `build_frame` a Path, so every spinbox step reopened and re-decoded the
+  pattern; holding an arrow was 44 % of a core. The panel caches the decode on
+  path+mtime+size; `alp` stays pure.
+- **Prose, two passes: 24.1 -> 23.6 %.** First ~10 genuine duplicate
+  explanations, found by scoring all 1241 comment/docstring sentences against
+  each other — `latest_frame` was explained three times over, two files
+  repeated their own module docstring in the class below. Then ~60 blocks
+  rewritten shorter, worst-first by length.
+  - **No fact was lost, and that is checked**: every numeric token in every
+    comment at 810c969 vs HEAD (158 -> 176 distinct). Four had gone; two were
+    restored (the 2026-08-17 provenance on WRITER_MBPS, the rig's 53 %) and two
+    were superseded figures still held in the docs.
+  - **main.py: comments only**, verified by its AST being identical to HEAD's
+    with docstrings blanked. `stage/driver.py` untouched — verbatim copy.
+- Measured and left alone, so nobody re-times them: `LoopRule.update` 0.3 us,
+  encoder `_derive` 31 us (0.37 % of 120 Hz — DECISIONS *asserted* this was
+  fine, now it is measured), `accessible_mask` 0.2 us cached, `outside` 297 us,
+  `build_frame` 18 ms once per projection, the 30 Hz preview 1.20 ms.
+- Suite **737 -> 743 checks**, 23 files, green.
+
+### 2026-08-25 (ao) — the writer, and bin 1 stops dropping half its frames
+
+The operator confirmed full-frame bin 1 is wanted, so the writer was worth
+fixing rather than working around.
+
+- **The disk was never the wall, and a note in DECISIONS.md said it was.** D:
+  writes **2700 MB/s** from a plain file. The writer did 1004. That gap was one
+  line — `dset[i] = frame`, which copies through the HDF5 chunk cache and
+  converts. Where a frame is exactly one chunk, handing HDF5 the frame's own
+  buffer instead gives **1304 → 2696 MB/s**, and **2464 through the whole path,
+  100 % kept over 60 s / 133 GB**. *The struck-through "already at hardware
+  limits" note is left in DECISIONS.md on purpose: it was inferred from one
+  end-to-end number with nothing measuring the hardware underneath it, and it
+  is why nobody looked.*
+- **Then the ring became the constraint.** 512 MB is 25 full frames, 0.24 s of
+  slack — it shed 14–54 frames per 30 s run. 2 GB sheds none; 4 GB adds
+  nothing.
+- **Measured and worthless, so nobody repeats them:** chunk cache size, growth
+  block, preallocation, 1/4 MB alignment, `meta_block_size`, the Windows VFD —
+  all within 3 % of 1300. Multi-frame chunks are *slower*. No fast compressor
+  exists in this venv and none is needed.
+- **The guard is the dangerous part.** A direct write converts nothing, and an
+  undersized one is accepted **silently** — the write returns, the file closes,
+  and *reading it back kills the process with an access violation*. Not
+  corruption you can see: a file that murders the reader. `test_writer_chunks`
+  proves the guard earns its place by running the unguarded case in a child.
+- Cleanup: 2 unreachable methods gone (a name-occurrence scan, not an import
+  graph — 5 of the 7 candidates were the excluded stage driver and a Qt
+  override); 4 stale counts; 9 stale writer facts across 5 docs. **Negative
+  result: every backticked identifier in every code comment still exists — the
+  prose is dense fact, and nothing was cut.** The 30 Hz preview tick measured
+  1.20 ms (3.6 % of budget) and was deliberately left alone.
+- **`closed-loop` failed once in eight suite runs and I did not capture the
+  message before it scrolled.** It then passed alone and 6/6 in a dedicated
+  hunt. Unexplained, like the `session` flake before it — two now.
+- Suite **716 → 737 checks, 22 → 23 files**, all green.
+
 ### 2026-08-24 (aj–an) — DMD calibration, built and run at the rig
 
 One day, several wrong turns; only what survived is here. The discarded designs

@@ -164,6 +164,13 @@ class ModuleAdapter:
     def on_trigger(self, name: str, duration: float) -> None:
         """A trigger fired on the shared bus — scheduled, or from the loop."""
 
+    def on_modules_changed(self) -> None:
+        """Another module was loaded or unloaded while this one was running.
+
+        Anything derived from the *set* of neighbours goes stale here — the
+        closed loop's source and target lists above all.
+        """
+
     def signal_sources(self) -> list[SignalSource]:
         """Live scalars this module offers a closed-loop rule. Declaring one is
         the whole cost of making a quantity triggerable."""

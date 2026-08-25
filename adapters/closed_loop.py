@@ -44,6 +44,11 @@ class ClosedLoopModule(ModuleAdapter):
         self.panel.armed_changed.connect(self._on_armed)
         return self.panel
 
+    def on_modules_changed(self) -> None:
+        # Its whole panel is a list of what the neighbours offer.
+        if self.panel is not None:
+            self._refresh_offers()
+
     def _refresh_offers(self) -> None:
         """Re-read what the loaded modules offer. Done at build and again per
         session, because the wheel's units follow its V/rev and diameter."""

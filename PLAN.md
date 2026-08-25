@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-25 (ap) |
+| **Last updated** | 2026-08-25 (aq) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **743 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **789 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **743 checks, 23 files, ~54 s**, and it is ALL GREEN. Run it
+the contract: **789 checks, 24 files, ~57 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -408,78 +408,38 @@ intact. Two are still worth doing and are listed there under "Still open".
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
-### 2026-08-25 (ap) — the sweep: two interactive paths, and real duplication
+### 2026-08-25 (aq) — instruments load and unload without restarting
 
-Asked for a prose/optimisation sweep after (ao). Both halves found things (ao)
-had not, because (ao) sampled four files and called it a sweep.
+Operator's request; their call on both behaviours (hot add/remove rather than
+restart-the-session, and a sidebar button rather than a settings tab).
 
-- **`reach_fraction` 2903 -> 436 us (~8x).** `_refresh_status` runs it on every
-  drag event, and it evaluated every ROI over the whole grid when ROIs cover
-  ~1 % of it. Bounded twice, as `dmd_frame` already was.
-- **The first test for that was WRONG and passed a broken bbox three ways** —
-  comparing to `clipped_mask` within 0.05, where one grid cell is far under
-  5 %. It now compares to an unbounded reference in the test file and demands
-  exact equality. Re-verified by breaking the bbox four ways; all four caught.
-  *A tolerance is not a control.*
-- **DMD preview 22.6 -> 18.2 ms and 20 disk reads/s -> 0.** The panel handed
-  `build_frame` a Path, so every spinbox step reopened and re-decoded the
-  pattern; holding an arrow was 44 % of a core. The panel caches the decode on
-  path+mtime+size; `alp` stays pure.
-- **Prose, two passes: 24.1 -> 23.6 %.** First ~10 genuine duplicate
-  explanations, found by scoring all 1241 comment/docstring sentences against
-  each other — `latest_frame` was explained three times over, two files
-  repeated their own module docstring in the class below. Then ~60 blocks
-  rewritten shorter, worst-first by length.
-  - **No fact was lost, and that is checked**: every numeric token in every
-    comment at 810c969 vs HEAD (158 -> 176 distinct). Four had gone; two were
-    restored (the 2026-08-17 provenance on WRITER_MBPS, the rig's 53 %) and two
-    were superseded figures still held in the docs.
-  - **main.py: comments only**, verified by its AST being identical to HEAD's
-    with docstrings blanked. `stage/driver.py` untouched — verbatim copy.
-- Measured and left alone, so nobody re-times them: `LoopRule.update` 0.3 us,
-  encoder `_derive` 31 us (0.37 % of 120 Hz — DECISIONS *asserted* this was
-  fine, now it is measured), `accessible_mask` 0.2 us cached, `outside` 297 us,
-  `build_frame` 18 ms once per projection, the 30 Hz preview 1.20 ms.
-- Suite **737 -> 743 checks**, 23 files, green.
+- **Sidebar → 🧩 Modules** reopens the startup picker against the running
+  window. `MainWindow.set_modules(keys)` -> (loaded, unloaded). A module loaded
+  into a RUNNING session builds and starts its own worker and joins the live
+  view; an unloaded one is stopped and its UI comes off.
+- **Refused while recording**, and the button greys out: the file's `modules`
+  attribute is written once at the start, so a stream cannot appear or vanish
+  part-way through.
+- **Three teardown traps, only one of which was obvious:**
+  - `setCentralWidget` DELETES the widget it replaces, so a pyqtgraph view left
+    in `_pg_views` is a dangling C++ object and **the next theme toggle kills
+    the process** with no traceback.
+  - `removeTab`/`removeDockWidget` only unparent from the LAYOUT; the widget
+    stays a child and survives to the next `restoreState()`, which puts the
+    dock back. `setParent(None)` before `deleteLater()`. **Found by the test.**
+  - The Devices monitor holds a SNAPSHOT of the keys, so it is discarded on any
+    change — otherwise it probes an unloaded instrument and reports "missing"
+    where the truth is "unloaded". Found by re-reading.
+- **`config.MODULES` order stays load-bearing**: `closed_loop` last, so a module
+  loaded later sorts into place and its tabs are inserted at the matching index.
+  `ModuleAdapter.on_modules_changed()` is the new hook — the closed loop's
+  source list is a list of what its neighbours offer.
+- The shared DCAM handle survives an unload/reload round trip (the window owns
+  it; `OrcaFireWorker` closes only a handle it opened). Checked, because
+  re-opening a just-closed DCAM device crashes natively.
+- `test_module_hotload`, 46 checks. Suite **743 -> 789 checks, 23 -> 24 files**.
 
-### 2026-08-25 (ao) — the writer, and bin 1 stops dropping half its frames
-
-The operator confirmed full-frame bin 1 is wanted, so the writer was worth
-fixing rather than working around.
-
-- **The disk was never the wall, and a note in DECISIONS.md said it was.** D:
-  writes **2700 MB/s** from a plain file. The writer did 1004. That gap was one
-  line — `dset[i] = frame`, which copies through the HDF5 chunk cache and
-  converts. Where a frame is exactly one chunk, handing HDF5 the frame's own
-  buffer instead gives **1304 → 2696 MB/s**, and **2464 through the whole path,
-  100 % kept over 60 s / 133 GB**. *The struck-through "already at hardware
-  limits" note is left in DECISIONS.md on purpose: it was inferred from one
-  end-to-end number with nothing measuring the hardware underneath it, and it
-  is why nobody looked.*
-- **Then the ring became the constraint.** 512 MB is 25 full frames, 0.24 s of
-  slack — it shed 14–54 frames per 30 s run. 2 GB sheds none; 4 GB adds
-  nothing.
-- **Measured and worthless, so nobody repeats them:** chunk cache size, growth
-  block, preallocation, 1/4 MB alignment, `meta_block_size`, the Windows VFD —
-  all within 3 % of 1300. Multi-frame chunks are *slower*. No fast compressor
-  exists in this venv and none is needed.
-- **The guard is the dangerous part.** A direct write converts nothing, and an
-  undersized one is accepted **silently** — the write returns, the file closes,
-  and *reading it back kills the process with an access violation*. Not
-  corruption you can see: a file that murders the reader. `test_writer_chunks`
-  proves the guard earns its place by running the unguarded case in a child.
-- Cleanup: 2 unreachable methods gone (a name-occurrence scan, not an import
-  graph — 5 of the 7 candidates were the excluded stage driver and a Qt
-  override); 4 stale counts; 9 stale writer facts across 5 docs. **Negative
-  result: every backticked identifier in every code comment still exists — the
-  prose is dense fact, and nothing was cut.** The 30 Hz preview tick measured
-  1.20 ms (3.6 % of budget) and was deliberately left alone.
-- **`closed-loop` failed once in eight suite runs and I did not capture the
-  message before it scrolled.** It then passed alone and 6/6 in a dedicated
-  hunt. Unexplained, like the `session` flake before it — two now.
-- Suite **716 → 737 checks, 22 → 23 files**, all green.
-
-Entries before 2026-08-25 (ao) are in
+Entries before 2026-08-25 (aq) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file small
 enough to read at the start of every session.
 

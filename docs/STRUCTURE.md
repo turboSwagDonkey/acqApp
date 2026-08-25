@@ -21,7 +21,7 @@ flowchart TD
     closed_loop["closed_loop/<br/><i>fire an output from a signal</i>"]
     saving["saving/<br/><i>where the file goes</i>"]
     acq["acq/<br/><i>clock · recorder · ring · writer · protocols</i>"]
-    dialogs["dialogs.py<br/><i>startup picker · device monitor</i>"]
+    dialogs["dialogs.py<br/><i>module picker · device monitor</i>"]
     probe["probe.py<br/><i>is a device present?</i>"]
     config["config.py"]
     style["style.py"]
@@ -175,6 +175,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_dmd_sweep.py           the wiring: fresh grabs, untransformed patterns
   test_encoder_derive.py
   test_encoder_timing.py
+  test_module_hotload.py       loading instruments without restarting
   test_module_subsets.py
   test_pupil_limit.py         the eye region: panel, preview, persistence
   test_pupil_video.py
@@ -192,7 +193,8 @@ main.py                 the shell: window chrome, docks, theme, session start/st
                         the venv bootstrap. Holds no per-instrument logic.
 config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
-dialogs.py              startup module picker, device monitor, settings dialog
+dialogs.py              module picker (startup + sidebar), device monitor,
+                        settings dialog
 probe.py                presence checks; enumeration only, never opens a device
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box

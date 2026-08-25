@@ -86,8 +86,16 @@ disable the re-exec, it refuses to install rather than touch that environment.
 Escape hatches: `ACQAPP_NO_REEXEC=1` skips the venv re-exec/creation (use the
 current interpreter as-is), `ACQAPP_NO_INSTALL=1` skips auto-installing.
 
-On startup a **module picker** pops up — tick which instruments to load this
-session (defaults to your last-used selection, stored in `acqapp_local.json`).
+On startup a **module picker** pops up — tick which instruments to load
+(defaults to your last-used selection, stored in `acqapp_local.json`).
+
+The set is **not fixed for the run**: the sidebar's **🧩 Modules** button reopens
+the same picker, and loading or unloading applies to the window you are looking
+at. A module loaded while a session is running builds and starts its own worker
+and joins the live view; an unloaded one is stopped and its tabs, docks and
+plots come off. The only refusal is **while recording** — the session file names
+its modules once, at the start, so a stream cannot appear or vanish part-way
+through. The button greys out for the duration.
 
 Vendor **runtime drivers** must be installed for real hardware (not
 pip-installable): NI-DAQmx (wheel + puffer) and Hamamatsu DCAM-API (camera).

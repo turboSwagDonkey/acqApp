@@ -155,6 +155,15 @@ class ModuleHost(Protocol):
         """Surface a device thread's exception instead of letting it abort the
         process."""
 
+    def set_modules(self, keys) -> tuple[list[str], list[str]]:
+        """Load/unload instruments in place → (loaded, unloaded).
+
+        Raises RuntimeError while recording: the file's `modules` attribute is
+        written at record start, and a stream that appears or vanishes mid-file
+        is not describable by it.
+        """
+        ...
+
     def module_keys(self) -> list[str]:
         """Loaded module keys, in display order."""
         ...

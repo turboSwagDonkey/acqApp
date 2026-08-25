@@ -232,6 +232,15 @@ class MainWindow(QMainWindow):
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         self._devices_dialog: ConnectionMonitor | None = None
         self._pg_views: list = []      # pyqtgraph views to recolour on theme change
+        # Undo bookkeeping for a module unloaded mid-session. `add_dock` and
+        # `register_pg_view` are called *by* the adapter during its build, and
+        # neither says who is calling, so the window notes whose build is in
+        # progress instead of changing the ModuleHost surface.
+        self._building_key: str | None = None
+        self._module_docks: dict[str, list] = {}
+        self._module_views: dict[str, list] = {}
+        self._module_plots: dict[str, QWidget] = {}
+        self._central_owner: str | None = None
 
         # One adapter per loaded instrument, in config.MODULES display order.
         self._modules = adapters.build_adapters(self, self._enabled)
@@ -308,6 +317,8 @@ class MainWindow(QMainWindow):
 
     def register_pg_view(self, view) -> None:
         self._pg_views.append(view)
+        if self._building_key is not None:
+            self._module_views.setdefault(self._building_key, []).append(view)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """See `devices.ModuleHost.set_expected_rate`."""
@@ -316,7 +327,10 @@ class MainWindow(QMainWindow):
 
     def add_dock(self, title: str, widget: QWidget, area: "Qt.DockWidgetArea",
                  accent: str = "sync") -> QDockWidget:
-        return self._make_dock(title, widget, area, accent)
+        dock = self._make_dock(title, widget, area, accent)
+        if self._building_key is not None:
+            self._module_docks.setdefault(self._building_key, []).append(dock)
+        return dock
 
     def on_worker_error(self, msg: str) -> None:
         # A device thread raised. Without this it escapes QThread.run() and
@@ -337,7 +351,7 @@ class MainWindow(QMainWindow):
         self._build_settings_dialog()
         self._build_plots_dock()
         for m in self._modules:          # extra docks (e.g. the pupil video box)
-            m.build_views()
+            self._build_views_for(m)
 
         # A starting width for the signals column only — dragged from here, and
         # the layout is remembered across runs.
@@ -348,14 +362,47 @@ class MainWindow(QMainWindow):
 
         self._restore_layout()
 
+    def _build_views_for(self, m) -> None:
+        """Run a module's `build_views()` with its docks and views attributed."""
+        self._building_key = m.key
+        try:
+            m.build_views()
+        finally:
+            self._building_key = None
+
+    def _central_claimant(self):
+        """The first loaded module that wants the centre pane, or None.
+
+        `central_title` is the claim, not `central_widget()`, which cannot be
+        asked without building one. `_build_central` is its only caller.
+        """
+        for m in self._modules:
+            if m.central_title:
+                return m
+        return None
+
     def _build_central(self) -> None:
         """The centre pane belongs to whichever module claims it (the primary
         camera); a placeholder stands in when that module isn't loaded."""
-        owner = view = None
-        for m in self._modules:
-            w = m.central_widget()
-            if w is not None and view is None:
-                owner, view = m, w
+        # setCentralWidget DELETES the widget it replaces, so the outgoing
+        # owner's pyqtgraph views have to leave `_pg_views` with it — a dangling
+        # one is a native crash on the next theme toggle.
+        if self._central_owner is not None:
+            for v in self._module_views.pop(self._central_owner, []):
+                if v in self._pg_views:
+                    self._pg_views.remove(v)
+        # Ask the claimant only. `central_widget()` BUILDS a view, so calling it
+        # on every module would construct and discard one per module — and each
+        # discarded one registers views that nothing will ever take back.
+        owner = self._central_claimant()
+        view = None
+        if owner is not None:
+            self._building_key = owner.key
+            try:
+                view = owner.central_widget()
+            finally:
+                self._building_key = None
+        self._central_owner = owner.key if view is not None else None
         if view is None:
             placeholder = QLabel("Voltage camera not loaded")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -395,7 +442,7 @@ class MainWindow(QMainWindow):
                 self._settings_dialog.add_panel(panel, m.tab_label, m.key)
 
     def _build_plots_dock(self) -> None:
-        tabs = QTabWidget()
+        self._plots_tabs = tabs = QTabWidget()
         tabs.setMovable(True)
         for m in self._modules:
             pw = m.build_plot()
@@ -403,7 +450,12 @@ class MainWindow(QMainWindow):
                 continue
             idx = tabs.addTab(pw, m.plot_label)
             tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[m.key]))
-            self.register_pg_view(pw)
+            self._module_plots[m.key] = pw
+            self._building_key = m.key
+            try:
+                self.register_pg_view(pw)
+            finally:
+                self._building_key = None
         self._plots_dock = self._make_dock("Signals", tabs,
                                            Qt.DockWidgetArea.RightDockWidgetArea)
 
@@ -461,8 +513,8 @@ class MainWindow(QMainWindow):
 
     def _build_sidebar(self) -> None:
         """Left side-bar: a 'Settings' tab that pops the settings *window* up,
-        plus the theme toggle and the device monitor. The window starts hidden;
-        clicking the tab toggles it open/shut."""
+        plus the theme toggle, the module picker and the device monitor. The
+        window starts hidden; clicking the tab toggles it open/shut."""
         self._sidebar = QToolBar("Sidebar")
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMovable(False)
@@ -488,6 +540,14 @@ class MainWindow(QMainWindow):
         self._theme_action.setToolTip("Toggle dark / light theme")
         self._theme_action.toggled.connect(self._on_theme_toggled)
         self._sidebar.addAction(self._theme_action)
+
+        # Load/unload instruments without restarting. Disabled only while
+        # recording — see set_modules.
+        self._modules_action = QAction("🧩 Modules", self)
+        self._modules_action.setToolTip(
+            "Load or unload instruments without restarting the app")
+        self._modules_action.triggered.connect(self._open_modules_dialog)
+        self._sidebar.addAction(self._modules_action)
 
         # Device connection monitor (probe-based; safe to open any time).
         self._devices_action = QAction("🔌 Devices", self)
@@ -635,6 +695,170 @@ class MainWindow(QMainWindow):
         self.status("Emulate ON — simulated signals" if on
                     else "Emulate OFF — real hardware")
 
+    # ── Loading and unloading instruments in place ───────────────────────────
+
+    def set_modules(self, keys) -> tuple[list[str], list[str]]:
+        """Load/unload instruments without restarting → (loaded, unloaded).
+
+        Refused while RECORDING: the file's `modules` attribute is written once
+        at record start, and a stream that appears or vanishes part-way through
+        is not describable by it. Between sessions and during a live/free run
+        are both fine — a module loaded into a running session builds its worker
+        and starts it against the clock already at t=0, which is safe because
+        workers stamp in `perf_counter` and only the Recorder converts.
+        """
+        if self._recorder is not None:
+            raise RuntimeError("stop the recording first")
+
+        want = [k for k in config.MODULES if k in set(keys) and k in adapters.ADAPTERS]
+        have = [m.key for m in self._modules]
+        removed = [k for k in have if k not in want]
+        added = [k for k in want if k not in have]
+        if not removed and not added:
+            return [], []
+
+        for key in removed:
+            self._unload_module(key)
+        for key in added:
+            self._load_module(key)
+
+        # config.MODULES order is load-bearing: closed_loop is last so that
+        # every source-providing adapter exists before its panel asks.
+        order = {k: i for i, k in enumerate(config.MODULES)}
+        self._modules.sort(key=lambda m: order.get(m.key, len(order)))
+
+        self._enabled = {m.key for m in self._modules}
+        config.save_enabled_modules(list(self._enabled))
+        # The monitor is built once around a SNAPSHOT of the module keys, so it
+        # has to go rather than list instruments that are no longer loaded.
+        if self._devices_dialog is not None:
+            self._devices_dialog.close()
+            self._devices_dialog.deleteLater()
+            self._devices_dialog = None
+        self._refresh_central()
+        for m in self._modules:
+            m.on_modules_changed()
+        return added, removed
+
+    def _load_module(self, key: str) -> None:
+        """Build one adapter and splice its UI in at the right place."""
+        m = adapters.ADAPTERS[key](self)
+        self._modules.append(m)             # sorted into place by the caller
+
+        panel = m.build_panel()
+        if panel is not None:
+            self._settings_dialog.add_panel(panel, m.tab_label, m.key,
+                                            index=self._settings_tab_index(key))
+        plot = m.build_plot()
+        if plot is not None:
+            idx = self._plots_tabs.insertTab(self._plot_tab_index(key), plot,
+                                             m.plot_label)
+            self._plots_tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
+            self._module_plots[key] = plot
+            self._building_key = key
+            try:
+                self.register_pg_view(plot)
+            finally:
+                self._building_key = None
+        self._build_views_for(m)
+        m.build_controller(self._emulate)
+
+        if self._session_on:
+            m.build_session(self._emulate)
+            m.start()
+
+    def _unload_module(self, key: str) -> None:
+        """Stop one adapter and take back everything it put on the window."""
+        m = next((x for x in self._modules if x.key == key), None)
+        if m is None:
+            return
+        # Same guard as _stop_session: teardown touches hardware, and a raise
+        # here would strand the widgets attached to a dead device.
+        try:
+            m.stop()
+        except Exception as e:
+            self.status(f"{key}: stop failed ({type(e).__name__}: {e})")
+            print(f"[main] {key}.stop() raised: {type(e).__name__}: {e}")
+        m.close_controller()
+
+        # setParent(None) before deleteLater on all three: removeTab and
+        # removeDockWidget only take the widget out of the LAYOUT, leaving it a
+        # child of the window. Deferred deletion then keeps it alive across the
+        # next restoreState(), which would put the dock back.
+        if m.panel is not None:
+            self._settings_dialog.remove_panel(m.panel)
+            m.panel.setParent(None)
+            m.panel.deleteLater()
+        plot = self._module_plots.pop(key, None)
+        if plot is not None:
+            i = self._plots_tabs.indexOf(plot)
+            if i >= 0:
+                self._plots_tabs.removeTab(i)
+            plot.setParent(None)
+            plot.deleteLater()
+        for dock in self._module_docks.pop(key, []):
+            self.removeDockWidget(dock)
+            dock.setParent(None)
+            dock.deleteLater()
+        for view in self._module_views.pop(key, []):
+            if view in self._pg_views:
+                self._pg_views.remove(view)
+
+        self._modules.remove(m)
+
+    def _settings_tab_index(self, key: str) -> int:
+        """Where this module's settings tab belongs. The Save tab leads, then
+        modules in `config.MODULES` order."""
+        order = list(config.MODULES)
+        before = [m for m in self._modules
+                  if m.key != key and m.panel is not None
+                  and order.index(m.key) < order.index(key)]
+        return 1 + len(before)          # 1 = past the Save tab
+
+    def _plot_tab_index(self, key: str) -> int:
+        order = list(config.MODULES)
+        return len([k for k in self._module_plots
+                    if k != key and order.index(k) < order.index(key)])
+
+    def _refresh_central(self) -> None:
+        """Rebuild the centre pane only if its owner changed.
+
+        `central_widget()` builds a fresh view every call, so rebuilding when
+        nothing moved would throw away the live image for no reason.
+        """
+        claimant = self._central_claimant()
+        want = claimant.key if claimant is not None else None
+        if want != self._central_owner:
+            self._build_central()
+
+    def _open_modules_dialog(self) -> None:
+        """The startup picker again, mid-session."""
+        if self._recorder is not None:
+            self.status("Stop the recording before changing which modules "
+                        "are loaded")
+            return
+        running = " — applied to the running session" if self._session_on else ""
+        dlg = ModuleSelectDialog(
+            sorted(self._enabled), parent=self, title="Modules",
+            prompt=f"Instruments to load{running}:")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            added, removed = self.set_modules(dlg.selected())
+        except RuntimeError as e:
+            self.status(f"Cannot change modules — {e}")
+            return
+        if not added and not removed:
+            self.status("Modules unchanged")
+            return
+        bits = []
+        if added:
+            bits.append("loaded " + ", ".join(added))
+        if removed:
+            bits.append("unloaded " + ", ".join(removed))
+        self.status("; ".join(bits)
+                    + (" — running" if self._session_on else ""))
+
     def _build_controllers(self) -> None:
         """(Re)create the persistent output controllers (puffer, LED, DMD) for
         the current emulate mode. Real by default; mock when emulating. Real
@@ -721,9 +945,17 @@ class MainWindow(QMainWindow):
             m.attach_sink(self._recorder)
 
         self._btn_rec.setText("■ Stop rec")
+        # Greyed rather than left to fail: set_modules refuses while recording,
+        # and a button that explains itself beats an error after the click.
+        self._modules_action.setEnabled(False)
+        self._modules_action.setToolTip(
+            "Not while recording — the file names its modules once, at the start")
         self.status(f"Recording → {path}")
 
     def _stop_recording(self) -> None:
+        self._modules_action.setEnabled(True)
+        self._modules_action.setToolTip(
+            "Load or unload instruments without restarting the app")
         for m in self._modules:
             m.detach_sink()
         rec = self._recorder

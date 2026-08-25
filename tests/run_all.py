@@ -51,6 +51,7 @@ TESTS = [
     ("losses",    "test_recording_losses.py"),
     ("camera-ts", "test_camera_timestamps.py"),
     ("subsets",   "test_module_subsets.py"),
+    ("hotload",   "test_module_hotload.py"),
     ("settings",  "test_settings_persistence.py"),
     ("session",   "test_session_recording.py"),
 ]
