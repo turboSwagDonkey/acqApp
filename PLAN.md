@@ -425,11 +425,17 @@ had not, because (ao) sampled four files and called it a sweep.
   `build_frame` a Path, so every spinbox step reopened and re-decoded the
   pattern; holding an arrow was 44 % of a core. The panel caches the decode on
   path+mtime+size; `alp` stays pure.
-- **Prose: ~10 genuine duplicate explanations**, found by scoring all 1241
-  comment/docstring sentences against each other. `latest_frame` was explained
-  three times over; two files repeated their own module docstring in the class
-  below it. Tree 24.1 -> 24.0 % — the number is small because nothing carrying
-  a fact was cut.
+- **Prose, two passes: 24.1 -> 23.6 %.** First ~10 genuine duplicate
+  explanations, found by scoring all 1241 comment/docstring sentences against
+  each other — `latest_frame` was explained three times over, two files
+  repeated their own module docstring in the class below. Then ~60 blocks
+  rewritten shorter, worst-first by length.
+  - **No fact was lost, and that is checked**: every numeric token in every
+    comment at 810c969 vs HEAD (158 -> 176 distinct). Four had gone; two were
+    restored (the 2026-08-17 provenance on WRITER_MBPS, the rig's 53 %) and two
+    were superseded figures still held in the docs.
+  - **main.py: comments only**, verified by its AST being identical to HEAD's
+    with docstrings blanked. `stage/driver.py` untouched — verbatim copy.
 - Measured and left alone, so nobody re-times them: `LoopRule.update` 0.3 us,
   encoder `_derive` 31 us (0.37 % of 120 Hz — DECISIONS *asserted* this was
   fine, now it is measured), `accessible_mask` 0.2 us cached, `outside` 297 us,
