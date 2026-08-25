@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-25 (ao) |
+| **Last updated** | 2026-08-25 (ap) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **737 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **743 checks, 23 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **737 checks, 23 files, ~53 s**, and it is ALL GREEN. Run it
+the contract: **743 checks, 23 files, ~54 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -407,6 +407,34 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-25 (ap) — the sweep: two interactive paths, and real duplication
+
+Asked for a prose/optimisation sweep after (ao). Both halves found things (ao)
+had not, because (ao) sampled four files and called it a sweep.
+
+- **`reach_fraction` 2903 -> 436 us (~8x).** `_refresh_status` runs it on every
+  drag event, and it evaluated every ROI over the whole grid when ROIs cover
+  ~1 % of it. Bounded twice, as `dmd_frame` already was.
+- **The first test for that was WRONG and passed a broken bbox three ways** —
+  comparing to `clipped_mask` within 0.05, where one grid cell is far under
+  5 %. It now compares to an unbounded reference in the test file and demands
+  exact equality. Re-verified by breaking the bbox four ways; all four caught.
+  *A tolerance is not a control.*
+- **DMD preview 22.6 -> 18.2 ms and 20 disk reads/s -> 0.** The panel handed
+  `build_frame` a Path, so every spinbox step reopened and re-decoded the
+  pattern; holding an arrow was 44 % of a core. The panel caches the decode on
+  path+mtime+size; `alp` stays pure.
+- **Prose: ~10 genuine duplicate explanations**, found by scoring all 1241
+  comment/docstring sentences against each other. `latest_frame` was explained
+  three times over; two files repeated their own module docstring in the class
+  below it. Tree 24.1 -> 24.0 % — the number is small because nothing carrying
+  a fact was cut.
+- Measured and left alone, so nobody re-times them: `LoopRule.update` 0.3 us,
+  encoder `_derive` 31 us (0.37 % of 120 Hz — DECISIONS *asserted* this was
+  fine, now it is measured), `accessible_mask` 0.2 us cached, `outside` 297 us,
+  `build_frame` 18 ms once per projection, the 30 Hz preview 1.20 ms.
+- Suite **737 -> 743 checks**, 23 files, green.
 
 ### 2026-08-25 (ao) — the writer, and bin 1 stops dropping half its frames
 
