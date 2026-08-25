@@ -43,6 +43,7 @@ class SettingsPanel(QWidget):
         self._res: tuple[int, int] = (DEFAULT_W, DEFAULT_H)
         self._pattern_path: Path | None = (
             Path(self._s.pattern_path) if self._s.pattern_path else None)
+        self._pattern_cache: tuple[tuple, np.ndarray] | None = None
         # Plain state, not widget values: a list of ROI dicts and a path.
         self._rois: tuple = tuple(self._s.rois or ())
         self._calib_path: str = self._s.calib_path or ""
@@ -415,6 +416,20 @@ class SettingsPanel(QWidget):
             self.load_requested.emit(p)
             self._emit()
 
+    def _pattern_array(self, p: Path) -> np.ndarray:
+        """The pattern file, decoded once. Keyed on path + mtime + size.
+
+        Every scale/rotation/offset step rebuilds the preview, and passing the
+        Path made `build_frame` reopen and re-decode the file each time: 4.7 ms
+        of the 21.8, and 20 disk reads/s while an arrow is held (2026-08-25).
+        """
+        from PIL import Image
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+        if self._pattern_cache is None or self._pattern_cache[0] != key:
+            self._pattern_cache = (key, np.asarray(Image.open(p).convert("L")))
+        return self._pattern_cache[1]
+
     def _update_preview(self) -> None:
         """Renders the pattern array with a padded thatched magenta border around DMD bounds."""
         pw = self._preview.width()
@@ -456,7 +471,7 @@ class SettingsPanel(QWidget):
             try:
                 s = self.settings
                 frame = alp.build_frame(
-                    p, w, h,
+                    self._pattern_array(p), w, h,
                     scale_pct=s.scale_pct,
                     rotation_deg=s.rotation_deg,
                     offset_x=s.offset_x,

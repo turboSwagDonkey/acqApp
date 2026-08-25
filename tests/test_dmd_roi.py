@@ -40,6 +40,34 @@ def calib() -> DmdCalibration:
                           created="2026-08-18T00:00:00")
 
 
+def _reach_unbounded(rset, calib, max_side: int = 512) -> float:
+    """`reach_fraction` with no bounding — every ROI over the whole grid.
+
+    The algorithm as it stood before 2026-08-25, kept here as the reference the
+    bounded one must reproduce bit for bit.
+    """
+    w, h = calib.cam_size
+    step = max(1, int(np.ceil(max(int(w), int(h)) / max(1, max_side))))
+    xs = np.arange(0, int(w), step, dtype=np.float64)
+    ys = np.arange(0, int(h), step, dtype=np.float64)
+    want = np.zeros((ys.size, xs.size), bool)
+    for r in rset.rois:
+        if r.enabled:
+            want |= r.mask_at(xs, ys)
+    iy, ix = np.nonzero(want)
+    if not iy.size:
+        return 1.0
+    return float(calib.accessible(np.column_stack((xs[ix], ys[iy]))).mean())
+
+
+def _set(*rois) -> RoiSet:
+    """A RoiSet of the given ROIs — `add()` names them as it goes."""
+    st = RoiSet()
+    for roi in rois:
+        st.add(roi)
+    return st
+
+
 def main() -> int:
     r = Report("dmd-roi")
     c = calib()
@@ -191,6 +219,43 @@ def main() -> int:
         r.check(abs(st.reach_fraction(c) - exact) < 0.05,
                 f"reach_fraction tracks clipped_mask "
                 f"({st.reach_fraction(c):.3f} vs {exact:.3f})")
+    # reach_fraction bounds its grid twice — each ROI to its own bbox, the scan
+    # to their union (2026-08-25, ~8x). A bbox one cell tight under-counts and
+    # the answer stays plausible, so compare against the UNBOUNDED algorithm and
+    # demand they agree exactly. Checking against `clipped_mask` within a
+    # tolerance does not work: at this camera size one cell is well under 5 %,
+    # and a deliberately broken bbox passed all three ways.
+    for name, st in (
+            ("two overlapping circles", _set(CircleRoi(x=40.0, y=60.0, r=34),
+                                             CircleRoi(x=58.0, y=60.0, r=34))),
+            ("two disjoint, far apart", _set(CircleRoi(x=38.0, y=40.0, r=26),
+                                             CircleRoi(x=CW * 0.7, y=CH * 0.6,
+                                                       r=26))),
+            ("rotated rect", _set(RectRoi(x=44.0, y=90.0, w=90, h=30,
+                                          angle_deg=37.0))),
+            ("straddling the image edge", _set(RectRoi(x=4.0, y=CH * 0.5,
+                                                       w=60, h=40))),
+            ("one disabled of two", _set(CircleRoi(x=42.0, y=150.0, r=30),
+                                         CircleRoi(x=CW * 0.6, y=CH * 0.5, r=30,
+                                                   enabled=False))),
+    ):
+        ref = _reach_unbounded(st, c)
+        got = st.reach_fraction(c)
+        # Partial, or the two agree only because both saturated.
+        r.check(0.02 < ref < 0.98 and got == ref,
+                f"reach_fraction bounds correctly — {name} "
+                f"({got!r} vs unbounded {ref!r})")
+
+    # CONTROL: the bounding must not be free to return anything. A set whose
+    # ROIs are wholly off the DMD field has to come back near 0, and one in the
+    # middle near 1 — if both read the same, the checks above prove nothing.
+    lo = _set(CircleRoi(x=CW - 5, y=CH - 5, r=20)).reach_fraction(c)
+    hi = _set(CircleRoi(x=float(corners[:, 0].mean()),
+                        y=float(corners[:, 1].mean()), r=20)).reach_fraction(c)
+    r.check(lo < 0.5 < hi,
+            f"control: reach_fraction separates an off-field set from an "
+            f"on-field one ({lo:.3f} vs {hi:.3f})")
+
     # CONTROL: an ROI well inside must NOT be flagged, or the check is vacuous.
     near = RoiSet()
     near.add(CircleRoi(x=float(corners[:, 0].mean()),

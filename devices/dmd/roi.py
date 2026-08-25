@@ -217,22 +217,40 @@ class RoiSet:
                        max_side: int = 512) -> float:
         """Share of the drawn area the DMD can illuminate — an ESTIMATE.
 
-        For the status line, which shows a whole-number percentage. Evaluated on
-        a grid capped at `max_side`, and only at the pixels an ROI actually
-        covers, so it costs the ROI's area rather than the camera's.
+        For the status line, recomputed on every drag event.
+
+        Grid capped at `max_side`, then bounded twice as `dmd_frame` is: each
+        ROI to its own bbox, the scan to their union. ROIs cover ~1 % of the
+        grid, so the unbounded version spent its time on cells nothing reached
+        — 1308 -> 190 us at four ROIs (2026-08-25), same answer.
         """
         w, h = calib.cam_size
         step = max(1, int(np.ceil(max(int(w), int(h)) / max(1, max_side))))
         xs = np.arange(0, int(w), step, dtype=np.float64)
         ys = np.arange(0, int(h), step, dtype=np.float64)
         want = np.zeros((ys.size, xs.size), bool)
+        i0 = j0 = np.iinfo(np.int32).max        # union bbox, in grid indices
+        i1 = j1 = 0
         for r in self.rois:
-            if r.enabled:
-                want |= r.mask_at(xs, ys)
-        iy, ix = np.nonzero(want)
+            if not r.enabled:
+                continue
+            b = r.boundary()
+            a0 = max(0, int(np.searchsorted(xs, b[:, 0].min(), "left")) - 1)
+            a1 = min(xs.size, int(np.searchsorted(xs, b[:, 0].max(), "right")) + 1)
+            c0 = max(0, int(np.searchsorted(ys, b[:, 1].min(), "left")) - 1)
+            c1 = min(ys.size, int(np.searchsorted(ys, b[:, 1].max(), "right")) + 1)
+            if a1 <= a0 or c1 <= c0:
+                continue                        # entirely off the grid
+            want[c0:c1, a0:a1] |= r.mask_at(xs[a0:a1], ys[c0:c1])
+            i0, i1 = min(i0, a0), max(i1, a1)
+            j0, j1 = min(j0, c0), max(j1, c1)
+        if i1 <= i0 or j1 <= j0:
+            return 1.0
+        iy, ix = np.nonzero(want[j0:j1, i0:i1])
         if not iy.size:
             return 1.0
-        return float(calib.accessible(np.column_stack((xs[ix], ys[iy]))).mean())
+        pts = np.column_stack((xs[ix + i0], ys[iy + j0]))
+        return float(calib.accessible(pts).mean())
 
     def outside(self, calib: DmdCalibration) -> list[str]:
         """Names of ROIs that are not wholly inside the DMD's field.
