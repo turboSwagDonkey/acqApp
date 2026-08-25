@@ -29,16 +29,17 @@ The voltage camera has the central image; the **pupil camera has its own dockabl
 video box** (live frame + detected-pupil outline), alongside its radius trace in
 the Signals panel.
 
-The **settings** for every loaded subsystem live in one **pop-up window**, and
-the left-edge sidebar picks the page: **Save** first, then one item per loaded
-instrument, each with its accent colour beside it — so the sidebar doubles as
-the list of what is loaded. Click an item to open the window on that page, click
-the one you are already on to tuck it away, keeping the main workspace entirely
-for the images and plots. Being a separate window, it can be left open beside
+The **settings** for every loaded subsystem live in one tabbed **pop-up
+window**, reachable two ways that stay in step. The left-edge sidebar has one
+item per page — **Save** first, then each loaded instrument with its accent
+colour beside it — so the sidebar doubles as the list of what is loaded; and the
+window keeps its **tab bar**, so every page is visible at once and the tabs drag
+into your own order. Clicking a sidebar item opens the window on that page and
+clicking the one you are already on tucks it away, keeping the main workspace
+entirely for the images and plots. Switching tab inside the window moves the
+sidebar highlight to match. Being a separate window, it can be left open beside
 the app or on a second screen while a session runs, and its size and position
-are remembered. (The window is still a tab stack inside, with the tab bar
-hidden — one selector, and it is the one that also shows what is loaded.)
-The pupil camera's page exposes
+are remembered. The pupil camera's page exposes
 camera exposure/frame-rate, the pupil-tracking parameters (threshold, min/max
 radius, search lines, edge polarity, minimum edge strength, circle-or-ellipse
 fit), and the eye-tracking LED toggle.

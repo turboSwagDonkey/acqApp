@@ -539,6 +539,10 @@ class MainWindow(QMainWindow):
         # un-check whichever page was showing, or its next click does nothing.
         self._settings_dialog.finished.connect(
             lambda _result: self._check_page(None))
+        # Both ways round: the tab bar is still there, so switching page inside
+        # the window has to move the sidebar's highlight with it.
+        self._settings_dialog.tabs.currentChanged.connect(
+            self._on_settings_tab_changed)
 
         # Dark/light theme toggle (persisted to config; default dark).
         self._theme_action = QAction(self._swatch(None), "☾ Theme", self)
@@ -599,6 +603,7 @@ class MainWindow(QMainWindow):
         for act in self._page_actions.values():
             self._sidebar.removeAction(act)
         self._page_actions.clear()
+        self._page_panels: dict[str, QWidget] = {}
 
         pages: list[tuple[str, str, QWidget]] = []
         if self._save_panel is not None:
@@ -614,7 +619,12 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, p=panel, k=key: self._show_page(k, p))
             self._sidebar.insertAction(self._sidebar_sep, act)
             self._page_actions[key] = act
+            self._page_panels[key] = panel
         self._stretch_sidebar()
+        # Fresh QActions default to unchecked, so an open window would be left
+        # showing a page nothing in the sidebar is lit for.
+        if self._settings_dialog.isVisible():
+            self._on_settings_tab_changed(0)
 
     def _stretch_sidebar(self) -> None:
         """All buttons one width, so the left edges line up.
@@ -630,6 +640,13 @@ class MainWindow(QMainWindow):
         widest = max(b.sizeHint().width() for b in btns)
         for b in btns:
             b.setMinimumWidth(widest)
+
+    def _on_settings_tab_changed(self, _index: int) -> None:
+        if not self._settings_dialog.isVisible():
+            return                       # a page removed, not a page chosen
+        panel = self._settings_dialog.current_panel()
+        self._check_page(next((k for k, p in self._page_panels.items()
+                               if p is panel), None))
 
     def _check_page(self, key: str | None) -> None:
         """Exactly one page item checked — or none, with the window shut."""
@@ -884,13 +901,21 @@ class MainWindow(QMainWindow):
         self._modules.remove(m)
 
     def _settings_tab_index(self, key: str) -> int:
-        """Where this module's settings tab belongs. The Save tab leads, then
-        modules in `config.MODULES` order."""
+        """Where a hot-loaded module's tab goes: after the last page that
+        precedes it in `config.MODULES`.
+
+        Read off the LIVE tab positions rather than counted, because the tabs
+        are draggable — counting assumes an order the operator may have changed.
+        """
+        dlg = self._settings_dialog
         order = list(config.MODULES)
-        before = [m for m in self._modules
-                  if m.key != key and m.panel is not None
-                  and order.index(m.key) < order.index(key)]
-        return 1 + len(before)          # 1 = past the Save tab
+        last = dlg.panel_index(self._save_panel) if self._save_panel else -1
+        for m in self._modules:
+            if m.key == key or m.panel is None:
+                continue
+            if order.index(m.key) < order.index(key):
+                last = max(last, dlg.panel_index(m.panel))
+        return last + 1
 
     def _plot_tab_index(self, key: str) -> int:
         order = list(config.MODULES)

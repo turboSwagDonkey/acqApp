@@ -103,9 +103,8 @@ def main() -> int:
     r.check(not dlg.isVisible(), "settings window starts hidden")
     r.check(dlg.tabs.count() == len(config.MODULES) + 1,
             f"a page per module plus Save (got {dlg.tabs.count()})")
-    # One sidebar item per page since 2026-08-25; the tab bar is hidden and the
-    # sidebar is the selector.
-    r.check(not dlg.tabs.tabBar().isVisible(), "the tab bar is hidden")
+    # Two selectors since 2026-08-25, and they stay in step: the tab bar, and
+    # one sidebar item per page.
     r.check(set(win._page_actions) == set(config.MODULES) | {"saving"},
             f"a sidebar item per page (got {sorted(win._page_actions)})")
     win._page_actions["wheel"].trigger()
@@ -116,6 +115,15 @@ def main() -> int:
             "…on that module's page")
     r.check(win._page_actions["wheel"].isChecked(),
             "…and checks only that item")
+    r.check(dlg.tabs.tabBar().isVisible(),
+            "the tab bar is still there — both ways to reach a page")
+    # The other direction: switching tab inside the window moves the highlight.
+    dlg.tabs.setCurrentIndex(dlg.panel_index(
+        next(m.panel for m in win._modules if m.key == "puffer")))
+    pump(app, 0.2)
+    r.check(win._page_actions["puffer"].isChecked()
+            and not win._page_actions["wheel"].isChecked(),
+            "choosing a TAB moves the sidebar highlight to match")
 
     # First-run size is measured from the panels, then clamped to the screen —
     # checked on default_size() rather than on the shown window, whose final
@@ -131,7 +139,11 @@ def main() -> int:
     r.check(want.width() <= avail.width() and want.height() <= avail.height(),
             "…and still fits on the screen it opens on")
     # Clicking the page you are already on shuts the window, as the single
-    # ⚙ Settings toggle used to.
+    # ⚙ Settings toggle used to. The tab switch above left `puffer` current, so
+    # that is the item that closes it — clicking any OTHER one just switches.
+    win._page_actions["wheel"].trigger()
+    pump(app, 0.2)
+    r.check(dlg.isVisible(), "clicking a different page switches, not hides")
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)
     r.check(not dlg.isVisible(), "clicking the open page again hides it")

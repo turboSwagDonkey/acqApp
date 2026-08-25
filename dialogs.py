@@ -70,9 +70,10 @@ class SettingsDialog(QDialog):
     from the camera pane. Built once and hidden on close — the panels inside are
     live objects wired to the running controllers, so it must not be destroyed.
 
-    Still a `QTabWidget` inside, but with **no tab bar** (2026-08-25): the
-    sidebar picks the page. One selector, and it is the one that also shows
-    which instruments are loaded.
+    Two ways to reach a page and they stay in step: the tab bar, and one
+    sidebar item per page (2026-08-25). The sidebar doubles as the list of what
+    is loaded; the tabs let you see every page at once and drag them into your
+    own order.
     """
 
     _GEOM_KEY = "settingsGeometry"
@@ -88,9 +89,7 @@ class SettingsDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
 
         self.tabs = QTabWidget()
-        # Kept as the page stack; the sidebar is the selector, so the bar is
-        # hidden rather than the widget replaced.
-        self.tabs.tabBar().setVisible(False)
+        self.tabs.setMovable(True)                  # tabs reorderable by drag
 
         # Scroll area so the window can be dragged narrower than the widest
         # panel (content scrolls instead of pinning a minimum width).
