@@ -131,6 +131,39 @@ def check_ui_released(r: Report, win) -> None:
             f"{before})")
 
 
+def check_sidebar_follows(r: Report, win) -> None:
+    """Each loaded instrument owns a sidebar item, and only while loaded.
+
+    The sidebar is the settings selector since 2026-08-25, so a stale item is
+    not cosmetic — it points at a panel that has been deleted.
+    """
+    win.set_modules(["voltage_cam", "wheel"])
+    r.check(set(win._page_actions) == {"saving", "voltage_cam", "wheel"},
+            f"Save plus one per module ({sorted(win._page_actions)})")
+
+    win.set_modules(["voltage_cam", "wheel", "puffer"])
+    r.check("puffer" in win._page_actions,
+            f"a loaded module gains one ({sorted(win._page_actions)})")
+
+    dead = win._page_actions["puffer"]
+    win.set_modules(["voltage_cam", "wheel"])
+    r.check("puffer" not in win._page_actions,
+            f"an unloaded one loses it ({sorted(win._page_actions)})")
+    r.check(dead not in win._sidebar.actions(),
+            "…and the item really is off the toolbar, not just out of the dict")
+
+    # The order is the sidebar's whole readability: Save first, then
+    # config.MODULES order.
+    win.set_modules(["closed_loop", "wheel", "voltage_cam"])
+    labels = [a.text() for a in win._sidebar.actions()
+              if a in win._page_actions.values()]
+    r.check(labels[0] == "Save", f"Save leads ({labels})")
+    keys = [k for k, a in win._page_actions.items() if a.text() != "Save"]
+    order = list(config.MODULES)
+    r.check(keys == sorted(keys, key=order.index),
+            f"modules in config.MODULES order ({keys})")
+
+
 def check_theme_toggle_survives(r: Report, win) -> None:
     """The failure the view bookkeeping exists to prevent.
 
@@ -313,6 +346,7 @@ def main() -> int:
         check_empty_set(r, win)
         check_order(r, win)
         check_ui_released(r, win)
+        check_sidebar_follows(r, win)
         check_theme_toggle_survives(r, win)
         check_central_pane(r, win)
         check_recording_refused(r, win)

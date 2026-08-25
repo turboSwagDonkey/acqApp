@@ -161,7 +161,7 @@ def _await_camera() -> None:
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 
 from PyQt6.QtCore import Qt, QTimer, QSettings
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QDockWidget, QLabel, QMainWindow, QPushButton,
     QStatusBar, QTabWidget, QToolBar, QVBoxLayout, QWidget,
@@ -519,22 +519,29 @@ class MainWindow(QMainWindow):
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMovable(False)
         self._sidebar.setOrientation(Qt.Orientation.Vertical)
-        self._sidebar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._sidebar.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        # Left-aligned, full-width buttons: a vertical toolbar centres each one
+        # by default, so a list of differently-sized labels comes out ragged and
+        # unreadable as a list.
+        self._sidebar.setStyleSheet(
+            "QToolButton { text-align:left; padding:4px 10px; }")
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
 
-        # Action ↔ visibility both ways: closing the window (✕ or Esc, both of
-        # which reach `finished`) un-checks the tab, so the next click re-opens
-        # instead of doing nothing.
-        self._settings_action = QAction("⚙ Settings", self)
-        self._settings_action.setCheckable(True)
-        self._settings_action.setToolTip("Open the settings window")
-        self._settings_action.toggled.connect(self._on_settings_toggled)
+        # One item per settings PAGE — Save, then a loaded instrument each —
+        # so the sidebar doubles as the list of what is loaded. Filled by
+        # _rebuild_page_actions, which runs again whenever the module set
+        # changes; everything below the separator is fixed.
+        self._page_actions: dict[str, QAction] = {}
+        self._sidebar_sep = self._sidebar.addSeparator()
+        self._rebuild_page_actions()
+        # Closing the window (✕ or Esc, both of which reach `finished`) has to
+        # un-check whichever page was showing, or its next click does nothing.
         self._settings_dialog.finished.connect(
-            lambda _result: self._settings_action.setChecked(False))
-        self._sidebar.addAction(self._settings_action)
+            lambda _result: self._check_page(None))
 
         # Dark/light theme toggle (persisted to config; default dark).
-        self._theme_action = QAction("☾ Theme", self)
+        self._theme_action = QAction(self._swatch(None), "☾ Theme", self)
         self._theme_action.setCheckable(True)
         self._theme_action.setChecked(config.get_theme() == "dark")
         self._theme_action.setToolTip("Toggle dark / light theme")
@@ -543,17 +550,18 @@ class MainWindow(QMainWindow):
 
         # Load/unload instruments without restarting. Disabled only while
         # recording — see set_modules.
-        self._modules_action = QAction("🧩 Modules", self)
+        self._modules_action = QAction(self._swatch(None), "🧩 Modules", self)
         self._modules_action.setToolTip(
             "Load or unload instruments without restarting the app")
         self._modules_action.triggered.connect(self._open_modules_dialog)
         self._sidebar.addAction(self._modules_action)
 
         # Device connection monitor (probe-based; safe to open any time).
-        self._devices_action = QAction("🔌 Devices", self)
+        self._devices_action = QAction(self._swatch(None), "🔌 Devices", self)
         self._devices_action.setToolTip("Check which devices are detected")
         self._devices_action.triggered.connect(self._show_devices)
         self._sidebar.addAction(self._devices_action)
+        self._stretch_sidebar()
 
     def _make_dock(self, title: str, widget: QWidget,
                    area: "Qt.DockWidgetArea", accent: str = "sync") -> QDockWidget:
@@ -570,15 +578,83 @@ class MainWindow(QMainWindow):
 
     # ── Settings window ─────────────────────────────────────────────────────────
 
-    def _on_settings_toggled(self, on: bool) -> None:
-        if on:
-            self._settings_dialog.show()
-            # Re-open in front: it may have been left behind the main window.
-            self._settings_dialog.raise_()
-            self._settings_dialog.activateWindow()
-        else:
+    @staticmethod
+    def _swatch(key: str | None) -> "QIcon":
+        """A chip in the subsystem's accent for its sidebar item.
+
+        `None` gives a transparent one, which the items below the separator
+        carry so every button lays out the same way: a QToolButton WITHOUT an
+        icon ignores the stylesheet's `text-align:left` and centres its label.
+        """
+        pm = QPixmap(12, 12)
+        pm.fill(QColor(style.HEX[key]) if key else Qt.GlobalColor.transparent)
+        return QIcon(pm)
+
+    def _rebuild_page_actions(self) -> None:
+        """One sidebar item per settings page, in `config.MODULES` order.
+
+        Rebuilt wholesale rather than patched: the module set changes rarely and
+        a stale item points at a deleted panel.
+        """
+        for act in self._page_actions.values():
+            self._sidebar.removeAction(act)
+        self._page_actions.clear()
+
+        pages: list[tuple[str, str, QWidget]] = []
+        if self._save_panel is not None:
+            pages.append(("saving", "Save", self._save_panel))
+        pages += [(m.key, m.tab_label, m.panel)
+                  for m in self._modules if m.panel is not None]
+
+        for key, label, panel in pages:
+            act = QAction(self._swatch(key), label, self)
+            act.setCheckable(True)
+            act.setToolTip(f"{label} settings")
+            act.triggered.connect(
+                lambda _checked=False, p=panel, k=key: self._show_page(k, p))
+            self._sidebar.insertAction(self._sidebar_sep, act)
+            self._page_actions[key] = act
+        self._stretch_sidebar()
+
+    def _stretch_sidebar(self) -> None:
+        """All buttons one width, so the left edges line up.
+
+        A size policy will not do it — `QToolBarLayout` sizes each button to its
+        own content and centres it, whatever the child asks for. Setting the
+        same minimum width on all of them is what actually aligns the labels.
+        """
+        btns = [self._sidebar.widgetForAction(a) for a in self._sidebar.actions()]
+        btns = [b for b in btns if b is not None]
+        if not btns:
+            return
+        widest = max(b.sizeHint().width() for b in btns)
+        for b in btns:
+            b.setMinimumWidth(widest)
+
+    def _check_page(self, key: str | None) -> None:
+        """Exactly one page item checked — or none, with the window shut."""
+        for k, act in self._page_actions.items():
+            act.setChecked(k == key)
+
+    def _show_page(self, key: str, panel) -> None:
+        """Open the settings window on this page, or shut it if already there.
+
+        Clicking the page you are on closes the window, which is what the single
+        Settings toggle used to do.
+        """
+        showing = (self._settings_dialog.isVisible()
+                   and self._settings_dialog.current_panel() is panel)
+        if showing:
             self._settings_dialog.save_geometry()
             self._settings_dialog.hide()
+            self._check_page(None)
+            return
+        self._settings_dialog.show_panel(panel)
+        self._settings_dialog.show()
+        # Re-open in front: it may have been left behind the main window.
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+        self._check_page(key)
 
     # ── Dock layout persistence ─────────────────────────────────────────────────
 
@@ -736,6 +812,7 @@ class MainWindow(QMainWindow):
             self._devices_dialog.deleteLater()
             self._devices_dialog = None
         self._refresh_central()
+        self._rebuild_page_actions()
         for m in self._modules:
             m.on_modules_changed()
         return added, removed

@@ -102,10 +102,20 @@ def main() -> int:
     r.check(not isinstance(dlg, M.QDockWidget), "…and not a dock widget")
     r.check(not dlg.isVisible(), "settings window starts hidden")
     r.check(dlg.tabs.count() == len(config.MODULES) + 1,
-            f"a tab per module plus Save (got {dlg.tabs.count()})")
-    win._settings_action.setChecked(True)
+            f"a page per module plus Save (got {dlg.tabs.count()})")
+    # One sidebar item per page since 2026-08-25; the tab bar is hidden and the
+    # sidebar is the selector.
+    r.check(not dlg.tabs.tabBar().isVisible(), "the tab bar is hidden")
+    r.check(set(win._page_actions) == set(config.MODULES) | {"saving"},
+            f"a sidebar item per page (got {sorted(win._page_actions)})")
+    win._page_actions["wheel"].trigger()
     pump(app, 0.2)
-    r.check(dlg.isVisible(), "the ⚙ Settings tab opens it")
+    r.check(dlg.isVisible(), "a sidebar page item opens the window")
+    r.check(dlg.current_panel() is
+            next(m.panel for m in win._modules if m.key == "wheel"),
+            "…on that module's page")
+    r.check(win._page_actions["wheel"].isChecked(),
+            "…and checks only that item")
 
     # First-run size is measured from the panels, then clamped to the screen —
     # checked on default_size() rather than on the shown window, whose final
@@ -120,11 +130,19 @@ def main() -> int:
             "default size covers the widest panel without scrolling")
     r.check(want.width() <= avail.width() and want.height() <= avail.height(),
             "…and still fits on the screen it opens on")
+    # Clicking the page you are already on shuts the window, as the single
+    # ⚙ Settings toggle used to.
+    win._page_actions["wheel"].trigger()
+    pump(app, 0.2)
+    r.check(not dlg.isVisible(), "clicking the open page again hides it")
+
+    win._page_actions["wheel"].trigger()
+    pump(app, 0.2)
     dlg.close()                       # the title-bar ✕ / Esc path
     pump(app, 0.2)
     r.check(not dlg.isVisible(), "closing the window hides it")
-    r.check(not win._settings_action.isChecked(),
-            "…and un-checks ⚙ Settings, so the next click re-opens it")
+    r.check(not any(a.isChecked() for a in win._page_actions.values()),
+            "…and un-checks every page item, so the next click re-opens it")
 
     panels = {m.key: m.panel for m in win._modules}
 

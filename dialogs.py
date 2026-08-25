@@ -63,12 +63,16 @@ class ModuleSelectDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """Modeless settings window: the Save tab plus one tab per subsystem.
+    """Modeless settings window: the Save page plus one page per subsystem.
 
     A window rather than a dock: the panels are edited *while* watching the live
     view, and a floating one can sit on a second screen without taking width
     from the camera pane. Built once and hidden on close — the panels inside are
     live objects wired to the running controllers, so it must not be destroyed.
+
+    Still a `QTabWidget` inside, but with **no tab bar** (2026-08-25): the
+    sidebar picks the page. One selector, and it is the one that also shows
+    which instruments are loaded.
     """
 
     _GEOM_KEY = "settingsGeometry"
@@ -84,7 +88,9 @@ class SettingsDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
 
         self.tabs = QTabWidget()
-        self.tabs.setMovable(True)                  # tabs reorderable by drag
+        # Kept as the page stack; the sidebar is the selector, so the bar is
+        # hidden rather than the widget replaced.
+        self.tabs.tabBar().setVisible(False)
 
         # Scroll area so the window can be dragged narrower than the widest
         # panel (content scrolls instead of pinning a minimum width).
@@ -158,6 +164,17 @@ class SettingsDialog(QDialog):
 
     def panel_index(self, panel: QWidget) -> int:
         return self.tabs.indexOf(panel)
+
+    def show_panel(self, panel: QWidget) -> bool:
+        """Bring `panel`'s page to the front. False if it is not in here."""
+        idx = self.tabs.indexOf(panel)
+        if idx < 0:
+            return False
+        self.tabs.setCurrentIndex(idx)
+        return True
+
+    def current_panel(self) -> QWidget | None:
+        return self.tabs.currentWidget()
 
     def save_geometry(self) -> None:
         QSettings("acqApp", "acqApp").setValue(self._GEOM_KEY, self.saveGeometry())

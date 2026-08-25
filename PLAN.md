@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-25 (aq) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **789 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Suite **800 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **789 checks, 24 files, ~57 s**, and it is ALL GREEN. Run it
+the contract: **800 checks, 24 files, ~58 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -408,7 +408,8 @@ intact. Two are still worth doing and are listed there under "Still open".
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
-### 2026-08-25 (aq) — instruments load and unload without restarting
+### 2026-08-25 (aq) — instruments load and unload without restarting, and the
+sidebar becomes the settings selector
 
 Operator's request; their call on both behaviours (hot add/remove rather than
 restart-the-session, and a sidebar button rather than a settings tab).
@@ -437,7 +438,16 @@ restart-the-session, and a sidebar button rather than a settings tab).
 - The shared DCAM handle survives an unload/reload round trip (the window owns
   it; `OrcaFireWorker` closes only a handle it opened). Checked, because
   re-opening a just-closed DCAM device crashes natively.
-- `test_module_hotload`, 46 checks. Suite **743 -> 789 checks, 23 -> 24 files**.
+- **The sidebar is now the settings selector**, one item per page — Save, then
+  one per LOADED instrument with its accent chip — so it doubles as the list of
+  what is loaded. The window's tab bar is hidden; clicking the page you are on
+  shuts it, as the old ⚙ Settings toggle did.
+  - Two Qt details, both found by rendering it and looking: `QToolBarLayout`
+    centres each button and ignores its size policy (equal `minimumWidth` is
+    what aligns them), and a `QToolButton` with no icon ignores
+    `text-align:left` — hence the transparent chip on Theme/Modules/Devices.
+- `test_module_hotload` 52 checks, `test_settings_persistence` follows the
+  sidebar. Suite **743 -> 800 checks, 23 -> 24 files**.
 
 Entries before 2026-08-25 (aq) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file small
