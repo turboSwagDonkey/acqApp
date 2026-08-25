@@ -43,6 +43,7 @@ TESTS = [
     ("dmd-roi",   "test_dmd_roi.py"),
     ("closed-loop", "test_closed_loop.py"),
     ("save-paths", "test_save_paths.py"),
+    ("writer-chunks", "test_writer_chunks.py"),
     ("stage-state", "test_stage_state.py"),
     ("stage-panel", "test_stage_panel.py"),
     ("pupil-limit", "test_pupil_limit.py"),

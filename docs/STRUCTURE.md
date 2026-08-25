@@ -187,6 +187,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_stage_state.py
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
+  test_writer_chunks.py       the direct-chunk write, and the guard on it
 main.py                 the shell: window chrome, docks, theme, session start/stop,
                         the venv bootstrap. Holds no per-instrument logic.
 config.py               settings persistence + the MODULES table
