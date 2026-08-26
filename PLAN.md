@@ -471,6 +471,18 @@ probe numbers with both controls green (noise → None 20/20, uncropped → 0/20
 `acquisition.py` slots in. **It is a sibling, like `wheelApp/`, and like
 `wheelApp/` it is not under version control** — the only copy is on this disk.
 
+**Corneal-reflection removal is in the bench app** (2026-08-26). EyeLoop's own
+is dead code — disabled in three places and writing to a buffer `engine.py`
+never creates — so `tracker.py` does it, with live controls and a red mask
+overlay. **A real but clip-dependent gain**: on pAce it tightens radius sd
+1.86 → 1.42 for +0.9 px; on the *operator's* State clip the reflection sits at
+0.84 r and nothing safe reaches it. Two traps found and fixed: masking the rim
+erases the boundary and inflates the radius (+3.5 px), and the search area must
+follow the fitted **ellipse** — a circle at 0.85 × mean-radius is already
+outside an 0.78-ratio pupil on the minor axis. Numbers in docs/EYELOOP.md.
+**Fit rate stayed 151/151 through every one of these failures.** The operator
+is tuning it.
+
 **Still blocked on the operator:** which tree (§0 forbids restoring a tracker on
 master; `pupil-tracking` already has a *working* one), and **GPL-3.0** —
 vendoring EyeLoop into `devices/` makes acqApp a derived work, which is why

@@ -174,6 +174,72 @@ that looks like a type error**. The wrapper keeps them int (`walk_radius`) and
 holds its own float acceptance band (`accept_radius`) separately. They were one
 parameter until this happened.
 
+## Corneal-reflection removal
+
+**EyeLoop's own is dead code.** `Shape.artefact_` paints a filled circle over
+the CR, but it is disabled in three places at once: `fit()`'s call to it is
+commented out, `Shape.__init__` binds `artefact` to a no-op for *both* types,
+and `artefact_` writes into `config.engine.pup_source` — which `engine.py`
+never creates. Upstream also tracks the pupil *before* the CR (`engine.py:183`
+then `:185`), so even a working version could not clean the frame the pupil fit
+sees. It has never run.
+
+So `eyeloopGUI/tracker.py` does it: `GlintRemoval` + `remove_glints()`, with
+live controls in the bench app and a red mask overlay showing what is blanked.
+
+### What is actually there
+
+Frame 0, pupil interior vs the reflections:
+
+| | pAce | State |
+|---|---|---|
+| pupil interior | median 23, p95 43 | median 22, p95 40 |
+| reflections | saturated 235, ~1.3 % of pupil px | same |
+| where they sit | area 61 at **0.54 r**, area 55 at 0.89 r | area 156 at **0.84 r** |
+
+The gap between p95 ≈ 42 and 235 is why `bright ≥` is not delicate: anything in
+100–180 selects the same pixels.
+
+### Two things that cost the measurements, both now fixed in the code
+
+**Mask the rim and the radius runs away.** Blanking bright pixels near the
+boundary erases the boundary, the walk runs further out, the radius grows, the
+search area grows with it. Measured at **+3.5 px on pAce** before it was
+constrained.
+
+**The search area must follow the fitted ellipse, not a circle.** A circle of
+0.85 × mean-radius is already *outside* an 0.78-ratio pupil along the minor
+axis — and the State clip's lash line is covered in bright specks at 0.80–0.91
+r. Switching the test to the ellipse cut State's masked pixels at reach 0.85
+from 253 to 76, and its radius drift from +1.65 px to +0.40.
+
+Each blob is also filled from **its own surrounding annulus** rather than from
+the pupil's interior level, so a reflection near the edge is not replaced with
+pupil-dark.
+
+### What it buys, measured
+
+Sweeps of both clips, ellipsoid, `bright ≥ 120`, `pad 4`:
+
+| | pAce thr 45 | State thr 60 |
+|---|---|---|
+| CR off | r 45.18 ± **1.86**, centre sd (2.83, 1.42) | r 59.66 ± **1.13**, sd (2.19, 2.56) |
+| reach 0.70 | r 46.05 ± **1.42**, sd (2.70, 1.20) | r 59.71 ± 1.49, sd (2.64, 2.59), 12 px |
+| reach 0.85 | r 47.04 ± **1.29**, sd (2.25, 1.00) | r 60.02 ± 2.33, sd (3.98, 2.57), 76 px |
+
+**It is a real but clip-dependent gain, and it is not free.** On pAce it
+tightens the radius (sd 1.86 → 1.42) and the centre, at +0.9 px of radius. On
+State — the operator's clip — the reflection sits at 0.84 r, so nothing safe
+reaches it: at 0.70 it masks 12 px and changes nothing, and at 0.85 it starts
+costing steadiness. **Fit rate stays 151/151 throughout and tells you nothing**,
+which is the standing lesson of this file.
+
+`max_area` turned out inert — every blob is small once the frame-spanning
+background component is excluded — so it is not exposed in the GUI.
+
+**Defaults are `reach 0.70`, `bright ≥ 120`, `pad 4`, `fill ring 6`**, chosen to
+not inflate rather than to maximise anything. Tuning is the operator's.
+
 ## Do we need OpenCV?
 
 The dependency is real but shallow — and one part of it is a liability that has
