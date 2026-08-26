@@ -42,6 +42,7 @@ TESTS = [
     ("dmd-sweep", "test_dmd_sweep.py"),
     ("dmd-roi",   "test_dmd_roi.py"),
     ("closed-loop", "test_closed_loop.py"),
+    ("routines",  "test_routines.py"),
     ("save-paths", "test_save_paths.py"),
     ("writer-chunks", "test_writer_chunks.py"),
     ("stage-state", "test_stage_state.py"),

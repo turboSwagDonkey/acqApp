@@ -19,6 +19,7 @@ flowchart TD
     adapters["adapters/<br/><i>one file per instrument</i>"]
     devices["devices/<br/><i>the six instruments</i>"]
     closed_loop["closed_loop/<br/><i>fire an output from a signal</i>"]
+    routines["routines/<br/><i>run a protocol step by step</i>"]
     saving["saving/<br/><i>where the file goes</i>"]
     acq["acq/<br/><i>clock · recorder · ring · writer · protocols</i>"]
     dialogs["dialogs.py<br/><i>module picker · device monitor</i>"]
@@ -147,6 +148,10 @@ devices/                one package per instrument
     capture_raw.py      script: hardware-clocked 1 kHz raw capture
     panel.py
     settings.py
+routines/               experiment routines: a protocol executed in order
+  engine.py             the executor — every actuation arrives as a callable,
+                        so the whole of it is testable before light is emitted
+  settings.py           Step / Routine / validate() — no Qt
 saving/                 where the session file goes
   config.py             SaveConfig + path building — no Qt
   panel.py
@@ -180,6 +185,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_pupil_limit.py         the eye region: panel, preview, persistence
   test_pupil_video.py
   test_readout_fps.py
+  test_routines.py            the routine engine, on a fake rig and a fake clock
   test_recording_losses.py
   test_save_paths.py
   test_session_recording.py
@@ -210,7 +216,7 @@ __init__.py
 Not listed and deliberately so: `.venv/`, `__pycache__/`, `sessions/` (recordings),
 anything else gitignored, and the per-package `__init__.py` — every package has
 one, and only the two carrying logic are called out above (the adapter registry,
-and the lazy PEP 562 re-exports in `closed_loop/` and `saving/`). Raw rig captures live **outside** the repo in
+and the lazy PEP 562 re-exports in `closed_loop/`, `routines/` and `saving/`). Raw rig captures live **outside** the repo in
 `../../rig_captures/`.
 
 ## Adding a module
