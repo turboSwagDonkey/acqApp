@@ -455,6 +455,12 @@ durable copy of the patches. The five things worth carrying:
 - **It does not beat the archived tracker on fit rate or steadiness** (151/151
   at sd 0.87 px). **The win is that ellipse mode works on real footage**, where
   acqApp's own was broken at 8/151.
+- **cv2 is needed, but shallowly** — the ellipse maths and the ray walk are
+  pure numpy; only the per-frame threshold (3 ops, scipy has them) and the
+  failure path use it. **That failure path opens a modal `waitKey(0)` and
+  blocks forever** (`processor.py:135`), on exactly the frames where tracking
+  failed. It must be neutered whichever way the cv2 question goes; the probes
+  could not find it because the good clips never failed.
 
 **Blocked on the operator, and nothing should be written until they answer:**
 which tree (§0 forbids restoring a tracker on master; `pupil-tracking` already

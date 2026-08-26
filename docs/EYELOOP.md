@@ -138,6 +138,47 @@ finder has to be scale-aware (a dark blob of pupil radius) or the eye region
 has to supply the seed, which it can: its centre is within tolerance by
 construction.
 
+## Do we need OpenCV?
+
+The dependency is real but shallow — and one part of it is a liability that has
+to go regardless.
+
+| layer | needs cv2? | what it calls |
+|---|---|---|
+| `Ellipse.fit` — the ellipse maths | **no** | pure numpy |
+| `pupil_walkout` — the ray walk | **no** | pure numpy |
+| `Shape.pupil_thresh` — every frame | **yes**, 3 ops | `erode`, `GaussianBlur`, `threshold` |
+| `Shape.center_adj_` — on failure | **yes** | `HoughCircles`, **and a blocking `imshow` + `waitKey(0)`** |
+
+### The failure path must be neutered whether or not cv2 stays
+
+For `type=1` — the pupil, the one we use — `center_adj` is bound to
+`center_adj_` (`processor.py:53`) and is called on **every** fit failure
+(`:173`, `:177`). If `HoughCircles` finds any circle, it opens a modal debug
+window named `kk` and calls **`cv2.waitKey(0)`, which blocks forever**, once
+per circle found.
+
+In an integrated acqApp that is a hang on exactly the frames where tracking
+failed. It never fired in the probes because the good clips had **zero**
+failures and the noise control returned `circles is None` — so this is a
+landmine the measurements above could not have found. Patch it out or bind
+`center_adj` to a no-op the way the CR branch already does (`:61`).
+
+### Dropping cv2 would be a small job
+
+`scipy.ndimage` is **already in `.venv`** (1.17.1) and gives `grey_erosion` and
+`gaussian_filter`; the threshold is one numpy comparison. That would leave
+EyeLoop's pupil path pure numpy — which matters mainly because it makes the
+algorithm easy to port, though **GPL follows a port just as it follows a copy**.
+
+### Recommendation: keep it, for now
+
+opencv-python installs on 3.14, the suite is green with it, and **acqApp
+imports cv2 nowhere else** — so it is additive, not a change to anything that
+already works. The reason acqApp avoided it (no 3.14 wheels) is gone. Revisit
+only if the 44 MB wheel or a numpy-only pupil path is wanted for its own sake.
+**The `waitKey(0)` is not part of that trade** — it goes either way.
+
 ## Open decisions — the operator's
 
 1. **Which tree.** PLAN §0: do not restore a tracker on master without being
