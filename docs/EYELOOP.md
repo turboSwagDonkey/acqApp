@@ -234,6 +234,21 @@ reaches it: at 0.70 it masks 12 px and changes nothing, and at 0.85 it starts
 costing steadiness. **Fit rate stays 151/151 throughout and tells you nothing**,
 which is the standing lesson of this file.
 
+### Pinned reflections
+
+Large reflections are stationary, so the bench app lets the operator mark them:
+pin mode, left-click to add (sized to the blob hit), right-click to remove.
+Stored in *frame* coordinates so the eye region can move without dragging them
+off target, and **exempt from both `reach` and `max_area`** — those guards
+protect the automatic pass from bright things it cannot identify, and a pin is
+an identification. Pinning is therefore the only way to reach a reflection the
+automatic pass has to be too timid to touch.
+
+It works, and it is not free: pinning the State clip's 0.84 r reflection
+removes it properly (447 px masked against 27) and costs **+6.6 px of radius**,
+because blanking something that overlaps the boundary erases the boundary.
+**Pins earn their keep on reflections inside the pupil, not on the rim.**
+
 `max_area` turned out inert — every blob is small once the frame-spanning
 background component is excluded — so it is not exposed in the GUI.
 
