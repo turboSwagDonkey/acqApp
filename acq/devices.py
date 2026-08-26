@@ -118,6 +118,44 @@ class ProjectorController(RecordingOutput, Protocol):
     def on_pixels(self) -> int: ...
 
 
+# ── what a routine may drive ──────────────────────────────────────────────────
+# Declared by the ADAPTER, not the driver: an experiment routine drives the
+# module as it is loaded — its soft limits, mock or real — and adding one of
+# these to an instrument is the whole cost of making it routine-drivable, the
+# way declaring a SignalSource is the whole cost of making a quantity
+# triggerable. Split in two because the stage is not a projector.
+
+@runtime_checkable
+class StageTarget(Protocol):
+    """A module a routine can send to an XY position.
+
+    No "is it moving?": the MCM6101 answers only over the serial link the
+    position poller already shares, and a routine ticking at 20 Hz would flood
+    it. Arrival is the operator's `settle_s` (PLAN §6 (3)) until a cheap arrival
+    signal exists — `RoutineHooks.moving` is the seam it plugs into.
+    """
+
+    def move_to(self, x_um: float | None, y_um: float | None) -> None:
+        """Move; None leaves that axis where it is."""
+
+    def stop_motion(self) -> None:
+        """Stop both axes. Called on any fault, so it must not raise blindly."""
+
+    def limits_um(self) -> tuple[tuple[float, float] | None,
+                                 tuple[float, float] | None]:
+        """(x, y) soft limits, so a routine is validated before it starts."""
+
+
+@runtime_checkable
+class PatternTarget(Protocol):
+    """A module a routine can put a pattern up on and take it down again."""
+
+    def set_pattern(self, path: str) -> None: ...
+
+    def set_light(self, on: bool) -> None:
+        """The one call that emits light. Everything else here is reversible."""
+
+
 # ── the host ──────────────────────────────────────────────────────────────────
 
 @runtime_checkable
@@ -182,6 +220,19 @@ class ModuleHost(Protocol):
         do it and put it back. The return value is what makes putting it back
         possible.
         """
+        ...
+
+    def stage_target(self) -> Any:
+        """The loaded module a routine may move, or None.
+
+        Pooled by the window like `signal_sources()`, and for the same reason:
+        the routine must not import the stage adapter, and the stage must not
+        know routines exist.
+        """
+        ...
+
+    def pattern_target(self) -> Any:
+        """The loaded module a routine may project through, or None."""
         ...
 
     def latest_frame(self, key: str) -> Any:

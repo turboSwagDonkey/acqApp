@@ -310,6 +310,21 @@ class SettingsPanel(QWidget):
         """Adopt a calibration the adapter just measured or loaded."""
         self._set_calib(path)
 
+    def set_pattern_path(self, path: Path) -> None:
+        """Adopt a pattern an experiment routine chose, and switch to Image.
+
+        The panel has to follow, not just the controller: `display()` re-applies
+        these settings, so a routine that loaded a file while the panel still
+        named the old one would project the old one back. The mode goes with it
+        for the same reason — naming a pattern file while the panel sits in
+        All ON or ROIs would project neither the file nor an error.
+        """
+        self._pattern_path = Path(path)
+        if not self._rb[MODE_PATTERN].isChecked():
+            self._rb[MODE_PATTERN].setChecked(True)   # -> _on_mode_changed
+        else:
+            self._emit()
+
     def set_rois(self, rois) -> None:
         """Store what the editor produced. Called by the adapter, not the user."""
         self._rois = tuple(rois)

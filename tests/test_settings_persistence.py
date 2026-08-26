@@ -22,6 +22,15 @@ from _harness import Report, isolate_user_state, pump, qt_app
 
 # (module key, panel attribute, setter, reader, expected) — one distinctive,
 # non-default value per panel so a stuck default cannot pass.
+def _add_step(panel) -> None:
+    """A routine step, added the way the +Step button does."""
+    from acqApp.routines.settings import Step
+    panel._r.steps.append(Step(label="grid A", x_um=250.0, length=64,
+                               unit="frames", settle_s=0.4))
+    panel._reload_table()
+    panel._emit()
+
+
 EDITS = [
     ("voltage_cam", "exposure",  lambda p: p._spn_exposure.setValue(7321.0),
      lambda p: p._spn_exposure.value(),        7321.0),
@@ -64,6 +73,18 @@ EDITS = [
     # simply overwrite the first and prove nothing.
     ("dmd",         "mode-roi",  lambda p: p._rb["roi"].setChecked(True),
      lambda p: p.settings.display_mode,         "roi"),
+    # The step list is the operator's PROTOCOL. Losing it at a restart loses
+    # the design of an experiment, not a spinbox value — and it is the only
+    # setting here that is a nested list rather than a flat scalar.
+    ("routines",    "step list", _add_step,
+     lambda p: [(s.label, s.x_um, s.length, s.unit, s.settle_s)
+                for s in p.settings.steps],
+     [("grid A", 250.0, 64.0, "frames", 0.4)]),
+    ("routines",    "cycles",    lambda p: p._spn_cycles.setValue(4),
+     lambda p: p.settings.cycles,               4),
+    ("routines",    "save mode",
+     lambda p: p._cmb_save.setCurrentIndex(p._cmb_save.findData("per_step")),
+     lambda p: p.settings.save_mode,            "per_step"),
 ]
 
 SAVE_EDITS = [
@@ -231,7 +252,7 @@ def main() -> int:
     saved = json.loads(cfg_path.read_text(encoding="utf-8")).get("settings", {})
     r.note(f"sections: {sorted(saved)}")
     for key in ("voltage_cam", "pupil_cam", "wheel", "puffer", "stage", "dmd",
-                "saving"):
+                "routines", "saving"):
         r.check(key in saved, f"'{key}' section present in the config")
 
     # The stage's axis calibration belongs to the shared stage_control config;

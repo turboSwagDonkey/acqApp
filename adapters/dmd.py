@@ -223,6 +223,20 @@ class DmdModule(ModuleAdapter):
         if duration > 0:
             QTimer.singleShot(int(duration * 1000), self.stop_display)
 
+    # ── what an experiment routine may drive (acq.devices.PatternTarget) ──
+    def pattern_target(self):
+        return self if self.controller is not None else None
+
+    def set_pattern(self, path: str) -> None:
+        """Load a pattern file. Uploads, projects nothing."""
+        self.panel.set_pattern_path(Path(path))
+        self.load(Path(path))
+
+    def set_light(self, on: bool) -> None:
+        """THE call that emits light. `display()` re-applies the panel's
+        geometry first, so a routine projects where the panel says it does."""
+        self.display() if on else self.stop_display()
+
     def attach_sink(self, rec) -> None:
         if self.controller is not None:
             # DMD frames are logged straight from its thread (no GUI-thread hop),

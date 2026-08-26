@@ -29,7 +29,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _harness import Report
+from _harness import Report, isolate_user_state, pump, qt_app
 
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineError, RoutineHooks
 from acqApp.routines.settings import RigLimits, Routine, Step, validate
@@ -472,6 +472,163 @@ def check_transitions(r: Report) -> None:
         r.check(True, "an empty routine raises rather than finishing instantly")
 
 
+# ── the whole app ─────────────────────────────────────────────────────────────
+
+def check_app(r: Report, app, tmp) -> None:
+    """The wiring: the panel refuses, the engine drives real adapters, and the
+    step boundaries reach the file on the shared clock.
+
+    Everything above this runs on fakes. This runs the actual window in mock
+    mode, because the seam that matters is `ModuleHost.stage_target` /
+    `pattern_target` — pooled by the window so the routine never imports the
+    stage, which is exactly the kind of link a unit test cannot see.
+    """
+    import h5py
+
+    import acqApp.main as M
+
+    out = tmp / "routine_rec"
+    win = M.MainWindow(cam_info=None, mock=True,
+                       enabled={"voltage_cam", "stage", "dmd", "routines"},
+                       cam_handle=None)
+    mod = {m.key: m for m in win._modules}
+    adapter, panel = mod["routines"], mod["routines"].panel
+
+    win._save_panel._ed_folder.setText(str(out))
+    win._save_panel._ed_subject.setText("routine")
+    win._save_panel._ed_template.setText("{subject}_{date}_{time}")
+    win._save_panel._on_edited()
+
+    # The stage link is session-scoped, so the targets only exist once a session
+    # does — which is also when a routine could possibly run.
+    r.check(win.stage_target() is None,
+            "no stage target before a session — nothing to drive yet")
+    win._btn_run.setChecked(True)
+
+    r.check(win.stage_target() is mod["stage"],
+            "the window offers the loaded stage as a routine target")
+    r.check(win.pattern_target() is mod["dmd"],
+            "…and the loaded DMD as a pattern target")
+
+    (lo_x, hi_x), (lo_y, hi_y) = win.stage_target().limits_um()
+    # Deliberately off-centre: the midpoint of a symmetric travel is 0.0, and a
+    # check against 0.0 passes for a stage that was never commanded at all.
+    inside = lo_x + (hi_x - lo_x) * 0.37
+    inside_y = lo_y + (hi_y - lo_y) * 0.62
+
+    # ── refusals, before anything is recorded or moved ──
+    panel._r.steps = [Step(label="one", x_um=inside, length=5, unit="frames",
+                           settle_s=0.0),
+                      Step(label="two", x_um=inside, y_um=inside_y,
+                           project=True, length=0.30, unit="seconds",
+                           settle_s=0.05)]
+    panel._reload_table()
+
+    adapter._start()
+    r.check(adapter._engine is None,
+            "Start is refused while not recording — the steps would have no file")
+
+    panel._r.steps[0].x_um = hi_x + 10_000.0
+    r.check(any("soft limits" in p
+                for p in validate(panel.settings, adapter._rig())),
+            "…and an out-of-limits target is refused before the run, not at step 7")
+    panel._r.steps[0].x_um = inside
+
+    # ── the real thing ──
+    moved: list[tuple] = []
+    lit: list[bool] = []
+    ctrl = mod["stage"].controller
+    real_move = ctrl.move_to_um
+    ctrl.move_to_um = lambda which, um: (moved.append((which, um)),
+                                         real_move(which, um))[1]
+    real_light = mod["dmd"].set_light
+    mod["dmd"].set_light = lambda on: (lit.append(bool(on)), real_light(on))[1]
+
+    win._btn_rec.setChecked(True)
+    path = win._rec_path
+    if not r.check(path is not None, "recording started"):
+        return
+
+    adapter._start()
+    if not r.check(adapter._engine is not None,
+                   "the routine starts once a recording is open"):
+        return
+
+    r.check("routine" in adapter.busy_reason().lower(),
+            f"the adapter declares itself busy while a routine runs "
+            f"({adapter.busy_reason()!r})")
+    try:
+        win.set_modules({"voltage_cam"})
+        r.check(False, "set_modules must be refused while a routine runs")
+    except RuntimeError as e:
+        # Today the recording refuses first — a routine cannot run without one.
+        # `busy_reason` is the mechanism that survives per-step file rolling,
+        # where the recorder is closed between steps; it is controlled below.
+        r.check(True, f"set_modules is refused while a routine runs ({e})")
+
+    for _ in range(120):
+        win._display_tick()
+        pump(app, 0.02)
+        if adapter._engine.phase == Phase.DONE:
+            break
+
+    eng = adapter._engine
+    phase, runs, filed = eng.phase, list(eng.runs), adapter._filed
+    win._btn_rec.setChecked(False)
+    win._btn_run.setChecked(False)
+    win.close()
+    pump(app, 0.2)
+
+    r.check(phase == Phase.DONE, f"the routine ran to the end (phase={phase})")
+    r.check(len(runs) == 2 and not any(x.interrupted for x in runs),
+            f"both steps completed cleanly ({len(runs)} runs)")
+    r.check(("x", inside) in moved and ("y", inside_y) in moved,
+            f"the stage really was commanded through the host ({moved})")
+    r.check(sum(1 for a, _ in moved if a == "y") == 1,
+            f"…and an axis left blank in a step is left where it is "
+            f"({[a for a, _ in moved]})")
+    r.check(lit and lit[-1] is False and True in lit,
+            f"the light went on for the projecting step and off after ({lit})")
+
+    frames_run = runs[0]
+    r.check(frames_run.frames is not None and frames_run.frames >= 5,
+            f"the frames step counted frames that reached the FILE "
+            f"({frames_run.frames})")
+    r.check(filed == 4, f"four step boundaries were filed (got {filed})")
+
+    # Control for the check above: the window must really ask every adapter,
+    # not just look at its own recorder.
+    mod["stage"].busy_reason = lambda: "the stage says no"
+    try:
+        win.set_modules({"voltage_cam"})
+        r.check(False, "control: a busy adapter must block set_modules")
+    except RuntimeError as e:
+        r.check("stage says no" in str(e),
+                f"control: the window really asks every adapter ({e})")
+    mod["stage"].busy_reason = lambda: ""
+
+    with h5py.File(path, "r") as f:
+        r.check("routine" in f, f"/routine is in the file (has {list(f)})")
+        g = f["routine"]
+        ts = [float(v) for v in g["timestamps"][:]]
+        vals = [float(v) for v in g["values"][:]]
+        r.check(all(b >= a for a, b in zip(ts, ts[1:])) and ts[0] >= 0.0,
+                f"…stamped on the session clock, in order "
+                f"({[round(v, 2) for v in ts]})")
+        r.check(len(vals) == 4,
+                f"one entry per boundary, opening and closing ({vals})")
+        r.check(vals[0] > 0 and vals[1] < 0,
+                f"…the sign says which edge it is ({vals[:2]})")
+        a = dict(f.attrs)
+        r.check(a.get("routine_started") in (True, 1, "True"),
+                "the file says a routine actually ran")
+        r.check(int(a.get("routine_steps_done", 0)) == 2,
+                f"…and how many steps finished ({a.get('routine_steps_done')})")
+        r.check(int(a.get("routine_n_steps", 0)) == 2
+                and "one" in str(a.get("routine_steps", "")),
+                "…and carries the protocol itself, which nothing else records")
+
+
 def main() -> int:
     r = Report("routines")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_routines_"))
@@ -486,6 +643,15 @@ def main() -> int:
         check_frames_vanish(r)
         check_cycles_and_attrs(r)
         check_transitions(r)
+        # The window persists as a side effect of ordinary use, so isolate
+        # first — an unisolated run overwrites the operator's save folder.
+        state = isolate_user_state()
+        try:
+            sys.argv = ["main.py", "--mock"]
+            check_app(r, qt_app(), state)
+        finally:
+            import shutil
+            shutil.rmtree(state, ignore_errors=True)
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)

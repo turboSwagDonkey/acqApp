@@ -12,8 +12,10 @@ runs and records six subsystems against a single shared session clock:
 | XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
 | DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
 
-…plus a seventh tab, **Closed loop** (`closed_loop.py`), which owns no device: it
-watches one subsystem's live signal and fires another's output (see below).
+…plus two tabs that own no device: **Experiment routines** (`routines/`), which
+executes a protocol of stage positions and DMD patterns step by step, and
+**Closed loop** (`closed_loop/`), which watches one subsystem's live signal and
+fires another's output. Both are described below.
 
 > **What has actually run.** Every subsystem has a real driver path and a mock
 > twin, and the whole suite is verified against the mocks (`tests/`). Two have
@@ -143,6 +145,7 @@ current data rate. It also shows the exact path the next recording will get:
 /puffer/values             (K,) float64 (dur) /puffer/timestamps       (K,) float64
 /stage_x_um  /stage_y_um   (P,) float64       …/timestamps             (P,) float64
 /dmd/values                (Q,) float64 (idx) /dmd/timestamps          (Q,) float64
+/routine/values            (S,) float64 (±step) /routine/timestamps   (S,) float64
 ```
 
 ### Frame timing
@@ -198,9 +201,64 @@ hold the ALP over USB**, so that app and acqApp cannot be connected at once
 (like the stage's serial port). If it is open, acqApp falls back to the mock and
 the DMD tab says `nothing will be projected` rather than silently doing nothing.
 
+### Experiment routines
+
+A tab that owns no device and drives two that do. A **routine** is a list of
+steps executed in order — *put the stage here, put this pattern up, capture this
+much, move on* — repeated for as many cycles as the operator asks. It is the
+first feature in the app whose whole purpose is to **actuate**, which is why it
+is shaped the way it is.
+
+A step's length is set in **frames or seconds, the operator's choice per step**,
+and the two are never interconverted: at 106 fps a rounded conversion sheds
+frames at every step boundary. A frames step is measured by what reached the
+**file**, not by what the camera produced — the two differ exactly when the
+write path is the thing falling behind. `settle_s` is separate from both: a
+stage move and an ALP upload are software-timed and neither is instant.
+
+Everything that decides lives in `routines/settings.py` (the protocol and its
+validation) and `routines/engine.py` (the executor), both Qt-free. **Every
+actuation reaches the engine as a callable**, the way the DMD calibration takes
+`project`/`grab`, so a whole routine — move, settle, light, capture, fault,
+resume — is driven against fakes on a fake clock in `tests/test_routines.py`
+before anything on the rig moves. `adapters/routines.py` is the only part that
+touches a real stage or projector, and it reaches them through
+`ModuleHost.stage_target`/`pattern_target`: an instrument becomes
+routine-drivable by declaring one, and the routine never imports it.
+
+**Validation is up front.** A stage target outside the soft limits, a frames
+step with no camera to count them, a step that projects with no DMD loaded, a
+missing pattern file — each is a refusal at the Start button with every reason
+listed, not a fault at step 7 of 12 with an animal on the rig.
+
+**A device failure pauses; it does not abort.** Stage motion is stopped and the
+light blanked, capture is left alone, and the operator decides. The interrupted
+step's data is **kept and marked** (`interrupted`, plus the fault text) rather
+than discarded, and **Resume repeats that step from its start** as a new
+attempt — a step means "this much capture under these conditions", and half of
+one does not. Both attempts stay in the file. Skip is the other way out.
+
+Step boundaries are recorded to `/routine` on the shared clock: `+n` when step
+*n* opens, `−n` when it closes. The file also carries the protocol itself
+(`routine_steps`, as JSON), because "which stage position was step 4" cannot be
+recovered from anything else in it, and `routine_started` — a routine that was
+configured and never run leaves the same step list as one that ran.
+
+Two more rules that go with it: the light is blanked *before* a move, since a
+lit panel travelling across the sample is a stimulus nobody asked for; and the
+module set cannot change while a routine runs, since the routine holds an index
+into it.
+
+> `save_mode = per_step` (a folder of one file per step, instead of one file for
+> the routine) is modelled, validated and carried into `StepRun.attrs()` — every
+> step file names the session origin and its own t0 on the same clock, so a
+> folder can be reassembled onto one timebase. **The rolling itself is not
+> built yet**; both modes currently produce one session file with `/routine`
+> boundaries in it.
+
 ### Closed loop
 
-A seventh tab, **Closed loop**, owns no device. It watches one live scalar and
+Another tab that owns no device. It watches one live scalar and
 fires one output when a condition on it holds — the behavioural counterpart to
 the scheduled triggers, which fire at a *time* on the session clock rather than
 at a *state* of the animal.
@@ -360,6 +418,7 @@ actions. In short:
 - ✅ Pupil tracking moved off the GUI thread; encoder on the DAQ's sample clock
 - ✅ DMD projecting for real (ALP-4.2), verified on the hardware
 - ✅ Closed loop: trigger the DMD / puffer from live wheel speed (mock-verified)
+- ✅ Experiment routines: stage + DMD protocol executed step by step (mock-verified)
 - Encoder scaling measured on the rig (`volts_per_rev`, wheel diameter)
 - Camera throughput measured on the rig — the number that sizes the ring buffer
 - Closed loop tried on the rig, with the threshold set against a real animal

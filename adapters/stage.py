@@ -104,3 +104,27 @@ class StageModule(ModuleAdapter):
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
         return {"stage_port": s.port, "stage_poll_hz": s.poll_hz}
+
+    # ── what an experiment routine may drive (acq.devices.StageTarget) ──
+    def stage_target(self):
+        """Itself, once connected. None before that, so a routine is refused
+        rather than starting and failing at its first move."""
+        return self if self.controller is not None else None
+
+    def move_to(self, x_um: float | None, y_um: float | None) -> None:
+        """MOTION. One axis at a time, because the controller commands one."""
+        if self.controller is None:
+            raise RuntimeError("stage not connected")
+        for which, um in (("x", x_um), ("y", y_um)):
+            if um is not None:
+                self.controller.move_to_um(which, float(um))
+
+    def stop_motion(self) -> None:
+        if self.controller is not None:
+            self.controller.stop_all()
+
+    def limits_um(self):
+        """The SHARED calibration's soft limits — the same ones the panel
+        clamps to, read live so a recalibration reaches a routine too."""
+        s = self.panel.settings if self.panel is not None else load_stage_settings()
+        return (s.x.soft_limits_um(), s.y.soft_limits_um())

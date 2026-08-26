@@ -272,6 +272,8 @@ def main() -> int:
         def latest_frame(self, key): return None
         def set_live(self, on): return False
         def set_modules(self, keys): return [], []
+        def stage_target(self): return None
+        def pattern_target(self): return None
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

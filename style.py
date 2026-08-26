@@ -18,6 +18,7 @@ HEX = {
     "stage":       "#1aa3b8",   # teal
     "dmd":         "#d6459b",   # magenta
     "closed_loop": "#9ecf2a",   # chartreuse (rule: signal in, actuation out)
+    "routines":    "#6f7bf7",   # indigo — the gap left between blue and purple
     "sync":        "#8844cc",   # purple  (session-wide controls)
     "saving":      "#c9a227",   # gold    (where recordings are written)
 }

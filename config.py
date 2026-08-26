@@ -22,6 +22,9 @@ MODULES: dict[str, str] = {
     "puffer":      "Puffer",
     "stage":       "XY stage",
     "dmd":         "DMD",
+    # Not an instrument either: it drives the stage and the DMD through a
+    # protocol the operator wrote. Before closed_loop so that stays last.
+    "routines":    "Experiment routines",
     # Not an instrument: it watches one module's signal and fires another's
     # output. Must come last — its panel asks the window what sources exist,
     # and the adapters are built in this order.

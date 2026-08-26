@@ -38,6 +38,7 @@ flowchart TD
     main --> console
     adapters --> devices
     adapters --> closed_loop
+    adapters --> routines
     adapters --> acq
     adapters --> config
     adapters --> style
@@ -46,6 +47,7 @@ flowchart TD
     devices --> style
     closed_loop --> acq
     closed_loop --> style
+    routines --> style
     dialogs --> config
     dialogs --> probe
     dialogs --> style
@@ -100,6 +102,7 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
   dmd.py
   puffer.py
   pupil_cam.py
+  routines.py           the ONLY routine code that touches a real device
   stage.py
   voltage_cam.py
   wheel.py
@@ -149,6 +152,7 @@ devices/                one package per instrument
     panel.py
     settings.py
 routines/               experiment routines: a protocol executed in order
+  panel.py              the step table and the run controls
   engine.py             the executor — every actuation arrives as a callable,
                         so the whole of it is testable before light is emitted
   settings.py           Step / Routine / validate() — no Qt

@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QWidget
 from acqApp import style
 from acqApp.closed_loop import SignalSource
 from acqApp.acq.devices import (DeviceWorker, ModuleHost, OutputController,
-                            RecordingOutput)
+                            PatternTarget, RecordingOutput, StageTarget)
 
 
 PLOT_HISTORY = 600          # samples kept in each rolling plot
@@ -175,6 +175,24 @@ class ModuleAdapter:
         """Live scalars this module offers a closed-loop rule. Declaring one is
         the whole cost of making a quantity triggerable."""
         return []
+
+    def stage_target(self) -> StageTarget | None:
+        """If this module can be sent to an XY position, itself. Declaring it is
+        the whole cost of letting an experiment routine drive it."""
+        return None
+
+    def pattern_target(self) -> PatternTarget | None:
+        """If this module can put a pattern up and take it down, itself."""
+        return None
+
+    def busy_reason(self) -> str:
+        """Why the module set must not change right now, or "".
+
+        `set_modules` already refuses while recording; a running routine is the
+        second such case, and asking every adapter keeps the window from
+        learning what a routine is.
+        """
+        return ""
 
     def probe_kwargs(self) -> dict[str, Any]:
         """Extra arguments for probe.probe_all (e.g. the stage's serial port)."""

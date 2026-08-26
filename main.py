@@ -290,6 +290,27 @@ class MainWindow(QMainWindow):
             out.extend(m.signal_sources())
         return out
 
+    def stage_target(self):
+        """The loaded module an experiment routine may move, or None.
+
+        Pooled here for the same reason `signal_sources` is: the routine has to
+        reach the stage without importing its adapter, and the stage stays
+        ignorant that routines exist. First one wins — there is one stage.
+        """
+        return self._first(lambda m: m.stage_target())
+
+    def pattern_target(self):
+        """The loaded module a routine may project through, or None."""
+        return self._first(lambda m: m.pattern_target())
+
+    def _first(self, ask):
+        """The first loaded module that answers `ask` with something."""
+        for m in self._modules:
+            got = ask(m)
+            if got is not None:
+                return got
+        return None
+
     def set_live(self, on: bool) -> bool:
         """Turn the live view on/off for a module that needs frames flowing.
 
@@ -802,6 +823,12 @@ class MainWindow(QMainWindow):
         """
         if self._recorder is not None:
             raise RuntimeError("stop the recording first")
+        # A running routine is the second reason the set must hold still; the
+        # adapter says so, so the window never learns what a routine is.
+        for m in self._modules:
+            why = m.busy_reason()
+            if why:
+                raise RuntimeError(why)
 
         want = [k for k in config.MODULES if k in set(keys) and k in adapters.ADAPTERS]
         have = [m.key for m in self._modules]

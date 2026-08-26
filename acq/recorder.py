@@ -40,6 +40,9 @@ class Recorder:
         self._closed = False
         self._late = 0              # arrived after the file was closed
         self._unstamped = 0         # arrived before the session clock started
+        # Samples offered per stream. Under the same lock as the enqueue, so a
+        # reader gets a count that never leads the buffer.
+        self._offered: dict[str, int] = {}
 
     def start(self, path: Path, metadata: dict[str, Any]) -> None:
         self._stop_event.clear()
@@ -67,6 +70,7 @@ class Recorder:
                 self._late += 1
                 return
             self._buf.put((stream, ts, data))
+            self._offered[stream] = self._offered.get(stream, 0) + 1
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
         """Facts known only once the run is under way. Call before stop()."""
@@ -94,6 +98,18 @@ class Recorder:
             self._writer.update_metadata(final_metadata())
         self._writer.close()
         return remaining
+
+    def offered(self, stream: str) -> int:
+        """Samples of `stream` handed to this file so far.
+
+        "Offered", not written: the ring can still shed one, and that is
+        counted in `drop_count` rather than here. It is what an experiment
+        routine measures a "100 frames" step by — the frames that reached the
+        file, not the frames the camera produced, which differ exactly when the
+        write path is the thing falling behind.
+        """
+        with self._gate:
+            return self._offered.get(stream, 0)
 
     @property
     def drop_count(self) -> int:
