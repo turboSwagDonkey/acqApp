@@ -9,7 +9,7 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (au) |
+| **Last updated** | 2026-08-26 (av) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
 | **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **912 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
@@ -41,10 +41,10 @@ is kept — drawn on the preview, persisted, recorded. Do not restore the tracke
 operator's request: somewhere a colleague can try changes separately). It has
 the tracker live and green — 830 checks, 24 files — and **`PUPIL_TRACKING.md`**
 is its entry point, written for someone who has never seen the repo. Master's
-decision is unchanged; the branch merges back by pull request. **A new
-request arrived 2026-08-26: integrate EyeLoop as the tracker, from an artifact
-written on the laptop** — the note is in §6, and it lands on that branch, not
-here.
+decision is unchanged; the branch merges back by pull request. **EyeLoop was tried on
+2026-08-26 and it works** — 151/151 on both clips, nothing integrated,
+[docs/EYELOOP.md](docs/EYELOOP.md). It lands on that branch, not here, and it
+is **GPL-3.0**, so it stays a sibling clone until the operator says otherwise.
 
 **There are SIX pupil clips on `E:`, not one** (found 2026-08-22 — four sessions
 measured the first and generalised from it). Still worth knowing, since they are
@@ -68,8 +68,9 @@ Use the **absolute** path to that interpreter. The shell usually starts in
 resolves to nothing and Python reports a baffling "the module '.venv' could not
 be loaded". Python here is **3.14** — no cv2 wheels exist for it, which is why
 the archived tracker is hand-rolled numpy and `avi.py` reads RIFF by hand.
-(**Contested as of 2026-08-26**: the EyeLoop artifact reports opencv-python
-5.0.0.93 on 3.14.3 on the laptop. This venv still has none. §6.)
+(**Retired 2026-08-26**: opencv-python 5.0.0.93 ships a `cp37-abi3` wheel and
+installs on 3.14. It is in `.venv` now, suite still green. `avi.py` still works
+and is still what reads the clips — it is no longer *forced*. docs/EYELOOP.md.)
 
 **Sibling projects are proven code, not scratch work.** `../stage_control/` and
 `../dmdGUI_project/` are standalone apps that already work on this hardware, and
@@ -427,49 +428,37 @@ marked**, and **resume repeats the step** as a fresh attempt rather than
 continuing it. **Confirm that second one with the operator on the first real
 run** — it is the only one of the six they did not state themselves.
 
-**INCOMING — integrate EyeLoop as the pupil tracker** (2026-08-26, operator's
-request). Artifact: **EyeLoop Integration Handoff**, `https://claude.ai/code/
-artifact/d229b3b8-4151-4dd3-b4e9-cc1d03ce5d2b`. It was written **on the laptop
-against a different tree** — read it as findings, not as a file plan. Nothing
-in it is in this repo yet. What it establishes:
+**EYELOOP WAS TRIED AND IT WORKS** (2026-08-26) — **151/151 frames on both rig
+clips**, the operator's hard one included, at 1.2–1.8 ms/frame. Nothing is
+integrated: no acqApp module imports it. Full measurements, traps and open
+decisions in **[docs/EYELOOP.md](docs/EYELOOP.md)**; the clone is `../eyeloop/`
+(upstream cd22fb7, GPL-3.0) and is **untracked**, so
+[docs/eyeloop-3.14-patches.diff](docs/eyeloop-3.14-patches.diff) is the only
+durable copy of the patches. The five things worth carrying:
 
-- **EyeLoop runs, after two patches to the laptop's copy.** `np.mat` →
-  `np.asmatrix` in `engine/models/ellipsoid.py` (3 sites) — NumPy 2 removed
-  `np.mat` and `fit()`'s bare `except` swallowed it, so it logged "pupil not
-  found" on every frame forever. Plus `GUI.cursor` seeded in
-  `guis/minimum/minimum_gui.py`. **The patched repo is on the laptop; there is
-  no eyeloop sibling on this machine.**
-- **Drive `Shape` + `Ellipse` as a library, not `run_eyeloop.main()`.** Stub
-  `eyeloop.config` (a process-wide global — one camera only), `reset(seed)`
-  before the first `track()`. 150/150 fits on rig footage, headless. `Shape` is
-  **stateful**, so the tracker is an object, not a pure `detect()`.
-- **Frame tight on the eye.** Its blink detector is a whole-frame mean-
-  brightness test with a hardcoded ±10: **62 %** false positives on the wide
-  rig FOV, **0 %** on an eye crop. The headless path bypasses it; frame tight
-  anyway, since that is what makes the threshold stable. Threshold 35 (30–45).
-- Left open in the artifact: **GPL** (vendor vs. depend), ellipse vs. circular,
-  corneal reflection, and whether `track()` fits inside a 33 ms tick.
+- **Three patches, not the artifact's two.** `engine_constants.py` dies at
+  import under NumPy 2 NEP 50 (`np.int8 * 360` overflows). Necessary, and the
+  artifact does not mention it.
+- **cv2 on 3.14 is settled: it installs** — opencv-python 5.0.0.93 ships a
+  `cp37-abi3` wheel. It and PyYAML are in `.venv` and **the suite is still
+  912/912 green**. §0's "no cv2 wheels exist for 3.14" is retired.
+- **Fit rate is not a quality metric.** `fit()` never resets `params` on
+  failure, so a dead frame returns the last good answer. Worse, threshold sets
+  the radius (**60 % swing**, thr 25→60) and a seed 100 px off silently halves
+  it — both at a reported 151/151. The artifact's threshold 35 is wrong for
+  this rig; ~60 matches the archived tracker's measured 53.6 px.
+- **The crop is mandatory**: full frame is **0/151** at 73 ms/frame; any crop
+  200–900 px gives the same answer. **The eye region is that crop** — kept in
+  the live app, persisted, and currently consumed by nothing. It gets a
+  consumer back.
+- **It does not beat the archived tracker on fit rate or steadiness** (151/151
+  at sd 0.87 px). **The win is that ellipse mode works on real footage**, where
+  acqApp's own was broken at 8/151.
 
-**Three things to settle here before any of it becomes code:**
-
-1. **It cuts against master's decision.** The tracker was retired 2026-08-24
-   and §0 says do not restore on master without being asked. Tracker work goes
-   on the **`pupil-tracking` branch**, where `devices/pupil_cam/tracking.py` is
-   live and green — so this is *replacing a working hand-rolled tracker*, not
-   filling the empty stub the artifact describes. **Ask which.**
-2. **cv2.** The artifact's colophon claims opencv-python 5.0.0.93 on Python
-   3.14.3; §0 says no cv2 wheels exist for 3.14, which is *why* the archived
-   tracker is hand-rolled numpy and `avi.py` reads RIFF by hand. `acqApp/.venv`
-   has **no cv2** today (checked 2026-08-26, numpy 2.4.6). One
-   `pip install opencv-python` into that venv settles it and is the cheapest
-   first move — if it lands, §0's claim is stale and says so.
-3. **Its file map is the laptop's** — `pupil_cam/tracking.py`,
-   `app/panels/pupil_panel.py:108`, `acquisitionPcam.py`. Here it is
-   `devices/pupil_cam/{acquisition,panel}.py` and, on the branch,
-   `tracking.py` + `track_worker.py` + `fits.py` + `rays.py`. `PupilResult` is
-   real (`archive/pupil_tracking/tracking.py:79`) and the artifact's advice to
-   widen it to the full ellipse still applies. Translate before following any
-   step in it.
+**Blocked on the operator, and nothing should be written until they answer:**
+which tree (§0 forbids restoring a tracker on master; `pupil-tracking` already
+has a *working* one), and **GPL-3.0** — vendoring EyeLoop into `devices/` makes
+acqApp a derived work, which is why the clone was kept as a sibling.
 
 ~~Pupil tracking.~~ **Retired 2026-08-24** — `archive/pupil_tracking/`. The
 eye region stayed. Do not restore without being asked; the README there has the
@@ -490,6 +479,31 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (av) — EyeLoop, tried
+
+Cloned EyeLoop (`../eyeloop/`, GPL-3.0, upstream cd22fb7), patched it and drove
+it headless over both rig clips. **It fits 151/151 on each, the operator's hard
+clip included, at 1.2–1.8 ms/frame.** Nothing integrated — no acqApp module
+imports it. [docs/EYELOOP.md](docs/EYELOOP.md) has the numbers.
+
+- **The artifact's two patches are not enough.** A third, `engine_constants.py`
+  under NumPy 2 NEP 50, stops it at *import*. Saved all three as
+  `docs/eyeloop-3.14-patches.diff` — the clone is untracked, so that diff is
+  the only durable copy.
+- **cv2 installs on 3.14** (`cp37-abi3` wheel). Retires a §0 claim that shaped
+  two subsystems. cv2 + PyYAML now in `.venv`; **suite re-run, 912/912 green**.
+- **The 151/151 nearly fooled me.** `fit()` never resets `params` on failure,
+  so failures return the last good fit. A noise control (0/151 genuine, 151
+  stale) is what makes the real number trustworthy. Then two silent
+  degradations *at* 151/151: threshold swings radius 60 %, and a seed 100 px
+  off halves it. **The artifact's threshold 35 is wrong for this rig.**
+- **Full frame is 0/151 at 73 ms.** The crop is required, and acqApp's eye
+  region — persisted, recorded, consumed by nothing since the retirement — is
+  exactly it.
+
+**Next: the operator decides** which tree it lands on and what GPL-3.0 implies
+before any code moves into the repo. §6's three rig measurements are unchanged.
 
 ### 2026-08-26 (au) — a note, not code
 
