@@ -2,27 +2,27 @@
 
 Everything that moves, lights up or writes a file arrives as a **callable**
 (`RoutineHooks`), the way `devices/dmd/calibration.py` takes `project`/`grab`.
-That is what lets the whole of this be driven against fakes before anything on
-the rig actuates, which §2 requires and this feature exists to do.
+That is what lets all of it be driven against fakes before anything on the rig
+actuates — §2's requirement, and the whole difficulty of this feature.
 
-`tick()`, not a loop with sleeps: the worker calls it at its own rate, so the
-engine is a state machine over `now()` and `frames()` and a test can step it
-through a whole routine on a fake clock in milliseconds.
+`tick()`, not a loop with sleeps: a state machine over `now()` and `frames()`,
+so pause/resume/abort are transitions and a test steps a whole routine on a
+fake clock.
 
-**On a device failure it PAUSES, it does not abort** (operator, PLAN §6 (4)):
-stage motion stopped and light off, capture untouched, and the operator decides.
-Two consequences of that, both decided here rather than left to the caller:
+**A device failure PAUSES; it does not abort** (operator, PLAN §6 (4)): motion
+stopped, light off, capture untouched, the operator decides. Two consequences
+the plan left open, decided here:
 
 - **The interrupted step's data is kept and marked**, never discarded — with an
   animal on the rig, recorded frames are not ours to throw away. `StepRun`
   carries `interrupted` and `fault` into the file.
-- **Resume repeats the step from its start**, as a new `attempt`. A step means
-  "this much capture under these conditions"; half of one does not, and both
-  attempts stay in the file so the analysis can see what happened.
+- **Resume repeats the step**, as a new `attempt`. A step means "this much
+  capture under these conditions"; half of one does not. Both attempts stay in
+  the file.
 
-The engine never touches the Recorder. It emits `begin_step`/`end_step`, and
-whether that rolls a new file (`save_mode="per_step"`) or just marks a boundary
-is the adapter's business.
+The engine never touches the Recorder: it emits `begin_step`/`end_step`, and
+whether that rolls a file (`save_mode="per_step"`) or marks a boundary is the
+adapter's business.
 """
 from __future__ import annotations
 
@@ -42,8 +42,6 @@ class Phase:
     CAPTURE = "capture"
     PAUSED  = "paused"      # a fault, or the operator — resume/skip/abort
     DONE    = "done"
-
-    ALL = (IDLE, SETTLE, CAPTURE, PAUSED, DONE)
 
 
 def _noop(*_a, **_k) -> None:
@@ -86,13 +84,15 @@ class StepRun:
     fault:       str = ""
 
     def attrs(self, session_origin: float = 0.0) -> dict[str, Any]:
-        """Attributes for this step's file, named here so both save modes agree.
+        """What one step execution records about itself.
 
-        `per_step` gives up "one HDF5 per session" as a *file* property; what
-        replaces it is this. Every step file carries the session origin and its
-        own t0 **on the same clock**, so a folder of them reassembles onto one
-        timebase. Per-step files that each restart from zero are not relatable
-        afterwards, and that is unrecoverable once the animal is off the rig.
+        Named here once so the two save modes cannot disagree: `single` files
+        the list of these as `routine_runs`, `per_step` will write each as its
+        own file's attributes. That is what `per_step` pays for giving up "one
+        HDF5 per session" as a *file* property — every step names the session
+        origin and its own t0 **on the same clock**, so a folder reassembles
+        onto one timebase. Files that each restart from zero are not relatable,
+        and that is unrecoverable once the animal is off the rig.
         """
         return {
             "routine_session_origin":   float(session_origin),

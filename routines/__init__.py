@@ -27,7 +27,6 @@ _LAZY = {
     "Routine":        "settings",
     "Step":           "settings",
     "validate":       "settings",
-    "with_step":      "settings",
     "MOVE_TIMEOUT_S": "engine",
     "Phase":          "engine",
     "RoutineEngine":  "engine",

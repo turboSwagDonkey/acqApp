@@ -4,18 +4,18 @@ A routine is a list of steps executed in order: put the stage here, put this
 pattern up, capture this much, move on. `Step` and `Routine` are what persists;
 `validate()` is what refuses a run *before* it starts.
 
-Two things here are load-bearing and were the operator's calls (PLAN §6):
+Two things here were the operator's calls (PLAN §6) and are load-bearing:
 
-- **A step's length is frames OR seconds, its author's choice**, and the two are
-  never interconverted. At 106 fps a rounded conversion sheds frames at every
-  step boundary, so `unit` travels with `length` all the way into the engine.
-- **Validation is up front.** A stage target outside the soft limits must be a
+- **A step's length is frames OR seconds, its author's choice**, never
+  interconverted — at 106 fps a rounded conversion sheds frames at every step
+  boundary, so `unit` travels with `length` into the engine.
+- **Validation is up front.** A stage target outside the soft limits is a
   refusal at the Start button, not a fault at step 7 of 12 with an animal on
   the rig.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 UNITS = ("frames", "seconds")
@@ -174,9 +174,3 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
 
     return out
 
-
-def with_step(routine: Routine, index: int, **changes) -> Routine:
-    """A copy of `routine` with one step edited — the panel's undo-free edit."""
-    steps = list(routine.steps)
-    steps[index] = replace(steps[index], **changes)
-    return replace(routine, steps=steps)

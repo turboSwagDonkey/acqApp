@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (ar) |
+| **Last updated** | 2026-08-26 (as) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **899 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **910 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **899 checks, 25 files, ~60 s**, and it is ALL GREEN. Run it
+the contract: **910 checks, 25 files, ~60 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -441,6 +441,33 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (as) — prose/optimisation sweep over the routines code
+
+The §6 item 5 sweep, same two jobs, run over what (ar) added. **The prose half
+found almost nothing** and the measurement said so up front: the new files sit
+at 20.8 % comment+docstring against a tree at 24.5 %, so worst-first by ratio
+pointed at interface files where the docstring *is* the contract. That is the
+2026-08-19 finding again — the remainder is not where the prose is.
+
+**Both real findings came from profiling**, and one of them refuted a
+micro-benchmark:
+- **`Recorder.offered()` took the enqueue gate to read one int** — read ~70×/s
+  from the GUI thread while a routine runs, against every worker's `put()`.
+  **6.1 ms mean / 28.7 ms worst → 1.4 µs / 4.2 µs.** The lock bought a count no
+  caller can distinguish; the increment still happens under the gate the
+  enqueue already holds, at 68 ns/sample.
+- **The routines panel restyled every display tick** — `setStyleSheet`
+  repolishes against the window's whole cascade, **53 % of the shared 30 Hz
+  tick**, re-applying an identical string. A bench on a detached panel had said
+  2 µs and "not worth it"; the profile of the *built window* said 26 µs. Tick
+  **0.05 → 0.02 ms**.
+
+Also: two dead names deleted, and `StepRun.attrs()` was promising the file
+something nothing wrote — `single` mode now files `routine_runs`, so **which**
+execution faulted is recoverable (`/routine` carries only a signed index).
+Numbers and reasoning in [docs/DECISIONS.md](docs/DECISIONS.md) §6 item 5, which
+is that pass's ledger. Suite **899 → 910 checks**, 25 files, green.
 
 ### 2026-08-26 (ar) — experiment routines: built, wired, and mock-verified
 

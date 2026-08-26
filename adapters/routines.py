@@ -2,23 +2,21 @@
 The experiment routine's adapter — the only code here that touches a real
 stage or a real projector.
 
-Everything that decides lives in `routines/`, Qt-free and driven against fakes
-by `tests/test_routines.py`. This builds the `RoutineHooks` that point that
-engine at the loaded modules, and it reaches them through `ModuleHost`
-(`stage_target`/`pattern_target`) rather than by importing their adapters — the
-stage does not know routines exist.
+Everything that decides lives in `routines/`, Qt-free. This builds the
+`RoutineHooks` pointing that engine at the loaded modules, reaching them
+through `ModuleHost` (`stage_target`/`pattern_target`) rather than by importing
+their adapters — the stage does not know routines exist.
 
-**The tick runs on the GUI thread**, on a QTimer, not in a worker. The engine's
-tick is cheap and non-blocking, and the closed loop already went out of its way
-to get actuation *back* onto the GUI thread (its `fired` signal is queued);
-starting here is that, without the hop. A stage move is a short serial write —
-the position poller owns the polling, on its own thread.
+**The tick runs on the GUI thread**, on a QTimer, not in a worker. It is
+non-blocking, and the closed loop already goes out of its way to get actuation
+*back* here (its `fired` signal is queued); this is that, without the hop. A
+stage move is a short serial write; the position poller does the polling, on
+its own thread.
 
 **Save mode `per_step` is accepted and validated but not yet rolled**: step
-boundaries are recorded into the one session file as `/routine`. Rolling a file
-per step means re-entering `MainWindow._start_recording` mid-session, which is
-the operator's file and a separate piece of work. Until then both modes produce
-one relatable file, which is the invariant that mattered.
+boundaries go into the one session file as `/routine`. Rolling one means
+re-entering `MainWindow._start_recording` mid-session, and main.py is the
+operator's file. Until then both modes produce one relatable file.
 """
 from __future__ import annotations
 
@@ -47,10 +45,9 @@ FRAME_STREAM = "voltage_cam"
 class RoutinesModule(ModuleAdapter):
     """Wires `routines/` into this window.
 
-    Owns no device. Like the closed loop it is last-ish in `config.MODULES` and
-    reads its neighbours only through the host, so a new instrument becomes
-    routine-drivable by declaring `stage_target`/`pattern_target` and changing
-    nothing here.
+    Owns no device, and reads its neighbours only through the host: an
+    instrument becomes routine-drivable by declaring `stage_target` or
+    `pattern_target`, and nothing here changes.
     """
     key = "routines"
     tab_label = "Routines"
@@ -105,9 +102,8 @@ class RoutinesModule(ModuleAdapter):
         rec = self._rec
 
         def frames() -> int | None:
-            # What reached the FILE, not what the camera produced: a "100
-            # frames" step is 100 frames of data, and the two differ exactly
-            # when the write path is the thing falling behind.
+            # What reached the FILE, not what the camera produced — the two
+            # differ exactly when the write path is what is falling behind.
             return None if rec is None else rec.offered(FRAME_STREAM)
 
         def noop_move(_x, _y) -> None:
@@ -275,11 +271,19 @@ class RoutinesModule(ModuleAdapter):
         eng = self._engine
         if eng is None:
             return {"routine_started": False, "routine_steps_done": 0,
-                    "routine_steps_interrupted": 0, "routine_fault": ""}
+                    "routine_steps_interrupted": 0, "routine_fault": "",
+                    "routine_runs": "[]"}
         return {
             "routine_started":           True,
             "routine_steps_done":        eng.steps_done(),
             "routine_steps_interrupted": sum(1 for x in eng.runs if x.interrupted),
+            # Every execution, not just the counts. `/routine` carries the
+            # boundaries but only a signed index, so without this a step that
+            # was interrupted and repeated is indistinguishable from one that
+            # ran twice — and WHICH one faulted is recoverable from nothing
+            # else in the file. Session origin 0.0: in `single` mode the file
+            # IS the session, so its clock already starts there.
+            "routine_runs": json.dumps([x.attrs() for x in eng.runs]),
             # Empty unless it ended paused — a routine that finished clean and
             # one that was left paused at step 7 look alike without this.
             "routine_fault":             eng.fault if eng.phase == Phase.PAUSED

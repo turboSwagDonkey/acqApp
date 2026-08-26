@@ -25,6 +25,7 @@ What it defends, in the order the decisions were made (PLAN §6):
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -472,6 +473,44 @@ def check_transitions(r: Report) -> None:
         r.check(True, "an empty routine raises rather than finishing instantly")
 
 
+def check_panel_repaint(r: Report, app) -> None:
+    """The panel is told its state 30×/s; it must repaint only on a change.
+
+    `setStyleSheet` repolishes the widget against the window's whole cascade —
+    26 us a call, and **53 % of the shared display tick** with eight modules
+    loaded, spent re-applying the identical string. Counted rather than timed,
+    so this is not a flaky benchmark.
+    """
+    from acqApp.routines.panel import SettingsPanel
+
+    panel = SettingsPanel()
+    styled, texted = [], []
+    lbl = panel._lbl_state
+    real_style, real_text = lbl.setStyleSheet, lbl.setText
+    lbl.setStyleSheet = lambda s: (styled.append(s), real_style(s))[1]
+    lbl.setText = lambda s: (texted.append(s), real_text(s))[1]
+
+    for i in range(30):
+        panel.set_state(Phase.CAPTURE, f"step 1/2 — capturing {i} %")
+    r.check(len(styled) == 1,
+            f"30 ticks in one phase restyle once ({len(styled)})")
+    r.check(len(texted) == 30,
+            f"…while the moving text still updates every tick ({len(texted)})")
+
+    panel.set_state(Phase.PAUSED, "PAUSED — the stage stopped answering")
+    r.check(len(styled) == 2, "a phase change does restyle")
+    r.check(not panel._btn_pause.isEnabled() and panel._btn_resume.isEnabled(),
+            "…and the buttons follow the new phase")
+
+    # CONTROL: show_problems() writes the label out of band, so the next
+    # set_state must repaint even though the phase never moved.
+    panel.show_problems(["step 1: nope"])
+    panel.set_state(Phase.PAUSED, "PAUSED — the stage stopped answering")
+    r.check(len(styled) == 4,
+            f"control: an out-of-band write forces the next repaint ({len(styled)})")
+    app.processEvents()
+
+
 # ── the whole app ─────────────────────────────────────────────────────────────
 
 def check_app(r: Report, app, tmp) -> None:
@@ -627,6 +666,15 @@ def check_app(r: Report, app, tmp) -> None:
         r.check(int(a.get("routine_n_steps", 0)) == 2
                 and "one" in str(a.get("routine_steps", "")),
                 "…and carries the protocol itself, which nothing else records")
+        # `/routine` gives the boundaries but only a signed index. Which
+        # execution faulted, and when each one started on the session clock,
+        # is recoverable from nothing else in the file.
+        runs = json.loads(str(a.get("routine_runs", "[]")))
+        r.check(len(runs) == 2 and [x["routine_step_index"] for x in runs] == [0, 1],
+                f"…and every step EXECUTION, not just the counts ({len(runs)})")
+        r.check(all(x["routine_step_interrupted"] is False for x in runs)
+                and runs[1]["routine_step_t0"] > runs[0]["routine_step_t0"],
+                "…each with its own t0 on the shared clock and its fault flag")
 
 
 def main() -> int:
@@ -648,7 +696,9 @@ def main() -> int:
         state = isolate_user_state()
         try:
             sys.argv = ["main.py", "--mock"]
-            check_app(r, qt_app(), state)
+            app = qt_app()
+            check_panel_repaint(r, app)
+            check_app(r, app, state)
         finally:
             import shutil
             shutil.rmtree(state, ignore_errors=True)

@@ -24,6 +24,7 @@ nothing went wrong is trusted:
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -194,6 +195,66 @@ def check_drops_counted(r: Report) -> None:
             f"shed samples are counted (got {rec.drop_count})")
 
 
+def check_offered_never_blocks(r: Report) -> None:
+    """`offered()` is read from the GUI thread; it must not wait on the gate.
+
+    An experiment routine measures a "100 frames" step by this count, reading it
+    ~70×/s (its own tick plus the display tick) while every device worker is
+    enqueueing through `put()`. Taking the gate to read one int bought a count
+    that never leads the buffer — which no caller can tell apart — and cost a
+    stall behind the producers: 6.1 ms mean, 28.7 ms worst against a saturating
+    one, against 1.3 us unlocked.
+
+    Deterministic, not a timing measurement: hold the gate from another thread
+    and require the read to come back anyway. A locked read hangs here.
+    """
+    rec, _w, clock = new_recorder()
+    clock.start()
+    rec.start(Path("unused.h5"), {})
+    for i in range(7):
+        rec.put("wheel", float(i))
+    r.check(rec.offered("wheel") == 7,
+            f"offered() counts what was handed over (got {rec.offered('wheel')})")
+    r.check(rec.offered("nothing_here") == 0,
+            "…and 0 for a stream nothing has written")
+
+    got: list = []
+    held = threading.Event()
+
+    def reader() -> None:
+        held.wait(2.0)
+        got.append(rec.offered("wheel"))
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    with rec._gate:                     # the lock every put() takes
+        held.set()
+        th.join(timeout=1.0)
+    r.check(not th.is_alive() and got == [7],
+            f"offered() returns while the enqueue gate is held (got {got})")
+
+    # CONTROL: the same read WITH the gate is what would hang — so the check
+    # above is not passing for free.
+    stuck: list = []
+    go = threading.Event()
+
+    def locked_reader() -> None:
+        go.wait(2.0)
+        with rec._gate:
+            stuck.append(rec.offered("wheel"))
+
+    th2 = threading.Thread(target=locked_reader, daemon=True)
+    th2.start()
+    with rec._gate:
+        go.set()
+        th2.join(timeout=0.3)
+        blocked = th2.is_alive()
+    th2.join(timeout=1.0)
+    r.check(blocked, "control: a read that does take the gate blocks there")
+
+    rec.stop()
+
+
 # ── #8 ────────────────────────────────────────────────────────────────────────
 
 def check_no_hot_spin(r: Report) -> None:
@@ -352,6 +413,7 @@ def main() -> int:
     check_late_samples(r)
     check_unstamped(r)
     check_drops_counted(r)
+    check_offered_never_blocks(r)
     check_no_hot_spin(r)
     check_skip_report_blames_the_loop(r)
     check_memory_capped_buffer_is_announced(r)

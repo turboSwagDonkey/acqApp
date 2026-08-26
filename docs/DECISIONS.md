@@ -201,6 +201,37 @@ a measured 4.912, and the encoder voltage does wrap.
      on a 1600×1200 synthetic eye, same radius to 2 dp.
    - `presets.readout_fps` sorted its datasheet table on every call.
 
+   **From the 2026-08-26 sweep over `routines/` (the same two jobs, worst-first
+   by ratio — which found nothing, so both findings came from profiling):**
+   - **`Recorder.offered()` took the enqueue gate to read one int.** It is read
+     ~70×/s from the GUI thread while a routine runs (the routine's own tick
+     plus the display tick), and every device worker enqueues through that same
+     lock. **6.1 ms mean / 28.7 ms worst → 1.4 µs / 4.2 µs** against a
+     saturating producer. The lock bought a count that never leads the buffer,
+     which no caller can tell apart: the one comparison is
+     `n - frame0 >= length`. One dict lookup of an int is atomic under the GIL;
+     the *increment* still happens under the gate the enqueue already holds,
+     for 68 ns/sample. `test_recording_losses` holds the gate from another
+     thread and requires the read to return, with the locked read as the
+     control that blocks.
+   - **The routines panel restyled itself every display tick.** `setStyleSheet`
+     repolishes against the window's whole cascade — 26 µs a call, and **53 %
+     of the shared 30 Hz tick** with eight modules loaded, to re-apply an
+     identical string. Guarded on the phase actually changing: tick
+     **0.05 → 0.02 ms**, and `set_state` leaves the profile entirely. Honest
+     framing: the tick was never in trouble (0.1 % of budget), it was simply the
+     largest thing in it and free to remove. Counted, not timed, in the test.
+   - **A micro-benchmark said this last one cost 2 µs and was not worth it.**
+     Profiling it *in the built window* said 26 µs. The 2026-08-18 lesson holds:
+     one profile of the real path beats guessing, and beats a bench on a
+     detached widget.
+   - Two dead names deleted (`settings.with_step`, `Phase.ALL` — nothing ever
+     called either), and `StepRun.attrs()` was **promising the file something
+     nothing wrote**: it had no caller outside the test. Now `single` mode files
+     the list as `routine_runs`, so which execution faulted, and when each
+     started on the session clock, is recoverable — `/routine` carries only a
+     signed index.
+
    - `_EncoderBase._report` ran `np.polyfit` **per sample** — an SVD behind a
      Vandermonde, 120×/s, to fit a straight line. Now the closed-form slope
      `cov(t,p)/var(t)`, plus `searchsorted` for the window (the buffer is
