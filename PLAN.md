@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-25 (aq) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. Suite **802 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. Suite **802 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — and after it, **experiment routines** (§6, 2026-08-26). |
 
 ---
 
@@ -386,6 +386,36 @@ kept for its reasoning, not a queue.
    mm, and the closed loop's threshold has to be set in revolutions.
    `volts_per_rev` is a measured 4.912 and the sign is settled, so this is the
    only thing between the wheel and fully physical units.
+
+**THE NEXT BIG ONE — EXPERIMENT ROUTINES** (operator, 2026-08-26). A protocol
+defined once and executed in order: 100 frames at this stage position with this
+DMD pattern, move, another 100 with a different pattern, repeat. Not started;
+the three actions above come first, and item 2 in particular — a routine that
+places ROIs inherits the unverified calibration.
+
+**It is the first feature whose whole purpose is to actuate**, and §2 does not
+weaken because the actuation is the point. Build the engine to take `move`,
+`project` and `grab` AS CALLABLES, exactly as `calibration.py` does, so all of
+it is verified before anything moves or lights up. `closed_loop/` is the shape
+to copy — model / worker / panel, with arming that cannot be persisted.
+
+**Four questions to answer here before writing code:**
+1. **What is "100 frames"?** The camera free-runs and nothing counts for you.
+   Off the sink, N/fps seconds, or the External edge trigger? Only one gives
+   exactly 100.
+2. **One file or many?** One HDF5 on one clock is the project's core invariant.
+   Keeping it means a `/routine` step-boundary stream, as `/closed_loop` already
+   does for fires. A file per step breaks the invariant — argue it or drop it.
+3. **How does a step know it is done?** Stage moves are not instant and
+   `alp.project()` uploads ONE frame, so pattern steps are software-timed
+   (`FreshGrabber`). Settling time is a parameter, not a detail.
+4. **What happens mid-run when a device refuses?** Abort, skip or hold — and
+   Stop must leave the hardware safe: light off, stage stationary.
+
+**Two constraints that already exist**: stage positions must be validated
+against the soft limits *before* the run starts, not discovered at step 7 of 12;
+and `set_modules()` refuses while recording, so it almost certainly must refuse
+while a routine runs (`on_modules_changed()` is the hook).
 
 ~~Pupil tracking.~~ **Retired 2026-08-24** — `archive/pupil_tracking/`. The
 eye region stayed. Do not restore without being asked; the README there has the
