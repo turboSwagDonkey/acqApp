@@ -399,18 +399,34 @@ weaken because the actuation is the point. Build the engine to take `move`,
 it is verified before anything moves or lights up. `closed_loop/` is the shape
 to copy — model / worker / panel, with arming that cannot be persisted.
 
-**Four questions to answer here before writing code:**
-1. **What is "100 frames"?** The camera free-runs and nothing counts for you.
-   Off the sink, N/fps seconds, or the External edge trigger? Only one gives
-   exactly 100.
-2. **One file or many?** One HDF5 on one clock is the project's core invariant.
-   Keeping it means a `/routine` step-boundary stream, as `/closed_loop` already
-   does for fires. A file per step breaks the invariant — argue it or drop it.
-3. **How does a step know it is done?** Stage moves are not instant and
-   `alp.project()` uploads ONE frame, so pattern steps are software-timed
-   (`FreshGrabber`). Settling time is a parameter, not a detail.
-4. **What happens mid-run when a device refuses?** Abort, skip or hold — and
-   Stop must leave the hardware safe: light off, stage stationary.
+**The four design questions are ANSWERED (operator, 2026-08-26).** Build to
+these, do not reopen them:
+
+1. **A step's length is set by the operator, in FRAMES or SECONDS** — their
+   choice of unit per step. So a step ends on whichever it was given; the
+   engine needs both and must not silently convert one to the other (at 106 fps
+   a rounded conversion loses frames at every step boundary).
+2. **One file per step — and the save mode is an OPTION**: a single HDF5 for
+   the whole routine, or a folder of per-step files. Both.
+3. Settled by (1): a step is done when its frame count or its seconds are up.
+   Settling time after a move/pattern change is still a separate parameter —
+   stage moves and `alp.project()` (one frame per upload, `FreshGrabber`) are
+   both software-timed and neither is instant.
+4. **On a device failure mid-run: PAUSE everything that is not capture** —
+   stage motion stopped, light off — **and show an error.** Not an abort:
+   capture keeps running and the operator decides.
+
+**What (2) costs, and it must be handled rather than discovered.** One file per
+step gives up "one HDF5 per session" as a *file* property, but the shared
+`SessionClock` is still the truth: every stream in every step file must stay
+stamped on it, and each file must record the session origin and its own step t0
+so the folder can be reassembled onto one timebase. Per-step files that each
+restart from zero are not relatable afterwards, and that is unrecoverable once
+the animal is off the rig.
+
+**(4) needs a resume path defined.** "Pause" implies going again — decide what
+happens to the half-finished step's data, and whether resume repeats it or
+continues it, before writing the pause.
 
 **Two constraints that already exist**: stage positions must be validated
 against the soft limits *before* the run starts, not discovered at step 7 of 12;

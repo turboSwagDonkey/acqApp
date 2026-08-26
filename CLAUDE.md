@@ -5,6 +5,9 @@ cam, wheel, puffer, XY stage, DMD on one shared clock, one HDF5 per session).
 
 ## Start here
 
+**Follow SOLID Principles**
+**Add explanatory comments, but keep them plain and short** 
+
 **Read [PLAN.md](PLAN.md) before planning any work** — its **§0 "Start here"**
 first, which carries the orientation a fresh session needs (how to run the
 suite, which hardware is actually on this machine, the sibling projects worth
