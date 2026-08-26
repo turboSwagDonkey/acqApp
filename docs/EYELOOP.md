@@ -18,18 +18,25 @@ The clone is **untracked by any repo here**, so
 [eyeloop-3.14-patches.diff](eyeloop-3.14-patches.diff) is the only durable copy
 of the patches. `git clone` + `git apply` reproduces the working state.
 
-## The three patches — the artifact names two
+## The four patches — the artifact names two
 
-| File | Fix |
-|---|---|
-| `engine/models/ellipsoid.py` | `np.mat(` → `np.asmatrix(`, 3 sites |
-| `constants/engine_constants.py` | `int(i) * 360` — **not in the artifact** |
-| `guis/minimum/minimum_gui.py` | seed `self.cursor`; GUI-only, irrelevant headless |
+| File | Fix | Needed for |
+|---|---|---|
+| `engine/models/ellipsoid.py` | `np.mat(` → `np.asmatrix(`, 3 sites | everything |
+| `constants/engine_constants.py` | `int(i) * 360` | everything |
+| `guis/minimum/minimum_gui.py` | seed `self.cursor` | the GUI |
+| `guis/minimum/minimum_gui.py` | `putText` via uint8 | the GUI |
 
-**The third one is why the artifact's two are necessary and not sufficient.**
+**The middle two are why the artifact's pair is necessary and not sufficient.**
 `engine_constants.py` dies *at import* under NumPy 2's NEP 50: `angular_range`
 is `dtype=np.int8`, and `i * 360` no longer promotes, so it overflows int8 on
 the first non-zero element. Nothing runs until it is fixed.
+
+The fourth is what stops the **stock GUI** from starting under OpenCV 5:
+`arm()` builds its label strips with `np.zeros(...)` (float64) and `cv2.putText`
+now asserts `CV_8U`. Those buffers are composited as float downstream, so the
+patch draws on a uint8 scratch and converts back rather than changing their
+dtype — same values, same dtype, no change to the display stack.
 
 The `np.mat` one is the blocker the artifact describes, and it verifies: fitting
 a known ellipse (centre 300,200, semi-axes 60×35, 25°) recovers it to
@@ -146,6 +153,36 @@ construction.
 4. **Ellipse or circular**, given circular is cheaper and equally steady here.
    Ellipsoid earns its cost only if the ellipse itself is wanted — which was
    the point of trying EyeLoop.
+
+## Running the stock GUI on a clip
+
+Verified end-to-end on 2026-08-26 — it opens, tracks and exits clean:
+
+```
+cd c:\Users\User\Desktop\python\eyeloop
+c:\Users\User\Desktop\python\acqApp\.venv\Scripts\python.exe -m eyeloop.run_eyeloop ^
+    --video "E:\pAce\VF203.2R\20260701\FOV1_T1\FOV1_T1_Pupil.avi" ^
+    --scale 0.4 --framerate 15 --save 0
+```
+
+`cd` into the clone: EyeLoop is **not pip-installed** into `.venv`, so it is
+found only via the current directory.
+
+- `--scale 0.4` — the clips are 1928×1208 and the stock GUI does not fit on
+  screen at 1:1.
+- `--save 0` — **the default is 1, which writes every frame as a JPG**: ~27 MB
+  per run of a 151-frame clip, into `eyeloop/data/trial_<timestamp>/`.
+- `--framerate 15` matches the clips. It rate-limits playback.
+
+In the **CONFIGURATION** window: hover the pupil and press **1** to seed it,
+**R/F** threshold, **T/G** blur, then **z** and **y** to start tracking, **q**
+to quit. Pressing 1 before moving the mouse is what the cursor patch fixes.
+
+**The blink detector is live in this path** and these are the wide-FOV clips,
+so expect it to misfire — 62 % per the artifact, and `--scale` scales rather
+than crops, so the CLI cannot give it the tight framing it wants. The stock GUI
+is for *looking at* the tracker, not for measuring it. The headless path is
+where the numbers above came from.
 
 ## Reproducing
 

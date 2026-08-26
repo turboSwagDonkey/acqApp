@@ -436,9 +436,10 @@ decisions in **[docs/EYELOOP.md](docs/EYELOOP.md)**; the clone is `../eyeloop/`
 [docs/eyeloop-3.14-patches.diff](docs/eyeloop-3.14-patches.diff) is the only
 durable copy of the patches. The five things worth carrying:
 
-- **Three patches, not the artifact's two.** `engine_constants.py` dies at
-  import under NumPy 2 NEP 50 (`np.int8 * 360` overflows). Necessary, and the
-  artifact does not mention it.
+- **Four patches, not the artifact's two.** `engine_constants.py` dies at
+  import under NumPy 2 NEP 50 (`np.int8 * 360` overflows); the stock GUI then
+  dies on `putText` against a float64 buffer under OpenCV 5. Neither is in the
+  artifact. **The stock GUI runs on a clip** — command in docs/EYELOOP.md.
 - **cv2 on 3.14 is settled: it installs** — opencv-python 5.0.0.93 ships a
   `cp37-abi3` wheel. It and PyYAML are in `.venv` and **the suite is still
   912/912 green**. §0's "no cv2 wheels exist for 3.14" is retired.
