@@ -163,8 +163,9 @@ docs/
   AUDIT-2026-08.md      closed audit — archive
   CAMERA_TRANSFER.md
   DECISIONS.md          closed items, kept for their reasoning — archive
+  EYELOOP-INTEGRATION.md  the plan for moving it into devices/ — start here
   EYELOOP.md            EyeLoop tried 2026-08-26 — and eyeloop-3.14-patches.diff
-                        beside it, the only durable copy of the 3 patches
+                        beside it, the only durable copy of the 4 patches
   HANDOFF.md
   PUPIL_CAMERA_TRANSFER.md
   README.md

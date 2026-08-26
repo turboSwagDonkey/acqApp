@@ -9,7 +9,7 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (aw) |
+| **Last updated** | 2026-08-26 (ax) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
 | **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **912 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
@@ -483,6 +483,11 @@ outside an 0.78-ratio pupil on the minor axis. Numbers in docs/EYELOOP.md.
 **Fit rate stayed 151/151 through every one of these failures.** The operator
 is tuning it.
 
+**THE WRAP-UP IS [docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md)** —
+read that before writing any integration code. It carries the two gates, the
+eight steps in dependency order, the seven silent traps, and what not to
+rebuild. EYELOOP.md is the measurements; that file is what to *do* with them.
+
 **Still blocked on the operator:** which tree (§0 forbids restoring a tracker on
 master; `pupil-tracking` already has a *working* one), and **GPL-3.0** —
 vendoring EyeLoop into `devices/` makes acqApp a derived work, which is why
@@ -507,6 +512,29 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (ax) — reflection removal, pinning, and the handoff
+
+Corneal-reflection removal in the bench app, plus operator-pinned reflections,
+then wrote the integration handoff. **EyeLoop's own removal is dead code** —
+disabled in three places and writing to a buffer `engine.py` never creates.
+
+- **Pins are exempt from both guards** (`reach`, `max_area`), because those
+  guard against bright things the automatic pass cannot identify and a pin is
+  an identification. Stored in *frame* coordinates so moving the eye region
+  does not walk them off target.
+- **Removal is a real but clip-dependent gain, and near the rim it costs.**
+  pAce: radius sd 1.86 → 1.42 for +0.9 px. Pinning State's 0.84 r reflection
+  removes it properly and costs **+6.6 px of radius** — blanking something that
+  overlaps the boundary erases the boundary. Pins pay off *inside* the pupil.
+- Two of my own mistakes, both caught by measuring: a circular search area ate
+  the eyelash line (fixed by following the fitted ellipse), and the two-pass
+  rewrite went 1.7 → 8.5 ms/frame before per-blob boxes put it back to 2.4.
+- **The operator is tuning it themselves** and has settings saved outside the
+  app — it persists nothing, which is step 5 of the integration.
+
+**Next: [docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md).** Two gates
+first — which tree, and GPL-3.0 — and both are the operator's.
 
 ### 2026-08-26 (aw) — the EyeLoop bench app
 
