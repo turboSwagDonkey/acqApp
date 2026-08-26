@@ -549,6 +549,28 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(win.pattern_target() is mod["dmd"],
             "…and the loaded DMD as a pattern target")
 
+    # `StageTarget.stop_motion` says it must not raise, and it runs when the
+    # stage has ALREADY failed — the engine calls it on every fault. A dead
+    # serial link is exactly when it is reached.
+    ctrl0 = mod["stage"].controller
+    real_stop_all = ctrl0.stop_all
+
+    def boom() -> None:
+        raise RuntimeError("serial link gone")
+
+    ctrl0.stop_all = boom
+    try:
+        win.stage_target().stop_motion()
+        r.check(True, "stop_motion() survives a controller that raises")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} escaped stop_motion: {e}")
+    try:
+        ctrl0.stop_all()
+        r.check(False, "control: the raw controller call must still raise")
+    except RuntimeError:
+        r.check(True, "control: the raw controller call does raise")
+    ctrl0.stop_all = real_stop_all
+
     (lo_x, hi_x), (lo_y, hi_y) = win.stage_target().limits_um()
     # Deliberately off-centre: the midpoint of a symmetric travel is 0.0, and a
     # check against 0.0 passes for a stage that was never commanded at all.

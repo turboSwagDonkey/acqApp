@@ -147,9 +147,6 @@ QStatusBar {{ font-size: 8pt; color: {t['status']}; }}
 """
 
 
-# Kept for backward-compat; apply_theme() is the entry point now.
-APP_QSS = _qss(_THEME["light"])
-
 
 def _dark_palette() -> QPalette:
     p = QPalette()

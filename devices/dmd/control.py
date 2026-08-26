@@ -28,7 +28,6 @@ FRAME_STOP = -1
 
 # What the panel is asking the device to show.
 MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
-MODES = (MODE_ALL_ON, MODE_PATTERN, MODE_ROI)
 
 
 def roi_frame(settings, width: int, height: int):

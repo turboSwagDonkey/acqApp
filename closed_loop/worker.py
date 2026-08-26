@@ -103,7 +103,7 @@ class ClosedLoopWorker(PullWorker):
 
             if hit:
                 s = self._rule.settings
-                sink = self._sink           # snapshot: set_sink(None) is safe
+                sink = self._sink   # snapshot: no None deref if set_sink races
                 if sink is not None:
                     sink((value, at))
                     self._recorded += 1

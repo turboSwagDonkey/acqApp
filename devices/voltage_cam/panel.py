@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import (
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
-    BINNING_OPTIONS, DEFAULT_BINNING,
-    TRIGGER_MODES, DEFAULT_TRIGGER,
+    BINNING_OPTIONS,
+    TRIGGER_MODES,
     WRITER_MBPS,
 )
 

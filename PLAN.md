@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (as) |
+| **Last updated** | 2026-08-26 (at) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **910 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **912 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **910 checks, 25 files, ~60 s**, and it is ALL GREEN. Run it
+the contract: **912 checks, 25 files, ~60 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -442,6 +442,40 @@ intact. Two are still worth doing and are listed there under "Still open".
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
+### 2026-08-26 (at) — the same sweep, tree-wide
+
+Ran §6 item 5 over everything the pass had never covered. **The prose half was
+again not where the value was** (tree 24.5 %, and worst-first points at
+interface files where the docstring IS the contract). Everything below came
+from a scan or a profile.
+
+- **The per-tick restyle was in two more places** — `closed_loop/panel`
+  (269 `setStyleSheet` calls in 6 s, identical string) and `adapters/wheel`'s
+  plot title, through pyqtgraph's `setHtml`. Both guarded on an actual change.
+- **Three docstrings claimed what the code does not do**, the class the
+  2026-08-18 survey flagged. `PullWorker.set_sink` said "Thread-safe.", which
+  reads as "detaching stops delivery" — it does not, and `Recorder.late_count`
+  exists precisely to count what lands after.
+- **`StageTarget.stop_motion` was declared "must not raise" and did.** It runs
+  *on a fault*, so a dead serial link is exactly when it is reached. Guarded,
+  with the raw call as the test's control.
+- Eight unused imports, two dead names. A dead-name scan over 109 files found
+  nothing else — the tree is clean.
+
+**One measured thing left deliberately alone, and it needs the operator: the
+two camera LUT bars are ~45 % of the display tick** (4.43 ms → 2.45 ms with
+their histograms disconnected; 13.3 % of a 30 Hz budget either way). Fixing it
+means recomputing the histogram twice a second instead of 30×, which **changes
+what you see on the preview you drag for contrast**. Number and reasoning in
+DECISIONS §6 item 5. Nothing is hurting today.
+
+**Two traps from getting that number**, both worth keeping: cProfile
+*under*-attributed it, and my first control was **vacuous** — it detached
+`getattr(m, "_hist", None)` and the adapters keep the LUT bar in a local, so it
+detached nothing and reported "no effect". It now counts what it detached.
+
+Suite **910 → 912 checks**, 25 files, green.
+
 ### 2026-08-26 (as) — prose/optimisation sweep over the routines code
 
 The §6 item 5 sweep, same two jobs, run over what (ar) added. **The prose half
@@ -506,49 +540,7 @@ same morning. Two commits: the Qt-free core, then the wiring.
 - Suite **802 → 899 checks, 24 → 25 files**. `test_routines` is 88 of them, a
   fake-rig half and a real-window half. Nothing here has touched hardware.
 
-### 2026-08-25 (aq) — instruments load and unload without restarting, and the
-sidebar becomes the settings selector
-
-Operator's request; their call on both behaviours (hot add/remove rather than
-restart-the-session, and a sidebar button rather than a settings tab).
-
-- **Sidebar → 🧩 Modules** reopens the startup picker against the running
-  window. `MainWindow.set_modules(keys)` -> (loaded, unloaded). A module loaded
-  into a RUNNING session builds and starts its own worker and joins the live
-  view; an unloaded one is stopped and its UI comes off.
-- **Refused while recording**, and the button greys out: the file's `modules`
-  attribute is written once at the start, so a stream cannot appear or vanish
-  part-way through.
-- **Three teardown traps, only one of which was obvious:**
-  - `setCentralWidget` DELETES the widget it replaces, so a pyqtgraph view left
-    in `_pg_views` is a dangling C++ object and **the next theme toggle kills
-    the process** with no traceback.
-  - `removeTab`/`removeDockWidget` only unparent from the LAYOUT; the widget
-    stays a child and survives to the next `restoreState()`, which puts the
-    dock back. `setParent(None)` before `deleteLater()`. **Found by the test.**
-  - The Devices monitor holds a SNAPSHOT of the keys, so it is discarded on any
-    change — otherwise it probes an unloaded instrument and reports "missing"
-    where the truth is "unloaded". Found by re-reading.
-- **`config.MODULES` order stays load-bearing**: `closed_loop` last, so a module
-  loaded later sorts into place and its tabs are inserted at the matching index.
-  `ModuleAdapter.on_modules_changed()` is the new hook — the closed loop's
-  source list is a list of what its neighbours offer.
-- The shared DCAM handle survives an unload/reload round trip (the window owns
-  it; `OrcaFireWorker` closes only a handle it opened). Checked, because
-  re-opening a just-closed DCAM device crashes natively.
-- **The sidebar is a settings selector too**, one item per page — Save, then
-  one per LOADED instrument with its accent chip — so it doubles as the list of
-  what is loaded. The window KEEPS its tab bar (operator's call): two ways in,
-  kept in step both directions. Clicking the page you are on shuts the window,
-  as the old ⚙ Settings toggle did.
-  - Two Qt details, both found by rendering it and looking: `QToolBarLayout`
-    centres each button and ignores its size policy (equal `minimumWidth` is
-    what aligns them), and a `QToolButton` with no icon ignores
-    `text-align:left` — hence the transparent chip on Theme/Modules/Devices.
-- `test_module_hotload` 52 checks, `test_settings_persistence` follows the
-  sidebar. Suite **743 -> 802 checks, 23 -> 24 files**.
-
-Entries before 2026-08-25 (aq) are in
+Entries before 2026-08-26 (ar) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file small
 enough to read at the start of every session.
 

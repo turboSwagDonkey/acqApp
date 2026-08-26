@@ -62,12 +62,19 @@ class PullWorker(QThread):
         return v
 
     def set_sink(self, sink: Callable[[Any], None] | None) -> None:
-        """Attach (or clear) a per-sample recording sink. Thread-safe."""
+        """Attach (or clear) a per-sample recording sink.
+
+        The store is atomic under the GIL, so a reader sees the old sink or the
+        new one. It does **not** stop a worker already inside `sink(value)`:
+        that call runs to completion and can land after the file closed, which
+        is why `Recorder` counts those rather than dropping them silently
+        (`late_count`). Detaching is not a barrier.
+        """
         self._sink = sink
 
     # ── run()-side helpers ──────────────────────────────────────────────────
     def _emit_sink(self, value: Any) -> None:
-        sink = self._sink                       # snapshot: set_sink(None) is safe
+        sink = self._sink       # snapshot: no None deref if set_sink races us
         if sink is not None:
             sink(value)
 

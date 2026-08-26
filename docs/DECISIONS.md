@@ -242,6 +242,58 @@ a measured 4.912, and the encoder voltage does wrap.
      cost, and fixing *that* needs a preallocated ring, which is not worth the
      complexity in load-bearing code.
 
+   **From the 2026-08-26 tree-wide sweep (the same two jobs, over everything
+   the pass had never covered):**
+   - **The same per-tick restyle was in `closed_loop/panel.set_readout`** —
+     269 `setStyleSheet` calls in a 6 s session, re-applying an identical
+     string. Guarded on the lit/unlit state actually changing.
+   - **`adapters/wheel._title` re-rendered the plot title every tick** through
+     pyqtgraph `LabelItem.setText` -> `setHtml` -> a QTextDocument relayout.
+     `_axis` beside it already had the guard; the title did not. Mostly the
+     digits do move — the win is the stationary wheel, which is what the rig
+     sits at between runs.
+   - **Three docstrings claimed properties the code does not have**, the class
+     the 2026-08-18 survey called worse than no comment. `PullWorker.set_sink`
+     said "Thread-safe.", which invites the reading that detaching stops
+     delivery: it does not, a worker already inside `sink(value)` runs to
+     completion and can land after the file closed — which is exactly what
+     `Recorder.late_count` exists to count. Two `# snapshot: set_sink(None) is
+     safe` comments said "safe" where the truth is "no None deref". All three
+     now say what is true.
+   - **`StageTarget.stop_motion` was declared "must not raise" and did.**
+     `adapters/stage.stop_motion` called `controller.stop_all()` unguarded, and
+     it runs *on a fault* — a dead serial link is exactly when it is reached.
+     The routine engine caught it, but a contract the implementation leans on
+     its caller to keep is not one. Guarded, with the raw call as the test's
+     control.
+   - Eight unused imports and two dead names (`dmd.control.MODES`,
+     `style.APP_QSS`, the latter self-described as backward-compat with no
+     callers and built at import). A tree-wide dead-name scan over 109 files
+     found nothing else: the `MGMSG_*` reply IDs and the unused `MCM6101`
+     methods are an APT wire-protocol table copied from `stage_control`, and
+     stay.
+
+   **Measured and deliberately NOT fixed — the number is here so the next
+   session does not have to re-measure it:**
+   - **The two camera LUT bars are ~45 % of the display tick.** Median tick
+     with all eight modules loaded and frames arriving: **4.43 ms, 13.3 % of a
+     30 Hz budget**; with the histograms' `sigImageChanged` disconnected,
+     **2.45 ms**. pyqtgraph already subsamples to ~200x200, so the cost is
+     inherent to a *live* histogram at the display rate. The fix would be to
+     recompute it on the existing `LEVELS_EVERY` cadence (twice a second) —
+     **that changes what the operator sees**, and the LUT bar is the contrast
+     tool they drag. Not mine to decide, and 13 % of budget is not hurting
+     anything. **Ask before doing it.**
+   - Two traps worth remembering from getting to that number. cProfile
+     *under*-attributed it (`np.sort` inside `np.histogram` showed as 0.15 s
+     and looked like the whole story), and the first control was **vacuous** —
+     it detached `getattr(m, "_hist", None)`, but the adapters bind the LUT bar
+     to a local, so it detached nothing and reported "no effect". A control
+     that finds zero widgets passes for free. It now counts them and says so.
+   - `adapters/voltage_cam.update_display` is 2.02 ms of the remaining 2.45 —
+     the percentile is already on the `LEVELS_EVERY` cadence and the rest is
+     `setImage` plus the mean. Nothing obviously wasteful left in it.
+
    **How to verify anything in this item:** `tests/run_all.py` **and**
    `devices/pupil_cam/_test_tracking.py` — the second is what covers the pupil
    maths against ground truth, and an optimisation that quietly changed a fit

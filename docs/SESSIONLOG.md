@@ -4,6 +4,48 @@ Older entries from `PLAN.md` §7, newest first. The three most recent sessions
 stay in PLAN.md; everything before them lives here so a fresh session reads the
 plan rather than the whole history.
 
+### 2026-08-25 (aq) — instruments load and unload without restarting, and the
+sidebar becomes the settings selector
+
+Operator's request; their call on both behaviours (hot add/remove rather than
+restart-the-session, and a sidebar button rather than a settings tab).
+
+- **Sidebar → 🧩 Modules** reopens the startup picker against the running
+  window. `MainWindow.set_modules(keys)` -> (loaded, unloaded). A module loaded
+  into a RUNNING session builds and starts its own worker and joins the live
+  view; an unloaded one is stopped and its UI comes off.
+- **Refused while recording**, and the button greys out: the file's `modules`
+  attribute is written once at the start, so a stream cannot appear or vanish
+  part-way through.
+- **Three teardown traps, only one of which was obvious:**
+  - `setCentralWidget` DELETES the widget it replaces, so a pyqtgraph view left
+    in `_pg_views` is a dangling C++ object and **the next theme toggle kills
+    the process** with no traceback.
+  - `removeTab`/`removeDockWidget` only unparent from the LAYOUT; the widget
+    stays a child and survives to the next `restoreState()`, which puts the
+    dock back. `setParent(None)` before `deleteLater()`. **Found by the test.**
+  - The Devices monitor holds a SNAPSHOT of the keys, so it is discarded on any
+    change — otherwise it probes an unloaded instrument and reports "missing"
+    where the truth is "unloaded". Found by re-reading.
+- **`config.MODULES` order stays load-bearing**: `closed_loop` last, so a module
+  loaded later sorts into place and its tabs are inserted at the matching index.
+  `ModuleAdapter.on_modules_changed()` is the new hook — the closed loop's
+  source list is a list of what its neighbours offer.
+- The shared DCAM handle survives an unload/reload round trip (the window owns
+  it; `OrcaFireWorker` closes only a handle it opened). Checked, because
+  re-opening a just-closed DCAM device crashes natively.
+- **The sidebar is a settings selector too**, one item per page — Save, then
+  one per LOADED instrument with its accent chip — so it doubles as the list of
+  what is loaded. The window KEEPS its tab bar (operator's call): two ways in,
+  kept in step both directions. Clicking the page you are on shuts the window,
+  as the old ⚙ Settings toggle did.
+  - Two Qt details, both found by rendering it and looking: `QToolBarLayout`
+    centres each button and ignores its size policy (equal `minimumWidth` is
+    what aligns them), and a `QToolButton` with no icon ignores
+    `text-align:left` — hence the transparent chip on Theme/Modules/Devices.
+- `test_module_hotload` 52 checks, `test_settings_persistence` follows the
+  sidebar. Suite **743 -> 802 checks, 23 -> 24 files**.
+
 ### 2026-08-25 (ap) — the sweep: two interactive paths, and real duplication
 
 Asked for a prose/optimisation sweep after (ao). Both halves found things (ao)

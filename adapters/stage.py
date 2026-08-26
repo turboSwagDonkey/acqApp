@@ -120,8 +120,16 @@ class StageModule(ModuleAdapter):
                 self.controller.move_to_um(which, float(um))
 
     def stop_motion(self) -> None:
+        """Stop both axes. Guarded, because `StageTarget` says it must be and
+        because this runs when the stage has ALREADY failed — a dead serial
+        link is exactly when it is called. The routine engine catches it too,
+        but a contract the implementation leans on its caller to keep is not
+        one."""
         if self.controller is not None:
-            self.controller.stop_all()
+            try:
+                self.controller.stop_all()
+            except Exception as e:      # noqa: BLE001 — link gone, port gone
+                print(f"[stage] stop_all failed ({type(e).__name__}: {e})")
 
     def limits_um(self):
         """The SHARED calibration's soft limits — the same ones the panel

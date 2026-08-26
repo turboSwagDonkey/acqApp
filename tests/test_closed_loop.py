@@ -238,7 +238,6 @@ def check_worker(r: Report, app) -> None:
 # ── 5. the whole app ─────────────────────────────────────────────────────────
 
 def check_app(r: Report, app, tmp) -> int:
-    from acqApp import config
     import acqApp.main as M
 
     out = tmp / "loop_rec"

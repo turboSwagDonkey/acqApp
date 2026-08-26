@@ -13,8 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp.saving.config import (_DEFAULT_SUBDIR, TOKENS, SaveConfig, _gb,
-                                  default_folder, free_bytes, list_drives,
-                                  sanitize)
+                                  default_folder, free_bytes, list_drives)
 
 
 class SavePanel(QWidget):

@@ -31,6 +31,7 @@ class WheelModule(ModuleAdapter):
         self._curve = None
         self._y: list[float] = []
         self._units: str | None = None       # current Y-axis unit label
+        self._title_text: str | None = None   # current plot title
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -104,13 +105,22 @@ class WheelModule(ModuleAdapter):
         self._plot_w.setLabel("left", name, units=units)
 
     def _title(self, speed: float | None, units: str) -> None:
-        """Show the live speed as a number in the distance plot's title."""
+        """Show the live speed as a number in the distance plot's title.
+
+        Guarded like `_axis`, and for the same reason it was: a pyqtgraph title
+        goes through `LabelItem.setText` -> `setHtml` -> a QTextDocument
+        relayout. The digits usually move, so this mostly buys nothing — but a
+        stationary wheel formats identically tick after tick, and that is what
+        the rig sits at between runs.
+        """
         if speed is None:
-            self._plot_w.setTitle("Wheel distance")
+            text = "Wheel distance"
         else:
             prec = 1 if units == "mm/s" else 2
-            self._plot_w.setTitle(
-                f"Wheel distance   —   speed {speed:+.{prec}f} {units}")
+            text = f"Wheel distance   —   speed {speed:+.{prec}f} {units}"
+        if text != self._title_text:
+            self._title_text = text
+            self._plot_w.setTitle(text)
 
     # ── closed loop ──
     def signal_sources(self) -> list[SignalSource]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QLabel, QSpinBox, QWidget,
+    QGroupBox, QLabel, QWidget,
 )
 
 from acqApp.devices.wheel.settings import EncoderSettings

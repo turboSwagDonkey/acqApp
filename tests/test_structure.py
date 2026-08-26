@@ -19,7 +19,6 @@ import ast
 import re
 import sys
 from collections import defaultdict
-from pathlib import Path
 
 from _harness import APP_DIR, Report
 

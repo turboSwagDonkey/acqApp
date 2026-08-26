@@ -23,6 +23,7 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self._s = settings or LoopSettings()
         self._sources: list[SignalSource] = []
+        self._lit: bool | None = None      # last readout styling applied
         self._build()
 
     # ── construction ─────────────────────────────────────────────────────────
@@ -218,12 +219,19 @@ class SettingsPanel(QWidget):
         self._lbl_readout.setText(
             f"{v}   ·   condition {'MET' if met else 'not met'}   ·   "
             f"{n_fires} fired{'' if armed else '   (disarmed)'}")
-        self._lbl_readout.setStyleSheet(
-            f"color:{style.HEX['closed_loop']};" if (met and armed) else "")
+        # Only on a change: this runs every display tick, and setStyleSheet
+        # repolishes the widget against the window's whole cascade to re-apply
+        # an identical string (269 calls in a 6 s session, 2026-08-26 sweep).
+        lit = met and armed
+        if lit is not self._lit:
+            self._lbl_readout.setStyleSheet(
+                f"color:{style.HEX['closed_loop']};" if lit else "")
+            self._lit = lit
 
     def clear_readout(self) -> None:
         self._lbl_readout.setText("—")
         self._lbl_readout.setStyleSheet("")
+        self._lit = None                   # written out of band; force a repaint
 
     # ── settings ─────────────────────────────────────────────────────────────
     def _emit(self, *_a) -> None:
