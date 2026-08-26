@@ -138,6 +138,42 @@ finder has to be scale-aware (a dark blob of pupil radius) or the eye region
 has to supply the seed, which it can: its centre is within tolerance by
 construction.
 
+## The bench app — `eyeloopGUI/`
+
+Built 2026-08-26. A sibling app, not part of acqApp:
+
+```
+acqApp\.venv\Scripts\python.exe eyeloopGUI\main.py
+```
+
+Open a clip, **click the pupil** — one click sets both the eye crop and the
+seed — tune the threshold, then **Sweep whole clip** for fit rate, mean radius
+and ms/frame. It does the one thing the stock EyeLoop GUI cannot: set the crop.
+
+    tracker.py   the ONLY file touching EyeLoop. No Qt.
+    source.py    FrameSource protocol + the eye Region. No Qt, no EyeLoop.
+    window.py    Qt only.
+    main.py      bootstrap into acqApp/.venv (the wheelApp pattern)
+
+`tracker.py` is written to move into `devices/pupil_cam/` unchanged, and
+`source.py`'s `FrameSource` is where `acquisition.py` slots in with no change
+to `window.py`. It sits outside acqApp because of the GPL question, not because
+it is throwaway.
+
+**It reproduces the probe numbers exactly** — pAce 151/151 r 45.18 ± 1.86 at
+thr 45, State 151/151 r 59.66 ± 1.13 at thr 60 — with two controls green: pure
+noise returns None 20/20 (no stale fits leaking), and the uncropped frame
+returns 0/20. Circular runs 0.63 ms/frame against ellipsoid's 1.73.
+
+### One trap it cost an hour to find
+
+`Shape.min_radius`/`max_radius` bound the ray walk and are clipped **into an
+int array** (`clip_`). Passing floats makes `np.clip(..., out=…)` raise inside
+`fit()`'s bare except — **every frame fails, silently, and nothing is logged
+that looks like a type error**. The wrapper keeps them int (`walk_radius`) and
+holds its own float acceptance band (`accept_radius`) separately. They were one
+parameter until this happened.
+
 ## Do we need OpenCV?
 
 The dependency is real but shallow — and one part of it is a liability that has

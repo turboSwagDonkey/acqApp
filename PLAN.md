@@ -9,7 +9,7 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (av) |
+| **Last updated** | 2026-08-26 (aw) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
 | **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **912 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
@@ -462,10 +462,19 @@ durable copy of the patches. The five things worth carrying:
   failed. It must be neutered whichever way the cv2 question goes; the probes
   could not find it because the good clips never failed.
 
-**Blocked on the operator, and nothing should be written until they answer:**
-which tree (§0 forbids restoring a tracker on master; `pupil-tracking` already
-has a *working* one), and **GPL-3.0** — vendoring EyeLoop into `devices/` makes
-acqApp a derived work, which is why the clone was kept as a sibling.
+**A bench app exists: `../eyeloopGUI/`** (2026-08-26). Open a clip, click the
+pupil to set the eye crop *and* the seed, tune the threshold, sweep. It does
+the one thing the stock EyeLoop GUI cannot — set the crop — and reproduces the
+probe numbers with both controls green (noise → None 20/20, uncropped → 0/20).
+`tracker.py` is the only file touching EyeLoop and is written to move into
+`devices/pupil_cam/` unchanged; `source.py`'s `FrameSource` is where
+`acquisition.py` slots in. **It is a sibling, like `wheelApp/`, and like
+`wheelApp/` it is not under version control** — the only copy is on this disk.
+
+**Still blocked on the operator:** which tree (§0 forbids restoring a tracker on
+master; `pupil-tracking` already has a *working* one), and **GPL-3.0** —
+vendoring EyeLoop into `devices/` makes acqApp a derived work, which is why
+both the clone and the bench app were kept outside.
 
 ~~Pupil tracking.~~ **Retired 2026-08-24** — `archive/pupil_tracking/`. The
 eye region stayed. Do not restore without being asked; the README there has the
@@ -486,6 +495,30 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (aw) — the EyeLoop bench app
+
+Built `../eyeloopGUI/`, a sibling that drives EyeLoop over a rig clip: click
+the pupil to place the eye crop and seed, tune the threshold, sweep. Four
+files, split so `tracker.py` (the only EyeLoop contact, Qt-free) can move into
+`devices/pupil_cam/` unchanged and `source.py`'s `FrameSource` takes the live
+camera later without `window.py` changing.
+
+- **It reproduces the probe numbers exactly**, which is the point of it —
+  pAce 151/151 r 45.18 ± 1.86 at thr 45, State 151/151 r 59.66 ± 1.13 at
+  thr 60. Controls green: noise → None 20/20, uncropped → 0/20.
+- **One trap, an hour.** `Shape.min_radius/max_radius` bound the ray walk and
+  are clipped *into an int array*; floats there make `np.clip(out=…)` raise
+  inside the bare except, so **every frame fails silently**. Split into an int
+  `walk_radius` and a float `accept_radius`.
+- `waitKey(0)` is bound to a no-op in the wrapper, and a failed frame now
+  returns None instead of the last good fit.
+- Registered in the root `CLAUDE.md` beside the other siblings. **Not under
+  version control** — nor is `wheelApp/`; that is the existing arrangement,
+  worth a decision rather than a surprise.
+
+**Next: unchanged** — §6's three rig measurements, and the operator's two
+EyeLoop decisions before any of it moves into `devices/`.
 
 ### 2026-08-26 (av) — EyeLoop, tried
 
