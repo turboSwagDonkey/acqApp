@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-25 (aq) |
+| **Last updated** | 2026-08-26 (ar) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. Suite **802 checks, 24 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — and after it, **experiment routines** (§6, 2026-08-26). |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **899 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **802 checks, 24 files, ~58 s**, and it is ALL GREEN. Run it
+the contract: **899 checks, 25 files, ~60 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **The pupil tracker is retired** (2026-08-24, operator's call). It lives in
@@ -88,8 +88,8 @@ writing a device path from scratch: `devices/dmd/alp.py` is a port of
   widget construction then aborts natively — an exit code, no traceback, no
   output at all. Assign `qt_app()`; don't just call it.
 - **A package `__init__` that eagerly re-exports pulls its heaviest submodule
-  into every import of the package.** `closed_loop/` and `saving/` re-export
-  lazily (PEP 562) so their Qt-free halves stay Qt-free.
+  into every import of the package.** `closed_loop/`, `routines/` and `saving/`
+  re-export lazily (PEP 562) so their Qt-free halves stay Qt-free.
 - **An import-graph search is the wrong test for a *script*.** Four diagnostic
   tools here are run directly and never imported, so they look dead and are not
   — see §7 (q). Check the docs before deleting anything that "nothing imports".
@@ -117,6 +117,16 @@ it with the camera in the loop, and `WRITER_MBPS = 1800` is a derate, not a
 measurement. Record 30 s at bin 1, count the frames off the closed file,
 replace the number. §6 item 1. **Nothing about this actuates** — it is the
 Record button.
+
+**Experiment routines are built** (2026-08-26) and are the newest thing here.
+`routines/` is the protocol + the engine, both **Qt-free and callable-driven**,
+`adapters/routines.py` the only part that touches a real device. Read
+`routines/engine.py`'s docstring before changing any of it — the two decisions
+the plan had left open are settled in there: an interrupted step's data is
+**kept and marked**, and **Resume repeats that step** as a fresh attempt.
+**Nothing about it has actuated anything**: it is mock-verified only, and its
+first real run is a rig trip. One piece is deliberately unbuilt — `per_step`
+save mode is modelled and validated but does not roll files yet (§6).
 
 **Calibration also works and has run at the rig.** DMD tab → Photostimulation
 ROIs → **Calibrate…** → one button, 19 exposures, ~9 s. It steps a narrow
@@ -387,51 +397,30 @@ kept for its reasoning, not a queue.
    `volts_per_rev` is a measured 4.912 and the sign is settled, so this is the
    only thing between the wheel and fully physical units.
 
-**THE NEXT BIG ONE — EXPERIMENT ROUTINES** (operator, 2026-08-26). A protocol
-defined once and executed in order: 100 frames at this stage position with this
-DMD pattern, move, another 100 with a different pattern, repeat. Not started;
-the three actions above come first, and item 2 in particular — a routine that
-places ROIs inherits the unverified calibration.
+**EXPERIMENT ROUTINES ARE BUILT** (2026-08-26) — `routines/` +
+`adapters/routines.py`, 88 checks, mock-verified. What is left of them is one
+piece and one rig trip:
 
-**It is the first feature whose whole purpose is to actuate**, and §2 does not
-weaken because the actuation is the point. Build the engine to take `move`,
-`project` and `grab` AS CALLABLES, exactly as `calibration.py` does, so all of
-it is verified before anything moves or lights up. `closed_loop/` is the shape
-to copy — model / worker / panel, with arming that cannot be persisted.
+- **`per_step` save mode does not roll files yet.** It is modelled, validated
+  and carried into `StepRun.attrs()` — every step file names the session origin
+  and its own t0 on the shared clock, which is the invariant that mattered —
+  but both modes currently write one session file with `/routine` boundaries in
+  it. Rolling means re-entering `MainWindow._start_recording` mid-session, and
+  **main.py is the operator's file: ask first.**
+- **`RoutineHooks.moving` is a seam nothing fills.** Arrival is `settle_s`
+  today, per the operator's answer (3). A cheap arrival signal would let a step
+  wait for the stage instead of for a guessed time; the MCM6101 answers only
+  over the serial link the 4 Hz poller already shares, so it is not free.
+- **Its first real run is a rig trip**, and it comes after item 2 above: a
+  routine that places ROIs inherits the calibration nobody has checked
+  optically.
 
-**The four design questions are ANSWERED (operator, 2026-08-26).** Build to
-these, do not reopen them:
-
-1. **A step's length is set by the operator, in FRAMES or SECONDS** — their
-   choice of unit per step. So a step ends on whichever it was given; the
-   engine needs both and must not silently convert one to the other (at 106 fps
-   a rounded conversion loses frames at every step boundary).
-2. **One file per step — and the save mode is an OPTION**: a single HDF5 for
-   the whole routine, or a folder of per-step files. Both.
-3. Settled by (1): a step is done when its frame count or its seconds are up.
-   Settling time after a move/pattern change is still a separate parameter —
-   stage moves and `alp.project()` (one frame per upload, `FreshGrabber`) are
-   both software-timed and neither is instant.
-4. **On a device failure mid-run: PAUSE everything that is not capture** —
-   stage motion stopped, light off — **and show an error.** Not an abort:
-   capture keeps running and the operator decides.
-
-**What (2) costs, and it must be handled rather than discovered.** One file per
-step gives up "one HDF5 per session" as a *file* property, but the shared
-`SessionClock` is still the truth: every stream in every step file must stay
-stamped on it, and each file must record the session origin and its own step t0
-so the folder can be reassembled onto one timebase. Per-step files that each
-restart from zero are not relatable afterwards, and that is unrecoverable once
-the animal is off the rig.
-
-**(4) needs a resume path defined.** "Pause" implies going again — decide what
-happens to the half-finished step's data, and whether resume repeats it or
-continues it, before writing the pause.
-
-**Two constraints that already exist**: stage positions must be validated
-against the soft limits *before* the run starts, not discovered at step 7 of 12;
-and `set_modules()` refuses while recording, so it almost certainly must refuse
-while a routine runs (`on_modules_changed()` is the hook).
+The four design questions the operator answered on 2026-08-26 are now **in the
+code**, not the plan — `routines/engine.py`'s docstring carries them and the two
+they implied, which are also decided: an interrupted step's data is **kept and
+marked**, and **resume repeats the step** as a fresh attempt rather than
+continuing it. **Confirm that second one with the operator on the first real
+run** — it is the only one of the six they did not state themselves.
 
 ~~Pupil tracking.~~ **Retired 2026-08-24** — `archive/pupil_tracking/`. The
 eye region stayed. Do not restore without being asked; the README there has the
@@ -452,6 +441,43 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (ar) — experiment routines: built, wired, and mock-verified
+
+The next big one from (aq)'s entry, to the four answers the operator gave the
+same morning. Two commits: the Qt-free core, then the wiring.
+
+- **`routines/`** — `settings.py` (Step / Routine / `validate`) and `engine.py`
+  (the executor). Both Qt-free; **every actuation reaches the engine as a
+  callable**, as `calibration.py` does, which is what let the whole feature be
+  verified before anything moved. `tick()` state machine over `now()` and
+  `frames()`, not a loop with sleeps — so pause/resume/abort are transitions and
+  a test steps a whole routine on a fake clock in 0.1 s.
+- **The two questions the plan left open are decided, in the code**: an
+  interrupted step's data is **kept and marked** (never discarded — with an
+  animal on the rig, recorded frames are not ours to throw away), and **resume
+  repeats the step** as a fresh `attempt`. Both attempts stay in the file.
+  **The operator has not confirmed the second**; ask on the first real run.
+- **The seam is two new Protocols**, `StageTarget` / `PatternTarget`, pooled by
+  the window as `stage_target()` / `pattern_target()` — the `signal_sources()`
+  shape. `adapters/routines.py` names no instrument; declaring a target is the
+  whole cost of making one routine-drivable. Deliberately no "is it moving?":
+  the MCM6101 answers only over the link the 4 Hz poller shares.
+- **`Recorder.offered(stream)`** is what a "100 frames" step counts — frames
+  that reached the FILE, not frames the camera produced. Those differ exactly
+  when the write path is what is falling behind, which is the failure this rig
+  had.
+- **Three things that cost the most thought, all of them "what does the file
+  say afterwards"**: `/routine` carries a signed entry per boundary on the
+  shared clock; `routine_steps` carries the protocol as JSON because "which
+  position was step 4" is recoverable from nothing else; and `StepRun.attrs()`
+  names the session origin + per-step t0 once, so the two save modes cannot
+  disagree.
+- **Not built, on purpose**: `per_step` file rolling. It means re-entering
+  `MainWindow._start_recording` mid-session and **main.py is the operator's
+  file**. Both modes write one session file today.
+- Suite **802 → 899 checks, 24 → 25 files**. `test_routines` is 88 of them, a
+  fake-rig half and a real-window half. Nothing here has touched hardware.
 
 ### 2026-08-25 (aq) — instruments load and unload without restarting, and the
 sidebar becomes the settings selector
