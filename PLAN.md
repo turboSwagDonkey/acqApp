@@ -9,7 +9,7 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (ax) |
+| **Last updated** | 2026-08-26 (ay) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
 | **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **912 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
@@ -28,14 +28,23 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **912 checks, 25 files, ~60 s**, and it is ALL GREEN. Run it
+the contract: **934 checks, 26 files, ~63 s**, and it is ALL GREEN. Run it
 before and after anything.
 
-**The pupil tracker is retired** (2026-08-24, operator's call). It lives in
-`archive/pupil_tracking/` with a README carrying the measurements; nothing
-imports it. The pupil camera still previews and records, and the **eye region**
-is kept — drawn on the preview, persisted, recorded. Do not restore the tracker
-**on master** without being asked.
+**A pupil tracker is back on master — EyeLoop, since 2026-08-26** (operator's
+call, superseding the 2026-08-24 retirement). `devices/pupil_cam/` now has
+`eyeloop_tracker.py` (the only file that touches EyeLoop) and `tracking.py`
+(settings + a frame in, a `PupilFit` out). **The hand-rolled tracker stays
+retired** in `archive/pupil_tracking/`; do not restore *that* one.
+
+**EyeLoop is GPL-3.0 and none of it is vendored.** It is imported from a clone
+at `../eyeloop`, which is **not in any repo** — so a fresh machine needs
+`git clone` + `git apply docs/eyeloop-3.14-patches.diff`, or
+`ACQAPP_EYELOOP_DIR` pointed at one. Without a clone the tracker raises
+`EyeLoopUnavailable` and **the pupil camera works exactly as before** — that
+is a tested contract, not a hope. **This repo is public**, so vendoring EyeLoop
+would be distribution and would make acqApp a derived work. That decision is
+still open; see docs/EYELOOP-INTEGRATION.md.
 
 **Tracker work happens on the `pupil-tracking` branch, not here** (2026-08-24,
 operator's request: somewhere a colleague can try changes separately). It has
@@ -117,7 +126,15 @@ settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose t
 retire it anyway rather than re-tune. **The numbers are in
 `archive/pupil_tracking/README.md`**, not here.
 
-**PICK UP HERE — one 30 s recording answers the open question.** Full-frame
+**PICK UP HERE — the EyeLoop integration is half done.** The model and the
+seam are in and tested (`test_pupil_eyeloop`, 22 checks, both rig clips at
+151/151 through the app path). **What is NOT done: the panel.** Nothing draws
+the fit on the preview, no controls set the tracking or corneal-reflection
+knobs, nothing records the trace into the session file, and tracking has not
+been moved off the GUI thread. Steps 5–8 of
+[docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md) — read that first.
+
+**The other open question — one 30 s recording answers it.** Full-frame
 bin 1 now keeps 100 % of its frames in the bench (2026-08-25); nothing has run
 it with the camera in the loop, and `WRITER_MBPS = 1800` is a derate, not a
 measurement. Record 30 s at bin 1, count the frames off the closed file,
@@ -483,6 +500,22 @@ outside an 0.78-ratio pupil on the minor axis. Numbers in docs/EYELOOP.md.
 **Fit rate stayed 151/151 through every one of these failures.** The operator
 is tuning it.
 
+**INTEGRATION STARTED 2026-08-26, on master, at the operator's call.** Done:
+`devices/pupil_cam/eyeloop_tracker.py` (the tracker, moved unchanged from the
+bench app), `tracking.py` (the seam), tracking + corneal-reflection knobs on
+`PupilSettings` with `crop_box()` deriving the crop from the **circular eye
+region** already there, and `test_pupil_eyeloop` — 22 checks, every one with a
+control, both rig clips 151/151 through the app path. Suite 934/26 green.
+
+**Not done — this is where to resume**, steps 5–8 of the handoff:
+1. **The panel.** Nothing draws the fit, and no control sets any of the knobs.
+2. **Persistence.** The fields exist on `PupilSettings` but nothing saves them,
+   so the operator's tuning is lost on close — they already lost one set.
+3. **Off the GUI thread.** 2.4 ms fits in a 33 ms tick, but that was offline
+   and single-threaded; the branch's `track_worker.py` solved this before.
+4. **Record it.** The session file needs the ellipse *and* the settings behind
+   it — a pupil trace without its threshold is not reproducible.
+
 **THE WRAP-UP IS [docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md)** —
 read that before writing any integration code. It carries the two gates, the
 eight steps in dependency order, the seven silent traps, and what not to
@@ -512,6 +545,30 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (ay) — EyeLoop integration started, on master
+
+Operator chose **master** and asked to begin. Moved `tracker.py` in unchanged
+as `devices/pupil_cam/eyeloop_tracker.py`, added `tracking.py` as the seam, and
+put the tracking + corneal-reflection knobs on `PupilSettings`. Suite **934
+checks / 26 files**, green.
+
+- **The circular eye region is the crop**, via `PupilSettings.crop_box()`. It
+  had been persisted and drawn but consumed by nothing since the 2026-08-24
+  retirement; it now does the job that makes tracking work at all.
+- **`test_pupil_eyeloop`, 22 checks, every one with a control** — the stale-fit
+  check backed by asserting `params` really was nulled, the reflection mask by
+  requiring nothing outside 0.95 r is touched, a pin's reach by the automatic
+  pass failing to reach the same reflection. Both rig clips 151/151 through the
+  app path.
+- **No EyeLoop source is in this repo, and the repo is public.** Vendoring
+  would be distribution and would make acqApp a derived work; that decision is
+  still open. `EyeLoopUnavailable` leaves the pupil camera untouched, tested.
+- §0's "do not restore the tracker on master" is **superseded** and rewritten;
+  the *hand-rolled* tracker stays retired.
+
+**Next: the panel, persistence, the worker thread, recording** — steps 5-8 of
+docs/EYELOOP-INTEGRATION.md.
 
 ### 2026-08-26 (ax) — reflection removal, pinning, and the handoff
 

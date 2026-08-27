@@ -47,6 +47,7 @@ TESTS = [
     ("writer-chunks", "test_writer_chunks.py"),
     ("stage-state", "test_stage_state.py"),
     ("stage-panel", "test_stage_panel.py"),
+    ("pupil-eyeloop", "test_pupil_eyeloop.py"),
     ("pupil-limit", "test_pupil_limit.py"),
     ("pupil-video", "test_pupil_video.py"),
     ("losses",    "test_recording_losses.py"),

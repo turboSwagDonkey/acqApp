@@ -1,10 +1,10 @@
-"""Pupil camera settings model — camera, eye region, LED. No Qt (see `panel.py`).
+"""Pupil camera settings model — camera, eye region, tracking. No Qt (see `panel.py`).
 
-The tracking knobs are gone with the tracker (2026-08-24, PLAN §7 (ai)); they
-are in `archive/pupil_tracking/` with the algorithm they configured.
+Tracking knobs returned 2026-08-26 with EyeLoop, configuring
+`eyeloop_tracker.py` rather than the tracker retired on 2026-08-24.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -23,8 +23,58 @@ class PupilSettings:
     # session metadata — replayed frames must never read as rig data.
     video_path:   str = ""
 
+    # ── tracking ──
+    # Off by default: it needs a clone of EyeLoop beside the repo, and a rig
+    # that has never run it should not start failing at launch because of it.
+    track:            bool = False
+    # THE consequential number. Threshold sets the reported radius — a 60 %
+    # swing across 25-60 on the test clips, at a clean 151/151 fit rate the
+    # whole way. It is illumination-dependent; expect to set it per session,
+    # and see docs/EYELOOP.md before trusting a radius.
+    track_threshold:  int = 45
+    track_blur:       int = 3
+    # "ellipsoid" or "circular". Circular is ~2.5x cheaper and equally steady
+    # on the test clips; ellipsoid gives the ellipse, which is why EyeLoop was
+    # adopted at all.
+    track_model:      str = "ellipsoid"
+
+    # ── corneal reflection ──
+    # EyeLoop's own removal has never run (disabled in three places upstream),
+    # so this configures ours. Defaults chosen not to inflate the radius rather
+    # than to maximise anything.
+    cr_remove:        bool = True
+    cr_threshold:     int = 120
+    cr_pad:           int = 4
+    cr_ring:          int = 6
+    # Fraction of the fitted ELLIPSE to search. Past ~0.85 it starts masking
+    # the eyelash line, which erases the pupil boundary and inflates the radius.
+    cr_reach:         float = 0.70
+    # Reflections the operator marked, as (x, y, r) in FULL-FRAME pixels.
+    # Rig geometry, not a preference: they record where the fixed reflections
+    # land, so they belong with the eye region and must be cleared when the
+    # optics move.
+    cr_pins:          list[tuple[float, float, float]] = field(default_factory=list)
+
     def search_limit(self) -> tuple[float, float, float] | None:
         """The region as (cx, cy, r), or None. One representation for "none"."""
         if self.limit_r <= 0.0:
             return None
         return (float(self.limit_x), float(self.limit_y), float(self.limit_r))
+
+    def crop_box(self, shape: tuple[int, int]) -> tuple[int, int, int, int] | None:
+        """The eye region as (x0, y0, x1, y1), clamped inside `shape` (h, w).
+
+        The bounding square of the circular region. The crop is not an
+        optimisation — EyeLoop fits *nothing* on a full rig frame (0/151) and
+        the same answer on any crop from 200 to 900 px, so this is what makes
+        tracking work at all.
+        """
+        lim = self.search_limit()
+        if lim is None:
+            return None
+        h, w = shape
+        cx, cy, r = lim
+        r = max(8.0, min(r, min(h, w) / 2.0))
+        cx = min(max(cx, r), w - r)
+        cy = min(max(cy, r), h - r)
+        return int(cx - r), int(cy - r), int(cx + r), int(cy + r)
