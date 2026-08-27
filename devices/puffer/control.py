@@ -90,16 +90,19 @@ class PufferController(QObject):
 
     def fire(self, duration_s: float | None = None) -> None:
         """Open the valve for `duration_s`, or the configured default."""
+        with self._task_lock:
+            task = self._task
+        if task is None:
+            # DAQ never opened (busy line, wrong device name) — nothing fires,
+            # so don't emit/log a puff that never happened (see _open()'s print).
+            print(f"[puffer] fire() ignored — no open DAQ task on {self._s.channel}")
+            return
         d = duration_s if duration_s is not None else self._s.duration_s
         t = time.perf_counter()
         self.puff_fired.emit(t, d)
         sink = self._sink
         if sink is not None:
             sink(d)   # logged against the shared session clock by the Recorder
-        with self._task_lock:
-            task = self._task
-        if task is None:
-            return
 
         def _pulse():
             try:

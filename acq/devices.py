@@ -69,7 +69,17 @@ class ExposureControl(Protocol):
 @runtime_checkable
 class OutputController(Protocol):
     """An always-on output, rebuilt when Emulate is toggled. `apply_settings` is
-    what makes its panel more than decorative (audit #3)."""
+    what makes its panel more than decorative (audit #3).
+
+    Two init-failure conventions, pick by whether `apply_settings` can reopen
+    the underlying resource in place: if it can (puffer re-points its DAQ task
+    to a new line on the same live object), swallow the open failure and stay
+    inert — the caller keeps one object for the module's lifetime. If it can't
+    (LED's controller is simply swapped for a Mock on failure), raise from
+    `__init__` and let the adapter's `build_controller` substitute the mock;
+    do not swallow-and-stay-inert there, or the caller can no longer tell it
+    apart from a live one.
+    """
 
     def apply_settings(self, settings: Any) -> None: ...
     def close(self) -> None: ...

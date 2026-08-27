@@ -10,7 +10,7 @@ when the question is "where does 0,0 come from"; this half is widgets.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
@@ -18,27 +18,32 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
+from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage.map_widget import StageMap
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
                                    _C_SOFT, StageSettings, config_path,
                                    load_settings)
 
 
-class _FrameWorker(QThread):
+class _FrameWorker(PullWorker):
     """Runs controller.establish_frame() off the GUI thread — it drives both axes
-    into their reverse hard limits and can block for minutes."""
+    into their reverse hard limits and can block for minutes.
+
+    Subclasses PullWorker (not QThread) so a bug in establish_frame() surfaces
+    as `error`/`failed`, not a qFatal that aborts the process mid-move.
+    """
     progress = pyqtSignal(str)
     finished_ok = pyqtSignal()
     failed = pyqtSignal(str)
 
     def __init__(self, controller, parent=None):
-        super().__init__(parent)
+        super().__init__()
         self._ctrl = controller
 
-    def run(self) -> None:                      # noqa: D102 — see class docstring
+    def _run(self) -> None:
         try:
             self._ctrl.establish_frame(progress=self.progress.emit)
-        except Exception as e:                  # noqa: BLE001 — never kill the process
+        except Exception as e:                  # noqa: BLE001 — reported via `failed`, not re-raised
             self.failed.emit(f"{type(e).__name__}: {e}")
         else:
             self.finished_ok.emit()

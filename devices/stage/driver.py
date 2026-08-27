@@ -59,6 +59,9 @@ JOG_REVERSE = 2
 STOP_IMMEDIATE = 1
 STOP_PROFILED = 2
 
+# MOTION: past any real axis's travel, so the reverse hard limit stops it first.
+REVERSE_LIMIT_SEEK_COUNTS = -30_000_000
+
 
 @dataclass
 class AxisStatus:
@@ -350,7 +353,7 @@ class MCM6101:
     def drive_to_reverse_limit(self, axis: int, timeout: float = 150) -> int:
         """MOTION: drive to the reverse hard limit and return its encoder value.
         This re-references the controller's command origin (defines the frame)."""
-        self.move_absolute(axis, -30_000_000)   # large negative command
+        self.move_absolute(axis, REVERSE_LIMIT_SEEK_COUNTS)
         time.sleep(0.4)
         t0 = time.time()
         while time.time() - t0 < timeout:

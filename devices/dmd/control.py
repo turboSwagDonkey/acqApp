@@ -145,10 +145,11 @@ class DmdController(QObject):
                 self._s.offset_y, self._s.invert, self._s.fit,
                 self._s.display_mode, self._s.rois, self._s.calib_path))
         self._s = settings
-        # ROI and all-on modes need no file, so the old "only if there is a
-        # pattern path" guard would have left them stale.
-        if geometry_changed and (settings.pattern_path
-                                 or settings.display_mode != MODE_PATTERN):
+        # Always reload on geometry change, even MODE_PATTERN with no file chosen:
+        # load_pattern() already clears _pattern to None in that case, and a
+        # "pattern_path or mode != MODE_PATTERN" guard here used to skip that
+        # clear, leaving a stale ALL_ON/ROI frame cached and projected.
+        if geometry_changed:
             self.load_pattern(settings.pattern_path)
 
     def load_pattern(self, path: Path | None = None) -> None:
@@ -271,8 +272,9 @@ class MockDmdController(QObject):
         self._sink = sink
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        reload = ((settings.pattern_path or settings.display_mode != MODE_PATTERN)
-                  and settings != self._s)
+        # See the real controller's apply_settings for why this must not skip
+        # MODE_PATTERN-with-no-file: load_pattern() clears the stale frame then.
+        reload = settings != self._s
         self._s = settings
         if reload:
             self.load_pattern(settings.pattern_path)

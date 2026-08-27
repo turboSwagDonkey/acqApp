@@ -160,16 +160,29 @@ class DmdModule(ModuleAdapter):
         s = config.load_dataclass(DmdSettings, self.key)
         saved = config.load_settings(self.key)
         shared = alp.sibling_config()
-        if "scale_pct" not in saved and "defaultScale" in shared:
-            s.scale_pct = float(shared["defaultScale"])
-        if "rotation_deg" not in saved and "defaultRot" in shared:
-            s.rotation_deg = float(shared["defaultRot"])
+        # Re-adopt the shared value whenever it has moved since our last save
+        # (the standalone app re-aligned the optics) — not just on a fresh
+        # install — so a saved scale/rotation can't pin a stale alignment
+        # forever. `_shared_*` are provenance only: load_dataclass drops them.
+        if "defaultScale" in shared:
+            shared_scale = float(shared["defaultScale"])
+            if "scale_pct" not in saved or saved.get("_shared_scale_pct") != shared_scale:
+                s.scale_pct = shared_scale
+        if "defaultRot" in shared:
+            shared_rot = float(shared["defaultRot"])
+            if "rotation_deg" not in saved or saved.get("_shared_rotation_deg") != shared_rot:
+                s.rotation_deg = shared_rot
         return s
 
     def _save(self, s) -> None:
         d = asdict(s)
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
         d["rois"] = list(s.rois or ())      # JSON has no tuples
+        shared = alp.sibling_config()
+        if "defaultScale" in shared:
+            d["_shared_scale_pct"] = float(shared["defaultScale"])
+        if "defaultRot" in shared:
+            d["_shared_rotation_deg"] = float(shared["defaultRot"])
         config.save_settings(self.key, d)
 
     def build_controller(self, emulate: bool) -> None:
