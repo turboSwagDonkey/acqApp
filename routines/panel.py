@@ -263,11 +263,10 @@ class SettingsPanel(QWidget):
         if not r.steps:
             self._lbl_summary.setText("No steps yet — add one.")
             return
-        secs = sum(s.settle_s for s in r.steps) * max(1, r.cycles)
-        secs += sum(s.length for s in r.steps if s.unit == "seconds") \
-            * max(1, r.cycles)
-        frames = sum(s.length for s in r.steps if s.unit == "frames") \
-            * max(1, r.cycles)
+        cycles = max(1, r.cycles)
+        secs = cycles * sum(s.settle_s + (s.length if s.unit == "seconds" else 0)
+                            for s in r.steps)
+        frames = cycles * sum(s.length for s in r.steps if s.unit == "frames")
         bits = [f"{runs} run(s): {len(r.steps)} step(s)"
                 + (f" x {r.cycles} cycles" if r.cycles > 1 else "")]
         # Frames and seconds are never interconverted (that is the point of

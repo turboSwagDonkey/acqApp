@@ -9,7 +9,7 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (ba) |
+| **Last updated** | 2026-08-26 (bb) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
 | **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). **2026-08-26: EyeLoop pupil tracking is integrated and complete in the app** — the panel, persistence, its own thread, and the ellipse recorded into the session file. Mock-verified only; step 8 (the live Basler) is a rig trip. **2026-08-26: the routines panel starts its own recording**, and its step list is edited through drop-downs and spin boxes rather than typed words. Suite **1049 checks, 27 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
@@ -563,6 +563,36 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (bb) — prose/optimisation sweep over this session's code
+
+§6 item 5's two jobs over the EyeLoop integration and the reworked routines
+panel. **The first pass where the prose half was the one that mattered** —
+which is the opposite of the last three, and only because the code being swept
+was written this session. Suite unchanged at **1049 checks**, 27 files, green.
+
+- **Prose, worst-first by ratio**: tree 27.6 %, and my own files topped the
+  list — `track_worker.py` **52.5 %**, `pupil_cam/settings.py` 59.5 %. Trimmed
+  to 44.9 % and 57.0 % with no fact lost. Everything else in the tree's top ten
+  is the interface-file case the 2026-08-19 pass already named.
+- **The optimisation half found nothing to fix, and one thing not to.** The
+  tracking wrapper looked like 0.16 ms/frame in the profile; timed directly it
+  is **2.042 vs 2.048 ms — zero**. The 0.16 ms was `sys.monitoring`'s own
+  per-call cost, so the per-frame `GlintRemoval` rebuild and the lazy import
+  are free and **must not be "optimised"**.
+- **A profiler trap in the opposite direction to (at)'s.** That sweep caught
+  cProfile *under*-attributing the LUT bars; this one caught it
+  *over*-attributing a wrapper by 30×. The profile says where to look; a direct
+  timing says how much.
+- **Pace a tick benchmark or it measures nothing.** A tight loop over
+  `_display_tick` reports 0.005 ms: it drains every worker on the first pass
+  and then times a tick with no frame to draw. Paced at 30 Hz the real number
+  is **4.14 ms** with eight modules loaded and tracking on, of which the pupil
+  adapter is 0.46 ms.
+- One dead name (`seed_from_darkest`), two unused imports, one condition
+  reordered so a 6 µs dataclass build stops happening before the cheap test
+  that usually skips it. Numbers in [docs/DECISIONS.md](docs/DECISIONS.md)
+  §6 item 5, which is that pass's ledger.
 
 ### 2026-08-26 (ba) — the routines panel: one Start button, and real editors
 

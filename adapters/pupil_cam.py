@@ -3,13 +3,11 @@ The pupil camera's adapter: preview dock, LED, the eye region and the tracker.
 
 The hand-rolled tracker was removed on 2026-08-24 (PLAN §7 (ai)) and stays
 retired in `archive/pupil_tracking/`. EyeLoop replaced it on 2026-08-26, behind
-`devices/pupil_cam/track_worker.py`, and this file is where it reaches the
-operator: the ellipse over the preview, the radius trace, the pinned
-reflections, and the five scalar streams the session file records.
+`devices/pupil_cam/track_worker.py`; this file is where it reaches the operator
+— the ellipse, the radius trace, the pins, and the five recorded streams.
 
-**Tracking never gates the camera.** With no EyeLoop clone, or with tracking
-off, the worker is a pass-through and everything below draws nothing extra —
-the preview and the recording are exactly what they were before.
+**Tracking never gates the camera.** With no clone, or with tracking off, the
+worker is a pass-through and the preview and recording are what they were.
 """
 from __future__ import annotations
 
@@ -411,9 +409,8 @@ class PupilCamModule(ModuleAdapter):
         return self._last_frame
 
     def _say_tracker_state(self) -> None:
-        """Say once why nothing is being tracked. A missing clone is the common
-        case and it is invisible otherwise — the preview simply has no ellipse
-        on it."""
+        """Say once why nothing is being tracked. A missing clone is otherwise
+        invisible: the preview simply has no ellipse on it."""
         msg = self._track.track_error
         if msg == self._said:
             return
@@ -439,14 +436,16 @@ class PupilCamModule(ModuleAdapter):
     def _draw_mask(self, tr) -> None:
         """Red over the pixels reflection removal blanked, inside the crop.
 
-        This is the only way to see what `cr_threshold` is actually doing —
-        the failure it guards against (masking the rim, which erases the pupil
-        boundary and inflates the radius) reports a perfectly good fit.
+        The only way to see what `cr_threshold` is doing: the failure it guards
+        against — masking the rim, which erases the boundary and inflates the
+        radius — reports a perfectly good fit.
         """
         if self._mask_img is None:
             return
-        show = (self.panel is not None and self.panel.settings.cr_show_mask
-                and tr.mask is not None and tr.box is not None)
+        # Cheap tests first: `panel.settings` builds a whole dataclass (6 us,
+        # measured), and most frames have no mask to draw at all.
+        show = (tr.mask is not None and tr.box is not None
+                and self.panel is not None and self.panel.settings.cr_show_mask)
         if not show:
             self._mask_img.clear()
             return
@@ -471,14 +470,12 @@ class PupilCamModule(ModuleAdapter):
                 lambda fit, at: self._record_fit(rec, fit, at))
 
     def _record_fit(self, rec, fit, at: float) -> None:
-        """One tracked frame's ellipse — NaN in every stream when there was no
-        fit, so the trace keeps one sample per tracked frame and a gap is a
-        gap rather than a missing row nothing marks.
+        """One tracked frame's ellipse; NaN in all five where there was no fit,
+        so a gap is in the file rather than a row nobody wrote.
 
         Runs on the tracker's thread. `at` is when the frame was pulled, not
-        when the camera exposed it: these frames carry no camera timestamp, so
-        this stream and `pupil_cam`'s frames are stamped independently and can
-        differ by up to a poll interval.
+        exposed — these frames carry no camera timestamp, so this stream and
+        `pupil_cam`'s are stamped independently.
         """
         vals = ((fit.center_x, fit.center_y, fit.semi_major, fit.semi_minor,
                  fit.angle_deg) if fit is not None else (float("nan"),) * 5)
@@ -522,12 +519,11 @@ class PupilCamModule(ModuleAdapter):
                 "pupil_cr_pins":         [v for pin in s.cr_pins for v in pin]}
 
     def final_metadata(self) -> dict[str, Any]:
-        """How tracking actually went, as opposed to how it was configured.
+        """How tracking went, as against how it was configured.
 
         Both numbers are needed to read the trace: frames are dropped when a
-        fit is slower than the camera, so the pupil streams are sparser than
-        `pupil_cam`'s frames, and `fits`/`tracked` is the fit rate — which is
-        NOT a quality measure (see docs/EYELOOP.md), only a floor.
+        fit is slower than the camera. `fits`/`tracked` is the fit rate, which
+        is a floor, NOT a quality measure — docs/EYELOOP.md.
         """
         if self._track is None or not self.panel.settings.track:
             return {}

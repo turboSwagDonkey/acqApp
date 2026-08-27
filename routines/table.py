@@ -1,19 +1,13 @@
 """The step list as a table of typed editors.
 
-Split out of `panel.py` because it is a whole job on its own: a `Step` has
-eight fields of five different kinds, and every one of them used to be typed as
-free text into a `QTableWidgetItem` — "yes"/"no" for the light, "frames" or
-"seconds" for the unit, a blank cell for "leave this axis where it is". That
-parses, but it puts the burden of knowing the vocabulary on the operator, and a
-typo reads back as the old value with nothing said.
+Every field used to be free text in a cell — "yes"/"no", "frames"/"seconds", a
+blank cell for an axis to leave alone. That parses, and a typo reads back as
+the old value with nothing said. Now each cell edits through a widget that can
+only produce a legal value, and **the value lives in `UserRole`** while the
+text is a rendering of it (`250 um`, `no change`, `1.5 s`).
 
-So every cell here edits through a widget that can only produce a legal value:
-a combo box for the two choices, a spin box for the four numbers. **The value
-lives in `UserRole`**, not in the text — the text is a rendering of it
-(`250 um`, `leave`, `1.5 s`), which is what makes the display readable without
-the parse being ambiguous.
-
-No Qt-free half: this is a widget. What it edits, `routines/settings.py` owns.
+Split from `panel.py`: eight fields of five kinds is a job on its own. What it
+edits, `routines/settings.py` owns.
 """
 from __future__ import annotations
 
@@ -90,12 +84,10 @@ class _ChoiceDelegate(QStyledItemDelegate):
 class _NumberDelegate(QStyledItemDelegate):
     """A numeric cell. `optional` adds a "no change" state under the range.
 
-    Qt spells "this box may also hold nothing" as `specialValueText` on the
-    **minimum**, so the sentinel has to be one single step below the lowest
-    real value — `_blank`. Putting it far below (at, say, -1e6 under a range
-    starting at -1e5) makes the state real but unreachable: the arrows would
-    take nine thousand presses to get there, so the only way in was to know the
-    magic number. One step down, and it is a thing the operator can find.
+    Qt spells "may hold nothing" as `specialValueText` on the **minimum**, so
+    the sentinel must be ONE step below the lowest real value. Parked further
+    down (-1e6 under a range starting at -1e5) the state is real but
+    unreachable — nine thousand arrow presses — so only a magic number sets it.
     """
 
     def __init__(self, lo: float, hi: float, decimals: int, suffix: str,
@@ -200,7 +192,10 @@ class StepTable(QTableWidget):
     def _paint_row(self, row: int, s: Step) -> None:
         for col, field in enumerate(FIELDS):
             value = getattr(s, field)
-            item = self.item(row, col) or QTableWidgetItem()
+            item = self.item(row, col)
+            if item is None:
+                item = QTableWidgetItem()
+                self.setItem(row, col, item)
             item.setData(VALUE, value)
             item.setText(_render(field, value))
             if field == "project":
@@ -213,8 +208,6 @@ class StepTable(QTableWidget):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setToolTip(s.pattern or "no pattern — the DMD keeps what "
                                              "it has. Double-click to choose one.")
-            if self.item(row, col) is None:
-                self.setItem(row, col, item)
 
     def mark_running(self, row: int | None) -> None:
         """Show which step the engine is on. -1/None clears it."""

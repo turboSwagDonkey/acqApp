@@ -58,7 +58,10 @@ and that arrangement is what makes the answer deferrable rather than answered.
 **2. DONE. `eyeloopGUI/tracker.py` → `devices/pupil_cam/eyeloop_tracker.py`.** It is
 written to move unchanged: Qt-free, app-state-free, no window, no file paths
 beyond locating the clone. It carries `PupilFit`, `GlintRemoval`, `Pin`,
-`remove_glints`, `measure_reflection`, `seed_from_darkest`. **Keep every
+`remove_glints` and `measure_reflection`. (`seed_from_darkest` came over too
+and was **deleted 2026-08-26 (bb)** — nothing here seeds from a full frame, the
+crop's centre is the seed, and the measured reason not to rebuild it is in "Do
+not rebuild" below. The bench app keeps its own copy.) **Keep every
 EyeLoop import inside this one file** — that is what makes the licence
 boundary and the upgrade path legible.
 

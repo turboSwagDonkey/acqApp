@@ -60,7 +60,7 @@ def main() -> int:
 
     try:
         from acqApp.devices.pupil_cam.eyeloop_tracker import (
-            EYELOOP_DIR, GlintRemoval, Pin, PupilFit, remove_glints)
+            EYELOOP_DIR, GlintRemoval, Pin, remove_glints)
     except ImportError as e:
         print(f"[pupil-eyeloop] cannot import the wrapper: {e}")
         return 1

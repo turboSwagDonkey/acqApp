@@ -54,18 +54,15 @@ class PupilSettings:
     # land, so they belong with the eye region and must be cleared when the
     # optics move.
     cr_pins:          list[tuple[float, float, float]] = field(default_factory=list)
-    # Paint the removed pixels over the preview. A view preference, but a
-    # persisted one: it is how cr_threshold gets tuned, and re-ticking it every
-    # launch is the kind of friction that stops it being used.
+    # Persisted, though it is a view preference: it is how cr_threshold gets
+    # tuned, and re-ticking it every launch is friction that stops it being used.
     cr_show_mask:     bool = False
 
     def __post_init__(self) -> None:
-        """Normalise `cr_pins` — JSON has no tuples, so a reloaded pin is a list.
+        """Normalise `cr_pins`: JSON has no tuples, so a reloaded pin is a list.
 
-        Without this the pins survive a restart as `[[x, y, r], ...]`, which
-        still unpacks and so still *works*, and then compares unequal to the
-        tuples the panel emits — the kind of difference that only shows up as a
-        settings save that never settles.
+        A list still unpacks, so it still *works* — and compares unequal to
+        what the panel emits, which shows up only as a save that never settles.
         """
         self.cr_pins = [tuple(float(v) for v in pin) for pin in self.cr_pins]
 
@@ -76,12 +73,10 @@ class PupilSettings:
         return (float(self.limit_x), float(self.limit_y), float(self.limit_r))
 
     def crop_box(self, shape: tuple[int, int]) -> tuple[int, int, int, int] | None:
-        """The eye region as (x0, y0, x1, y1), clamped inside `shape` (h, w).
+        """The region's bounding square as (x0, y0, x1, y1), clamped to `shape`.
 
-        The bounding square of the circular region. The crop is not an
-        optimisation — EyeLoop fits *nothing* on a full rig frame (0/151) and
-        the same answer on any crop from 200 to 900 px, so this is what makes
-        tracking work at all.
+        Not an optimisation: EyeLoop fits *nothing* on a full rig frame (0/151)
+        and the same answer on any crop from 200 to 900 px.
         """
         lim = self.search_limit()
         if lim is None:

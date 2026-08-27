@@ -25,7 +25,6 @@ import threading
 import time
 
 import numpy as np
-from PyQt6.QtCore import QPointF
 
 from _harness import Report, isolate_user_state, pump, qt_app
 

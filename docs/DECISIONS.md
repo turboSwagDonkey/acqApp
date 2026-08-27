@@ -273,6 +273,44 @@ a measured 4.912, and the encoder voltage does wrap.
      methods are an APT wire-protocol table copied from `stage_control`, and
      stay.
 
+   **From the 2026-08-26 sweep over the EyeLoop integration and the reworked
+   routines panel (the same two jobs). This is the first pass where the PROSE
+   half was where the value was, and the optimisation half found nothing:**
+   - **Prose, measured worst-first:** tree at 27.6 %, and the session's own
+     files were the top of the list — `pupil_cam/track_worker.py` at **52.5 %**
+     and `pupil_cam/settings.py` at 59.5 %. Trimmed to 44.9 % and 57.0 %
+     without losing a fact; the rest of the tree's worst files are the same
+     interface files the 2026-08-19 finding named, where the docstring IS the
+     contract. `settings.py` stays high because it is 79 lines of dataclass
+     fields each carrying a rig fact, which is the shape that measure cannot
+     tell from padding.
+   - **The tracking wrapper costs nothing.** `PupilTracking.track` builds a
+     `GlintRemoval` and re-runs a lazy import per frame, and the profile
+     attributed **0.16 ms/frame** to it (2.18 vs 2.02 for the fit inside).
+     Timed directly, with no profiler: **2.042 vs 2.048 ms — zero, inside the
+     noise.** The 0.16 ms was `sys.monitoring`'s own per-call cost. **Do not
+     "fix" the per-frame rebuild**; it is free, and caching it would need a
+     staleness rule for a saving of nothing.
+   - **A profiler trap, the mirror of the 2026-08-26 one.** That sweep found
+     cProfile *under*-attributing the LUT bars; this one found it
+     *over*-attributing a wrapper by 30×. Both directions, same lesson: the
+     profile says where to look, a direct measurement says how much.
+   - **The display tick is unchanged by any of this.** Paced at 30 Hz with
+     eight modules loaded and tracking on: **4.14 ms** (3.86 with tracking off,
+     4.10 with the CR mask drawn as well). The pupil adapter is **0.46 ms, 11 %
+     of the tick**, and its biggest part is the same LUT-bar histogram already
+     ledgered below. A tight tick loop measures **0.005 ms** — it drains every
+     worker on the first pass and then times a tick with nothing to draw. Pace
+     the loop or the number is meaningless.
+   - `_draw_mask` read `panel.settings` — a whole 18-field dataclass rebuild,
+     **6.04 µs** against a 0.14 µs checkbox read — before testing whether there
+     was a mask at all. Reordered so the cheap tests run first. Not a
+     performance fix: 6 µs is **0.15 % of the tick**, below this pass's bar.
+   - One dead name (`eyeloop_tracker.seed_from_darkest`, unused since the
+     tracker came over from the bench app — the measured reason not to rebuild
+     it is in EYELOOP-INTEGRATION.md, so deleting the code loses nothing) and
+     two unused imports in tests. A tree-wide scan found nothing else.
+
    **Measured and deliberately NOT fixed — the number is here so the next
    session does not have to re-measure it:**
    - **The two camera LUT bars are ~45 % of the display tick.** Median tick

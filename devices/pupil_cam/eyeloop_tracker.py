@@ -439,15 +439,3 @@ def measure_reflection(gray: np.ndarray, at: tuple[float, float],
     bh = stats[lab, cv2.CC_STAT_HEIGHT]
     return float(min(max_r, max(6.0, 0.5 * max(bw, bh) + pad)))
 
-
-def seed_from_darkest(gray: np.ndarray, sigma: float = 6.0) -> tuple[int, int]:
-    """Darkest point of a blurred frame — only trustworthy inside an eye crop.
-
-    On a full wide-FOV rig frame this returns the *corner*: vignetting and dark
-    background beat the pupil at large scale. Measured on both clips; see
-    acqApp/docs/EYELOOP.md.
-    """
-    from scipy.ndimage import gaussian_filter
-    b = gaussian_filter(gray.astype(np.float32), sigma)
-    y, x = np.unravel_index(int(np.argmin(b)), b.shape)
-    return int(x), int(y)
