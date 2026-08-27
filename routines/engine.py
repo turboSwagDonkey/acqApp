@@ -129,6 +129,7 @@ class RoutineEngine:
         self._open = False              # begin_step delivered, end_step owed
         self._issued_at = 0.0           # when this step's move went out
         self._arrived_at: float | None = None
+        self._started_at: float | None = None   # session clock at start()
 
     # ── readout ───────────────────────────────────────────────────────────────
     @property
@@ -170,6 +171,31 @@ class RoutineEngine:
             got = self._h.now() - run.t0
         return max(0.0, min(1.0, got / step.length)) if step.length > 0 else 1.0
 
+    def total_runs(self) -> int:
+        """Step executions a clean run performs — steps x cycles."""
+        return self._r.total_steps()
+
+    def overall_progress(self) -> float:
+        """0..1 through the WHOLE routine, the current step's fraction included.
+
+        Position-based, not `steps_done()`: a repeated attempt is not backwards
+        progress, and a bar that goes back would read as a fault.
+        """
+        total = self.total_runs()
+        if total <= 0 or self._phase == Phase.IDLE:
+            return 0.0
+        if self._phase == Phase.DONE:
+            return 1.0
+        done = self._cycle * len(self._r.steps) + self._i + self.progress()
+        return max(0.0, min(1.0, done / total))
+
+    def elapsed(self) -> float:
+        """Seconds since start(), on the session clock. 0 before it."""
+        if self._started_at is None:
+            return 0.0
+        return max(0.0, self._safe_value(self._h.now, self._started_at)
+                   - self._started_at)
+
     # ── control ───────────────────────────────────────────────────────────────
     def start(self) -> None:
         if self._phase in (Phase.SETTLE, Phase.CAPTURE, Phase.PAUSED):
@@ -180,6 +206,7 @@ class RoutineEngine:
         self.fault = ""
         self._i = self._cycle = 0
         self._attempt = 1
+        self._started_at = self._safe_value(self._h.now, 0.0)
         self._enter_step()
 
     def pause(self, reason: str = "paused by the operator") -> None:

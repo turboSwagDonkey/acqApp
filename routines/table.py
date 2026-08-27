@@ -6,6 +6,11 @@ the old value with nothing said. Now each cell edits through a widget that can
 only produce a legal value, and **the value lives in `UserRole`** while the
 text is a rendering of it (`250 um`, `no change`, `1.5 s`).
 
+Rows are **dragged to reorder** — a protocol is an ordered thing, and the
+arrow buttons alone made moving step 9 to the top nine deliberate presses.
+Ctrl+Up/Ctrl+Down does the same from the keyboard, and both go through
+`move_row`, so there is one implementation of "what reordering means".
+
 Split from `panel.py`: eight fields of five kinds is a job on its own. What it
 edits, `routines/settings.py` owns.
 """
@@ -55,6 +60,10 @@ FIELDS = [f for _t, f, _tip in COLS]
 # blank used to mean both "leave this axis alone" and "I have not typed it
 # yet", and "leave" on its own did not say leave WHAT.
 NO_CHANGE = "no change"
+
+# The row header of the step the engine is on. The row is bold as well; the
+# marker is what survives a table the operator has scrolled.
+RUNNING = "▶"
 
 
 class _ChoiceDelegate(QStyledItemDelegate):
@@ -132,11 +141,13 @@ class StepTable(QTableWidget):
 
     changed = pyqtSignal()
     pattern_requested = pyqtSignal(int)     # row; the panel owns the file dialog
+    reordered = pyqtSignal(int)             # the moved step's new row
 
     def __init__(self, steps: list[Step], parent=None) -> None:
         super().__init__(0, len(COLS), parent)
         self._steps = steps
         self._loading = False
+        self._running: int | None = None     # row the engine is on
 
         self.setHorizontalHeaderLabels([t for t, _f, _tip in COLS])
         for col, (_t, _f, tip) in enumerate(COLS):
@@ -144,6 +155,15 @@ class StepTable(QTableWidget):
         self.verticalHeader().setDefaultSectionSize(24)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Drag a row to where it belongs. InternalMove alone would have Qt move
+        # the *cells*; `dropEvent` below moves the Step instead, because the
+        # list is what the engine reads.
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropOverwriteMode(False)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.verticalHeader().setSectionsMovable(False)
         self.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch)
         # One click on a selected cell opens its editor: with combo boxes and
@@ -186,8 +206,17 @@ class StepTable(QTableWidget):
             self.setRowCount(len(self._steps))
             for row, s in enumerate(self._steps):
                 self._paint_row(row, s)
+            self._paint_numbers()
         finally:
             self._loading = False
+
+    def _paint_numbers(self) -> None:
+        """The row header is the step's place in the order, and carries the
+        running marker — so "which step is this" is answered where the step is,
+        not by counting rows."""
+        self.setVerticalHeaderLabels(
+            [RUNNING if r == self._running else str(r + 1)
+             for r in range(self.rowCount())])
 
     def _paint_row(self, row: int, s: Step) -> None:
         for col, field in enumerate(FIELDS):
@@ -211,6 +240,7 @@ class StepTable(QTableWidget):
 
     def mark_running(self, row: int | None) -> None:
         """Show which step the engine is on. -1/None clears it."""
+        self._running = row if row is not None and row >= 0 else None
         for r in range(self.rowCount()):
             for c in range(self.columnCount()):
                 item = self.item(r, c)
@@ -219,6 +249,7 @@ class StepTable(QTableWidget):
                 f = item.font()
                 f.setBold(r == row)
                 item.setFont(f)
+        self._paint_numbers()
 
     # ── editing ──────────────────────────────────────────────────────────────
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -270,6 +301,10 @@ class StepTable(QTableWidget):
     _CLEARABLE = ("x_um", "y_um", "pattern")
 
     def keyPressEvent(self, ev) -> None:
+        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier and                 ev.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            row = self.selected_row()
+            self.move_row(row, row + (-1 if ev.key() == Qt.Key.Key_Up else +1))
+            return
         if ev.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             item = self.currentItem()
             if item is not None and FIELDS[item.column()] in self._CLEARABLE:
@@ -284,6 +319,53 @@ class StepTable(QTableWidget):
         setattr(self._steps[row], field, "" if field == "pattern" else None)
         self._repaint_row(row)
         self.changed.emit()
+
+    # ── reordering ───────────────────────────────────────────────────────────
+    def move_row(self, src: int, dest: int) -> bool:
+        """Move one step to `dest`, its FINAL index. The one implementation.
+
+        The arrows, Ctrl+Up/Down and a drop all land here, so reordering cannot
+        mean two different things depending on how it was asked for.
+        """
+        n = len(self._steps)
+        if not (0 <= src < n):
+            return False
+        dest = max(0, min(dest, n - 1))
+        if dest == src:
+            return False
+        self._steps.insert(dest, self._steps.pop(src))
+        self.reload()
+        self.select_row(dest)          # so a second press moves the same step
+        self.reordered.emit(dest)
+        self.changed.emit()
+        return True
+
+    def dropEvent(self, ev) -> None:
+        """A dropped row moves the Step, not the cells.
+
+        Qt's InternalMove would shuffle the *items* and leave `self._steps` in
+        the old order — the table would look right and the engine would run the
+        old protocol.
+        """
+        if ev.source() is not self:
+            ev.ignore()
+            return
+        src = self.selected_row()
+        insert = self._drop_index(ev)
+        ev.setDropAction(Qt.DropAction.MoveAction)
+        ev.accept()
+        # An insertion point past the source collapses by one once it is lifted.
+        self.move_row(src, insert - 1 if insert > src else insert)
+
+    def _drop_index(self, ev) -> int:
+        """Where the drop points, as an insertion index in [0, len]."""
+        pos = ev.position().toPoint()
+        idx = self.indexAt(pos)
+        if not idx.isValid():
+            return len(self._steps)
+        rect = self.visualRect(idx)
+        # Below the middle of a row means after it — the drop indicator's line.
+        return idx.row() + (1 if pos.y() > rect.center().y() else 0)
 
     # ── selection ────────────────────────────────────────────────────────────
     def selected_row(self) -> int:

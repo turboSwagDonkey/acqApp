@@ -4,6 +4,23 @@ Older entries from `PLAN.md` §7, newest first. The most recent sessions stay in
 PLAN.md; everything before them lives here so a fresh session reads the plan
 rather than the whole history.
 
+### 2026-08-26 (az) — the EyeLoop panel, its thread and its trace
+
+Steps 5–8 of the handoff: the integration is complete in the app and only the
+rig is left. Suite 934 → 1001 checks.
+
+- **The panel** draws the fit and **clears it on every failed frame** — the
+  display half of EyeLoop's stale-`params` trap. Pins are placed on the preview.
+- **Persistence was one line of a bug**: `SettingsPanel.settings` rebuilt from
+  six of eighteen fields, so every tracking edit saved itself back as the
+  default. That is the operator's lost tuning, exactly.
+- **`track_worker.py`** is the sole consumer of the camera's frames and
+  republishes each with its fit. **Its `error` had to stay the `PullWorker`
+  signal** — a property of that name breaks the guard that keeps an exception in
+  `run()` from killing the process.
+- **The trace is five streams**, NaN in all five where there was no fit, plus
+  the settings behind it and `pupil_frames_tracked`/`pupil_fits` at close.
+
 ### 2026-08-26 (ay) — EyeLoop integration started, on master
 
 Operator chose **master** and asked to begin. Moved `tracker.py` in unchanged

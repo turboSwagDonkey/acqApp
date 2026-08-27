@@ -707,6 +707,308 @@ def check_step_table(r: Report, app) -> None:
     app.processEvents()
 
 
+# ── how long it takes ─────────────────────────────────────────────────────────
+
+def check_estimate(r: Report) -> None:
+    """The estimate converts frames to seconds; the RECORDING still never does.
+
+    Frames and seconds are not interconvertible where a step is recorded — a
+    rounded conversion sheds frames at every boundary, which is why `unit`
+    travels with `length`. An estimate is not a recording, so it may convert;
+    what it must not do is convert **silently**, or invent a rate nobody gave it.
+    """
+    from acqApp.routines.estimate import clock, estimate, remaining
+
+    r.check(clock(45) == "45 s" and clock(124) == "2:04 min"
+            and clock(3725) == "1:02:05 h",
+            f"a duration reads as one ({clock(45)}, {clock(124)}, {clock(3725)})")
+
+    rt = Routine(steps=[Step(length=100, unit="frames", settle_s=0.25),
+                        Step(length=2.0, unit="seconds", settle_s=0.25)])
+    blind = estimate(rt, None)
+    r.check(blind.seconds == 2.5 and blind.frames == 100,
+            f"with no frame rate the frames stay frames "
+            f"({blind.seconds} s, {blind.frames} frames)")
+    r.check(not blind.complete and "at least" in blind.text()
+            and "100 frames" in blind.text(),
+            f"…and it says so rather than guessing ({blind.text()!r})")
+
+    known = estimate(rt, 100.0)
+    r.check(known.complete and abs(known.seconds - 3.5) < 1e-9,
+            f"at 100 fps the 100-frame step is 1 s ({known.seconds} s)")
+    r.check(known.text().startswith("about") and "frames" not in known.text(),
+            f"…and the whole routine is one duration ({known.text()!r})")
+    # CONTROL: the rate is the operator's camera, not a constant in here.
+    half = estimate(rt, 50.0)
+    r.check(abs(half.seconds - 4.5) < 1e-9,
+            f"control: halving the frame rate lengthens only the frames step "
+            f"({half.seconds} s)")
+
+    rt.cycles = 3
+    r.check(abs(estimate(rt, 100.0).seconds - 10.5) < 1e-9,
+            f"cycles multiply the whole list ({estimate(rt, 100.0).seconds} s)")
+
+    # What is LEFT, part-way through: the readout must not sit still for a whole
+    # step and then jump.
+    whole = estimate(rt, 100.0).seconds
+    at_start = remaining(rt, 100.0, 0, 0, 0.0).seconds
+    midway = remaining(rt, 100.0, 0, 0, 0.5).seconds
+    last = remaining(rt, 100.0, 1, 2, 0.0).seconds
+    r.check(abs(at_start - whole) < 1e-9,
+            f"before step 1 of cycle 1, all of it is left ({at_start} s)")
+    r.check(midway < at_start and last < midway,
+            f"…and it falls within a step, not only between them "
+            f"({at_start} > {midway} > {last})")
+    r.check(abs(last - 2.25) < 1e-9,
+            f"the last step of the last cycle is its own settle plus length "
+            f"({last} s)")
+
+    # The stage is what nothing can time: `RoutineHooks.moving` is a seam
+    # nothing fills, so travel is not in any of these totals.
+    moved = Routine(steps=[Step(length=1.0, unit="seconds", x_um=250.0)])
+    r.check(estimate(moved, None).moves == 1 and estimate(rt, None).moves == 0,
+            "an estimate reports how many steps move the stage, since their "
+            "travel is not counted")
+
+
+def check_progress(r: Report) -> None:
+    """The whole-routine progress the tracker draws: monotone, and 1.0 at DONE."""
+    rig = FakeRig(fps=100.0)
+    rt = Routine(steps=[Step(length=0.2, unit="seconds", settle_s=0.05),
+                        Step(length=0.2, unit="seconds", settle_s=0.05)],
+                 cycles=2)
+    eng = RoutineEngine(rt, rig.hooks())
+    r.check(eng.overall_progress() == 0.0 and eng.total_runs() == 4,
+            f"before start it is 0 of {eng.total_runs()} runs")
+
+    eng.start()
+    seen: list[float] = []
+    while rig.t < 30.0 and eng.phase not in (Phase.DONE, Phase.PAUSED):
+        rig.advance()
+        eng.tick()
+        seen.append(eng.overall_progress())
+    r.check(eng.phase == Phase.DONE and eng.overall_progress() == 1.0,
+            f"a finished routine is 1.0 ({eng.overall_progress()})")
+    r.check(all(b >= a - 1e-12 for a, b in zip(seen, seen[1:])),
+            "it never goes backwards while running")
+    r.check(any(0.05 < x < 0.95 for x in seen),
+            "…and it passes through the middle rather than jumping 0 to 1")
+    r.check(eng.elapsed() > 0.0,
+            f"and the run reports how long it took ({eng.elapsed():.2f} s)")
+
+    # CONTROL: a repeated attempt is not backwards progress. Resume repeats the
+    # step, and a bar that went back would read as a fault.
+    rig2 = FakeRig(fps=100.0)
+    eng2 = RoutineEngine(Routine(steps=[Step(length=0.2, unit="seconds"),
+                                        Step(length=0.2, unit="seconds")]),
+                         rig2.hooks())
+    eng2.start()
+    drive(eng2, rig2, until=lambda e: e.position[0] == 1)
+    before = eng2.overall_progress()
+    eng2.pause()
+    eng2.resume()
+    r.check(eng2.overall_progress() >= before - 1e-12,
+            f"control: resuming a step does not rewind the bar "
+            f"({before} -> {eng2.overall_progress()})")
+
+
+# ── the template library ──────────────────────────────────────────────────────
+
+def check_templates(r: Report) -> None:
+    """A protocol worth running twice survives as a file, not as a config key."""
+    from acqApp.routines import templates
+
+    r.check(templates.names() == [],
+            f"an empty library lists nothing ({templates.names()})")
+
+    rt = Routine(name="grid 3x3", cycles=2, save_mode="per_step",
+                 steps=[Step(label="a", x_um=100.0, length=50, unit="frames"),
+                        Step(label="b", project=True, length=1.5,
+                             unit="seconds")])
+    path = templates.save(rt)
+    r.check(path.exists() and path.name.endswith(templates.SUFFIX),
+            f"saving writes one file ({path.name})")
+    r.check(templates.names() == ["grid 3x3"],
+            f"…which the library then lists ({templates.names()})")
+
+    back = templates.load("grid 3x3")
+    r.check([vars(x) for x in back.steps] == [vars(x) for x in rt.steps],
+            "every field of every step comes back")
+    r.check(back.cycles == 2 and back.save_mode == "per_step"
+            and back.name == "grid 3x3",
+            f"…and so do the cycles and the save mode "
+            f"({back.cycles}, {back.save_mode})")
+
+    # A name is not a path. The routine name is the operator's free text and
+    # goes straight at the filesystem.
+    evil = "../../evil/name"
+    r.check(templates.path_for(evil).parent == templates.DIR
+            and templates.path_for("   ").name.startswith("routine"),
+            f"a name is not a path — it cannot escape the folder "
+            f"({templates.path_for(evil).name!r})")
+
+    templates.save(Routine(name="b"), "b")
+    templates.save(Routine(name="A"), "A")
+    r.check(templates.names() == ["A", "b", "grid 3x3"],
+            f"the library is sorted the way a human reads it "
+            f"({templates.names()})")
+
+    # A hand-edited or stale template must not stop the app: from_dict drops
+    # what no longer fits, and validate() refuses the rest at Start.
+    templates.path_for("stale").write_text(
+        '{"name": "stale", "cycles": "lots", "save_mode": "nope",'
+        ' "steps": [{"label": "ok", "length": 5, "unit": "seconds"},'
+        ' {"gone": 1}, "not a step"]}', encoding="utf-8")
+    stale = templates.load("stale")
+    r.check(len(stale.steps) == 2 and stale.cycles == 1
+            and stale.save_mode == "single",
+            f"a stale template loads as much of itself as still fits "
+            f"({len(stale.steps)} step(s), cycles={stale.cycles})")
+
+    templates.delete("b")
+    r.check("b" not in templates.names() and "A" in templates.names(),
+            f"deleting removes one and only one ({templates.names()})")
+    templates.delete("b")               # a second delete must not raise
+
+
+def check_panel_tracker(r: Report, app) -> None:
+    """The four things the operator asked the panel for, at the widget level.
+
+    Where the routine is, reordering that is not nine button presses, what the
+    protocol will cost before it starts, and a library of protocols.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+
+    from acqApp.routines import templates
+    from acqApp.routines.panel import SettingsPanel
+    from acqApp.routines.table import RUNNING
+
+    routine = Routine(name="tracked",
+                      steps=[Step(label="one", length=100, unit="frames"),
+                             Step(label="two", length=100, unit="frames"),
+                             Step(label="three", length=100, unit="frames")])
+    panel = SettingsPanel(routine)
+    tbl = panel._tbl
+
+    # ── 1. where the routine is ──
+    r.check(panel._bar.isHidden(),
+            "before a run there is no progress bar — an empty one reads as a "
+            "stalled run")
+    values: list[int] = []
+    real = panel._bar.setValue
+    panel._bar.setValue = lambda v: (values.append(v), real(v))[1]
+    panel.set_progress(0.25, "1 s elapsed")
+    r.check(not panel._bar.isHidden() and values == [250],
+            f"…and starting one shows it at where it is ({values})")
+    for _ in range(30):
+        panel.set_progress(0.25, "1 s elapsed")
+    r.check(values == [250],
+            f"30 ticks at the same place repaint the bar once ({len(values)})")
+    panel.set_progress(0.5, "2 s elapsed")
+    r.check(values == [250, 500] and panel._lbl_eta.text() == "2 s elapsed",
+            f"…and it follows the routine when it moves ({values})")
+    panel.set_progress(None)
+    r.check(panel._bar.isHidden() and panel._lbl_eta.isHidden(),
+            "a routine that is no longer running puts both away")
+
+    # Which step, in the protocol itself: the row header is the step's place in
+    # the order and carries the marker, so a scrolled table still answers it.
+    panel.set_state(Phase.CAPTURE, "step 2/3", 1)
+    heads = [tbl.verticalHeaderItem(i).text() for i in range(tbl.rowCount())]
+    r.check(heads == ["1", RUNNING, "3"],
+            f"the running step is marked in the row header ({heads})")
+    panel.set_state(Phase.DONE, "finished", None)
+    heads = [tbl.verticalHeaderItem(i).text() for i in range(tbl.rowCount())]
+    r.check(heads == ["1", "2", "3"],
+            f"…and the headers are the step order again once it is over "
+            f"({heads})")
+
+    # ── 2. reordering ──
+    # One implementation: the arrows, Ctrl+Up/Down and a dropped row all go
+    # through move_row, so they cannot come to mean different things.
+    tbl.move_row(0, 2)
+    r.check([x.label for x in routine.steps] == ["two", "three", "one"],
+            f"a step moves straight to a row, not one press at a time "
+            f"({[x.label for x in routine.steps]})")
+    r.check(tbl.selected_row() == 2,
+            "…and the selection follows the step it moved")
+    QTest.keyClick(tbl, Qt.Key.Key_Up, Qt.KeyboardModifier.ControlModifier)
+    r.check([x.label for x in routine.steps] == ["two", "one", "three"],
+            f"Ctrl+Up moves it from the keyboard "
+            f"({[x.label for x in routine.steps]})")
+    # CONTROL: a plain arrow key is navigation, not reordering.
+    before = [x.label for x in routine.steps]
+    QTest.keyClick(tbl, Qt.Key.Key_Up)
+    r.check([x.label for x in routine.steps] == before,
+            f"control: the arrow key on its own still just moves the cursor "
+            f"({[x.label for x in routine.steps]})")
+    r.check(not tbl.move_row(0, -5) and not tbl.move_row(9, 0)
+            and [x.label for x in routine.steps] == before,
+            "a move off either end of the list does nothing")
+    # The order the ENGINE will run is the order on screen: the table writes
+    # into the panel's own list rather than shuffling its cells.
+    r.check(tbl._steps is panel.settings.steps,
+            "the table reorders the routine's own step list, not a copy of it")
+
+    # ── 3. what it will cost ──
+    panel.set_frame_rate(None)
+    r.check("at least" in panel._lbl_summary.text()
+            and "300 frames" in panel._lbl_summary.text(),
+            f"with no camera loaded the summary counts frames as frames "
+            f"({panel._lbl_summary.text()!r})")
+    panel.set_frame_rate(100.0)
+    text = panel._lbl_summary.text()
+    r.check("about" in text and "100 fps" in text and "frames" not in text,
+            f"…and a loaded camera turns the whole protocol into a duration, "
+            f"naming the rate it used ({text!r})")
+    r.check(panel.frame_rate == 100.0,
+            "the panel keeps the rate, so the run readout does not re-ask the "
+            "camera 30 times a second")
+
+    # ── 4. the library ──
+    panel.save_template("saved one")
+    r.check("saved one" in templates.names(),
+            f"Save as… writes the protocol to the library "
+            f"({templates.names()})")
+    r.check(panel._cmb_tpl.currentText() == "saved one",
+            "…and selects it, so Load next means what was just saved")
+
+    panel._del_step()
+    panel._del_step()
+    r.check(len(routine.steps) == 1, "the protocol is then edited down")
+    panel.load_template("saved one")
+    r.check([x.label for x in panel.settings.steps] == before,
+            f"Load puts the saved protocol back, in its saved order "
+            f"({[x.label for x in panel.settings.steps]})")
+    r.check(tbl._steps is panel.settings.steps and tbl.rowCount() == 3,
+            "…into the same list the table edits — a loaded template is the "
+            "routine, not a second one")
+
+    emitted: list = []
+    panel.settings_changed.connect(emitted.append)
+    panel.load_template("saved one")
+    r.check(len(emitted) == 1,
+            f"loading persists the routine ONCE, not once per widget it moved "
+            f"({len(emitted)})")
+
+    # CONTROL: a template that is not there is a message, not a traceback out
+    # of a Qt slot — which would take the process down with it.
+    said: list = []
+    panel.status_message.connect(said.append)
+    panel.load_template("no such template")
+    r.check(said and "could not load" in said[-1],
+            f"control: loading a missing template says so ({said})")
+
+    panel._cmb_tpl.setCurrentText("saved one")
+    panel._on_delete_template()
+    r.check("saved one" not in templates.names(),
+            f"Delete removes it from the library ({templates.names()})")
+    r.check(len(panel.settings.steps) == 3,
+            "…and leaves the protocol being edited alone")
+    app.processEvents()
+
+
 # ── the whole app ─────────────────────────────────────────────────────────────
 
 def check_app(r: Report, app, tmp) -> None:
@@ -929,14 +1231,19 @@ def main() -> int:
         check_frames_vanish(r)
         check_cycles_and_attrs(r)
         check_transitions(r)
+        check_estimate(r)
+        check_progress(r)
         # The window persists as a side effect of ordinary use, so isolate
-        # first — an unisolated run overwrites the operator's save folder.
+        # first — an unisolated run overwrites the operator's save folder, and
+        # would save into and delete from the operator's template library.
         state = isolate_user_state()
         try:
             sys.argv = ["main.py", "--mock"]
             app = qt_app()
+            check_templates(r)
             check_panel_repaint(r, app)
             check_step_table(r, app)
+            check_panel_tracker(r, app)
             check_app(r, app, state)
         finally:
             import shutil

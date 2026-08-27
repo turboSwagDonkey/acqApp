@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import QWidget
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
+from acqApp.routines.estimate import clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import RigLimits, Routine, validate
 
@@ -45,6 +46,11 @@ TICK_MS = 25
 # The stream a "frames" step counts. The voltage camera is the imaging path an
 # experiment is about; the pupil camera watches the animal.
 FRAME_STREAM = "voltage_cam"
+
+# Display ticks between two asks for the camera's frame rate. The estimate has
+# to follow an exposure changed in another tab, but not at 30 Hz — the number
+# is rebuilt from that panel's widgets each time.
+FPS_EVERY = 30
 
 
 class RoutinesModule(ModuleAdapter):
@@ -64,6 +70,8 @@ class RoutinesModule(ModuleAdapter):
         self._rec = None                # the Recorder, while recording
         self._filed = 0                 # step boundaries handed to the file
         self._n_steps = 0               # steps in the routine that is running
+        self._routine: Routine | None = None    # the one that is running
+        self._fps_tick = 0
         # True only when Start opened the recording. What makes "stop what you
         # started" different from "stop the operator's recording".
         self._own_rec = False
@@ -78,11 +86,13 @@ class RoutinesModule(ModuleAdapter):
         self.panel.resume_requested.connect(self._resume)
         self.panel.skip_requested.connect(self._skip)
         self.panel.abort_requested.connect(self._abort)
+        self.panel.status_message.connect(self.win.status)
         # Parented to the panel, so it dies with the UI rather than ticking on
         # into an unloaded module.
         self._timer = QTimer(self.panel)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
+        self.panel.set_frame_rate(self.win.frame_rate_hz())
         return self.panel
 
     def _save(self, routine: Routine) -> None:
@@ -147,6 +157,7 @@ class RoutinesModule(ModuleAdapter):
         if self._rec is None and not self._open_recording():
             return
         self._filed = 0
+        self._routine = routine
         self._n_steps = len(routine.steps)
         self._engine = RoutineEngine(routine, self._hooks())
         self._engine.start()
@@ -266,6 +277,10 @@ class RoutinesModule(ModuleAdapter):
         self._own_rec = False
         super().stop()
 
+    def on_modules_changed(self) -> None:
+        if self.panel is not None:
+            self.panel.set_frame_rate(self.win.frame_rate_hz())
+
     def busy_reason(self) -> str:
         if self._engine is not None and self._engine.running:
             return ("stop the routine first — it holds an index into the "
@@ -274,16 +289,27 @@ class RoutinesModule(ModuleAdapter):
 
     # ── display ──
     def update_display(self) -> None:
+        if self.panel is None:
+            return
+        # The estimate follows a frame rate the operator may be changing in
+        # another tab. Throttled: it costs that panel a config rebuild.
+        self._fps_tick += 1
+        if self._fps_tick >= FPS_EVERY:
+            self._fps_tick = 0
+            self.panel.set_frame_rate(self.win.frame_rate_hz())
+
         eng = self._engine
-        if eng is None or self.panel is None:
+        if eng is None:
             return
         if eng.phase == Phase.PAUSED:
             self.panel.set_state(eng.phase, f"PAUSED — {eng.fault}",
                                  eng.position[0])
+            self.panel.set_progress(eng.overall_progress(), self._left(eng))
             return
         if eng.phase == Phase.DONE:
             self.panel.set_state(eng.phase,
                                  f"finished — {eng.steps_done()} step(s)", None)
+            self.panel.set_progress(1.0, f"took {clock(eng.elapsed())}")
             return
         i, cycle, attempt = eng.position
         step = eng.step
@@ -298,6 +324,17 @@ class RoutinesModule(ModuleAdapter):
         # The row is bolded in the table, so "which step is this" is answered
         # by looking at the protocol rather than by counting the label's index.
         self.panel.set_state(eng.phase, where, i)
+        self.panel.set_progress(eng.overall_progress(), self._left(eng))
+
+    def _left(self, eng) -> str:
+        """Elapsed, and what is left — a floor, since no move is timed."""
+        done = f"{clock(eng.elapsed())} elapsed"
+        if self._routine is None:
+            return done
+        i, cycle, _a = eng.position
+        est = remaining(self._routine, self.panel.frame_rate,
+                        i, cycle, eng.progress())
+        return f"{done} · {est.text()} left"
 
     # ── metadata ──
     def metadata(self) -> dict[str, Any]:

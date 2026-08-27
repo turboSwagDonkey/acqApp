@@ -245,6 +245,16 @@ class ModuleHost(Protocol):
         """The loaded module a routine may project through, or None."""
         ...
 
+    def frame_rate_hz(self) -> float | None:
+        """The loaded camera's configured frame rate, or None.
+
+        Pooled like the two above, and for the same reason: the routine panel
+        estimates how long "100 frames" takes without importing a camera. It is
+        an ESTIMATE — frames and seconds are still never interconverted where a
+        step is recorded (`routines/settings.py`).
+        """
+        ...
+
     def latest_frame(self, key: str) -> Any:
         """The newest frame from another module's camera, or None.
 

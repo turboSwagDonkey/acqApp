@@ -15,6 +15,15 @@ does enforce, because they belong next to the button:
 - **Arming is not persisted**, as in `closed_loop/`: the step list is saved,
   the fact that a routine is *running* never is. A restored "running" would
   drive the stage at launch.
+- **Templates are files, not another key in the config.** `routines/templates.py`
+  owns the folder; this owns the four buttons over it. The routine being edited
+  is still the one that persists — loading a template overwrites it, saving one
+  copies it out.
+
+Two readouts, because "is it working" and "how long is this" are different
+questions: the **progress bar** is the whole routine, current step included,
+and the **summary line** is what the protocol costs before it starts
+(`routines/estimate.py`). Both are floors — nothing times a stage move.
 
 The step *table* is `routines/table.py` — every cell edits through a widget
 that can only produce a legal value, which is why nothing here parses "yes".
@@ -25,12 +34,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
+from acqApp.routines import templates
 from acqApp.routines.engine import Phase
+from acqApp.routines.estimate import clock, estimate
 from acqApp.routines.settings import SAVE_MODES, Routine, Step
 from acqApp.routines.table import StepTable
 
@@ -39,6 +50,7 @@ class SettingsPanel(QWidget):
     """The routine, plus Start / Pause / Resume / Skip / Abort."""
 
     settings_changed = pyqtSignal(object)      # emits Routine (persisted)
+    status_message   = pyqtSignal(str)         # one line for the status bar
     start_requested  = pyqtSignal()
     pause_requested  = pyqtSignal()
     resume_requested = pyqtSignal()
@@ -52,7 +64,11 @@ class SettingsPanel(QWidget):
         self._painted: str | None = None      # last phase actually painted
         self._painted_text: str | None = None
         self._marked: int | None = None       # step row shown as running
+        self._fps: float | None = None        # frame rate the estimate uses
+        self._painted_pct: int | None = None
+        self._painted_note: str | None = None
         self._build()
+        self.refresh_templates()
         self._reload_table()
         self._set_phase(Phase.IDLE, "")
 
@@ -64,6 +80,29 @@ class SettingsPanel(QWidget):
         grp = QGroupBox("Protocol")
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
+
+        # A protocol worth running twice is worth keeping. The library is a
+        # folder of files, so it copies to the rig machine with the repo.
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Template:"))
+        self._cmb_tpl = QComboBox()
+        self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces the "
+                                 "step list below.")
+        trow.addWidget(self._cmb_tpl, 1)
+        for text, slot, tip in (
+                ("Load", self._on_load_template,
+                 "Replace the protocol below with the selected template."),
+                ("Save as…", self._on_save_template,
+                 "Save the protocol below as a template, under a name you "
+                 "choose."),
+                ("Delete", self._on_delete_template,
+                 "Delete the selected template. The protocol below is not "
+                 "touched.")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            trow.addWidget(b)
+        lay.addLayout(trow)
 
         form = QFormLayout()
         form.setSpacing(4)
@@ -96,8 +135,12 @@ class SettingsPanel(QWidget):
                 ("Duplicate", self._dup_step,
                  "Copy the selected step — a grid is one step edited N times."),
                 ("Remove", self._del_step, "Delete the selected step."),
-                ("↑", self._move_up, "Move the selected step earlier."),
-                ("↓", self._move_down, "Move the selected step later."),
+                ("↑", self._move_up,
+                 "Move the selected step earlier. Dragging the row and "
+                 "Ctrl+Up do the same."),
+                ("↓", self._move_down,
+                 "Move the selected step later. Dragging the row and "
+                 "Ctrl+Down do the same."),
                 ("Pattern…", self._pick_pattern,
                  "Set the selected step's DMD pattern file. Double-clicking "
                  "the Pattern cell does the same."),
@@ -166,6 +209,24 @@ class SettingsPanel(QWidget):
         self._lbl_state.setWordWrap(True)
         rlay.addWidget(self._lbl_state)
 
+        # Where the routine is, as a bar: a twelve-step protocol read off a
+        # line of text is counted, not seen. The running step is also marked
+        # in the table, which is where "which step" is actually answered.
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 1000)          # tenths of a percent: 40 steps move it
+        self._bar.setTextVisible(True)
+        self._bar.setFormat("%p%")
+        self._bar.setToolTip("Progress through the whole routine, the step "
+                             "now running included.")
+        self._bar.hide()
+        rlay.addWidget(self._bar)
+
+        self._lbl_eta = QLabel()
+        self._lbl_eta.setWordWrap(True)
+        self._lbl_eta.setStyleSheet("color:#9aa0a6;")
+        self._lbl_eta.hide()
+        rlay.addWidget(self._lbl_eta)
+
         note = QLabel("A routine moves the stage and projects light on its own. "
                       "Start opens the recording it needs; it is never "
                       "remembered as running.")
@@ -220,17 +281,11 @@ class SettingsPanel(QWidget):
         self._move(+1)
 
     def _move(self, delta: int) -> None:
-        """Reorder one step. A protocol is an ordered thing, and until this
-        existed the only way to reorder was to delete and retype."""
+        """One step earlier or later. The table owns what reordering means —
+        the arrows, Ctrl+Up/Down and a dropped row are the same operation."""
         row = self._selected()
-        new = row + delta
-        if row < 0 or not (0 <= new < len(self._r.steps)):
-            return
-        steps = self._r.steps
-        steps[row], steps[new] = steps[new], steps[row]
-        self._reload_table()
-        self._tbl.select_row(new)
-        self._emit()
+        if row >= 0:
+            self._tbl.move_row(row, row + delta)
 
     def _pick_pattern(self) -> None:
         self._pick_pattern_for(self._selected())
@@ -257,31 +312,41 @@ class SettingsPanel(QWidget):
             self._tbl.clear_cell(row, "pattern")
 
     def _refresh_summary(self) -> None:
-        """One line: how much work this is, and whether any of it emits light."""
+        """One line: how long this is, and whether any of it emits light."""
         r = self._r
-        runs = r.total_steps()
         if not r.steps:
             self._lbl_summary.setText("No steps yet — add one.")
             return
-        cycles = max(1, r.cycles)
-        secs = cycles * sum(s.settle_s + (s.length if s.unit == "seconds" else 0)
-                            for s in r.steps)
-        frames = cycles * sum(s.length for s in r.steps if s.unit == "frames")
-        bits = [f"{runs} run(s): {len(r.steps)} step(s)"
+        est = estimate(r, self._fps)
+        bits = [f"{r.total_steps()} run(s): {len(r.steps)} step(s)"
                 + (f" x {r.cycles} cycles" if r.cycles > 1 else "")]
-        # Frames and seconds are never interconverted (that is the point of
-        # `unit`), so they are reported side by side rather than as one total.
-        bits.append("at least " + _clock(secs)
-                    + (f" plus {frames:g} frames" if frames else ""))
-        if any(s.x_um is not None or s.y_um is not None for s in r.steps):
+        # "about", not a promise: nothing times a stage move, so every total
+        # here is a floor. Frames become seconds only when a camera has told us
+        # its rate — otherwise they are reported as frames rather than guessed.
+        bits.append(est.text() + (f" (at {est.fps:g} fps)" if est.fps and
+                                  any(x.unit == "frames" for x in r.steps)
+                                  else ""))
+        if est.moves:
             bits.append("moves the stage")
-        lit = sum(1 for s in r.steps if s.project)
-        if lit:
+        if est.lit:
             # Coloured, not capitalised: it is the one line that says light
             # will be emitted, and shouting reads as decoration.
-            bits.append(f"<span style='color:#d08770'>{lit} step(s) emit "
+            bits.append(f"<span style='color:#d08770'>{est.lit} step(s) emit "
                         f"light</span>")
         self._lbl_summary.setText(" · ".join(bits))
+
+    @property
+    def frame_rate(self) -> float | None:
+        """The rate the estimate is using, or None if no camera has said."""
+        return self._fps
+
+    def set_frame_rate(self, fps: float | None) -> None:
+        """The camera's rate, for the estimate only — a step measured in frames
+        is still never converted where it is *recorded* (settings.py)."""
+        fps = float(fps) if fps and fps > 0 else None
+        if fps != self._fps:
+            self._fps = fps
+            self._refresh_summary()
 
     # ── run state ────────────────────────────────────────────────────────────
     def set_state(self, phase: str, text: str, row: int | None = None) -> None:
@@ -290,6 +355,30 @@ class SettingsPanel(QWidget):
         if row != self._marked:
             self._tbl.mark_running(row)
             self._marked = row
+
+    def set_progress(self, fraction: float | None, note: str = "") -> None:
+        """Where the routine is, 0..1, and one grey line under the bar.
+
+        `None` puts both away — before a run there is nothing to be part-way
+        through, and an empty bar reads as a stalled one. Repaints only on a
+        change, for the same reason `_set_phase` does: this is called 30x/s.
+        """
+        if fraction is None:
+            if self._painted_pct is not None:
+                self._bar.hide()
+                self._lbl_eta.hide()
+                self._painted_pct = self._painted_note = None
+            return
+        pct = int(round(max(0.0, min(1.0, fraction)) * 1000))
+        if pct != self._painted_pct:
+            if self._painted_pct is None:
+                self._bar.show()
+                self._lbl_eta.show()
+            self._bar.setValue(pct)
+            self._painted_pct = pct
+        if note != self._painted_note:
+            self._lbl_eta.setText(note)
+            self._painted_note = note
 
     def _set_phase(self, phase: str, text: str) -> None:
         """Repaint only what changed.
@@ -329,8 +418,90 @@ class SettingsPanel(QWidget):
         # phase has not moved.
         self._painted = self._painted_text = None
 
+    # ── templates ────────────────────────────────────────────────────────────
+    # The four buttons are thin on purpose: the folder, the naming and the
+    # reading back are `routines/templates.py`, which has no Qt in it.
+    def refresh_templates(self, select: str = "") -> None:
+        names = templates.names()
+        self._cmb_tpl.blockSignals(True)
+        try:
+            self._cmb_tpl.clear()
+            self._cmb_tpl.addItems(names)
+            if select in names:
+                self._cmb_tpl.setCurrentIndex(names.index(select))
+        finally:
+            self._cmb_tpl.blockSignals(False)
+        self._cmb_tpl.setEnabled(bool(names))
+        if not names:
+            self._cmb_tpl.setPlaceholderText("no saved templates")
+
+    def _on_save_template(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save as template",
+                                        "Template name:",
+                                        text=self.settings.name)
+        if ok and name.strip():
+            self.save_template(name.strip())
+
+    def save_template(self, name: str) -> None:
+        try:
+            path = templates.save(self.settings, name)
+        except OSError as e:
+            self.status_message.emit(f"could not save the template: {e}")
+            return
+        self.refresh_templates(templates.safe_name(name))
+        self.status_message.emit(f"template saved as {path.name}")
+
+    def _on_load_template(self) -> None:
+        name = self._cmb_tpl.currentText()
+        if name:
+            self.load_template(name)
+
+    def load_template(self, name: str) -> None:
+        """Replace the protocol being edited. A template is not a second live
+        routine — there is one, and this is what it now says."""
+        try:
+            loaded = templates.load(name)
+        except (OSError, ValueError) as e:
+            self.status_message.emit(f"could not load {name!r}: {e}")
+            return
+        self.set_routine(loaded)
+        self.status_message.emit(
+            f"loaded template {name!r} — {len(loaded.steps)} step(s)")
+
+    def _on_delete_template(self) -> None:
+        name = self._cmb_tpl.currentText()
+        if not name:
+            return
+        templates.delete(name)
+        self.refresh_templates()
+        self.status_message.emit(f"template {name!r} deleted")
+
+    def set_routine(self, r: Routine) -> None:
+        """Adopt a whole routine, keeping the step LIST the table holds.
+
+        The table was handed `self._r.steps` and writes into it, so the list
+        object has to survive — rebinding it would leave the table editing a
+        routine nothing else can see.
+        """
+        self._loading = True
+        try:
+            self._r.name, self._r.cycles = r.name, max(1, r.cycles)
+            self._r.save_mode = r.save_mode
+            self._r.steps[:] = r.steps
+            self._txt_name.setText(self._r.name)
+            self._spn_cycles.setValue(self._r.cycles)
+            self._cmb_save.setCurrentIndex(
+                max(0, self._cmb_save.findData(self._r.save_mode)))
+        finally:
+            self._loading = False
+        self._reload_table()
+        self._tbl.select_row(0)
+        self._emit()
+
     # ── settings ─────────────────────────────────────────────────────────────
     def _emit(self, *_a) -> None:
+        if self._loading:               # set_routine moves every widget at once
+            return
         self._refresh_summary()
         self.settings_changed.emit(self.settings)
 
@@ -341,10 +512,3 @@ class SettingsPanel(QWidget):
         self._r.save_mode = self._cmb_save.currentData() or "single"
         return self._r
 
-
-def _clock(seconds: float) -> str:
-    """Seconds as the operator reads a duration. 124 s is not a duration."""
-    if seconds < 90:
-        return f"{seconds:g} s"
-    m, sec = divmod(int(round(seconds)), 60)
-    return f"{m}:{sec:02d} min"

@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (bb) |
+| **Last updated** | 2026-08-27 (bc) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done, audit 22/22 closed, **suite 1049 checks / 27 files green**. Built and mock-verified since: DMD calibration (and it has run at the rig), full-frame bin-1 recording, hot module load/unload, experiment routines, EyeLoop pupil tracking. **Nothing new has actuated anything.** What is left is in §6, and it is mostly rig work. §5b **A3** is the one open architecture item. |
+| **Progress** | Roadmap phases 0–5 done, audit 22/22 closed, **suite 1100 checks / 27 files green**. Built and mock-verified since: DMD calibration (and it has run at the rig), full-frame bin-1 recording, hot module load/unload, experiment routines (panel reworked 2026-08-27: progress tracker, drag-reorder, time estimate, templates), EyeLoop pupil tracking. **Nothing new has actuated anything.** What is left is in §6, and it is mostly rig work. §5b **A3** is the one open architecture item. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **1049 checks, 27 files, ~65 s**, and it is ALL GREEN, and it
+the contract: **1100 checks, 27 files, ~65 s**, and it is ALL GREEN, and it
 has **no known flaky test** (the last one was fixed 2026-08-26 (ba)). Run it
 before and after anything.
 
@@ -121,6 +121,9 @@ the recording it needs** (`MainWindow.set_recording`, the twin of `set_live`).
 Read `routines/engine.py`'s docstring before changing any of it: an interrupted
 step's data is **kept and marked**, and **Resume repeats that step**. Nothing
 about it has actuated anything, and `per_step` does not roll files yet (§6).
+The panel grew a progress tracker, drag-reordering, a time estimate and a
+template library on 2026-08-27; the estimate is the **only** place frames are
+turned into seconds, and it says which rate it used.
 
 **Calibration also works and has run at the rig.** DMD tab → Photostimulation
 ROIs → **Calibrate…** → one button, 19 exposures, ~9 s. It steps a narrow
@@ -362,8 +365,8 @@ kept for its reasoning, not a queue.
 the doc named beside it — that is where to read before touching any of them,
 and it is why this section stays short.
 
-**Experiment routines** (`routines/` + `adapters/routines.py`, 134 checks,
-mock-verified; panel reworked 2026-08-26 (ba)):
+**Experiment routines** (`routines/` + `adapters/routines.py`, 185 checks,
+mock-verified; panel reworked 2026-08-27 (bc)):
 
 - **`per_step` save mode does not roll files.** Modelled, validated and carried
   into `StepRun.attrs()`; both modes still write one session file with
@@ -372,7 +375,9 @@ mock-verified; panel reworked 2026-08-26 (ba)):
   ask first.**
 - **`RoutineHooks.moving` is a seam nothing fills.** Arrival is `settle_s`
   (operator's answer). A real arrival signal shares the serial link the 4 Hz
-  poller already uses, so it is not free.
+  poller already uses, so it is not free. **It is also why every time estimate
+  is a floor** — nothing times a stage move, and `estimate.py` says "at least"
+  rather than pretending otherwise.
 - **Its first real run is a rig trip**, after item 2 above: a routine that
   places ROIs inherits a calibration nobody has checked optically. **Confirm
   with the operator that Resume repeating the step is what they want** — the
@@ -413,6 +418,29 @@ still worth doing, under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-27 (bc) — the routines panel: where it is, in what order, how long
+
+Operator's four asks, all four built and mock-verified. Suite 1049 → **1100
+checks / 27 files**.
+
+- **A tracker.** `RoutineEngine.overall_progress()` is position-based, not
+  `steps_done()` — Resume repeats a step, and a bar that went backwards reads
+  as a fault. Drawn as a bar plus elapsed/left, and the **row header carries
+  the ▶ marker**, which survives a scrolled table where the bold row does not.
+- **Reordering is drag, Ctrl+Up/Down or the arrows**, all three through
+  `StepTable.move_row`. Qt's `InternalMove` shuffles the *cells*: the table
+  would look reordered while the engine ran the old protocol, so `dropEvent`
+  moves the `Step` itself.
+- **`routines/estimate.py` is the one place frames become seconds**, and it
+  names the rate it used; with no camera the frames stay frames. Where a step
+  is *recorded* they are still never interconverted — `settings.py` unchanged.
+- **A new `ModuleHost.frame_rate_hz()`** supplies it, pooled by `_first` like
+  `stage_target` — 6 lines of main.py, **operator approved**; nothing records it.
+- **`routines/templates.py`: a folder of JSON, not another config key**, so a
+  protocol copies to the rig machine. `isolate_user_state()` redirects it (an
+  unisolated run would delete from the operator's library) and
+  `test_structure`'s SKIP_DIRS ignores it like `sessions/`.
 
 ### 2026-08-26 (bb) — prose/optimisation sweep, and PLAN.md halved
 
@@ -460,24 +488,7 @@ Operator's request, both halves. Suite 1001 → 1044 checks.
   refractory (0.151/0.153 s against 0.15). **Suspect two counters filled on
   different threads before suspecting the device.**
 
-### 2026-08-26 (az) — the EyeLoop panel, its thread and its trace
-
-Steps 5–8 of the handoff: the integration is complete in the app and only the
-rig is left. Suite 934 → 1001 checks.
-
-- **The panel** draws the fit and **clears it on every failed frame** — the
-  display half of EyeLoop's stale-`params` trap. Pins are placed on the preview.
-- **Persistence was one line of a bug**: `SettingsPanel.settings` rebuilt from
-  six of eighteen fields, so every tracking edit saved itself back as the
-  default. That is the operator's lost tuning, exactly.
-- **`track_worker.py`** is the sole consumer of the camera's frames and
-  republishes each with its fit. **Its `error` had to stay the `PullWorker`
-  signal** — a property of that name breaks the guard that keeps an exception in
-  `run()` from killing the process.
-- **The trace is five streams**, NaN in all five where there was no fit, plus
-  the settings behind it and `pupil_frames_tracked`/`pupil_fits` at close.
-
-Entries before 2026-08-26 (az) are in
+Entries before 2026-08-26 (ba) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file small
 enough to read at the start of every session.
 

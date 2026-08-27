@@ -160,7 +160,10 @@ routines/               experiment routines: a protocol executed in order
                         can only produce a legal value
   engine.py             the executor — every actuation arrives as a callable,
                         so the whole of it is testable before light is emitted
+  estimate.py           how long a routine takes — the one place frames become
+                        seconds, and it says so; no Qt
   settings.py           Step / Routine / validate() — no Qt
+  templates.py          the saved-protocol library, one JSON file each — no Qt
 saving/                 where the session file goes
   config.py             SaveConfig + path building — no Qt
   panel.py
@@ -228,6 +231,7 @@ __init__.py
 ```
 
 Not listed and deliberately so: `.venv/`, `__pycache__/`, `sessions/` (recordings),
+`routine_templates/` (the operator's saved protocols, written by `routines/templates.py`),
 anything else gitignored, and the per-package `__init__.py` — every package has
 one, and only the two carrying logic are called out above (the adapter registry,
 and the lazy PEP 562 re-exports in `closed_loop/`, `routines/` and `saving/`). Raw rig captures live **outside** the repo in

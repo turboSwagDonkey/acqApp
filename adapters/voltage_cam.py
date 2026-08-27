@@ -81,6 +81,11 @@ class VoltageCamModule(ModuleAdapter):
         self.win.set_expected_rate(
             cfg.frame_bytes * cfg.expected_fps / (1 << 20), WRITER_MBPS)
 
+    def frame_rate_hz(self) -> float | None:
+        """What this preset and exposure are expected to sustain. The routine
+        panel turns "100 frames" into seconds with it; nothing records it."""
+        return self.panel.get_config().expected_fps
+
     def _on_exposure(self, us: float) -> None:
         if self.worker is not None:
             self.worker.set_exposure(us)

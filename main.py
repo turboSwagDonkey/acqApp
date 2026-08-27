@@ -303,6 +303,14 @@ class MainWindow(QMainWindow):
         """The loaded module a routine may project through, or None."""
         return self._first(lambda m: m.pattern_target())
 
+    def frame_rate_hz(self) -> float | None:
+        """The loaded camera's configured frame rate, or None — for estimates.
+
+        Pooled like the two above: the routine panel says how long a protocol
+        measured in frames will take, without importing a camera.
+        """
+        return self._first(lambda m: m.frame_rate_hz())
+
     def _first(self, ask):
         """The first loaded module that answers `ask` with something."""
         for m in self._modules:

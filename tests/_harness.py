@@ -102,6 +102,11 @@ def isolate_user_state() -> Path:
     from acqApp import config
     config._CONFIG_PATH = tmp / "acqapp_local.json"
 
+    # The routine template library is a folder of files beside the package; an
+    # unisolated run would save into, and delete from, the operator's own.
+    from acqApp.routines import templates
+    templates.DIR = tmp / "routine_templates"
+
     MemorySettings.store = {}
     import PyQt6.QtCore
     PyQt6.QtCore.QSettings = MemorySettings

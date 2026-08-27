@@ -185,6 +185,14 @@ class ModuleAdapter:
         """If this module can put a pattern up and take it down, itself."""
         return None
 
+    def frame_rate_hz(self) -> float | None:
+        """The rate this module's camera is configured to run at, or None.
+
+        For *estimating* only — a step measured in frames is still never
+        converted where it is recorded (`routines/settings.py`).
+        """
+        return None
+
     def busy_reason(self) -> str:
         """Why the module set must not change right now, or "".
 
