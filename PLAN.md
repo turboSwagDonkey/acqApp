@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (az) |
+| **Last updated** | 2026-08-26 (ba) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). **2026-08-26: EyeLoop pupil tracking is integrated and complete in the app** — the panel, persistence, its own thread, and the ellipse recorded into the session file. Mock-verified only; step 8 (the live Basler) is a rig trip. Suite **1001 checks, 27 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). **2026-08-26: EyeLoop pupil tracking is integrated and complete in the app** — the panel, persistence, its own thread, and the ellipse recorded into the session file. Mock-verified only; step 8 (the live Basler) is a rig trip. **2026-08-26: the routines panel starts its own recording**, and its step list is edited through drop-downs and spin boxes rather than typed words. Suite **1044 checks, 27 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **1001 checks, 27 files, ~64 s**, and it is ALL GREEN. Run it
+the contract: **1044 checks, 27 files, ~65 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **A pupil tracker is back on master — EyeLoop, since 2026-08-26** (operator's
@@ -145,6 +145,14 @@ it with the camera in the loop, and `WRITER_MBPS = 1800` is a derate, not a
 measurement. Record 30 s at bin 1, count the frames off the closed file,
 replace the number. §6 item 1. **Nothing about this actuates** — it is the
 Record button.
+
+**The routines panel runs itself** (2026-08-26, operator's request): Start
+validates, **opens the recording it needs**, and runs — it used to refuse until
+the operator had pressed Record in another part of the window. That is
+`MainWindow.set_recording`, the twin of `set_live`; it returns the previous
+state, which is what lets the adapter stop a recording it started and leave the
+operator's alone. The step list edits through widgets (`routines/table.py`), so
+nothing parses "yes" any more.
 
 **Experiment routines are built** (2026-08-26) and are the newest thing here.
 `routines/` is the protocol + the engine, both **Qt-free and callable-driven**,
@@ -426,8 +434,10 @@ kept for its reasoning, not a queue.
    only thing between the wheel and fully physical units.
 
 **EXPERIMENT ROUTINES ARE BUILT** (2026-08-26) — `routines/` +
-`adapters/routines.py`, 88 checks, mock-verified. What is left of them is one
-piece and one rig trip:
+`adapters/routines.py`, 130 checks, mock-verified. **Their panel was reworked
+on 2026-08-26 (ba)** at the operator's request: Start opens its own recording,
+and every cell of the step list edits through a drop-down or a spin box. What
+is left of them is one piece and one rig trip:
 
 - **`per_step` save mode does not roll files yet.** It is modelled, validated
   and carried into `StepRun.attrs()` — every step file names the session origin
@@ -552,6 +562,39 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (ba) — the routines panel: one Start button, and real editors
+
+Operator's request, both halves. Suite **1001 → 1044 checks**, 27 files, green.
+Still mock-verified: no routine has actuated anything.
+
+- **Start opens its own recording.** It used to refuse until the operator had
+  found the Record button in another part of the window, which only moved the
+  failure earlier. `MainWindow.set_recording` is the twin of `set_live` (§5b
+  A4) and is added for the same reason; it returns the PREVIOUS state, which is
+  what lets the adapter stop a recording it started and leave the operator's
+  running. **The operator approved the main.py edit** — it is a method beside
+  `set_live`, and touches nothing in the dock or settings code.
+- **`RigLimits.has_frames` changed meaning** with it: "a camera is loaded", not
+  "a file is open". Validating against a recording that Start has not opened
+  yet would refuse every routine measured in frames.
+- **`routines/table.py`** — every cell edits through a widget that can only
+  produce a legal value. The value lives in the cell's `UserRole` and the text
+  is a rendering of it, so a word typed into a cell can no longer decide what a
+  step does. "leave this axis" became a state on the spin box; blank used to
+  mean both "leave it" and "not typed yet".
+- **Also in the table**: reorder arrows (there was no way to move a step but to
+  delete and retype it), "No pattern" (cancelling a file dialog means "changed
+  my mind"), the running row in bold, and a summary line — runs, duration, and
+  how many steps emit light, in amber.
+- **`style.toggle_btn` had no `:disabled` rule**, which is the exact wart
+  `solid_btn`'s own docstring warns about: a stylesheet background overrides
+  the palette, so a disabled button still reads as the thing to press. Fixed in
+  style.py, which also fixes **Emulate** and **Free run** — both disabled for
+  the whole of a session.
+
+**Next: unchanged** — §6's three rig measurements, plus EyeLoop step 8. Nothing
+here has actuated anything either.
 
 ### 2026-08-26 (az) — the EyeLoop panel, its thread and its trace
 

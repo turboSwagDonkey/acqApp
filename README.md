@@ -229,7 +229,8 @@ write path is the thing falling behind. `settle_s` is separate from both: a
 stage move and an ALP upload are software-timed and neither is instant.
 
 Everything that decides lives in `routines/settings.py` (the protocol and its
-validation) and `routines/engine.py` (the executor), both Qt-free. **Every
+validation) and `routines/engine.py` (the executor), both Qt-free; the panel is
+`routines/panel.py` and the step table `routines/table.py`. **Every
 actuation reaches the engine as a callable**, the way the DMD calibration takes
 `project`/`grab`, so a whole routine — move, settle, light, capture, fault,
 resume — is driven against fakes on a fake clock in `tests/test_routines.py`
@@ -237,6 +238,22 @@ before anything on the rig moves. `adapters/routines.py` is the only part that
 touches a real stage or projector, and it reaches them through
 `ModuleHost.stage_target`/`pattern_target`: an instrument becomes
 routine-drivable by declaring one, and the routine never imports it.
+
+**One button starts it.** Start validates the protocol, opens the recording if
+one is not already running, and runs the steps — a routine cannot record into a
+file that is not open, so refusing until the operator had found the Record
+button in another part of the window only moved the failure earlier. A recording
+Start opened is stopped again when the routine ends; one the operator started is
+left running. (`ModuleHost.set_recording`, the twin of the `set_live` the DMD
+calibration uses to turn the live view on for itself.)
+
+**The step list is edited through widgets, not words.** Light is a no/yes
+drop-down, Unit a frames/seconds one, and X, Y, Capture and Settle are spin
+boxes; an axis a step should not move reads **leave** rather than being blank,
+which used to mean both "leave it" and "not typed yet". Steps reorder with the
+arrows, and the row being executed is shown in bold while the routine runs. A
+summary line under the table says how many runs, how long at least, whether the
+stage moves and how many steps emit light.
 
 **Validation is up front.** A stage target outside the soft limits, a frames
 step with no camera to count them, a step that projects with no DMD loaded, a
