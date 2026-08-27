@@ -1,8 +1,127 @@
 # Session log — archive
 
-Older entries from `PLAN.md` §7, newest first. The three most recent sessions
-stay in PLAN.md; everything before them lives here so a fresh session reads the
-plan rather than the whole history.
+Older entries from `PLAN.md` §7, newest first. The most recent sessions stay in
+PLAN.md; everything before them lives here so a fresh session reads the plan
+rather than the whole history.
+
+### 2026-08-26 (au) — a note, not code
+
+Recorded the operator's **EyeLoop integration request** in §6 from the
+*EyeLoop Integration Handoff* artifact. **Nothing was built** — §6's three next
+actions are all rig measurements, and this is the fourth thing, not a fourth
+action.
+
+- The artifact is **the laptop's tree, not this one**: it targets an empty
+  `pupil_cam/tracking.py` stub, and here that tracker exists, works, and was
+  *retired* 2026-08-24. The note says translate before following it.
+- Two facts worth having anyway: EyeLoop's per-frame failure was NumPy 2
+  removing `np.mat` swallowed by a bare `except`, and its blink detector is a
+  whole-frame brightness test — **62 % false positives on the wide rig FOV,
+  0 % on an eye crop**. Frame tight regardless of tracker.
+- Checked what the artifact assumes against this machine: **no cv2 in
+  `acqApp/.venv`** (numpy 2.4.6, Python 3.14.3), and **no eyeloop sibling
+  folder** — the two patches live only on the laptop.
+
+**Next: unchanged.** §6 items 1–3, then ask the operator whether EyeLoop
+replaces the branch's hand-rolled tracker or nothing.
+
+### 2026-08-26 (at) — the same sweep, tree-wide
+
+Ran §6 item 5 over everything the pass had never covered. **The prose half was
+again not where the value was** (tree 24.5 %, and worst-first points at
+interface files where the docstring IS the contract). Everything below came
+from a scan or a profile.
+
+- **The per-tick restyle was in two more places** — `closed_loop/panel`
+  (269 `setStyleSheet` calls in 6 s, identical string) and `adapters/wheel`'s
+  plot title, through pyqtgraph's `setHtml`. Both guarded on an actual change.
+- **Three docstrings claimed what the code does not do**, the class the
+  2026-08-18 survey flagged. `PullWorker.set_sink` said "Thread-safe.", which
+  reads as "detaching stops delivery" — it does not, and `Recorder.late_count`
+  exists precisely to count what lands after.
+- **`StageTarget.stop_motion` was declared "must not raise" and did.** It runs
+  *on a fault*, so a dead serial link is exactly when it is reached. Guarded,
+  with the raw call as the test's control.
+- Eight unused imports, two dead names. A dead-name scan over 109 files found
+  nothing else — the tree is clean.
+
+**One measured thing left deliberately alone, and it needs the operator: the
+two camera LUT bars are ~45 % of the display tick** (4.43 ms → 2.45 ms with
+their histograms disconnected; 13.3 % of a 30 Hz budget either way). Fixing it
+means recomputing the histogram twice a second instead of 30×, which **changes
+what you see on the preview you drag for contrast**. Number and reasoning in
+DECISIONS §6 item 5. Nothing is hurting today.
+
+**Two traps from getting that number**, both worth keeping: cProfile
+*under*-attributed it, and my first control was **vacuous** — it detached
+`getattr(m, "_hist", None)` and the adapters keep the LUT bar in a local, so it
+detached nothing and reported "no effect". It now counts what it detached.
+
+Suite **910 → 912 checks**, 25 files, green.
+
+### 2026-08-26 (as) — prose/optimisation sweep over the routines code
+
+The §6 item 5 sweep, same two jobs, run over what (ar) added. **The prose half
+found almost nothing** and the measurement said so up front: the new files sit
+at 20.8 % comment+docstring against a tree at 24.5 %, so worst-first by ratio
+pointed at interface files where the docstring *is* the contract. That is the
+2026-08-19 finding again — the remainder is not where the prose is.
+
+**Both real findings came from profiling**, and one of them refuted a
+micro-benchmark:
+- **`Recorder.offered()` took the enqueue gate to read one int** — read ~70×/s
+  from the GUI thread while a routine runs, against every worker's `put()`.
+  **6.1 ms mean / 28.7 ms worst → 1.4 µs / 4.2 µs.** The lock bought a count no
+  caller can distinguish; the increment still happens under the gate the
+  enqueue already holds, at 68 ns/sample.
+- **The routines panel restyled every display tick** — `setStyleSheet`
+  repolishes against the window's whole cascade, **53 % of the shared 30 Hz
+  tick**, re-applying an identical string. A bench on a detached panel had said
+  2 µs and "not worth it"; the profile of the *built window* said 26 µs. Tick
+  **0.05 → 0.02 ms**.
+
+Also: two dead names deleted, and `StepRun.attrs()` was promising the file
+something nothing wrote — `single` mode now files `routine_runs`, so **which**
+execution faulted is recoverable (`/routine` carries only a signed index).
+Numbers and reasoning in [docs/DECISIONS.md](docs/DECISIONS.md) §6 item 5, which
+is that pass's ledger. Suite **899 → 910 checks**, 25 files, green.
+
+### 2026-08-26 (ar) — experiment routines: built, wired, and mock-verified
+
+The next big one from (aq)'s entry, to the four answers the operator gave the
+same morning. Two commits: the Qt-free core, then the wiring.
+
+- **`routines/`** — `settings.py` (Step / Routine / `validate`) and `engine.py`
+  (the executor). Both Qt-free; **every actuation reaches the engine as a
+  callable**, as `calibration.py` does, which is what let the whole feature be
+  verified before anything moved. `tick()` state machine over `now()` and
+  `frames()`, not a loop with sleeps — so pause/resume/abort are transitions and
+  a test steps a whole routine on a fake clock in 0.1 s.
+- **The two questions the plan left open are decided, in the code**: an
+  interrupted step's data is **kept and marked** (never discarded — with an
+  animal on the rig, recorded frames are not ours to throw away), and **resume
+  repeats the step** as a fresh `attempt`. Both attempts stay in the file.
+  **The operator has not confirmed the second**; ask on the first real run.
+- **The seam is two new Protocols**, `StageTarget` / `PatternTarget`, pooled by
+  the window as `stage_target()` / `pattern_target()` — the `signal_sources()`
+  shape. `adapters/routines.py` names no instrument; declaring a target is the
+  whole cost of making one routine-drivable. Deliberately no "is it moving?":
+  the MCM6101 answers only over the link the 4 Hz poller shares.
+- **`Recorder.offered(stream)`** is what a "100 frames" step counts — frames
+  that reached the FILE, not frames the camera produced. Those differ exactly
+  when the write path is what is falling behind, which is the failure this rig
+  had.
+- **Three things that cost the most thought, all of them "what does the file
+  say afterwards"**: `/routine` carries a signed entry per boundary on the
+  shared clock; `routine_steps` carries the protocol as JSON because "which
+  position was step 4" is recoverable from nothing else; and `StepRun.attrs()`
+  names the session origin + per-step t0 once, so the two save modes cannot
+  disagree.
+- **Not built, on purpose**: `per_step` file rolling. It means re-entering
+  `MainWindow._start_recording` mid-session and **main.py is the operator's
+  file**. Both modes write one session file today.
+- Suite **802 → 899 checks, 24 → 25 files**. `test_routines` is 88 of them, a
+  fake-rig half and a real-window half. Nothing here has touched hardware.
 
 ### 2026-08-25 (aq) — instruments load and unload without restarting, and the
 sidebar becomes the settings selector

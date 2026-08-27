@@ -9,9 +9,9 @@ wrong once.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-26 (ay) |
+| **Last updated** | 2026-08-26 (az) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). Suite **912 checks, 25 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). **2026-08-26: EyeLoop pupil tracking is integrated and complete in the app** — the panel, persistence, its own thread, and the ellipse recorded into the session file. Mock-verified only; step 8 (the live Basler) is a rig trip. Suite **1001 checks, 27 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **934 checks, 26 files, ~63 s**, and it is ALL GREEN. Run it
+the contract: **1001 checks, 27 files, ~64 s**, and it is ALL GREEN. Run it
 before and after anything.
 
 **A pupil tracker is back on master — EyeLoop, since 2026-08-26** (operator's
@@ -126,13 +126,18 @@ settings — each alone takes a 151/151 clip to ~45/151 (§7 (ah)). They chose t
 retire it anyway rather than re-tune. **The numbers are in
 `archive/pupil_tracking/README.md`**, not here.
 
-**PICK UP HERE — the EyeLoop integration is half done.** The model and the
-seam are in and tested (`test_pupil_eyeloop`, 22 checks, both rig clips at
-151/151 through the app path). **What is NOT done: the panel.** Nothing draws
-the fit on the preview, no controls set the tracking or corneal-reflection
-knobs, nothing records the trace into the session file, and tracking has not
-been moved off the GUI thread. Steps 5–8 of
-[docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md) — read that first.
+**The EyeLoop integration is DONE in the app** (2026-08-26, steps 2–7 of
+[docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md)): the tracker, the
+seam, the panel controls, persistence through a restart, tracking on its own
+thread, and the ellipse in the session file as five NaN-padded streams.
+**Step 8 is what is left and it is a rig trip** — nothing here has met the live
+Basler, and the two questions it answers are whether one threshold holds for a
+whole session and whether a fit keeps up at full resolution.
+
+**The trap to know before touching any of it: fit rate is not accuracy.**
+Threshold *sets* the reported radius — a 60 % swing over 25–60 on the rig clips
+— at a clean 151/151 the whole way. Nothing in the app can tell the operator
+their threshold is wrong, which is why the file records it beside the trace.
 
 **The other open question — one 30 s recording answers it.** Full-frame
 bin 1 now keeps 100 % of its frames in the bench (2026-08-25); nothing has run
@@ -500,31 +505,33 @@ outside an 0.78-ratio pupil on the minor axis. Numbers in docs/EYELOOP.md.
 **Fit rate stayed 151/151 through every one of these failures.** The operator
 is tuning it.
 
-**INTEGRATION STARTED 2026-08-26, on master, at the operator's call.** Done:
-`devices/pupil_cam/eyeloop_tracker.py` (the tracker, moved unchanged from the
-bench app), `tracking.py` (the seam), tracking + corneal-reflection knobs on
-`PupilSettings` with `crop_box()` deriving the crop from the **circular eye
-region** already there, and `test_pupil_eyeloop` — 22 checks, every one with a
-control, both rig clips 151/151 through the app path. Suite 934/26 green.
+**INTEGRATION IS DONE IN THE APP** (2026-08-26, master, steps 2–7 of the
+handoff). The tracker and the seam, the panel controls, persistence, the
+thread, and the trace in the file. Suite 1001/27 green, mock-verified only.
+What that leaves:
 
-**Not done — this is where to resume**, steps 5–8 of the handoff:
-1. **The panel.** Nothing draws the fit, and no control sets any of the knobs.
-2. **Persistence.** The fields exist on `PupilSettings` but nothing saves them,
-   so the operator's tuning is lost on close — they already lost one set.
-3. **Off the GUI thread.** 2.4 ms fits in a 33 ms tick, but that was offline
-   and single-threaded; the branch's `track_worker.py` solved this before.
-4. **Record it.** The session file needs the ellipse *and* the settings behind
-   it — a pupil trace without its threshold is not reproducible.
+- **Step 8 — the live Basler.** Everything so far is offline clips and the
+  mock. It is not an actuation: the pupil camera only looks. Turn tracking on,
+  place the eye region on the real eye, watch the ellipse, and record 30 s.
+- **The operator's tuned numbers should become the shipped defaults.** The app
+  persists them now, so they live in `acqapp_local.json` on this machine only.
+  Which ones were settled on is not written down anywhere.
+- **Whether one threshold holds for a session, or tracks illumination.** The
+  single most consequential number, and nothing measures it yet.
+- **Ground truth.** Every number so far is a proxy.
+  `archive/pupil_tracking/_mark_truth.py` exists to fix that and has never been
+  run; a dozen hand-marked frames would settle which threshold is *right*.
 
-**THE WRAP-UP IS [docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md)** —
-read that before writing any integration code. It carries the two gates, the
-eight steps in dependency order, the seven silent traps, and what not to
-rebuild. EYELOOP.md is the measurements; that file is what to *do* with them.
+**Still blocked on the operator: GPL-3.0.** Nothing is vendored — EyeLoop is
+imported from `../eyeloop`, so a fresh machine needs the clone plus the patch
+diff, or `ACQAPP_EYELOOP_DIR`. Vendoring it into `devices/` makes acqApp a
+derived work, and **this repo is public**. `EyeLoopUnavailable` leaves the pupil
+camera working exactly as before, which is a tested contract — so the decision
+can wait without blocking anything.
 
-**Still blocked on the operator:** which tree (§0 forbids restoring a tracker on
-master; `pupil-tracking` already has a *working* one), and **GPL-3.0** —
-vendoring EyeLoop into `devices/` makes acqApp a derived work, which is why
-both the clone and the bench app were kept outside.
+**[docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md)** is now the record
+of how each step was closed and what it actually became; EYELOOP.md is the
+measurements. Read the traps table in the first before changing any of it.
 
 ~~Pupil tracking.~~ **Retired 2026-08-24** — `archive/pupil_tracking/`. The
 eye region stayed. Do not restore without being asked; the README there has the
@@ -545,6 +552,43 @@ intact. Two are still worth doing and are listed there under "Still open".
 ## 7. Session log
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
+
+### 2026-08-26 (az) — the EyeLoop panel, its thread and its trace
+
+Steps 5–8 of the handoff, so the integration is complete in the app and only
+the rig is left. Suite **934 → 1001 checks, 26 → 27 files**, green. Nothing has
+run against the live Basler.
+
+- **The panel.** Tracking (enable, threshold, blur, ellipse/circle) and corneal
+  reflection (threshold, pad, ring, reach, plus a red overlay of the pixels it
+  blanked — the only way to see what the threshold is doing). The fit is drawn
+  on the preview and **cleared on every failed frame**, which is the display
+  half of EyeLoop's stale-`params` trap. Pins are placed on the preview like
+  the eye region: click a reflection to pin it, click a pin to remove it.
+- **Persistence was one line of a bug.** `SettingsPanel.settings` built a fresh
+  `PupilSettings` from six of eighteen fields, so every tracking edit saved
+  itself back as the *default* — the operator's lost tuning, exactly. It reads
+  all of them now, and `__post_init__` normalises `cr_pins`, which JSON returns
+  as lists. Five rows in `test_settings_persistence` check it through a real
+  restart.
+- **`track_worker.py`** is the sole consumer of the camera's frames and
+  republishes each one *with* its fit, so the outline always matches the image.
+  Built whether or not tracking is on — one code path for the preview is worth
+  the thread. **Its `error` had to stay the `PullWorker` signal**: a property of
+  that name shadows it and breaks the guard that keeps an exception in `run()`
+  from taking the process down. The message is `track_error`.
+- **The trace is five streams** (`pupil_x/_y/_major/_minor/_angle`), one sample
+  per tracked frame, **NaN in all five where there was no fit** — a gap has to
+  be in the file, not a row nobody wrote. `pupil_track_threshold` and the rest
+  go in the metadata; the close writes `pupil_frames_tracked` / `pupil_fits`,
+  because tracking drops frames it cannot keep up with.
+- **`test_pupil_track`, 48 checks, each with a control**, and **none of it needs
+  an EyeLoop clone**: with no clone every fit is None, which is exactly what the
+  NaN contract is for. On this machine it fits 6/6 through the whole worker
+  path on the mock camera.
+
+**Next: the rig.** §6's three measurements are unchanged, and step 8 joins
+them — tracking on the live Basler is looking, not actuating.
 
 ### 2026-08-26 (ay) — EyeLoop integration started, on master
 
@@ -642,126 +686,7 @@ imports it. [docs/EYELOOP.md](docs/EYELOOP.md) has the numbers.
 **Next: the operator decides** which tree it lands on and what GPL-3.0 implies
 before any code moves into the repo. §6's three rig measurements are unchanged.
 
-### 2026-08-26 (au) — a note, not code
-
-Recorded the operator's **EyeLoop integration request** in §6 from the
-*EyeLoop Integration Handoff* artifact. **Nothing was built** — §6's three next
-actions are all rig measurements, and this is the fourth thing, not a fourth
-action.
-
-- The artifact is **the laptop's tree, not this one**: it targets an empty
-  `pupil_cam/tracking.py` stub, and here that tracker exists, works, and was
-  *retired* 2026-08-24. The note says translate before following it.
-- Two facts worth having anyway: EyeLoop's per-frame failure was NumPy 2
-  removing `np.mat` swallowed by a bare `except`, and its blink detector is a
-  whole-frame brightness test — **62 % false positives on the wide rig FOV,
-  0 % on an eye crop**. Frame tight regardless of tracker.
-- Checked what the artifact assumes against this machine: **no cv2 in
-  `acqApp/.venv`** (numpy 2.4.6, Python 3.14.3), and **no eyeloop sibling
-  folder** — the two patches live only on the laptop.
-
-**Next: unchanged.** §6 items 1–3, then ask the operator whether EyeLoop
-replaces the branch's hand-rolled tracker or nothing.
-
-### 2026-08-26 (at) — the same sweep, tree-wide
-
-Ran §6 item 5 over everything the pass had never covered. **The prose half was
-again not where the value was** (tree 24.5 %, and worst-first points at
-interface files where the docstring IS the contract). Everything below came
-from a scan or a profile.
-
-- **The per-tick restyle was in two more places** — `closed_loop/panel`
-  (269 `setStyleSheet` calls in 6 s, identical string) and `adapters/wheel`'s
-  plot title, through pyqtgraph's `setHtml`. Both guarded on an actual change.
-- **Three docstrings claimed what the code does not do**, the class the
-  2026-08-18 survey flagged. `PullWorker.set_sink` said "Thread-safe.", which
-  reads as "detaching stops delivery" — it does not, and `Recorder.late_count`
-  exists precisely to count what lands after.
-- **`StageTarget.stop_motion` was declared "must not raise" and did.** It runs
-  *on a fault*, so a dead serial link is exactly when it is reached. Guarded,
-  with the raw call as the test's control.
-- Eight unused imports, two dead names. A dead-name scan over 109 files found
-  nothing else — the tree is clean.
-
-**One measured thing left deliberately alone, and it needs the operator: the
-two camera LUT bars are ~45 % of the display tick** (4.43 ms → 2.45 ms with
-their histograms disconnected; 13.3 % of a 30 Hz budget either way). Fixing it
-means recomputing the histogram twice a second instead of 30×, which **changes
-what you see on the preview you drag for contrast**. Number and reasoning in
-DECISIONS §6 item 5. Nothing is hurting today.
-
-**Two traps from getting that number**, both worth keeping: cProfile
-*under*-attributed it, and my first control was **vacuous** — it detached
-`getattr(m, "_hist", None)` and the adapters keep the LUT bar in a local, so it
-detached nothing and reported "no effect". It now counts what it detached.
-
-Suite **910 → 912 checks**, 25 files, green.
-
-### 2026-08-26 (as) — prose/optimisation sweep over the routines code
-
-The §6 item 5 sweep, same two jobs, run over what (ar) added. **The prose half
-found almost nothing** and the measurement said so up front: the new files sit
-at 20.8 % comment+docstring against a tree at 24.5 %, so worst-first by ratio
-pointed at interface files where the docstring *is* the contract. That is the
-2026-08-19 finding again — the remainder is not where the prose is.
-
-**Both real findings came from profiling**, and one of them refuted a
-micro-benchmark:
-- **`Recorder.offered()` took the enqueue gate to read one int** — read ~70×/s
-  from the GUI thread while a routine runs, against every worker's `put()`.
-  **6.1 ms mean / 28.7 ms worst → 1.4 µs / 4.2 µs.** The lock bought a count no
-  caller can distinguish; the increment still happens under the gate the
-  enqueue already holds, at 68 ns/sample.
-- **The routines panel restyled every display tick** — `setStyleSheet`
-  repolishes against the window's whole cascade, **53 % of the shared 30 Hz
-  tick**, re-applying an identical string. A bench on a detached panel had said
-  2 µs and "not worth it"; the profile of the *built window* said 26 µs. Tick
-  **0.05 → 0.02 ms**.
-
-Also: two dead names deleted, and `StepRun.attrs()` was promising the file
-something nothing wrote — `single` mode now files `routine_runs`, so **which**
-execution faulted is recoverable (`/routine` carries only a signed index).
-Numbers and reasoning in [docs/DECISIONS.md](docs/DECISIONS.md) §6 item 5, which
-is that pass's ledger. Suite **899 → 910 checks**, 25 files, green.
-
-### 2026-08-26 (ar) — experiment routines: built, wired, and mock-verified
-
-The next big one from (aq)'s entry, to the four answers the operator gave the
-same morning. Two commits: the Qt-free core, then the wiring.
-
-- **`routines/`** — `settings.py` (Step / Routine / `validate`) and `engine.py`
-  (the executor). Both Qt-free; **every actuation reaches the engine as a
-  callable**, as `calibration.py` does, which is what let the whole feature be
-  verified before anything moved. `tick()` state machine over `now()` and
-  `frames()`, not a loop with sleeps — so pause/resume/abort are transitions and
-  a test steps a whole routine on a fake clock in 0.1 s.
-- **The two questions the plan left open are decided, in the code**: an
-  interrupted step's data is **kept and marked** (never discarded — with an
-  animal on the rig, recorded frames are not ours to throw away), and **resume
-  repeats the step** as a fresh `attempt`. Both attempts stay in the file.
-  **The operator has not confirmed the second**; ask on the first real run.
-- **The seam is two new Protocols**, `StageTarget` / `PatternTarget`, pooled by
-  the window as `stage_target()` / `pattern_target()` — the `signal_sources()`
-  shape. `adapters/routines.py` names no instrument; declaring a target is the
-  whole cost of making one routine-drivable. Deliberately no "is it moving?":
-  the MCM6101 answers only over the link the 4 Hz poller shares.
-- **`Recorder.offered(stream)`** is what a "100 frames" step counts — frames
-  that reached the FILE, not frames the camera produced. Those differ exactly
-  when the write path is what is falling behind, which is the failure this rig
-  had.
-- **Three things that cost the most thought, all of them "what does the file
-  say afterwards"**: `/routine` carries a signed entry per boundary on the
-  shared clock; `routine_steps` carries the protocol as JSON because "which
-  position was step 4" is recoverable from nothing else; and `StepRun.attrs()`
-  names the session origin + per-step t0 once, so the two save modes cannot
-  disagree.
-- **Not built, on purpose**: `per_step` file rolling. It means re-entering
-  `MainWindow._start_recording` mid-session and **main.py is the operator's
-  file**. Both modes write one session file today.
-- Suite **802 → 899 checks, 24 → 25 files**. `test_routines` is 88 of them, a
-  fake-rig half and a real-window half. Nothing here has touched hardware.
-
-Entries before 2026-08-26 (ar) are in
+Entries before 2026-08-26 (av) are in
 **[docs/SESSIONLOG.md](docs/SESSIONLOG.md)** — moved there to keep this file small
 enough to read at the start of every session.
 

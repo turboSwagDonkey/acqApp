@@ -28,8 +28,8 @@ fires another's output. Both are described below.
 Panels are **dockable** — drag any plot or video panel to re-dock, float, or tab
 it with another; drag the tabs to reorder. The layout is remembered across runs.
 The voltage camera has the central image; the **pupil camera has its own dockable
-video box** (live frame + detected-pupil outline), alongside its radius trace in
-the Signals panel.
+video box** (live frame, the fitted pupil ellipse, the eye region and any pinned
+reflections), alongside its radius trace in the Signals panel.
 
 The **settings** for every loaded subsystem live in one tabbed **pop-up
 window**, reachable two ways that stay in step. The left-edge sidebar has one
@@ -42,9 +42,11 @@ entirely for the images and plots. Switching tab inside the window moves the
 sidebar highlight to match. Being a separate window, it can be left open beside
 the app or on a second screen while a session runs, and its size and position
 are remembered. The pupil camera's page exposes
-camera exposure/frame-rate, the pupil-tracking parameters (threshold, min/max
-radius, search lines, edge polarity, minimum edge strength, circle-or-ellipse
-fit), and the eye-tracking LED toggle.
+camera exposure/frame-rate, the tracking parameters (threshold, blur,
+ellipse-or-circle), corneal-reflection removal (threshold, pad, ring, reach) and
+the eye-tracking LED toggle. The **eye region** and the **pinned reflections**
+are placed on the preview rather than typed here — both are positions in the
+frame.
 
 **Every panel's settings persist** to `acqapp_local.json` and come back on the
 next launch — camera preset and exposure, wheel V/rev and diameter, pupil
@@ -141,12 +143,22 @@ current data rate. It also shows the exact path the next recording will get:
 /voltage_cam/frames        (N, H, W) uint16   /voltage_cam/timestamps  (N,) float64
 /voltage_cam_index/values  (N,) float64       …/timestamps             (N,) float64
 /pupil_cam/frames          (N, H, W) uint8    /pupil_cam/timestamps    (N,) float64
+/pupil_x /pupil_y /pupil_major /pupil_minor /pupil_angle   (T,) float64 + timestamps
 /wheel_voltage /wheel_speed /wheel_distance    (M,) float64  + timestamps
 /puffer/values             (K,) float64 (dur) /puffer/timestamps       (K,) float64
 /stage_x_um  /stage_y_um   (P,) float64       …/timestamps             (P,) float64
 /dmd/values                (Q,) float64 (idx) /dmd/timestamps          (Q,) float64
 /routine/values            (S,) float64 (±step) /routine/timestamps   (S,) float64
 ```
+
+The five **pupil** streams are the fitted ellipse — centre, semi-axes and angle
+in frame pixels — one sample per *tracked* frame, and **NaN in all five** where
+there was no fit, so a gap in the trace is in the file rather than being a row
+nobody wrote. There are fewer of them than there are frames: tracking drops
+frames it cannot keep up with, and the file's `pupil_frames_tracked` and
+`pupil_fits` say by how much. `pupil_track_threshold` is written with them
+because threshold *sets* the reported radius — a pupil trace without it is not
+reproducible.
 
 ### Frame timing
 
@@ -336,19 +348,24 @@ way back out. A value that was never set reads as an empty string.
 - `devices/` — one package per subsystem, each with `acquisition.py` (a `QThread` worker with
   a mock twin), `settings.py`/`control.py` (a Qt panel), `recording.py`, and a
   **Free run** button: tick one module at startup and run it with no session
-  clock and no recording. The pupil cam's tuning overlay (annulus, per-ray
-  edge points, click-to-seed) is the **Show search overlay** box in its tab.
+  clock and no recording. The pupil cam's tuning overlay — the pixels
+  reflection removal blanked — is the **Show what was removed** box in its tab.
 - `devices/dmd/alp.py` — the whole of the Vialux hardware knowledge, Qt-free: where the
   vendor API lives, `build_frame` (image → the binary panel frame, which is
   where a mispositioned stimulus would come from, so it is unit-tested), and the
   open/project/halt/close lifecycle. `devices/dmd/control.py` holds only the panel and
   the app-facing controller.
-- `devices/pupil_cam/track_worker.py` — pupil **tracking** gets a thread of its own, on
-  top of the camera's. Tracking is unbounded work (a degenerate mask costs
-  100–200 ms in `coarse_seed`, and a lost pupil re-seeds every frame), so in the
-  display tick it froze the whole window, voltage-camera preview included. It is
-  the sole consumer of the pupil camera's frames and republishes each frame
-  *with* the fit made from it, so the outline always matches the image under it.
+- `devices/pupil_cam/eyeloop_tracker.py` — the **only** file that touches
+  EyeLoop, which is **GPL-3.0** and is imported from a clone beside the repo
+  rather than vendored. With no clone the pupil camera runs exactly as before
+  and says so; nothing else in the app changes. `tracking.py` is the seam that
+  turns a frame plus the operator's settings into one ellipse.
+- `devices/pupil_cam/track_worker.py` — pupil **tracking** gets a thread of its
+  own, on top of the camera's. A fit is 1–2 ms, but it is not bounded (a lost
+  pupil, a re-armed tracker), and in the display tick a slow one freezes the
+  whole window, voltage-camera preview included. It is the sole consumer of the
+  pupil camera's frames and republishes each frame *with* the fit made from it,
+  so the outline always matches the image under it.
 - `adapters/` — one `ModuleAdapter` per subsystem, **one file each**, holding
   everything specific to that instrument: its settings tab, its plot, its
   worker, its ~30 Hz display tick, its recording sink, and the metadata it
