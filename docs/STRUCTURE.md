@@ -155,7 +155,9 @@ devices/                one package per instrument
     panel.py
     settings.py
 routines/               experiment routines: a protocol executed in order
-  panel.py              the step table and the run controls
+  panel.py              the protocol, the run controls, and one Start button
+  table.py              the step list: every cell edits through a widget that
+                        can only produce a legal value
   engine.py             the executor — every actuation arrives as a callable,
                         so the whole of it is testable before light is emitted
   settings.py           Step / Routine / validate() — no Qt

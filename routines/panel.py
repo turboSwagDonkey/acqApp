@@ -1,44 +1,38 @@
-"""Experiment routines — the step table and the run controls.
+"""Experiment routines — the protocol, the run controls, and one Start button.
 
-The panel edits a `Routine` and emits it; it decides nothing. Two rules it does
-enforce, because they belong next to the button:
+The panel edits a `Routine` and emits it; it decides nothing. Three rules it
+does enforce, because they belong next to the button:
 
+- **Start starts everything it needs.** It opens the recording itself (through
+  `ModuleHost.set_recording`, as the DMD calibration opens the live view
+  through `set_live`) rather than refusing until the operator has found the
+  Record button in another part of the window. A routine that cannot record is
+  a routine that cannot run, so making the operator do it by hand only moved
+  the failure earlier.
 - **Start is refused with the problems listed**, not greyed out with no reason.
   `validate()` returns sentences, and an operator who cannot start needs to
   read which step is wrong.
 - **Arming is not persisted**, as in `closed_loop/`: the step list is saved,
   the fact that a routine is *running* never is. A restored "running" would
   drive the stage at launch.
+
+The step *table* is `routines/table.py` — every cell edits through a widget
+that can only produce a legal value, which is why nothing here parses "yes".
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
 from acqApp.routines.engine import Phase
-from acqApp.routines.settings import SAVE_MODES, UNITS, Routine, Step
-
-# Columns of the step table, in order.
-COLS = ("Label", "X (um)", "Y (um)", "Pattern", "Light", "Length", "Unit",
-        "Settle (s)")
-
-
-def _num(text: str) -> float | None:
-    """A cell the operator may leave blank — blank means "leave this axis"."""
-    text = (text or "").strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+from acqApp.routines.settings import SAVE_MODES, Routine, Step
+from acqApp.routines.table import StepTable
 
 
 class SettingsPanel(QWidget):
@@ -57,6 +51,7 @@ class SettingsPanel(QWidget):
         self._loading = False
         self._painted: str | None = None      # last phase actually painted
         self._painted_text: str | None = None
+        self._marked: int | None = None       # step row shown as running
         self._build()
         self._reload_table()
         self._set_phase(Phase.IDLE, "")
@@ -89,14 +84,10 @@ class SettingsPanel(QWidget):
         form.addRow("Save as:", self._cmb_save)
         lay.addLayout(form)
 
-        self._tbl = QTableWidget(0, len(COLS))
-        self._tbl.setHorizontalHeaderLabels(list(COLS))
-        self._tbl.verticalHeader().setDefaultSectionSize(22)
-        self._tbl.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows)
-        self._tbl.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch)
+        self._tbl = StepTable(self._r.steps)
         self._tbl.setMinimumHeight(160)
+        self._tbl.changed.connect(self._emit)
+        self._tbl.pattern_requested.connect(self._pick_pattern_for)
         lay.addWidget(self._tbl, 1)
 
         btns = QHBoxLayout()
@@ -105,14 +96,27 @@ class SettingsPanel(QWidget):
                 ("Duplicate", self._dup_step,
                  "Copy the selected step — a grid is one step edited N times."),
                 ("Remove", self._del_step, "Delete the selected step."),
+                ("↑", self._move_up, "Move the selected step earlier."),
+                ("↓", self._move_down, "Move the selected step later."),
                 ("Pattern…", self._pick_pattern,
-                 "Set the selected step's DMD pattern file.")):
+                 "Set the selected step's DMD pattern file. Double-clicking "
+                 "the Pattern cell does the same."),
+                ("No pattern", self._clear_pattern,
+                 "Leave the DMD showing whatever it already has for this "
+                 "step.")):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
             btns.addWidget(b)
         btns.addStretch(1)
         lay.addLayout(btns)
+
+        # What is about to happen, in one line — a step list is not something
+        # you can total up by eye once it is longer than a screen.
+        self._lbl_summary = QLabel()
+        self._lbl_summary.setWordWrap(True)
+        self._lbl_summary.setStyleSheet("color:#9aa0a6;")
+        lay.addWidget(self._lbl_summary)
         root.addWidget(grp, 1)
 
         # ── running ──────────────────────────────────────────────────────────
@@ -121,7 +125,15 @@ class SettingsPanel(QWidget):
         rlay.setSpacing(4)
 
         self._btn_start = QPushButton("▶ Start routine")
-        self._btn_start.setStyleSheet(style.toggle_btn("routines"))
+        # solid_btn, not toggle_btn: Start is not a toggle, it is the panel's
+        # primary action — and it is disabled for the whole of a run, which is
+        # the case the solid style renders honestly.
+        self._btn_start.setStyleSheet(style.solid_btn("routines"))
+        self._btn_start.setToolTip(
+            "Check the protocol, start recording if it is not already running, "
+            "and run the steps.\nA recording this button started is stopped "
+            "again when the routine ends; one you started yourself is left "
+            "alone.")
         self._btn_start.clicked.connect(self.start_requested)
         rlay.addWidget(self._btn_start)
 
@@ -139,7 +151,8 @@ class SettingsPanel(QWidget):
                 (self._btn_skip, self.skip_requested,
                  "Give up on the paused step and go on to the next one."),
                 (self._btn_abort, self.abort_requested,
-                 "End the routine. Recording is still yours to stop.")):
+                 "End the routine now. Motion stops and the light goes off; a "
+                 "recording this panel started is stopped with it.")):
             b.setToolTip(tip)
             b.clicked.connect(sig)
             row.addWidget(b)
@@ -153,7 +166,7 @@ class SettingsPanel(QWidget):
         rlay.addWidget(self._lbl_state)
 
         note = QLabel("A routine moves the stage and projects light on its own. "
-                      "It runs only while a session does, and it is never "
+                      "Start opens the recording it needs; it is never "
                       "remembered as running.")
         note.setWordWrap(True)
         note.setStyleSheet("color:#9aa0a6;")
@@ -163,74 +176,21 @@ class SettingsPanel(QWidget):
         self._txt_name.editingFinished.connect(self._emit)
         self._spn_cycles.valueChanged.connect(self._emit)
         self._cmb_save.currentIndexChanged.connect(self._emit)
-        self._tbl.itemChanged.connect(self._on_cell_changed)
 
-    # ── the step table ───────────────────────────────────────────────────────
+    # ── the step list ────────────────────────────────────────────────────────
+    # The table edits `self._r.steps` in place; these are the operations on the
+    # list itself, which a table cell cannot express.
     def _reload_table(self) -> None:
-        """Repaint the table from `self._r`. Signals off — an itemChanged here
-        would read half-built rows back into the routine."""
-        self._loading = True
-        try:
-            self._tbl.setRowCount(len(self._r.steps))
-            for row, s in enumerate(self._r.steps):
-                self._set_row(row, s)
-        finally:
-            self._loading = False
-
-    def _set_row(self, row: int, s: Step) -> None:
-        for col, text in enumerate((
-                s.label,
-                "" if s.x_um is None else f"{s.x_um:g}",
-                "" if s.y_um is None else f"{s.y_um:g}",
-                Path(s.pattern).name if s.pattern else "",
-                "yes" if s.project else "no",
-                f"{s.length:g}",
-                s.unit,
-                f"{s.settle_s:g}")):
-            item = QTableWidgetItem(text)
-            if col == 3:                        # the pattern is set by browsing
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setToolTip(s.pattern or "no pattern — the DMD keeps what "
-                                             "it has")
-            self._tbl.setItem(row, col, item)
-
-    def _on_cell_changed(self, item: QTableWidgetItem) -> None:
-        if self._loading:
-            return
-        row, col = item.row(), item.column()
-        if not (0 <= row < len(self._r.steps)):
-            return
-        s = self._r.steps[row]
-        text = item.text().strip()
-        if col == 0:
-            s.label = text
-        elif col == 1:
-            s.x_um = _num(text)
-        elif col == 2:
-            s.y_um = _num(text)
-        elif col == 4:
-            s.project = text.lower() in ("yes", "y", "true", "1", "on")
-        elif col == 5:
-            s.length = _num(text) if _num(text) is not None else s.length
-        elif col == 6:
-            s.unit = text.lower() if text.lower() in UNITS else s.unit
-        elif col == 7:
-            v = _num(text)
-            s.settle_s = s.settle_s if v is None else v
-        self._loading = True                    # rewrite the cell canonically
-        try:
-            self._set_row(row, s)
-        finally:
-            self._loading = False
-        self._emit()
+        self._tbl.reload()
+        self._refresh_summary()
 
     def _selected(self) -> int:
-        rows = {i.row() for i in self._tbl.selectedIndexes()}
-        return min(rows) if rows else -1
+        return self._tbl.selected_row()
 
     def _add_step(self) -> None:
         self._r.steps.append(Step(label=f"step {len(self._r.steps) + 1}"))
         self._reload_table()
+        self._tbl.select_row(len(self._r.steps) - 1)
         self._emit()
 
     def _dup_step(self) -> None:
@@ -240,6 +200,7 @@ class SettingsPanel(QWidget):
         from dataclasses import replace
         self._r.steps.insert(row + 1, replace(self._r.steps[row]))
         self._reload_table()
+        self._tbl.select_row(row + 1)
         self._emit()
 
     def _del_step(self) -> None:
@@ -248,11 +209,33 @@ class SettingsPanel(QWidget):
             return
         del self._r.steps[row]
         self._reload_table()
+        self._tbl.select_row(min(row, len(self._r.steps) - 1))
+        self._emit()
+
+    def _move_up(self) -> None:
+        self._move(-1)
+
+    def _move_down(self) -> None:
+        self._move(+1)
+
+    def _move(self, delta: int) -> None:
+        """Reorder one step. A protocol is an ordered thing, and until this
+        existed the only way to reorder was to delete and retype."""
+        row = self._selected()
+        new = row + delta
+        if row < 0 or not (0 <= new < len(self._r.steps)):
+            return
+        steps = self._r.steps
+        steps[row], steps[new] = steps[new], steps[row]
+        self._reload_table()
+        self._tbl.select_row(new)
         self._emit()
 
     def _pick_pattern(self) -> None:
-        row = self._selected()
-        if row < 0:
+        self._pick_pattern_for(self._selected())
+
+    def _pick_pattern_for(self, row: int) -> None:
+        if not (0 <= row < len(self._r.steps)):
             return
         start = str(Path(self._r.steps[row].pattern).parent) \
             if self._r.steps[row].pattern else ""
@@ -264,10 +247,51 @@ class SettingsPanel(QWidget):
             self._reload_table()
             self._emit()
 
+    def _clear_pattern(self) -> None:
+        """Back to "whatever the DMD has". The file dialog cannot express this
+        — cancelling it means "changed my mind", not "no pattern"."""
+        row = self._selected()
+        if row < 0 or not self._r.steps[row].pattern:
+            return
+        self._r.steps[row].pattern = ""
+        self._reload_table()
+        self._emit()
+
+    def _refresh_summary(self) -> None:
+        """One line: how much work this is, and whether any of it emits light."""
+        r = self._r
+        runs = r.total_steps()
+        if not r.steps:
+            self._lbl_summary.setText("No steps yet — add one.")
+            return
+        secs = sum(s.settle_s for s in r.steps) * max(1, r.cycles)
+        secs += sum(s.length for s in r.steps if s.unit == "seconds") \
+            * max(1, r.cycles)
+        frames = sum(s.length for s in r.steps if s.unit == "frames") \
+            * max(1, r.cycles)
+        bits = [f"{runs} run(s): {len(r.steps)} step(s)"
+                + (f" x {r.cycles} cycles" if r.cycles > 1 else "")]
+        # Frames and seconds are never interconverted (that is the point of
+        # `unit`), so they are reported side by side rather than as one total.
+        bits.append("at least " + _clock(secs)
+                    + (f" plus {frames:g} frames" if frames else ""))
+        if any(s.x_um is not None or s.y_um is not None for s in r.steps):
+            bits.append("moves the stage")
+        lit = sum(1 for s in r.steps if s.project)
+        if lit:
+            # Coloured, not capitalised: it is the one line that says light
+            # will be emitted, and shouting reads as decoration.
+            bits.append(f"<span style='color:#d08770'>{lit} step(s) emit "
+                        f"light</span>")
+        self._lbl_summary.setText(" · ".join(bits))
+
     # ── run state ────────────────────────────────────────────────────────────
-    def set_state(self, phase: str, text: str) -> None:
-        """Called from the adapter's display tick."""
+    def set_state(self, phase: str, text: str, row: int | None = None) -> None:
+        """Called from the adapter's display tick. `row` is the step running."""
         self._set_phase(phase, text)
+        if row != self._marked:
+            self._tbl.mark_running(row)
+            self._marked = row
 
     def _set_phase(self, phase: str, text: str) -> None:
         """Repaint only what changed.
@@ -309,6 +333,7 @@ class SettingsPanel(QWidget):
 
     # ── settings ─────────────────────────────────────────────────────────────
     def _emit(self, *_a) -> None:
+        self._refresh_summary()
         self.settings_changed.emit(self.settings)
 
     @property
@@ -317,3 +342,11 @@ class SettingsPanel(QWidget):
         self._r.cycles = self._spn_cycles.value()
         self._r.save_mode = self._cmb_save.currentData() or "single"
         return self._r
+
+
+def _clock(seconds: float) -> str:
+    """Seconds as the operator reads a duration. 124 s is not a duration."""
+    if seconds < 90:
+        return f"{seconds:g} s"
+    m, sec = divmod(int(round(seconds)), 60)
+    return f"{m}:{sec:02d} min"

@@ -52,7 +52,13 @@ def line() -> str:
 # ── Reusable QSS snippets ─────────────────────────────────────────────────────
 
 def toggle_btn(key: str) -> str:
-    """Checkable button: a pale accent tint when off, full accent when checked."""
+    """Checkable button: a pale accent tint when off, full accent when checked.
+
+    The disabled rule is not optional, for the reason `solid_btn` spells out: a
+    stylesheet background overrides the palette, so a greyed-out button without
+    one still reads as the thing to press. Emulate and Free run are disabled
+    for the whole of a session, which is exactly when it matters.
+    """
     c = HEX[key]
     tint = QColor(c).lighter(185).name()
     return (
@@ -61,6 +67,8 @@ def toggle_btn(key: str) -> str:
         "border-radius:4px;padding:3px 8px}"
         f"QPushButton:checked{{background:{c};color:white;font-weight:bold;"
         f"border:1px solid {c}}}"
+        "QPushButton:disabled{background:#3a3a3a;color:#777;"
+        "border:1px solid #555}"
     )
 
 

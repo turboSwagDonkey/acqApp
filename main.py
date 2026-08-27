@@ -324,6 +324,24 @@ class MainWindow(QMainWindow):
             self._btn_run.setChecked(bool(on))
         return was
 
+    def set_recording(self, on: bool) -> bool:
+        """Start or stop recording for a module that needs a file open.
+
+        The twin of `set_live`, added for the same reason (§5b A4): an
+        experiment routine has to be recording before it can run a step, and
+        making the operator find the Record button in another part of the
+        window — then come back and press Start — is a worse design than
+        letting the panel do it. Returns the PREVIOUS state, so a caller that
+        started the recording can stop it again and leave one it did not start
+        alone. Goes through the button, so the UI and the status line stay in
+        step with reality; the toggle already starts the session if it is not
+        running.
+        """
+        was = self._btn_rec.isChecked()
+        if bool(on) != was:
+            self._btn_rec.setChecked(bool(on))
+        return was
+
     def latest_frame(self, key: str):
         """The newest frame from module `key`'s camera, or None. Why it exists:
         `devices.ModuleHost`. Why it reads the cache: `ModuleAdapter.last_frame`.

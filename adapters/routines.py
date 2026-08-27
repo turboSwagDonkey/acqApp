@@ -13,6 +13,12 @@ non-blocking, and the closed loop already goes out of its way to get actuation
 stage move is a short serial write; the position poller does the polling, on
 its own thread.
 
+**Start opens the recording itself** (`ModuleHost.set_recording`, the twin of
+the `set_live` the DMD calibration uses). A routine cannot run a step without a
+file open, so refusing until the operator had pressed Record in another part of
+the window only moved the failure earlier. A recording this adapter started, it
+stops when the routine ends; one the operator started, it leaves alone.
+
 **Save mode `per_step` is accepted and validated but not yet rolled**: step
 boundaries go into the one session file as `/routine`. Rolling one means
 re-entering `MainWindow._start_recording` mid-session, and main.py is the
@@ -59,6 +65,9 @@ class RoutinesModule(ModuleAdapter):
         self._rec = None                # the Recorder, while recording
         self._filed = 0                 # step boundaries handed to the file
         self._n_steps = 0               # steps in the routine that is running
+        # True only when Start opened the recording. What makes "stop what you
+        # started" different from "stop the operator's recording".
+        self._own_rec = False
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -90,10 +99,12 @@ class RoutinesModule(ModuleAdapter):
                 x, y = stage.limits_um()
             except Exception:            # noqa: BLE001 — a stage mid-teardown
                 x = y = None
+        # `has_frames` is "a camera is loaded", not "a file is open": Start
+        # opens the file itself, so validating against the recording that has
+        # not been opened yet would refuse every routine measured in frames.
         return RigLimits(x_um=x, y_um=y, has_stage=stage is not None,
                          has_dmd=self.win.pattern_target() is not None,
-                         has_frames=self._rec is not None
-                         and FRAME_STREAM in self.win.module_keys())
+                         has_frames=FRAME_STREAM in self.win.module_keys())
 
     def _hooks(self) -> RoutineHooks:
         stage = self.win.stage_target()
@@ -123,15 +134,20 @@ class RoutinesModule(ModuleAdapter):
 
     # ── run control ──
     def _start(self) -> None:
-        """Validate first, and say every reason it cannot run."""
+        """Validate, open the recording if there is none, then run.
+
+        In that order: validation must not leave a file open behind a routine
+        that was refused, and every reason it cannot run is said at once rather
+        than one per attempt.
+        """
         routine = self.panel.settings
         problems = validate(routine, self._rig())
-        if self._rec is None:
-            problems.insert(0, "not recording — start the recording first, so "
-                                "the steps land in a file")
         if problems:
             self.panel.show_problems(problems)
             self.win.status(f"routine refused: {problems[0]}")
+            return
+
+        if self._rec is None and not self._open_recording():
             return
         self._filed = 0
         self._n_steps = len(routine.steps)
@@ -140,6 +156,32 @@ class RoutinesModule(ModuleAdapter):
         self._timer.start()
         self.win.status(f"routine '{routine.name}' started — "
                         f"{routine.total_steps()} step(s)")
+
+    def _open_recording(self) -> bool:
+        """Start recording for this routine. False if it could not be started.
+
+        `set_recording` goes through the window's own Record button, so the
+        save path, the free-run guard and the status line all behave exactly as
+        if the operator had pressed it — including refusing when the save
+        folder is not writable, which is the failure worth catching here.
+        """
+        was = self.win.set_recording(True)
+        if self._rec is None:            # attach_sink never came: it refused
+            self.panel.show_problems(
+                ["could not start recording — check the Save page "
+                 "(the status line says why)"])
+            return False
+        self._own_rec = not was
+        if self._own_rec:
+            self.win.status("recording started for the routine")
+        return True
+
+    def _close_own_recording(self) -> None:
+        """Stop a recording this adapter started; leave the operator's alone."""
+        if not self._own_rec:
+            return
+        self._own_rec = False            # before the call: detach_sink re-enters
+        self.win.set_recording(False)
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -157,6 +199,7 @@ class RoutinesModule(ModuleAdapter):
         if self._engine is not None:
             self._engine.abort()
         self._stop_ticking()
+        self._close_own_recording()
 
     def _stop_ticking(self) -> None:
         if self._timer is not None:
@@ -177,6 +220,8 @@ class RoutinesModule(ModuleAdapter):
             return
         if eng.phase == Phase.DONE:
             self._stop_ticking()
+            # The routine is over; a file it opened has nothing left to record.
+            self._close_own_recording()
 
     # ── the file ──
     def _on_step_begin(self, run) -> None:
@@ -206,11 +251,15 @@ class RoutinesModule(ModuleAdapter):
         super().detach_sink()
         # Recording stopped under a running routine: it has nowhere to put its
         # steps and its "100 frames" has nothing to count. Stop it rather than
-        # let it drive the stage into a file that is not open.
+        # let it drive the stage into a file that is not open. Reached both
+        # ways round — the operator stopping the recording, and the routine
+        # closing the one it opened — so `_own_rec` is already False by the
+        # time this runs on the second path.
         if self._engine is not None and self._engine.running:
             self._engine.abort()
             self._stop_ticking()
             self.win.status("routine aborted — the recording stopped")
+        self._own_rec = False
         self._rec = None
 
     def stop(self) -> None:
@@ -219,6 +268,9 @@ class RoutinesModule(ModuleAdapter):
             self._engine.abort()
         self._stop_ticking()
         self._engine = None
+        # Not `_close_own_recording`: the session is already coming down, and
+        # `_stop_session` closes the recording before it gets here.
+        self._own_rec = False
         super().stop()
 
     def busy_reason(self) -> str:
@@ -233,11 +285,12 @@ class RoutinesModule(ModuleAdapter):
         if eng is None or self.panel is None:
             return
         if eng.phase == Phase.PAUSED:
-            self.panel.set_state(eng.phase, f"PAUSED — {eng.fault}")
+            self.panel.set_state(eng.phase, f"PAUSED — {eng.fault}",
+                                 eng.position[0])
             return
         if eng.phase == Phase.DONE:
             self.panel.set_state(eng.phase,
-                                 f"finished — {eng.steps_done()} step(s)")
+                                 f"finished — {eng.steps_done()} step(s)", None)
             return
         i, cycle, attempt = eng.position
         step = eng.step
@@ -249,7 +302,9 @@ class RoutinesModule(ModuleAdapter):
         elif step is not None:
             where += (f" — capturing {eng.progress() * 100:.0f} % of "
                       f"{step.length:g} {step.unit}")
-        self.panel.set_state(eng.phase, where)
+        # The row is bolded in the table, so "which step is this" is answered
+        # by looking at the protocol rather than by counting the label's index.
+        self.panel.set_state(eng.phase, where, i)
 
     # ── metadata ──
     def metadata(self) -> dict[str, Any]:

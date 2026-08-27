@@ -271,6 +271,7 @@ def main() -> int:
         def module_keys(self): return []
         def latest_frame(self, key): return None
         def set_live(self, on): return False
+        def set_recording(self, on): return False
         def set_modules(self, keys): return [], []
         def stage_target(self): return None
         def pattern_target(self): return None

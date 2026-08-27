@@ -33,7 +33,8 @@ from pathlib import Path
 from _harness import Report, isolate_user_state, pump, qt_app
 
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineError, RoutineHooks
-from acqApp.routines.settings import RigLimits, Routine, Step, validate
+from acqApp.routines.settings import (UNITS, RigLimits, Routine, Step,
+                                      validate)
 
 FULL_RIG = RigLimits(x_um=(-5000.0, 5000.0), y_um=(-5000.0, 5000.0),
                      has_stage=True, has_dmd=True, has_frames=True)
@@ -511,6 +512,168 @@ def check_panel_repaint(r: Report, app) -> None:
     app.processEvents()
 
 
+def check_step_table(r: Report, app) -> None:
+    """The step list edits through widgets, not through typed words.
+
+    Every field used to be free text in a table cell — "yes"/"no" for the
+    light, "frames"/"seconds" for the unit, a blank cell for "leave this axis".
+    That parses, and a typo reads back as the old value with nothing said. The
+    contract now is: **the value lives in the cell's data, the text is a
+    rendering of it**, so a cell can only hold something the editor could
+    produce.
+    """
+    from PyQt6.QtCore import Qt
+
+    from acqApp.routines.panel import SettingsPanel
+    from acqApp.routines.table import FIELDS, VALUE
+
+    routine = Routine(steps=[Step(label="one", length=100, unit="frames"),
+                             Step(label="two", length=2.0, unit="seconds")])
+    panel = SettingsPanel(routine)
+    tbl = panel._tbl
+    col = {f: i for i, f in enumerate(FIELDS)}
+
+    edits: list = []
+    panel.settings_changed.connect(edits.append)
+
+    # What actually opens when a cell is edited. Asked of the delegate the way
+    # the view asks it, because "it is a dropdown" is the whole request here —
+    # inspecting the delegate's own list would pass even if it never built one.
+    from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QLineEdit,
+                                 QStyleOptionViewItem)
+
+    def editor(row: int, field: str):
+        c = col[field]
+        return tbl.itemDelegateForColumn(c).createEditor(
+            tbl, QStyleOptionViewItem(), tbl.model().index(row, c))
+
+    ed = editor(0, "project")
+    r.check(isinstance(ed, QComboBox),
+            f"the Light cell opens a drop-down ({type(ed).__name__})")
+    r.check([ed.itemData(i) for i in range(ed.count())] == [False, True],
+            "…offering exactly no/yes")
+    ed = editor(0, "unit")
+    r.check(isinstance(ed, QComboBox),
+            f"the Unit cell opens a drop-down ({type(ed).__name__})")
+    r.check(tuple(ed.itemData(i) for i in range(ed.count())) == UNITS,
+            f"…offering exactly settings.UNITS ({UNITS}) — so the panel cannot "
+            f"drift from what validate() accepts")
+    ed = editor(0, "settle_s")
+    r.check(isinstance(ed, QDoubleSpinBox) and ed.suffix() == " s",
+            f"a duration cell opens a spin box in seconds ({type(ed).__name__})")
+    ed = editor(0, "x_um")
+    r.check(isinstance(ed, QDoubleSpinBox) and ed.specialValueText() == "leave",
+            "an axis cell opens a spin box with a 'leave' state")
+    # CONTROL: the free-text field is still free text — the point is typed
+    # editors where the value is constrained, not spin boxes everywhere.
+    idx = tbl.model().index(0, col["label"])
+    # itemDelegateForIndex, not …ForColumn: the name column has no delegate of
+    # its own, which is exactly the claim — it falls back to the plain one.
+    ed = tbl.itemDelegateForIndex(idx).createEditor(
+        tbl, QStyleOptionViewItem(), idx)
+    r.check(isinstance(ed, QLineEdit),
+            f"control: the Step name is still typed ({type(ed).__name__})")
+
+    # What a delegate does when the operator picks something: it writes the
+    # VALUE, and the table renders the text from it.
+    tbl.item(0, col["project"]).setData(VALUE, True)
+    r.check(routine.steps[0].project is True,
+            "choosing 'yes' in the Light cell sets project on the step")
+    r.check(tbl.item(0, col["project"]).text() == "yes",
+            f"…and the cell reads back as yes "
+            f"({tbl.item(0, col['project']).text()!r})")
+    r.check(len(edits) == 1, f"…as ONE settings change, not two ({len(edits)})")
+
+    # CONTROL: text alone is not a value. This is the old failure mode — a
+    # word typed into the cell deciding what the step does.
+    before = routine.steps[1].project
+    tbl.item(1, col["project"]).setText("yes")
+    r.check(routine.steps[1].project == before,
+            "control: text typed into a cell cannot set a value the editor "
+            "would not produce")
+
+    tbl.item(0, col["unit"]).setData(VALUE, "seconds")
+    r.check(routine.steps[0].unit == "seconds",
+            "the Unit cell sets the unit")
+
+    # The optional axes: "leave" is a state, not an empty string.
+    tbl.item(0, col["x_um"]).setData(VALUE, 250.0)
+    r.check(routine.steps[0].x_um == 250.0 and
+            tbl.item(0, col["x_um"]).text() == "250 um",
+            f"an axis takes a number ({tbl.item(0, col['x_um']).text()!r})")
+    tbl.item(0, col["x_um"]).setData(VALUE, None)
+    r.check(routine.steps[0].x_um is None and
+            tbl.item(0, col["x_um"]).text() == "leave",
+            f"…and clears back to 'leave' ({tbl.item(0, col['x_um']).text()!r})")
+
+    # A frames step is a whole number of frames — validate() refuses the
+    # alternative, so the panel rounds rather than letting Start refuse it.
+    tbl.item(1, col["unit"]).setData(VALUE, "frames")
+    tbl.item(1, col["length"]).setData(VALUE, 100.4)
+    r.check(routine.steps[1].length == 100,
+            f"a fractional length on a frames step is rounded "
+            f"({routine.steps[1].length})")
+    r.check(not [p for p in validate(routine, RigLimits(has_frames=True))
+                 if "whole number" in p],
+            "…so the routine validates instead of being refused at Start")
+    # CONTROL: seconds are not rounded — the rounding is about frames, not
+    # about tidy numbers.
+    tbl.item(1, col["unit"]).setData(VALUE, "seconds")
+    tbl.item(1, col["length"]).setData(VALUE, 2.5)
+    r.check(routine.steps[1].length == 2.5,
+            f"control: a seconds step keeps its fraction ({routine.steps[1].length})")
+
+    # Reordering. Until this existed the only way to move a step was to delete
+    # it and retype it.
+    panel._tbl.select_row(0)
+    panel._move_down()
+    r.check([x.label for x in routine.steps] == ["two", "one"],
+            f"a step moves down the list ({[x.label for x in routine.steps]})")
+    r.check(panel._tbl.selected_row() == 1,
+            "…and the selection follows it, so a second press moves the same step")
+    panel._move_up()
+    r.check([x.label for x in routine.steps] == ["one", "two"],
+            "…and back up again")
+
+    # The pattern is chosen with a file dialog, so clearing it needs its own
+    # control: cancelling a dialog means "changed my mind", not "no pattern".
+    routine.steps[0].pattern = r"C:\patterns\grid.png"
+    panel._reload_table()
+    r.check(tbl.item(0, col["pattern"]).text() == "grid.png",
+            f"the pattern cell shows the file's name "
+            f"({tbl.item(0, col['pattern']).text()!r})")
+    r.check(not (tbl.item(0, col["pattern"]).flags() & Qt.ItemFlag.ItemIsEditable),
+            "…and is not typed into")
+    panel._tbl.select_row(0)
+    panel._clear_pattern()
+    r.check(routine.steps[0].pattern == "" and
+            tbl.item(0, col["pattern"]).text() == "—",
+            "'No pattern' clears it back to whatever the DMD has")
+
+    # The summary is the only place the whole protocol is totalled up.
+    routine.steps[0].project = True
+    panel._refresh_summary()
+    text = panel._lbl_summary.text()
+    r.check("2 run(s)" in text and "emit light" in text,
+            f"the summary says how much work it is and that it emits light "
+            f"({text!r})")
+    routine.steps[0].project = False
+    routine.steps[1].project = False
+    panel._refresh_summary()
+    r.check("emit light" not in panel._lbl_summary.text(),
+            f"control: with nothing projecting it does not warn "
+            f"({panel._lbl_summary.text()!r})")
+
+    # Which step is running is shown in the protocol, not only in the label.
+    panel.set_state(Phase.CAPTURE, "step 2/2", 1)
+    r.check(tbl.item(1, 0).font().bold() and not tbl.item(0, 0).font().bold(),
+            "the running step is bold in the table")
+    panel.set_state(Phase.DONE, "finished", None)
+    r.check(not tbl.item(1, 0).font().bold(),
+            "…and nothing is bold once it is over")
+    app.processEvents()
+
+
 # ── the whole app ─────────────────────────────────────────────────────────────
 
 def check_app(r: Report, app, tmp) -> None:
@@ -585,9 +748,29 @@ def check_app(r: Report, app, tmp) -> None:
                            settle_s=0.05)]
     panel._reload_table()
 
+    # ── Start opens the recording it needs ──
+    # It used to refuse until the operator had found the Record button in
+    # another part of the window, which only moved the failure earlier.
+    r.check(not win._btn_rec.isChecked(), "fixture: not recording yet")
     adapter._start()
-    r.check(adapter._engine is None,
-            "Start is refused while not recording — the steps would have no file")
+    r.check(adapter._engine is not None,
+            "Start runs the routine without the operator pressing Record first")
+    r.check(win._btn_rec.isChecked(), "…by opening the recording itself")
+    r.check(adapter._own_rec, "…and it knows that recording is its own")
+    adapter._abort()
+    r.check(not win._btn_rec.isChecked(),
+            "ending the routine stops the recording it started")
+
+    # CONTROL: a recording the OPERATOR started is not the routine's to stop.
+    win._btn_rec.setChecked(True)
+    adapter._start()
+    r.check(adapter._engine is not None and not adapter._own_rec,
+            "control: a recording already running is not adopted as its own")
+    adapter._abort()
+    r.check(win._btn_rec.isChecked(),
+            "control: …so ending the routine leaves that one running")
+    win._btn_rec.setChecked(False)              # clean slate for the real run
+    pump(app, 0.1)
 
     panel._r.steps[0].x_um = hi_x + 10_000.0
     r.check(any("soft limits" in p
@@ -612,7 +795,7 @@ def check_app(r: Report, app, tmp) -> None:
 
     adapter._start()
     if not r.check(adapter._engine is not None,
-                   "the routine starts once a recording is open"):
+                   "the routine starts against the operator's own recording"):
         return
 
     r.check("routine" in adapter.busy_reason().lower(),
@@ -720,6 +903,7 @@ def main() -> int:
             sys.argv = ["main.py", "--mock"]
             app = qt_app()
             check_panel_repaint(r, app)
+            check_step_table(r, app)
             check_app(r, app, state)
         finally:
             import shutil

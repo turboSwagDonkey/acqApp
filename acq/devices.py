@@ -222,6 +222,16 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def set_recording(self, on: bool) -> bool:
+        """Start/stop recording; returns its PREVIOUS state.
+
+        The twin of `set_live`, and the same argument: an experiment routine
+        cannot run a step without a file open, and the panel that starts the
+        routine is the right place to open one. The return value is what lets a
+        caller stop only a recording it started itself.
+        """
+        ...
+
     def stage_target(self) -> Any:
         """The loaded module a routine may move, or None.
 
