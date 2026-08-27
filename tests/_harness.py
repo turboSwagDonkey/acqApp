@@ -122,7 +122,14 @@ class Report:
 
     Not assert-based on purpose: stopping at the first failure hides the other
     five, and these tests are slow enough that one run should tell you all of it.
+
+    **`-q` prints only what went wrong**, plus the closing summary. The passing
+    lines are the point when a human reads a run — each one states a property in
+    a sentence — but they are 50-130 lines of "ok" that a caller who only needs
+    the verdict pays for. A failure prints in full either way.
     """
+
+    QUIET = "-q" in sys.argv or os.environ.get("ACQAPP_QUIET") == "1"
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -130,18 +137,22 @@ class Report:
         self.n_ok = 0
 
     def check(self, cond: bool, msg: str) -> bool:
-        print(("  ok   " if cond else "  FAIL ") + msg)
         if cond:
             self.n_ok += 1
+            if not self.QUIET:
+                print("  ok   " + msg)
         else:
             self.failures.append(msg)
+            print("  FAIL " + msg)
         return bool(cond)
 
     def info(self, msg: str) -> None:
-        print(f"         {msg}")
+        if not self.QUIET:
+            print(f"         {msg}")
 
     def note(self, msg: str) -> None:
-        print(f"[{self.name}] {msg}")
+        if not self.QUIET:
+            print(f"[{self.name}] {msg}")
 
     def finish(self) -> int:
         print()

@@ -4,6 +4,102 @@ Older entries from `PLAN.md` §7, newest first. The most recent sessions stay in
 PLAN.md; everything before them lives here so a fresh session reads the plan
 rather than the whole history.
 
+### 2026-08-26 (ay) — EyeLoop integration started, on master
+
+Operator chose **master** and asked to begin. Moved `tracker.py` in unchanged
+as `devices/pupil_cam/eyeloop_tracker.py`, added `tracking.py` as the seam, and
+put the tracking + corneal-reflection knobs on `PupilSettings`. Suite **934
+checks / 26 files**, green.
+
+- **The circular eye region is the crop**, via `PupilSettings.crop_box()`. It
+  had been persisted and drawn but consumed by nothing since the 2026-08-24
+  retirement; it now does the job that makes tracking work at all.
+- **`test_pupil_eyeloop`, 22 checks, every one with a control** — the stale-fit
+  check backed by asserting `params` really was nulled, the reflection mask by
+  requiring nothing outside 0.95 r is touched, a pin's reach by the automatic
+  pass failing to reach the same reflection. Both rig clips 151/151 through the
+  app path.
+- **No EyeLoop source is in this repo, and the repo is public.** Vendoring
+  would be distribution and would make acqApp a derived work; that decision is
+  still open. `EyeLoopUnavailable` leaves the pupil camera untouched, tested.
+- §0's "do not restore the tracker on master" is **superseded** and rewritten;
+  the *hand-rolled* tracker stays retired.
+
+**Next: the panel, persistence, the worker thread, recording** — steps 5-8 of
+docs/EYELOOP-INTEGRATION.md.
+
+### 2026-08-26 (ax) — reflection removal, pinning, and the handoff
+
+Corneal-reflection removal in the bench app, plus operator-pinned reflections,
+then wrote the integration handoff. **EyeLoop's own removal is dead code** —
+disabled in three places and writing to a buffer `engine.py` never creates.
+
+- **Pins are exempt from both guards** (`reach`, `max_area`), because those
+  guard against bright things the automatic pass cannot identify and a pin is
+  an identification. Stored in *frame* coordinates so moving the eye region
+  does not walk them off target.
+- **Removal is a real but clip-dependent gain, and near the rim it costs.**
+  pAce: radius sd 1.86 → 1.42 for +0.9 px. Pinning State's 0.84 r reflection
+  removes it properly and costs **+6.6 px of radius** — blanking something that
+  overlaps the boundary erases the boundary. Pins pay off *inside* the pupil.
+- Two of my own mistakes, both caught by measuring: a circular search area ate
+  the eyelash line (fixed by following the fitted ellipse), and the two-pass
+  rewrite went 1.7 → 8.5 ms/frame before per-blob boxes put it back to 2.4.
+- **The operator is tuning it themselves** and has settings saved outside the
+  app — it persists nothing, which is step 5 of the integration.
+
+**Next: [docs/EYELOOP-INTEGRATION.md](docs/EYELOOP-INTEGRATION.md).** Two gates
+first — which tree, and GPL-3.0 — and both are the operator's.
+
+### 2026-08-26 (aw) — the EyeLoop bench app
+
+Built `../eyeloopGUI/`, a sibling that drives EyeLoop over a rig clip: click
+the pupil to place the eye crop and seed, tune the threshold, sweep. Four
+files, split so `tracker.py` (the only EyeLoop contact, Qt-free) can move into
+`devices/pupil_cam/` unchanged and `source.py`'s `FrameSource` takes the live
+camera later without `window.py` changing.
+
+- **It reproduces the probe numbers exactly**, which is the point of it —
+  pAce 151/151 r 45.18 ± 1.86 at thr 45, State 151/151 r 59.66 ± 1.13 at
+  thr 60. Controls green: noise → None 20/20, uncropped → 0/20.
+- **One trap, an hour.** `Shape.min_radius/max_radius` bound the ray walk and
+  are clipped *into an int array*; floats there make `np.clip(out=…)` raise
+  inside the bare except, so **every frame fails silently**. Split into an int
+  `walk_radius` and a float `accept_radius`.
+- `waitKey(0)` is bound to a no-op in the wrapper, and a failed frame now
+  returns None instead of the last good fit.
+- Registered in the root `CLAUDE.md` beside the other siblings. **Not under
+  version control** — nor is `wheelApp/`; that is the existing arrangement,
+  worth a decision rather than a surprise.
+
+**Next: unchanged** — §6's three rig measurements, and the operator's two
+EyeLoop decisions before any of it moves into `devices/`.
+
+### 2026-08-26 (av) — EyeLoop, tried
+
+Cloned EyeLoop (`../eyeloop/`, GPL-3.0, upstream cd22fb7), patched it and drove
+it headless over both rig clips. **It fits 151/151 on each, the operator's hard
+clip included, at 1.2–1.8 ms/frame.** Nothing integrated — no acqApp module
+imports it. [docs/EYELOOP.md](docs/EYELOOP.md) has the numbers.
+
+- **The artifact's two patches are not enough.** A third, `engine_constants.py`
+  under NumPy 2 NEP 50, stops it at *import*. Saved all three as
+  `docs/eyeloop-3.14-patches.diff` — the clone is untracked, so that diff is
+  the only durable copy.
+- **cv2 installs on 3.14** (`cp37-abi3` wheel). Retires a §0 claim that shaped
+  two subsystems. cv2 + PyYAML now in `.venv`; **suite re-run, 912/912 green**.
+- **The 151/151 nearly fooled me.** `fit()` never resets `params` on failure,
+  so failures return the last good fit. A noise control (0/151 genuine, 151
+  stale) is what makes the real number trustworthy. Then two silent
+  degradations *at* 151/151: threshold swings radius 60 %, and a seed 100 px
+  off halves it. **The artifact's threshold 35 is wrong for this rig.**
+- **Full frame is 0/151 at 73 ms.** The crop is required, and acqApp's eye
+  region — persisted, recorded, consumed by nothing since the retirement — is
+  exactly it.
+
+**Next: the operator decides** which tree it lands on and what GPL-3.0 implies
+before any code moves into the repo. §6's three rig measurements are unchanged.
+
 ### 2026-08-26 (au) — a note, not code
 
 Recorded the operator's **EyeLoop integration request** in §6 from the

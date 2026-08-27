@@ -15,6 +15,7 @@ on screen, and no writes to the operator's real config or dock layout.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -73,10 +74,15 @@ def main() -> int:
     results, total_ok = [], 0
     t_start = time.perf_counter()
 
+    # The child must print its passing lines: this counts them. A caller with
+    # ACQAPP_QUIET set in their environment would otherwise silently zero every
+    # count here.
+    env = {k: v for k, v in os.environ.items() if k != "ACQAPP_QUIET"}
+
     for name, script in tests:
         t0 = time.perf_counter()
         proc = subprocess.run([sys.executable, str(HERE / script)],
-                              capture_output=True, text=True,
+                              capture_output=True, text=True, env=env,
                               encoding="utf-8", errors="replace")
         dt = time.perf_counter() - t0
         out = proc.stdout + proc.stderr
@@ -89,9 +95,13 @@ def main() -> int:
         status = "PASS" if ok else "FAIL"
         print(f"  {status}  {name:<12} {n_ok:>3} checks  {dt:5.1f}s")
         if verbose or not ok:
+            # A failing test's own passing lines are not why it failed, and
+            # there can be 130 of them. Everything else — the FAIL lines, the
+            # measured `info` numbers beside them, any traceback — is kept.
             print("  " + "-" * 68)
             for line in out.splitlines():
-                print("  | " + line)
+                if verbose or not line.startswith("  ok   "):
+                    print("  | " + line)
             print("  " + "-" * 68)
 
     failed = [n for n, ok, _, _ in results if not ok]

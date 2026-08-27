@@ -8,39 +8,34 @@ cam, wheel, puffer, XY stage, DMD on one shared clock, one HDF5 per session).
 **Follow SOLID Principles**
 **Add explanatory comments, but keep them plain and short** 
 
-**Read [PLAN.md](PLAN.md) before planning any work** — its **§0 "Start here"**
-first, which carries the orientation a fresh session needs (how to run the
-suite, which hardware is actually on this machine, the sibling projects worth
-copying from, and anything left uncommitted). Then §6, the next actions. §5b is
-reference: consult the item you're working on rather than reading it through.
-There is exactly one such file — update it, don't fork it.
+**Read [PLAN.md](PLAN.md) before planning any work** — **§0** for orientation,
+then **§6** for the next actions; that is the whole of it. §5b is reference,
+consulted per item. There is exactly one such file: update it, don't fork it,
+and keep it inside the size budget in its §8 — it is read in full every session,
+so every line is paid for again in every future one. Finished work is archived,
+not deleted, into [docs/AUDIT-2026-08.md](docs/AUDIT-2026-08.md),
+[docs/DECISIONS.md](docs/DECISIONS.md) and
+[docs/SESSIONLOG.md](docs/SESSIONLOG.md); **open those only to chase a specific
+item, never to get oriented.**
 
-PLAN.md is kept short on purpose, because it is read in full every session.
-Finished work is archived, not deleted: the closed 2026-08-10 audit is in
-[docs/AUDIT-2026-08.md](docs/AUDIT-2026-08.md) and older session entries in
-[docs/SESSIONLOG.md](docs/SESSIONLOG.md). **Open those only to chase a specific
-item number or an old decision** — never as part of getting oriented.
-
-- [docs/STRUCTURE.md](docs/STRUCTURE.md) — **the map of the tree, and the rule
-  that comes with it: any move, rename or new module updates this file in the
-  same commit.** It is not on trust — `tests/test_structure.py` checks the tree
-  against the filesystem and the mermaid arrows against the AST, so a stale map
-  fails the suite. Read it to find something; update it when you move something.
+- [docs/STRUCTURE.md](docs/STRUCTURE.md) — the map of the tree. **Any move,
+  rename or new module updates it in the same commit**, and
+  `tests/test_structure.py` fails the suite if you don't.
 - [README.md](README.md) — the authoritative *description* (architecture,
-  recording format). PLAN.md is the *plan*. Keep that split.
-- [docs/](docs/) — historical handoff and per-device notes. Where they disagree
-  with the code, the code wins.
+  recording format); PLAN.md is the *plan*. Keep that split.
+- [docs/](docs/) — handoff and per-device notes. Where they disagree with the
+  code, the code wins.
 
 ## Non-negotiables
 
 - **Installs go ONLY into `acqApp/.venv`.** Never pip-install into another
   interpreter, even if the user's shell is running one.
 - **Verify in Emulate/mock mode**: `acqApp\.venv\Scripts\python.exe
-  acqApp\tests\run_all.py` — 802 checks, ~58 s, no hardware, no windows. Use the
-  **absolute** interpreter path; the shell usually starts in this repo's parent,
-  where the relative one fails obscurely. Say plainly when something is
-  mock-verified only: apart from the wheel encoder and the DMD, none of this
-  code has run against real hardware.
+  acqApp\tests\run_all.py` — ~65 s, no hardware, no windows; add `-q` to a
+  single test file for failures only. Use the **absolute** interpreter path; the
+  shell usually starts in this repo's parent, where the relative one fails
+  obscurely. Say plainly when something is mock-verified only: apart from the
+  wheel encoder and the DMD, none of this code has run against real hardware.
 - **Ask before actuating anything physical.** Opening and configuring a device
   is safe; projecting light, firing the puffer and driving the stage are not —
   there may be an animal on the rig. Verify the whole path short of the
