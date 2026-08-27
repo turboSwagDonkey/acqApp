@@ -31,6 +31,13 @@ MODULES: dict[str, str] = {
     "closed_loop": "Closed loop",
 }
 
+# Modules that are not the operator's to switch off, so they carry no
+# checkbox in the picker and `set_modules` puts them back if a caller drops
+# them. `routines` is here because it owns no device: it *drives* the
+# instruments that are optional, and an operator who unticked it would lose
+# the protocol they had written rather than free anything up.
+ALWAYS_ON: frozenset[str] = frozenset({"routines"})
+
 _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")
 
 
@@ -87,13 +94,15 @@ def load_enabled_modules() -> list[str]:
     saved = load_config().get("enabled_modules")
     if not isinstance(saved, list):
         return list(MODULES)
-    # keep MODULES order and drop anything unknown/removed
-    return [k for k in MODULES if k in saved]
+    # keep MODULES order, drop anything unknown/removed, and put ALWAYS_ON back
+    # — a config written before a module became always-on would not name it.
+    return [k for k in MODULES if k in saved or k in ALWAYS_ON]
 
 
 def save_enabled_modules(enabled: list[str]) -> None:
     cfg = load_config()
-    cfg["enabled_modules"] = [k for k in MODULES if k in enabled]
+    cfg["enabled_modules"] = [k for k in MODULES
+                             if k in enabled or k in ALWAYS_ON]
     save_config(cfg)
 
 

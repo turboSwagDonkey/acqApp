@@ -139,8 +139,17 @@ def main() -> int:
     r.check(dlg is not None and dlg.isWindow(), "settings are a top-level window")
     r.check(not isinstance(dlg, M.QDockWidget), "…and not a dock widget")
     r.check(not dlg.isVisible(), "settings window starts hidden")
-    r.check(dlg.tabs.count() == len(config.MODULES) + 1,
-            f"a page per module plus Save (got {dlg.tabs.count()})")
+    # A page per module plus Save — except the modules that asked for a
+    # window of their own, which are not pages at all (`ModuleAdapter.
+    # own_window`); they still get a sidebar item, checked just below.
+    paged = len(config.MODULES) - sum(1 for m in win._modules if m.own_window)
+    r.check(dlg.tabs.count() == paged + 1,
+            f"a page per module plus Save (got {dlg.tabs.count()}, "
+            f"want {paged + 1})")
+    r.check(any(m.own_window for m in win._modules)
+            and all(dlg.panel_index(m.panel) < 0
+                    for m in win._modules if m.own_window),
+            "…and a module with its own window is not among them")
     # Two selectors since 2026-08-25, and they stay in step: the tab bar, and
     # one sidebar item per page.
     r.check(set(win._page_actions) == set(config.MODULES) | {"saving"},

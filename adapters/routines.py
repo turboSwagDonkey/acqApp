@@ -62,6 +62,10 @@ class RoutinesModule(ModuleAdapter):
     """
     key = "routines"
     tab_label = "Routines"
+    # Its own window: a routine is *run* from this panel, and the operator is
+    # watching the camera's page while it runs. Always loaded too
+    # (`config.ALWAYS_ON`) — it owns no device, so there is nothing to unload.
+    own_window = True
 
     def __init__(self, win) -> None:
         super().__init__(win)

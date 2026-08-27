@@ -1,5 +1,5 @@
 """
-The shell's three modal windows.
+The shell's own windows.
 
 Split out of `main.py`; none knows about the clock, the recorder or a device.
 
@@ -9,7 +9,7 @@ without it the suite overwrites the operator's real window geometry.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QSettings, QSize, Qt
+from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QGridLayout,
@@ -26,6 +26,9 @@ class ModuleSelectDialog(QDialog):
     Used twice: at startup, and from the sidebar's Modules button, where the
     change applies to the running window (`MainWindow.set_modules`). Hence the
     caller supplies the wording — "this session" is a lie mid-session.
+
+    `config.ALWAYS_ON` gets no checkbox and is added back by `selected()`: a
+    box that must stay ticked is not a choice, it is a trap.
     """
 
     def __init__(self, enabled: list[str], parent=None, *,
@@ -40,6 +43,8 @@ class ModuleSelectDialog(QDialog):
 
         self._boxes: dict[str, QCheckBox] = {}
         for key, label in config.MODULES.items():
+            if key in config.ALWAYS_ON:
+                continue
             cb = QCheckBox(label)
             cb.setChecked(key in enabled)
             cb.toggled.connect(self._update_ok)
@@ -59,7 +64,116 @@ class ModuleSelectDialog(QDialog):
         ok.setEnabled(any(cb.isChecked() for cb in self._boxes.values()))
 
     def selected(self) -> list[str]:
-        return [k for k, cb in self._boxes.items() if cb.isChecked()]
+        """The ticked modules, plus the ones that are never untickable."""
+        return [k for k in config.MODULES
+                if k in config.ALWAYS_ON
+                or (k in self._boxes and self._boxes[k].isChecked())]
+
+
+def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
+                    screen) -> QSize:
+    """`hint` plus padding, never under `floor`, never over 90 % of the screen.
+
+    The clamp is the part that matters: a size comfortable on this laptop can
+    open taller than the rig's screen, which on Windows puts the bottom of the
+    window — and whatever button is on it — out of reach.
+    """
+    w = max(floor[0], hint.width() + 2 * pad)
+    h = max(floor[1], hint.height() + 2 * pad)
+    screen = screen or QGuiApplication.primaryScreen()
+    if screen is not None:
+        avail = screen.availableGeometry()
+        w = min(w, int(avail.width() * 0.9))
+        h = min(h, int(avail.height() * 0.9))
+    return QSize(w, h)
+
+
+class PanelWindow(QDialog):
+    """One module's panel, in a window of its own instead of a settings page.
+
+    For a module that is *used* rather than configured: an experiment routine
+    is driven from its panel while the settings window is showing the camera it
+    is driving, and a tab cannot be in two places at once. Which modules get
+    one is `ModuleAdapter.own_window` — the window never learns what a routine
+    is.
+
+    Hidden, never destroyed, exactly as `SettingsDialog` is: the panel inside is
+    a live object wired to a running controller. Its geometry is remembered per
+    module key, so two of these do not fight over one saved rectangle.
+    """
+
+    visibility_changed = pyqtSignal(bool)
+
+    # The same width floor as `SettingsDialog`: these are the same panels, and
+    # one should not open narrower for having moved out of the tabs.
+    _MIN_DEFAULT = (900, 700)
+    _PAD = 16
+
+    def __init__(self, panel: QWidget, label: str, key: str, parent=None):
+        super().__init__(parent)
+        self._key = key
+        self._geom_key = f"panelGeometry/{key}"
+        self.setWindowTitle(label)
+        # A real window (minimise/maximise), not a fixed dialog frame.
+        self.setWindowFlag(Qt.WindowType.Window, True)
+
+        # Scroll, so the window can be dragged narrower than the panel wants.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(panel)
+        self._scroll.setMinimumWidth(80)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self._scroll)
+
+        # The same dressing a settings page gets, so a panel does not change
+        # appearance depending on which window it landed in.
+        panel.setStyleSheet(style.accent_panel(key))
+        widgets.collapsible_groups(panel, key)
+
+        self._panel = panel
+        self._saved_geom = QSettings("acqApp", "acqApp").value(self._geom_key)
+        self._sized = False
+
+    def default_size(self) -> QSize:
+        return _fits_on_screen(self._panel.sizeHint(), self._MIN_DEFAULT,
+                               self._PAD, self.screen())
+
+    def showEvent(self, event) -> None:
+        if not self._sized:
+            self._sized = True
+            if self._saved_geom is not None:
+                self.restoreGeometry(self._saved_geom)
+            else:
+                self.resize(self.default_size())
+        super().showEvent(event)
+        self.visibility_changed.emit(True)
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.visibility_changed.emit(False)
+
+    def save_geometry(self) -> None:
+        QSettings("acqApp", "acqApp").setValue(self._geom_key,
+                                               self.saveGeometry())
+
+    def closeEvent(self, event) -> None:
+        self.save_geometry()
+        super().closeEvent(event)       # hide; the adapter owns the panel
+
+    def release(self) -> QWidget | None:
+        """Give the panel back before this window is destroyed.
+
+        `takeWidget` and not just `deleteLater`: a QScrollArea owns its widget,
+        so deleting the window would take the adapter's panel with it — and the
+        adapter is what disposes of the panel, after its controller is closed.
+        """
+        self.save_geometry()
+        self.hide()
+        panel = self._scroll.takeWidget()
+        self._panel = None
+        return panel
 
 
 class SettingsDialog(QDialog):
@@ -117,15 +231,8 @@ class SettingsDialog(QDialog):
 
         Asks the tab widget, not the `QScrollArea` — a scroll area reports a
         small hint of its own, which is the point of it."""
-        hint = self.tabs.sizeHint()
-        w = max(self._MIN_DEFAULT[0], hint.width()  + 2 * self._PAD)
-        h = max(self._MIN_DEFAULT[1], hint.height() + 2 * self._PAD)
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            w = min(w, int(avail.width()  * 0.9))
-            h = min(h, int(avail.height() * 0.9))
-        return QSize(w, h)
+        return _fits_on_screen(self.tabs.sizeHint(), self._MIN_DEFAULT,
+                               self._PAD, self.screen())
 
     def showEvent(self, event) -> None:
         # First show only: afterwards the operator's own size wins.

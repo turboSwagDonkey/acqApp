@@ -12,10 +12,12 @@ runs and records six subsystems against a single shared session clock:
 | XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
 | DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
 
-…plus two tabs that own no device: **Experiment routines** (`routines/`), which
+…plus two that own no device: **Experiment routines** (`routines/`), which
 executes a protocol of stage positions and DMD patterns step by step, and
 **Closed loop** (`closed_loop/`), which watches one subsystem's live signal and
-fires another's output. Both are described below.
+fires another's output. Both are described below. Routines is **always loaded
+and opens in a window of its own**; the closed loop is a settings tab like the
+instruments.
 
 > **What has actually run.** Every subsystem has a real driver path and a mock
 > twin, and the whole suite is verified against the mocks (`tests/`). Two have
@@ -96,6 +98,9 @@ current interpreter as-is), `ACQAPP_NO_INSTALL=1` skips auto-installing.
 
 On startup a **module picker** pops up — tick which instruments to load
 (defaults to your last-used selection, stored in `acqapp_local.json`).
+**Experiment routines has no checkbox**: it owns no device, so there is nothing
+to unload, and unticking it would only lose the protocol you had written
+(`config.ALWAYS_ON`).
 
 The set is **not fixed for the run**: the sidebar's **🧩 Modules** button reopens
 the same picker, and loading or unloading applies to the window you are looking
@@ -215,7 +220,14 @@ the DMD tab says `nothing will be projected` rather than silently doing nothing.
 
 ### Experiment routines
 
-A tab that owns no device and drives two that do. A **routine** is a list of
+A window that owns no device and drives two that do. It is **always loaded**,
+and its panel is **its own window** rather than a page of the settings window —
+a routine is *run* from that panel while the settings window is showing the
+camera it is driving, and a tab cannot be in two places. Any adapter can ask
+for the same by setting `own_window` (`adapters/base.py`); the shell never
+learns which module did.
+
+A **routine** is a list of
 steps executed in order — *put the stage here, put this pattern up, capture this
 much, move on* — repeated for as many cycles as the operator asks. It is the
 first feature in the app whose whole purpose is to **actuate**, which is why it
@@ -228,9 +240,18 @@ frames at every step boundary. A frames step is measured by what reached the
 write path is the thing falling behind. `settle_s` is separate from both: a
 stage move and an ALP upload are software-timed and neither is instant.
 
+The panel shows **where the routine is** (a bar over the whole protocol, plus
+a marker on the running step) and **what it will cost before it starts**.
+`routines/estimate.py` is the one place frames are turned into seconds, and it
+names the frame rate it used — with no camera loaded it reports frames as
+frames rather than guessing. Steps are reordered by dragging the row, by
+Ctrl+Up/Down or by the arrow buttons, and a protocol worth running twice is
+saved to `routine_templates/` as a file (`routines/templates.py`).
+
 Everything that decides lives in `routines/settings.py` (the protocol and its
-validation) and `routines/engine.py` (the executor), both Qt-free; the panel is
-`routines/panel.py` and the step table `routines/table.py`. **Every
+validation), `routines/engine.py` (the executor) and `routines/estimate.py`,
+all Qt-free; the panel is `routines/panel.py` and the step table
+`routines/table.py`. **Every
 actuation reaches the engine as a callable**, the way the DMD calibration takes
 `project`/`grab`, so a whole routine — move, settle, light, capture, fault,
 resume — is driven against fakes on a fake clock in `tests/test_routines.py`

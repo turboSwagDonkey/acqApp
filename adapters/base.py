@@ -76,6 +76,13 @@ class ModuleAdapter:
         self.controller: OutputController | None = None
 
     # ── construction (once, at startup) ───────────────────────────────────────
+    # A panel that belongs in a window of its own rather than as a page of the
+    # shared settings window. For a module that is *used* while another
+    # module's page is open — a routine is driven while the camera it drives is
+    # being adjusted, and a tab cannot be in two places. The window reads this;
+    # it never learns which module set it.
+    own_window: bool = False
+
     def build_panel(self) -> QWidget | None:
         """The settings tab for this module, or None."""
         return None

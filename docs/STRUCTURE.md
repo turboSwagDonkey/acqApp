@@ -243,3 +243,8 @@ Three registrations, not the two that used to be documented:
 `adapters.ADAPTERS`, `config.MODULES`, and a `style.HEX` colour — the third only
 showed up as a `KeyError` at build time. Then a new file in `adapters/`, a
 package in `devices/`, and an entry in the tree above.
+
+Two optional declarations on the adapter, both read by the shell and neither
+naming a module in `main.py`: **`own_window`** puts its panel in a window of
+its own instead of a settings page, and **`config.ALWAYS_ON`** keeps it out of
+the module picker. `routines` sets both.

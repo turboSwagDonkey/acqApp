@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-27 (bc) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done, audit 22/22 closed, **suite 1100 checks / 27 files green**. Built and mock-verified since: DMD calibration (and it has run at the rig), full-frame bin-1 recording, hot module load/unload, experiment routines (panel reworked 2026-08-27: progress tracker, drag-reorder, time estimate, templates), EyeLoop pupil tracking. **Nothing new has actuated anything.** What is left is in §6, and it is mostly rig work. §5b **A3** is the one open architecture item. |
+| **Progress** | Roadmap phases 0–5 done, audit 22/22 closed, **suite 1118 checks / 27 files green**. Built and mock-verified since: DMD calibration (and it has run at the rig), full-frame bin-1 recording, hot module load/unload, experiment routines (2026-08-27: progress tracker, drag-reorder, time estimate, templates, and always-loaded in a window of its own), EyeLoop pupil tracking. **Nothing new has actuated anything.** What is left is in §6, and it is mostly rig work. §5b **A3** is the one open architecture item. |
 
 ---
 
@@ -28,7 +28,7 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **1100 checks, 27 files, ~65 s**, and it is ALL GREEN, and it
+the contract: **1118 checks, 27 files, ~65 s**, and it is ALL GREEN, and it
 has **no known flaky test** (the last one was fixed 2026-08-26 (ba)). Run it
 before and after anything.
 
@@ -123,7 +123,10 @@ step's data is **kept and marked**, and **Resume repeats that step**. Nothing
 about it has actuated anything, and `per_step` does not roll files yet (§6).
 The panel grew a progress tracker, drag-reordering, a time estimate and a
 template library on 2026-08-27; the estimate is the **only** place frames are
-turned into seconds, and it says which rate it used.
+turned into seconds, and it says which rate it used. It is also the first
+module that is **always loaded** (`config.ALWAYS_ON`, no picker checkbox) and
+whose panel is **its own window** (`ModuleAdapter.own_window`) — both are
+declarations the shell reads, so `main.py` still names no module.
 
 **Calibration also works and has run at the rig.** DMD tab → Photostimulation
 ROIs → **Calibrate…** → one button, 19 exposures, ~9 s. It steps a narrow
@@ -419,7 +422,7 @@ still worth doing, under "Still open".
 
 Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
-### 2026-08-27 (bc) — the routines panel: where it is, in what order, how long
+### 2026-08-27 (bc) — the routines panel, and a window of its own
 
 Operator's four asks, all four built and mock-verified. Suite 1049 → **1100
 checks / 27 files**.
@@ -441,6 +444,21 @@ checks / 27 files**.
   protocol copies to the rig machine. `isolate_user_state()` redirects it (an
   unisolated run would delete from the operator's library) and
   `test_structure`'s SKIP_DIRS ignores it like `sessions/`.
+
+Then, same session: **always loaded, and out of the settings window.**
+
+- **`config.ALWAYS_ON`** — no picker checkbox, `selected()` adds it back, and
+  `set_modules` adds it back for callers that never saw the picker. All three,
+  because any one alone leaves a way to drop it.
+- **`ModuleAdapter.own_window` → `dialogs.PanelWindow`.** A routine is *run*
+  from its panel while the settings window shows the camera it drives; a tab
+  cannot be in two places. `main.py` branches once, in `_place_panel`, and
+  learns nothing about routines. The sidebar item is the same gesture for both
+  kinds, and `_check_page` skips own-window keys so the two windows are lit
+  independently.
+- **`PanelWindow.release()` before deleting it**: a `QScrollArea` owns its
+  widget, so destroying the window would take the adapter's panel with it —
+  and the adapter is what disposes of the panel, after its controller closes.
 
 ### 2026-08-26 (bb) — prose/optimisation sweep, and PLAN.md halved
 

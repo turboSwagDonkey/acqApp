@@ -169,7 +169,8 @@ from PyQt6.QtWidgets import (
 import pyqtgraph as pg
 
 from acqApp import adapters, config, style
-from acqApp.dialogs import ConnectionMonitor, ModuleSelectDialog, SettingsDialog
+from acqApp.dialogs import (ConnectionMonitor, ModuleSelectDialog, PanelWindow,
+                            SettingsDialog)
 from acqApp.saving import SaveConfig, SavePanel
 from acqApp.acq.sync import SyncController
 from acqApp.acq.clock import SessionClock
@@ -214,7 +215,8 @@ class MainWindow(QMainWindow):
         # Tracked, not read off `_sync.running`: free run leaves the sync
         # controller deliberately stopped, so that would answer no mid-session.
         self._session_on = False
-        self._enabled = enabled if enabled is not None else set(config.MODULES)
+        self._enabled = (enabled if enabled is not None
+                         else set(config.MODULES)) | config.ALWAYS_ON
         self._cam_info = cam_info
         # Opened once at startup, reused by every session's worker (see the
         # pre-init note). None in emulate/no-camera runs.
@@ -230,6 +232,9 @@ class MainWindow(QMainWindow):
         self._rec_path: Path | None = None      # file the last recording went to
         self._save_panel: SavePanel | None = None
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
+        # Modules whose panel is a window of its own, by key. Hidden until the
+        # sidebar item is clicked, and never destroyed while loaded.
+        self._panel_windows: dict[str, PanelWindow] = {}
         self._devices_dialog: ConnectionMonitor | None = None
         self._pg_views: list = []      # pyqtgraph views to recolour on theme change
         # Undo bookkeeping for a module unloaded mid-session. `add_dock` and
@@ -470,11 +475,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(wrap)
 
     def _build_settings_dialog(self) -> None:
-        """Build the settings window (hidden until the sidebar tab is clicked).
+        """Build every panel and the window each one lives in — all hidden.
 
         Built at startup rather than on first click: the module controllers are
         configured from these panels, so they have to exist before
-        `_build_controllers()` opens any device."""
+        `_build_controllers()` opens any device. Most become pages of the one
+        settings window; a module that asks for `own_window` gets its own
+        instead (`_place_panel`)."""
         self._settings_dialog = SettingsDialog(self)
 
         # Session-wide, not a module's, and the first thing to get right before
@@ -484,9 +491,32 @@ class MainWindow(QMainWindow):
         self._settings_dialog.add_panel(self._save_panel, "Save", "saving")
 
         for m in self._modules:
-            panel = m.build_panel()
-            if panel is not None:
-                self._settings_dialog.add_panel(panel, m.tab_label, m.key)
+            m.build_panel()
+            self._place_panel(m)
+
+    def _place_panel(self, m, index: int | None = None) -> None:
+        """Put a built panel where its adapter says it belongs.
+
+        The one branch on `own_window`; everything else — the sidebar item,
+        unloading, the theme — treats the two the same.
+        """
+        if m.panel is None:
+            return
+        if not m.own_window:
+            self._settings_dialog.add_panel(m.panel, m.tab_label, m.key,
+                                            index=index)
+            return
+        win = PanelWindow(m.panel, m.tab_label, m.key, parent=self)
+        win.visibility_changed.connect(
+            lambda vis, k=m.key: self._on_panel_window(k, vis))
+        self._panel_windows[m.key] = win
+
+    def _on_panel_window(self, key: str, visible: bool) -> None:
+        """Keep the sidebar item lit for as long as its own window is open —
+        including when the operator closes it with the window's own X."""
+        act = self._page_actions.get(key)
+        if act is not None:
+            act.setChecked(visible)
 
     def _build_plots_dock(self) -> None:
         self._plots_tabs = tabs = QTabWidget()
@@ -661,7 +691,8 @@ class MainWindow(QMainWindow):
         for key, label, panel in pages:
             act = QAction(self._swatch(key), label, self)
             act.setCheckable(True)
-            act.setToolTip(f"{label} settings")
+            act.setToolTip(f"{label} — its own window" if key in self._panel_windows
+                           else f"{label} settings")
             act.triggered.connect(
                 lambda _checked=False, p=panel, k=key: self._show_page(k, p))
             self._sidebar.insertAction(self._sidebar_sep, act)
@@ -672,6 +703,8 @@ class MainWindow(QMainWindow):
         # showing a page nothing in the sidebar is lit for.
         if self._settings_dialog.isVisible():
             self._on_settings_tab_changed(0)
+        for key, win in self._panel_windows.items():
+            self._on_panel_window(key, win.isVisible())
 
     def _stretch_sidebar(self) -> None:
         """All buttons one width, so the left edges line up.
@@ -696,16 +729,27 @@ class MainWindow(QMainWindow):
                                if p is panel), None))
 
     def _check_page(self, key: str | None) -> None:
-        """Exactly one page item checked — or none, with the window shut."""
+        """Exactly one settings page item checked — or none, with it shut.
+
+        A module with its own window is skipped: it is lit by whether THAT
+        window is open, which is independent of what page the settings window
+        is showing.
+        """
         for k, act in self._page_actions.items():
-            act.setChecked(k == key)
+            if k not in self._panel_windows:
+                act.setChecked(k == key)
 
     def _show_page(self, key: str, panel) -> None:
         """Open the settings window on this page, or shut it if already there.
 
         Clicking the page you are on closes the window, which is what the single
-        Settings toggle used to do.
+        Settings toggle used to do. A module with its own window toggles that
+        instead — same item, same gesture.
         """
+        own = self._panel_windows.get(key)
+        if own is not None:
+            self._toggle_own_window(own)
+            return
         showing = (self._settings_dialog.isVisible()
                    and self._settings_dialog.current_panel() is panel)
         if showing:
@@ -719,6 +763,16 @@ class MainWindow(QMainWindow):
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
         self._check_page(key)
+
+    @staticmethod
+    def _toggle_own_window(win: PanelWindow) -> None:
+        """Show it, or shut it if it is already the window in front."""
+        if win.isVisible() and win.isActiveWindow():
+            win.close()
+            return
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     # ── Dock layout persistence ─────────────────────────────────────────────────
 
@@ -856,7 +910,8 @@ class MainWindow(QMainWindow):
             if why:
                 raise RuntimeError(why)
 
-        want = [k for k in config.MODULES if k in set(keys) and k in adapters.ADAPTERS]
+        keys = set(keys) | config.ALWAYS_ON
+        want = [k for k in config.MODULES if k in keys and k in adapters.ADAPTERS]
         have = [m.key for m in self._modules]
         removed = [k for k in have if k not in want]
         added = [k for k in want if k not in have]
@@ -892,10 +947,8 @@ class MainWindow(QMainWindow):
         m = adapters.ADAPTERS[key](self)
         self._modules.append(m)             # sorted into place by the caller
 
-        panel = m.build_panel()
-        if panel is not None:
-            self._settings_dialog.add_panel(panel, m.tab_label, m.key,
-                                            index=self._settings_tab_index(key))
+        m.build_panel()
+        self._place_panel(m, index=self._settings_tab_index(key))
         plot = m.build_plot()
         if plot is not None:
             idx = self._plots_tabs.insertTab(self._plot_tab_index(key), plot,
@@ -932,8 +985,16 @@ class MainWindow(QMainWindow):
         # removeDockWidget only take the widget out of the LAYOUT, leaving it a
         # child of the window. Deferred deletion then keeps it alive across the
         # next restoreState(), which would put the dock back.
-        if m.panel is not None:
+        win = self._panel_windows.pop(key, None)
+        if win is not None:
+            # release() first: a QScrollArea owns its widget, so deleting the
+            # window would take the adapter's panel with it.
+            win.release()
+            win.setParent(None)
+            win.deleteLater()
+        elif m.panel is not None:
             self._settings_dialog.remove_panel(m.panel)
+        if m.panel is not None:
             m.panel.setParent(None)
             m.panel.deleteLater()
         plot = self._module_plots.pop(key, None)
@@ -1199,6 +1260,11 @@ class MainWindow(QMainWindow):
         # alive with no way back to it.
         self._settings_dialog.save_geometry()
         self._settings_dialog.close()
+        # Same reason: a module's own window is top-level too, and one left
+        # open would keep the app alive with no way back to it.
+        for win in self._panel_windows.values():
+            win.save_geometry()
+            win.close()
         if self._session_on:
             self._stop_session()
         for m in self._modules:

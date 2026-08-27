@@ -35,9 +35,15 @@ def _keys(win) -> list[str]:
     return [m.key for m in win._modules]
 
 
+def _chosen(win) -> list[str]:
+    """The loaded keys the operator picked. `config.ALWAYS_ON` is not one of
+    them and is checked on its own (`check_always_on`)."""
+    return [k for k in _keys(win) if k not in config.ALWAYS_ON]
+
+
 def check_add_remove(r: Report, win) -> None:
     """The set changes, and the adapters follow it."""
-    r.check(_keys(win) == ["voltage_cam", "wheel"],
+    r.check(_chosen(win) == ["voltage_cam", "wheel"],
             f"built with the two asked for ({_keys(win)})")
 
     added, removed = win.set_modules(["voltage_cam", "wheel", "puffer"])
@@ -65,7 +71,8 @@ def check_empty_set(r: Report, win) -> None:
     """
     win.set_modules(["voltage_cam", "wheel"])
     win.set_modules([])
-    r.check(_keys(win) == [], f"every module unloaded ({_keys(win)})")
+    r.check(_chosen(win) == [],
+            f"every module the operator chose unloaded ({_keys(win)})")
     r.check(win._central_owner is None, "the centre pane fell back")
     r.check(win._plots_tabs.count() == 0, "no Signals tabs left")
     r.check(win._settings_dialog.tabs.count() == 1,
@@ -141,7 +148,8 @@ def check_sidebar_follows(r: Report, win) -> None:
     not cosmetic — it points at a panel that has been deleted.
     """
     win.set_modules(["voltage_cam", "wheel"])
-    r.check(set(win._page_actions) == {"saving", "voltage_cam", "wheel"},
+    r.check(set(win._page_actions) ==
+            {"saving", "voltage_cam", "wheel"} | config.ALWAYS_ON,
             f"Save plus one per module ({sorted(win._page_actions)})")
 
     win.set_modules(["voltage_cam", "wheel", "puffer"])
@@ -221,7 +229,7 @@ def check_recording_refused(r: Report, win) -> None:
     finally:
         win._recorder = None
     r.check(raised, "set_modules refuses while a recorder is open")
-    r.check(_keys(win) == ["voltage_cam", "wheel"],
+    r.check(_chosen(win) == ["voltage_cam", "wheel"],
             f"…and changed nothing ({_keys(win)})")
     # CONTROL: the same call succeeds once the recorder is gone, so the refusal
     # is about recording and not about the argument.
@@ -337,6 +345,87 @@ def check_live_session(r: Report, win) -> None:
     r.check(not win._session_on, "and it stops cleanly afterwards")
 
 
+def check_always_on(r: Report, win) -> None:
+    """`config.ALWAYS_ON` is not the operator's to switch off.
+
+    The routine panel drives the instruments that ARE optional and owns no
+    device of its own, so unticking it would only lose the protocol. Enforced
+    in three places, because any one of them alone leaves a way to drop it: the
+    picker offers no checkbox, `selected()` puts it back, and `set_modules`
+    puts it back for callers that never went through the picker at all.
+    """
+    from PyQt6.QtWidgets import QCheckBox
+
+    from acqApp.dialogs import ModuleSelectDialog
+
+    r.check(config.ALWAYS_ON and config.ALWAYS_ON <= set(config.MODULES),
+            f"ALWAYS_ON names real modules ({sorted(config.ALWAYS_ON)})")
+
+    dlg = ModuleSelectDialog(["wheel"])
+    boxes = {cb.text() for cb in dlg.findChildren(QCheckBox)}
+    labels = {config.MODULES[k] for k in config.ALWAYS_ON}
+    r.check(not (boxes & labels),
+            f"the picker offers no checkbox for it ({sorted(boxes)})")
+    r.check(config.ALWAYS_ON <= set(dlg.selected()),
+            f"…and hands it back anyway ({dlg.selected()})")
+    # CONTROL: the picker still reports what WAS ticked, so the check above is
+    # not passing because selected() returns everything.
+    r.check("wheel" in dlg.selected() and "puffer" not in dlg.selected(),
+            f"control: the ticked modules are still what comes back "
+            f"({dlg.selected()})")
+    dlg.deleteLater()
+
+    win.set_modules(["voltage_cam"])
+    r.check(config.ALWAYS_ON <= set(_keys(win)),
+            f"set_modules([]) cannot drop it either ({_keys(win)})")
+    _, removed = win.set_modules(["voltage_cam"])
+    r.check(removed == [], f"…and asking again unloads nothing ({removed})")
+    r.check(config.ALWAYS_ON <= set(config.load_enabled_modules()),
+            f"a saved config that omits it reads back with it "
+            f"({config.load_enabled_modules()})")
+
+
+def check_own_window(r: Report, win) -> None:
+    """A module with `own_window` gets a window, not a settings page.
+
+    Its sidebar item is the same gesture as every other page's — that is the
+    point: one selector, two kinds of destination.
+    """
+    key = next(iter(config.ALWAYS_ON))
+    win.set_modules(["voltage_cam", "wheel"])
+
+    m = next(x for x in win._modules if x.key == key)
+    r.check(m.own_window, f"{key} asks for its own window")
+    own = win._panel_windows.get(key)
+    r.check(own is not None and own.isWindow(),
+            f"…and the window exists ({own})")
+    r.check(win._settings_dialog.panel_index(m.panel) < 0,
+            "…while its panel is NOT a page of the settings window")
+    # CONTROL: a module that did not ask for one is still a page.
+    other = next(x for x in win._modules if x.key == "wheel")
+    r.check(not other.own_window
+            and win._settings_dialog.panel_index(other.panel) >= 0,
+            "control: the wheel's panel is still a settings page")
+
+    r.check(not own.isVisible(), "the window starts hidden, as the settings do")
+    win._page_actions[key].trigger()
+    r.check(own.isVisible(), "its sidebar item opens it")
+    r.check(win._page_actions[key].isChecked(),
+            "…and lights the item while it is open")
+    # The two windows are independent: opening a settings page must not shut it.
+    win._page_actions["wheel"].trigger()
+    r.check(own.isVisible() and win._settings_dialog.isVisible(),
+            "opening a settings page leaves the own window open")
+    r.check(win._page_actions[key].isChecked()
+            and win._page_actions["wheel"].isChecked(),
+            "…and both items stay lit — they are different windows")
+
+    own.close()
+    r.check(not win._page_actions[key].isChecked(),
+            "closing it with its own X un-lights the item")
+    win._settings_dialog.hide()
+
+
 def main() -> int:
     r = Report("hotload")
     isolate_user_state()
@@ -345,6 +434,8 @@ def main() -> int:
 
     win = MainWindow(mock=True, enabled={"voltage_cam", "wheel"})
     try:
+        check_always_on(r, win)
+        check_own_window(r, win)
         check_add_remove(r, win)
         check_empty_set(r, win)
         check_order(r, win)
