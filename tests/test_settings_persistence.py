@@ -40,6 +40,23 @@ EDITS = [
      lambda p: p._spn_exp.value(),              4321.0),
     ("pupil_cam",   "region R",  lambda p: p._spn_lr.setValue(118.0),
      lambda p: p.settings.limit_r,              118.0),
+    # The tracking knobs. The operator lost one set of tuning to a panel that
+    # held these and never wrote them, so each is checked through a restart —
+    # threshold above all, since it sets the reported radius.
+    ("pupil_cam",   "track on",  lambda p: p._chk_track.setChecked(True),
+     lambda p: p.settings.track,                True),
+    ("pupil_cam",   "threshold", lambda p: p._spn_thr.setValue(63),
+     lambda p: p.settings.track_threshold,      63),
+    ("pupil_cam",   "model",
+     lambda p: p._cmb_model.setCurrentIndex(p._cmb_model.findData("circular")),
+     lambda p: p.settings.track_model,          "circular"),
+    ("pupil_cam",   "CR reach",  lambda p: p._spn_cr_reach.setValue(0.55),
+     lambda p: p.settings.cr_reach,             0.55),
+    # Pins are rig geometry, not a preference — and the only pupil setting
+    # that is a nested list, so they are also what proves JSON's loss of the
+    # tuple type is normalised back on load.
+    ("pupil_cam",   "CR pins",   lambda p: p.set_pins([(11.0, 22.0, 3.0)]),
+     lambda p: p.settings.cr_pins,              [(11.0, 22.0, 3.0)]),
     ("wheel",       "V/rev",     lambda p: p._spn_vpr.setValue(3.210),
      lambda p: p.settings.volts_per_rev,        3.210),
     ("wheel",       "diameter",  lambda p: p._spn_dia.setValue(123.0),

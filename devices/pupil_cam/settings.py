@@ -54,6 +54,20 @@ class PupilSettings:
     # land, so they belong with the eye region and must be cleared when the
     # optics move.
     cr_pins:          list[tuple[float, float, float]] = field(default_factory=list)
+    # Paint the removed pixels over the preview. A view preference, but a
+    # persisted one: it is how cr_threshold gets tuned, and re-ticking it every
+    # launch is the kind of friction that stops it being used.
+    cr_show_mask:     bool = False
+
+    def __post_init__(self) -> None:
+        """Normalise `cr_pins` — JSON has no tuples, so a reloaded pin is a list.
+
+        Without this the pins survive a restart as `[[x, y, r], ...]`, which
+        still unpacks and so still *works*, and then compares unequal to the
+        tuples the panel emits — the kind of difference that only shows up as a
+        settings save that never settles.
+        """
+        self.cr_pins = [tuple(float(v) for v in pin) for pin in self.cr_pins]
 
     def search_limit(self) -> tuple[float, float, float] | None:
         """The region as (cx, cy, r), or None. One representation for "none"."""

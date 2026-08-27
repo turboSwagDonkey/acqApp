@@ -125,7 +125,7 @@ class EyeLoopTracker:
                  accept_radius: tuple[float, float] = (5.0, 200.0),
                  glint: GlintRemoval | None = None) -> None:
         self.threshold = threshold
-        self.blur = blur
+        self.blur = int(blur) | 1      # cv2 kernels must be odd, as in apply_settings
         self.model = model
         # Two different things, and they were one name until it cost an hour:
         # `walk_radius` bounds Shape's ray walk and is clipped INTO an int

@@ -132,6 +132,7 @@ devices/                one package per instrument
     eyeloop_tracker.py  the ONLY file that touches EyeLoop (GPL-3.0, not vendored)
     panel.py
     settings.py         camera, eye region, tracking + corneal-reflection knobs
+    track_worker.py     tracking on its own thread; sole consumer of the frames
     tracking.py         settings + a frame in, a PupilFit out; no Qt, no EyeLoop
     video.py            third frame source: replay recorded footage
   stage/
@@ -192,6 +193,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_module_hotload.py       loading instruments without restarting
   test_module_subsets.py
   test_pupil_eyeloop.py       EyeLoop through the app path; every check has a control
+  test_pupil_track.py         tracking through the app: thread, trace, overlay, file
   test_pupil_limit.py         the eye region: panel, preview, persistence
   test_pupil_video.py
   test_readout_fps.py

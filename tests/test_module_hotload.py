@@ -120,8 +120,11 @@ def check_ui_released(r: Report, win) -> None:
     r.check(len(win._pg_views) < views_with,
             f"its pyqtgraph views were unregistered ({len(win._pg_views)} vs "
             f"{views_with}) — a stale one crashes the theme toggle natively")
-    r.check(win._plots_tabs.count() == plots_with,
-            "the Signals tabs are untouched (the pupil camera has no plot)")
+    # The pupil camera grew a plot when EyeLoop landed (the radius trace), so
+    # unloading it takes a Signals tab with it.
+    r.check(win._plots_tabs.count() == plots_with - 1,
+            f"its Signals tab went too ({win._plots_tabs.count()} vs "
+            f"{plots_with})")
 
     # The wheel DOES have a plot, so removing it must drop a Signals tab.
     before = win._plots_tabs.count()

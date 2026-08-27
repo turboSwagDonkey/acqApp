@@ -20,20 +20,35 @@ from _harness import MemorySettings, Report, isolate_user_state, pump, qt_app
 
 EXPECTED_STREAMS = [
     "voltage_cam", "voltage_cam_index", "pupil_cam",
+    # The pupil trace. Written whether or not EyeLoop is installed: with no
+    # clone every frame is a NaN row, which is the contract — a gap in the
+    # trace has to be visible in the file.
+    "pupil_x", "pupil_y", "pupil_major", "pupil_minor", "pupil_angle",
     "wheel_voltage", "wheel_speed", "wheel_distance",
     "stage_x_um", "stage_y_um", "puffer", "dmd",
 ]
+PUPIL_FIT_STREAMS = ["pupil_x", "pupil_y", "pupil_major", "pupil_minor",
+                     "pupil_angle"]
+
+PUPIL_THRESHOLD = 57                    # not the default, so a stuck one shows
 
 CONFIG_ATTRS = ["created", "emulated", "modules", "subject", "cam_exposure_us",
                 "wheel_rate_hz", "pupil_fps", "stage_port", "dmd_on_time_ms",
-                "puffer_channel", "puffer_duration_s"]
+                "puffer_channel", "puffer_duration_s",
+                # A pupil trace without the threshold that produced it is not
+                # reproducible: threshold SETS the radius.
+                "pupil_track_threshold", "pupil_track_model"]
 
 # Written when the file closes, not when it opens — they describe what the run
 # actually did rather than how it was configured.
 FINAL_ATTRS = ["cam_timestamp_source", "cam_dropped_frames",
                "wheel_timestamp_source", "wheel_rate_actual_hz",
                "recorder_dropped_samples", "recorder_late_samples",
-               "recorder_unstamped_samples"]
+               "recorder_unstamped_samples",
+               # Frames are dropped when a fit is slower than the camera, so
+               # the trace is sparser than the frames and the file has to say
+               # by how much.
+               "pupil_frames_tracked", "pupil_fits"]
 
 TEST_CHANNEL = "Dev3/port0/line2"       # not the default, so a stuck default shows
 TEST_DURATION = 0.250                   # likewise
@@ -75,10 +90,17 @@ def main() -> int:
     for _ in range(5):
         win._display_tick()
         pump(app, 0.05)
+    # Tracking on, with the eye region the mock frame needs (240x320): the
+    # crop is what EyeLoop needs to fit anything at all, and without a region
+    # nothing is tracked. Set before Record so the trace covers the file.
+    pupil_panel = mod["pupil_cam"].panel
+    pupil_panel.set_limit(160.0, 120.0, 100.0)
+    pupil_panel._chk_track.setChecked(True)
+    pupil_panel._spn_thr.setValue(PUPIL_THRESHOLD)
+    r.check(mod["pupil_cam"].panel.settings.track, "pupil tracking is on")
+
     r.check(len(mod["voltage_cam"]._y) > 0, "voltage-cam ΔF/F reached the plot")
     r.check(len(mod["wheel"]._y) > 0, "wheel samples reached the plot")
-    # The pupil module has no trace since the tracker was archived; what it
-    # must still do is show frames.
     r.check(mod["pupil_cam"]._img.image is not None,
             "pupil frames reached the preview")
 
@@ -209,6 +231,26 @@ def main() -> int:
         r.check(bool(np.all(fdt > 0)), "no two camera frames share a timestamp")
         r.info(f"camera frame interval: mean {fdt.mean()*1e3:.1f} ms "
                f"std {fdt.std()*1e3:.2f} ms")
+        # The pupil streams are one per TRACKED frame, and there is one of
+        # each per frame — a trace missing a semi-axis cannot be read as an
+        # ellipse.
+        ns = {k: len(f[k]["values"]) for k in PUPIL_FIT_STREAMS if k in f}
+        r.check(len(set(ns.values())) == 1 and min(ns.values()) > 0,
+                f"the five pupil streams are the same length ({ns})")
+        r.check(len(f["pupil_x"]["values"]) <= len(f["pupil_cam"]["timestamps"]),
+                "…and never more samples than there were frames "
+                f"({len(f['pupil_x']['values'])} vs "
+                f"{len(f['pupil_cam']['timestamps'])})")
+        r.check(attrs.get("pupil_track_threshold") == PUPIL_THRESHOLD,
+                f"the threshold behind the trace is the one that was set "
+                f"(got {attrs.get('pupil_track_threshold')})")
+        r.check(attrs.get("pupil_fits") <= attrs.get("pupil_frames_tracked"),
+                f"fits cannot exceed frames tracked "
+                f"({attrs.get('pupil_fits')}/{attrs.get('pupil_frames_tracked')})")
+        r.info(f"pupil: {attrs.get('pupil_fits')} fits of "
+               f"{attrs.get('pupil_frames_tracked')} frames tracked, "
+               f"{len(f['pupil_x']['values'])} recorded")
+
         idx = f["voltage_cam_index"]["values"][:]
         r.check(bool(np.all(np.diff(idx) == 1)),
                 "voltage_cam_index is contiguous (no frames lost)")
