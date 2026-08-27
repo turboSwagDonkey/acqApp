@@ -1,60 +1,33 @@
-# Working on acqApp
+# acqApp
 
-Multi-instrument in-vivo acquisition suite for the ICN rig (voltage cam, pupil
-cam, wheel, puffer, XY stage, DMD on one shared clock, one HDF5 per session).
+Multi-instrument acquisition suite (voltage/pupil cams, wheel, puffer, XY stage, DMD on shared clock; 1 HDF5/session).
 
-## Start here
+## Directives
 
-**Follow SOLID Principles**
-**Add explanatory comments, but keep them plain and short** 
+Code & Style: Follow SOLID. Keep comments plain and concise. Code overrides docs on discrepancy.
 
-**Read [PLAN.md](PLAN.md) before planning any work** — **§0** for orientation,
-then **§6** for the next actions; that is the whole of it. §5b is reference,
-consulted per item. There is exactly one such file: update it, don't fork it,
-and keep it inside the size budget in its §8 — it is read in full every session,
-so every line is paid for again in every future one. Finished work is archived,
-not deleted, into [docs/AUDIT-2026-08.md](docs/AUDIT-2026-08.md),
-[docs/DECISIONS.md](docs/DECISIONS.md) and
-[docs/SESSIONLOG.md](docs/SESSIONLOG.md); **open those only to chase a specific
-item, never to get oriented.**
+Planning: Read [PLAN.md](PLAN.md) §0 (orientation) and §6 (next actions). Update in-place; keep within §8 size budget.
 
-- [docs/STRUCTURE.md](docs/STRUCTURE.md) — the map of the tree. **Any move,
-  rename or new module updates it in the same commit**, and
-  `tests/test_structure.py` fails the suite if you don't.
-- [README.md](README.md) — the authoritative *description* (architecture,
-  recording format); PLAN.md is the *plan*. Keep that split.
-- [docs/](docs/) — handoff and per-device notes. Where they disagree with the
-  code, the code wins.
+Separation: Keep [README.md](README.md) (architecture) distinct from PLAN.md (tasks).
 
-## Non-negotiables
+Tree Map: Update [docs/STRUCTURE.md](docs/STRUCTURE.md) on any move/rename/new module (tests/test_structure.py enforces).
 
-- **Installs go ONLY into `acqApp/.venv`.** Never pip-install into another
-  interpreter, even if the user's shell is running one.
-- **Verify in Emulate/mock mode**: `acqApp\.venv\Scripts\python.exe
-  acqApp\tests\run_all.py` — ~65 s, no hardware, no windows; add `-q` to a
-  single test file for failures only. Use the **absolute** interpreter path; the
-  shell usually starts in this repo's parent, where the relative one fails
-  obscurely. Say plainly when something is mock-verified only: apart from the
-  wheel encoder and the DMD, none of this code has run against real hardware.
-- **Ask before actuating anything physical.** Opening and configuring a device
-  is safe; projecting light, firing the puffer and driving the stage are not —
-  there may be an animal on the rig. Verify the whole path short of the
-  actuating call, then ask. See PLAN.md §2.
-- **An exception escaping a `QThread.run()` aborts the process** (PyQt6
-  `qFatal`). Worker bodies stay inside the `PullWorker.run()` guard, and every
-  runnable entry point calls `console.enable_safe_console()` before its first
-  print — an unencodable character in a diagnostic print inside an acquisition
-  loop reads as a device failure. `tests/test_console_safety.py` enforces this.
-- **Never commit experiment data.** `sessions/`, `*.h5`, `*.csv`, `*_local.json`
-  are gitignored; keep it that way. Commit before restructuring — the repo once
-  went six weeks and 68 files without one.
-- **Don't run tests or scratch scripts against real user state.** GUI tests must
-  call `tests/_harness.isolate_user_state()`: the app persists settings and the
-  dock layout as a side effect of ordinary use, and unisolated runs have
-  destroyed the operator's saved layout before.
+Archives: Open docs/AUDIT-2026-08.md, DECISIONS.md, or SESSIONLOG.md only for targeted lookups.
 
-## End of session
+## Non-Negotiables
 
-Update [PLAN.md](PLAN.md) per its §8: tick only *verified* work, rewrite the
-three next actions, add one dated line to the session log, refresh the header
-date and progress figure. Do it before the context gets tight, not after.
+Environment: Install strictly into `acqApp\.venv` — never another interpreter, even if the shell is running one.
+
+Testing: `acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py`. Use the ABSOLUTE interpreter path — the shell starts in this repo's parent, where the relative one fails obscurely. For one test, run its script directly with `-q` (`tests\test_routines.py -q`); run_all selects by short name (`routines`), not filename, and ignores `-q`. State explicitly if mock-verified only (only wheel and DMD have run on physical hardware).
+
+Hardware Safety: Device open/config is safe. Verify the whole path short of the actuating call, then ask explicit user permission before physical actuation (DMD light, puffer, stage) — there may be an animal on the rig. See PLAN.md §2.
+
+Thread/Console Safety: An exception escaping QThread.run() aborts the process (PyQt6 qFatal). Keep worker bodies inside PullWorker.run() guards; call console.enable_safe_console() before the first print, since an unencodable character in an acquisition loop reads as a device failure. tests/test_console_safety.py enforces this.
+
+Test Isolation: GUI tests must invoke tests/_harness.isolate_user_state() — unisolated runs have destroyed the operator's saved layout before.
+
+Git: Never commit sessions/, *.h5, *.csv, or *_local.json. Commit changes prior to any structural refactoring.
+
+## Session Close
+
+Update PLAN.md (§8): Check off verified work, state 3 next actions, add dated log entry, update header date and progress.
