@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QWidget,
 )
 
 from .presets import (
@@ -74,6 +75,30 @@ class SettingsPanel(QWidget):
         self._spn_exposure.valueChanged.connect(self.exposure_changed)
         lay.addRow("Exposure:", self._spn_exposure)
 
+        # A frame period cannot be shorter than the exposure inside it, so Rate
+        # always caps Exposure's maximum to 1/rate — independent of Link, which
+        # only decides whether moving one *also* moves the other.
+        self._spn_hz = QDoubleSpinBox()
+        self._spn_hz.setRange(0.001, 100_000.0)
+        self._spn_hz.setDecimals(3)
+        self._spn_hz.setSuffix(" Hz")
+        self._spn_hz.setValue(1e6 / self._cfg.exposure_us if self._cfg.exposure_us > 0 else 100.0)
+        self._chk_hz_link = QCheckBox("Link")
+        self._chk_hz_link.setToolTip(
+            "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
+        self._chk_hz_link.toggled.connect(self._on_hz_link_toggled)
+        hz_row = QWidget()
+        hz_lay = QHBoxLayout(hz_row)
+        hz_lay.setContentsMargins(0, 0, 0, 0)
+        hz_lay.addWidget(self._spn_hz)
+        hz_lay.addWidget(self._chk_hz_link)
+        lay.addRow("Rate:", hz_row)
+
+        self._hz_syncing = False
+        self._spn_hz.valueChanged.connect(self._on_hz_changed)
+        self._spn_exposure.valueChanged.connect(self._on_exposure_changed_for_hz)
+        self._on_hz_changed(self._spn_hz.value())    # apply the initial cap
+
         self._cmb_trigger = QComboBox()
         self._cmb_trigger.addItems(TRIGGER_MODES)
         self._cmb_trigger.setCurrentText(self._cfg.trigger_mode)
@@ -106,6 +131,33 @@ class SettingsPanel(QWidget):
                     self._spn_exposure.valueChanged):
             sig.connect(lambda *_: self._refresh_rate())
         self._refresh_rate()
+
+    def _on_hz_changed(self, hz: float) -> None:
+        """Rate always caps Exposure's ceiling; Link also drives it to the cap."""
+        if self._hz_syncing:
+            return
+        self._hz_syncing = True
+        try:
+            max_us = 1e6 / hz if hz > 0 else self._spn_exposure.maximum()
+            self._spn_exposure.setMaximum(max_us)   # Qt clamps the value too
+            if self._chk_hz_link.isChecked():
+                self._spn_exposure.setValue(max_us)
+        finally:
+            self._hz_syncing = False
+
+    def _on_exposure_changed_for_hz(self, us: float) -> None:
+        """Only Link pulls Rate along; otherwise Rate stays the operator's cap."""
+        if self._hz_syncing or not self._chk_hz_link.isChecked():
+            return
+        self._hz_syncing = True
+        try:
+            self._spn_hz.setValue(1e6 / us if us > 0 else self._spn_hz.maximum())
+        finally:
+            self._hz_syncing = False
+
+    def _on_hz_link_toggled(self, linked: bool) -> None:
+        if linked:
+            self._on_hz_changed(self._spn_hz.value())
 
     def _refresh_rate(self) -> None:
         self._refresh_recordability()

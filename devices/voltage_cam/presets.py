@@ -146,17 +146,19 @@ def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
 # Sustained end-to-end write rate, MiB/s (worker → Recorder → HDF5Writer →
 # NVMe). Here because the worker and the panel must agree what can be recorded.
 #
-# Measured 2026-08-27 with the CAMERA and the full six-stream session running
-# (voltage_cam + pupil_cam + wheel + stage + puffer, the app's normal Record
-# button, nothing isolated): a 27 s bin-1 full-frame recording kept 693 of the
-# ~3068 frames the camera captured (77% lost — 611 shed by the camera's own
-# ring, the rest by the shared Recorder ring across all six streams), for
-# 513 MB/s on what was actually written. The prior 1800 was a derated
-# camera-only bench with no other stream competing for the ring; this is lower
-# because concurrent pupil/wheel/stage/puffer traffic contends for the same
-# Recorder, which the bench never modeled. Re-measure if the ring sizing or the
-# set of always-on streams changes.
-WRITER_MBPS: float = 513.0
+# Measured 2026-08-27 with the real ORCA, bin-1 full-frame, 30 s: ~513 MB/s
+# kept, TWICE — once with the full six-stream session running (693/3068
+# frames kept) and again with voltage_cam alone, nothing else selected
+# (949/4264 kept, near-identical throughput). That rules out contention from
+# the other five device threads as the cause: the ceiling is in the
+# camera-read + writer path itself under the real running app (with its GUI
+# event loop, live preview, everything the isolated writer-only bench never
+# had). The prior 1800 was that isolated bench (2464 MB/s, synthetic frames,
+# no camera, no Qt) derated by a guess — not reproducible with the camera
+# actually running. Root cause still open: prime suspects are the per-frame
+# copy out of the driver buffer and the live preview's GIL hold (see
+# `_skip_report` in acquisition.py). Re-measure if either changes.
+WRITER_MBPS: float = 510.0
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1

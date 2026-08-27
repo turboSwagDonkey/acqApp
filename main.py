@@ -230,6 +230,7 @@ class MainWindow(QMainWindow):
 
         self._recorder: Recorder | None = None
         self._rec_path: Path | None = None      # file the last recording went to
+        self._rec_t0: float = 0.0     # session-clock time Record was pressed
         self._save_panel: SavePanel | None = None
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         # Modules whose panel is a window of its own, by key. Hidden until the
@@ -1154,6 +1155,9 @@ class MainWindow(QMainWindow):
             return
         self._recorder = rec
         self._rec_path = path
+        # The session clock may already be running (Live started earlier) — the
+        # readout counts from Record, not from the clock's own origin.
+        self._rec_t0 = self._sync.elapsed()
 
         # The Recorder stamps each sample on the shared clock, so every stream
         # in the file shares one time origin.
@@ -1221,7 +1225,7 @@ class MainWindow(QMainWindow):
         if self._recorder is None or self._rec_path is None:
             self._lbl_rec.setText("")
             return
-        mins, secs = divmod(int(elapsed), 60)
+        mins, secs = divmod(int(elapsed - self._rec_t0), 60)
         txt = f"● REC  {mins:d}:{secs:02d}"
         try:
             mb = self._rec_path.stat().st_size / (1 << 20)

@@ -5,9 +5,9 @@ one; update it in place, don't fork it.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-27 (bd) |
+| **Last updated** | 2026-08-27 (be) |
 | **What the app is** | [README.md](README.md) is the authoritative *description*; this file is the *plan*. |
-| **Progress** | Phases 0–5 done, audit 22/22 closed, **suite 1118 checks / 27 files green, no known flaky test**. §6 item 1 done — the real writer number is in, and it is worse than assumed. §5b **A3** is the one open architecture item. |
+| **Progress** | Phases 0–5 done, audit 22/22 closed, **suite 1118 checks / 27 files green**. `closed-loop` is a reconfirmed occasional flake — a cross-thread race in the test, not the app (`docs/SESSIONLOG.md` (ba)); rerun alone before trusting a red run. §6 item 1's number is in, still worse than assumed and still unexplained. §5b **A3** is the one open architecture item. |
 
 ---
 
@@ -195,20 +195,22 @@ two cannot be confused.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Fix the shared-ring contention `WRITER_MBPS = 513` just exposed.**
-   **Done 2026-08-27**: `WRITER_MBPS` was re-measured with the ORCA
-   running — but at the ordinary Record button, meaning the full six-stream
-   session (voltage_cam + pupil_cam + wheel + stage + puffer), not the
-   camera alone. Result: **77 % of frames lost** — a 27 s bin-1 full-frame
-   recording kept 693 of ~3068 camera frames, 513 MB/s on what landed. 611
-   were shed by the camera's own ring (read too slowly); the rest by the
-   shared `Recorder` ring, which the camera-only bench (2464 MB/s, 100 %
-   kept) never modeled because nothing else was competing for it.
-   `WRITER_MBPS` now carries this number and the caveat, but **the ring
-   contention itself is unfixed** — the next step is finding whether the
-   `Recorder`'s ring is sized for one stream's worth of slack rather than
-   six, before reaching for DCAM's own `.dcimg` recorder (which costs the
-   one-file/one-clock invariant, DECISIONS.md item 7).
+1. **Find why the camera+writer path alone only sustains ~510 MB/s.**
+   **Measured 2026-08-27, twice.** First at the ordinary Record button with
+   all six streams running: 77 % of frames lost (693/3068, 513 MB/s). The
+   plan was then to blame the other five device threads — but a second 30 s
+   run with **only `voltage_cam` selected** (nothing else, no other live
+   view) lost frames just as badly (949/4264, 508 MB/s). **Same number
+   either way — it rules out multi-stream contention.** The ceiling is in
+   the camera-read + writer path itself, under conditions the isolated bench
+   (2464 MB/s, synthetic frames, no camera, no Qt event loop) never
+   recreated. `WRITER_MBPS` now carries ~510 with this history in its
+   comment. **Open**: prime suspects are the per-frame copy out of the DCAM
+   driver buffer (`_skip_report` in `devices/voltage_cam/acquisition.py`
+   names it) and the live preview holding the GIL on the main thread —
+   neither is confirmed. Next step is profiling one recording with the live
+   preview OFF (no GUI redraw) before reaching for DCAM's own `.dcimg`
+   recorder (costs the one-file/one-clock invariant, DECISIONS.md item 7).
 
 2. **Save a calibration and check it optically.** The sweep runs; what has not
    happened is anyone confirming where the light actually lands. Run Calibrate…,
@@ -272,6 +274,28 @@ every one of them reports success while being wrong.
 Newest first. 3–6 lines per session: what changed, what it cost, what was
 learned. Older entries are in [docs/SESSIONLOG.md](docs/SESSIONLOG.md).
 
+### 2026-08-27 (be) — isolating the writer number, a recording-timer bug, and Rate next to Exposure
+
+- **The multi-stream theory in (bd) was wrong.** A second 30 s bin-1 run with
+  only `voltage_cam` selected lost frames just as badly as the six-stream
+  run (949/4264 vs 693/3068, both ~510 MB/s). Rewrote §6 item 1: it's the
+  camera+writer path itself under the real app, not ring contention between
+  streams — see the item for the two remaining suspects.
+- **The recording readout counted from Live, not from Record.** `_on_tick`
+  fed the session clock's own elapsed time straight into
+  `_refresh_rec_readout`, so starting Record after Live had already been
+  running for a while showed that whole head start as recording time.
+  `MainWindow._rec_t0` now captures `self._sync.elapsed()` at Record, and the
+  readout subtracts it (`main.py`).
+- **`SettingsPanel` (voltage_cam) gained a Rate (Hz) field beside Exposure**,
+  with a Link checkbox. Rate always caps Exposure's maximum to `1e6/rate` —
+  a frame can't expose longer than its own period — regardless of Link;
+  Link additionally drives Exposure to that cap (and back) so the two move
+  together. Unlinked, Rate is just an operator-set ceiling. No new
+  `AcqConfig` field: Exposure is still the one persisted value, Rate is
+  derived from it at load.
+- Suite 1118/27 (`closed-loop` reconfirmed flaky in isolation, see header).
+
 ### 2026-08-27 (bd) — committed a stray session's fixes, then measured the real writer number
 
 - **Committed six files left uncommitted from the prior session**: puffer
@@ -315,13 +339,6 @@ The operator's four asks, then two more. Suite 1049 → **1118 checks / 27 files
 - **Then this file and `acqApp/CLAUDE.md` were compressed** (§8's budget), and
   the testing instruction in CLAUDE.md was corrected: `run_all` selects by short
   name and ignores `-q`, which belongs to the individual test script.
-
-### 2026-08-26 (bb) — prose sweep, and a number on the budget
-
-PLAN.md 818 → 525 lines and both CLAUDE.md files trimmed, cutting the mandatory
-per-session read **14.3k → 9.1k tokens**. `Report` grew **`-q`** (134 lines → 3)
-and `run_all` stopped dumping a failing test's passing lines. §8 now carries a
-NUMBER: a soft "aim to stay short" is exactly what let this file double.
 
 ## 8. How to keep this file useful
 

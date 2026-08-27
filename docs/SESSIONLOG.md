@@ -4,6 +4,13 @@ Older entries from `PLAN.md` §7, newest first. The most recent sessions stay in
 PLAN.md; everything before them lives here so a fresh session reads the plan
 rather than the whole history.
 
+### 2026-08-26 (bb) — prose sweep, and a number on the budget
+
+PLAN.md 818 → 525 lines and both CLAUDE.md files trimmed, cutting the mandatory
+per-session read **14.3k → 9.1k tokens**. `Report` grew **`-q`** (134 lines → 3)
+and `run_all` stopped dumping a failing test's passing lines. §8 now carries a
+NUMBER: a soft "aim to stay short" is exactly what let this file double.
+
 ### 2026-08-26 (ba) — the routines panel: one Start button, and real editors
 
 - **Start opens its own recording.** `MainWindow.set_recording` is the twin of
