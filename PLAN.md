@@ -5,9 +5,9 @@ one; update it in place, don't fork it.
 
 | | |
 |---|---|
-| **Last updated** | 2026-08-27 (bc) |
+| **Last updated** | 2026-08-27 (bd) |
 | **What the app is** | [README.md](README.md) is the authoritative *description*; this file is the *plan*. |
-| **Progress** | Phases 0–5 done, audit 22/22 closed, **suite 1118 checks / 27 files green, no known flaky test**. **Nothing new has actuated anything.** What is left is §6, and it is mostly rig work. §5b **A3** is the one open architecture item. |
+| **Progress** | Phases 0–5 done, audit 22/22 closed, **suite 1118 checks / 27 files green, no known flaky test**. §6 item 1 done — the real writer number is in, and it is worse than assumed. §5b **A3** is the one open architecture item. |
 
 ---
 
@@ -195,15 +195,20 @@ two cannot be confused.
 **THE NEXT THREE THINGS**, per §8's own rule. Everything after them is reference
 kept for its reasoning, not a queue.
 
-1. **Re-measure the writer with the camera running.** Full-frame bin 1 records
-   complete *in the bench* — 2464 MB/s saturated against 2223 offered, 100 %
-   kept over 60 s / 133 GB — but no ORCA was in the loop. The one number that is
-   a guess is `WRITER_MBPS = 1800`, the bench derated by 0.77. **Run a 30 s
-   full-frame bin-1 recording, count the frames off the closed file, and replace
-   1800 with what it says.** Nothing to configure: it is the ordinary Record
-   button at bin 1. If it sheds frames the next lever is DCAM's own `.dcimg`
-   recorder, which costs the one-file/one-clock invariant and hand-written
-   ctypes (DECISIONS.md item 7). If it does not, the throughput work is finished.
+1. **Fix the shared-ring contention `WRITER_MBPS = 513` just exposed.**
+   **Done 2026-08-27**: `WRITER_MBPS` was re-measured with the ORCA
+   running — but at the ordinary Record button, meaning the full six-stream
+   session (voltage_cam + pupil_cam + wheel + stage + puffer), not the
+   camera alone. Result: **77 % of frames lost** — a 27 s bin-1 full-frame
+   recording kept 693 of ~3068 camera frames, 513 MB/s on what landed. 611
+   were shed by the camera's own ring (read too slowly); the rest by the
+   shared `Recorder` ring, which the camera-only bench (2464 MB/s, 100 %
+   kept) never modeled because nothing else was competing for it.
+   `WRITER_MBPS` now carries this number and the caveat, but **the ring
+   contention itself is unfixed** — the next step is finding whether the
+   `Recorder`'s ring is sized for one stream's worth of slack rather than
+   six, before reaching for DCAM's own `.dcimg` recorder (which costs the
+   one-file/one-clock invariant, DECISIONS.md item 7).
 
 2. **Save a calibration and check it optically.** The sweep runs; what has not
    happened is anyone confirming where the light actually lands. Run Calibrate…,
@@ -267,6 +272,23 @@ every one of them reports success while being wrong.
 Newest first. 3–6 lines per session: what changed, what it cost, what was
 learned. Older entries are in [docs/SESSIONLOG.md](docs/SESSIONLOG.md).
 
+### 2026-08-27 (bd) — committed a stray session's fixes, then measured the real writer number
+
+- **Committed six files left uncommitted from the prior session**: puffer
+  fire-order (don't log a puff that never happened), DMD reload guard (both
+  real and mock controllers skipped clearing a stale frame on MODE_PATTERN
+  with no file), the stage `_FrameWorker` moved off `QThread` onto
+  `PullWorker` so a bug in `establish_frame()` reports instead of
+  qFatal-aborting the process, and the DMD adapter re-adopting the sibling
+  app's scale/rotation whenever it moves, not just on first install. Suite
+  unchanged at 1118/27 both before and after — these were finished, tested
+  work with nothing left to verify, just sitting.
+- **§6 item 1 done, and it was worse than the plan expected.** The 30 s
+  full-frame bin-1 recording was run at the ordinary Record button, which
+  meant the full six-stream session, not the camera alone — 77 % of frames
+  lost, `WRITER_MBPS` 1800 → **513**. The ring contention that number now
+  documents is itself unfixed; see the rewritten item 1.
+
 ### 2026-08-27 (bc) — the routines panel, and a window of its own
 
 The operator's four asks, then two more. Suite 1049 → **1118 checks / 27 files**.
@@ -300,20 +322,6 @@ PLAN.md 818 → 525 lines and both CLAUDE.md files trimmed, cutting the mandator
 per-session read **14.3k → 9.1k tokens**. `Report` grew **`-q`** (134 lines → 3)
 and `run_all` stopped dumping a failing test's passing lines. §8 now carries a
 NUMBER: a soft "aim to stay short" is exactly what let this file double.
-
-### 2026-08-26 (ba) — the routines panel: one Start button, and real editors
-
-- **Start opens its own recording.** `MainWindow.set_recording` is the twin of
-  `set_live` and returns the PREVIOUS state, which is what lets the adapter stop
-  a recording it started and leave the operator's running.
-- **`routines/table.py`** — every cell edits through a widget that can only
-  produce a legal value; the value lives in `UserRole` and the text renders it.
-- **`style.toggle_btn` had no `:disabled` rule**, so Emulate and Free run,
-  disabled for a whole session, still rendered as the thing to press.
-- **The suite's one flaky test was a cross-thread race in the TEST**, not in the
-  loop: the sink runs on the worker's thread while `fired` is a queued signal,
-  so "one recorded event per fire" compared two counters mid-flight. **Suspect
-  two counters filled on different threads before suspecting the device.**
 
 ## 8. How to keep this file useful
 

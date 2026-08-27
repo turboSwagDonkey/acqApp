@@ -146,12 +146,17 @@ def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
 # Sustained end-to-end write rate, MiB/s (worker → Recorder → HDF5Writer →
 # NVMe). Here because the worker and the panel must agree what can be recorded.
 #
-# THE ONE FIGURE HERE THAT IS NOT A RIG MEASUREMENT. It was 1000, measured
-# 2026-08-17 with the camera; the direct-chunk writer then took the same bench
-# to 2464 MB/s saturated (2350 MiB/s), derated by the 0.77 that run showed
-# against its own bench (1004/1305) for ORCA grab-thread contention.
-# Deliberately low — too high and frames drop unwarned. Re-measure and replace.
-WRITER_MBPS: float = 1800.0
+# Measured 2026-08-27 with the CAMERA and the full six-stream session running
+# (voltage_cam + pupil_cam + wheel + stage + puffer, the app's normal Record
+# button, nothing isolated): a 27 s bin-1 full-frame recording kept 693 of the
+# ~3068 frames the camera captured (77% lost — 611 shed by the camera's own
+# ring, the rest by the shared Recorder ring across all six streams), for
+# 513 MB/s on what was actually written. The prior 1800 was a derated
+# camera-only bench with no other stream competing for the ring; this is lower
+# because concurrent pupil/wheel/stage/puffer traffic contends for the same
+# Recorder, which the bench never modeled. Re-measure if the ring sizing or the
+# set of always-on streams changes.
+WRITER_MBPS: float = 513.0
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1

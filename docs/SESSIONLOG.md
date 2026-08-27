@@ -4,6 +4,20 @@ Older entries from `PLAN.md` §7, newest first. The most recent sessions stay in
 PLAN.md; everything before them lives here so a fresh session reads the plan
 rather than the whole history.
 
+### 2026-08-26 (ba) — the routines panel: one Start button, and real editors
+
+- **Start opens its own recording.** `MainWindow.set_recording` is the twin of
+  `set_live` and returns the PREVIOUS state, which is what lets the adapter stop
+  a recording it started and leave the operator's running.
+- **`routines/table.py`** — every cell edits through a widget that can only
+  produce a legal value; the value lives in `UserRole` and the text renders it.
+- **`style.toggle_btn` had no `:disabled` rule**, so Emulate and Free run,
+  disabled for a whole session, still rendered as the thing to press.
+- **The suite's one flaky test was a cross-thread race in the TEST**, not in the
+  loop: the sink runs on the worker's thread while `fired` is a queued signal,
+  so "one recorded event per fire" compared two counters mid-flight. **Suspect
+  two counters filled on different threads before suspecting the device.**
+
 ### 2026-08-26 (az) — the EyeLoop panel, its thread and its trace
 
 Steps 5–8 of the handoff: the integration is complete in the app and only the
