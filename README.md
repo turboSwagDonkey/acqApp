@@ -249,8 +249,9 @@ calibration uses to turn the live view on for itself.)
 
 **The step list is edited through widgets, not words.** Light is a no/yes
 drop-down, Unit a frames/seconds one, and X, Y, Capture and Settle are spin
-boxes; an axis a step should not move reads **leave** rather than being blank,
-which used to mean both "leave it" and "not typed yet". Steps reorder with the
+boxes; an axis a step should not move reads **no change** rather than being
+blank, which used to mean both "leave it alone" and "not typed yet" — one step
+under the lowest position, or Delete on the cell. Steps reorder with the
 arrows, and the row being executed is shown in bold while the routine runs. A
 summary line under the table says how many runs, how long at least, whether the
 stage moves and how many steps emit light.

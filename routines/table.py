@@ -33,12 +33,20 @@ VALUE = Qt.ItemDataRole.UserRole
 # Columns, in order: (title, field, tooltip).
 COLS = (
     ("Step",       "label",    "Your name for this step. It goes into the file."),
-    ("X",          "x_um",     "Stage X for this step. 'leave' keeps the axis "
-                               "where the last step left it."),
-    ("Y",          "y_um",     "Stage Y for this step. 'leave' keeps the axis "
-                               "where the last step left it."),
-    ("Pattern",    "pattern",  "The DMD pattern for this step. Double-click to "
-                               "choose one; empty keeps whatever the DMD has."),
+    ("Stage X",    "x_um",     "Where to send the stage's X axis for this "
+                               "step.\n\"no change\" means this step leaves X "
+                               "wherever the step before it put the stage — so "
+                               "a column of Y positions at one X does not "
+                               "repeat the X in every row.\nOne step below the "
+                               "lowest value, or press Delete on the cell."),
+    ("Stage Y",    "y_um",     "Where to send the stage's Y axis for this "
+                               "step.\n\"no change\" means this step leaves Y "
+                               "wherever the step before it put the stage.\n"
+                               "One step below the lowest value, or press "
+                               "Delete on the cell."),
+    ("Pattern",    "pattern",  "The DMD pattern for this step. Double-click "
+                               "to choose one, Delete to clear it; with none, "
+                               "the DMD keeps whatever it already has."),
     ("Light",      "project",  "Whether the DMD emits light for the length of "
                                "this step."),
     ("Capture",    "length",   "How much to capture, once the step has settled."),
@@ -49,9 +57,10 @@ COLS = (
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
-# The one sentinel in the file: an optional axis is "leave" at the spin box's
-# own minimum, which is far outside any real stage travel.
-_LEAVE = -1e6
+# What an axis this step does not move reads as. A word, not a blank cell:
+# blank used to mean both "leave this axis alone" and "I have not typed it
+# yet", and "leave" on its own did not say leave WHAT.
+NO_CHANGE = "no change"
 
 
 class _ChoiceDelegate(QStyledItemDelegate):
@@ -79,7 +88,15 @@ class _ChoiceDelegate(QStyledItemDelegate):
 
 
 class _NumberDelegate(QStyledItemDelegate):
-    """A numeric cell. `optional` adds a "leave" state below the minimum."""
+    """A numeric cell. `optional` adds a "no change" state under the range.
+
+    Qt spells "this box may also hold nothing" as `specialValueText` on the
+    **minimum**, so the sentinel has to be one single step below the lowest
+    real value — `_blank`. Putting it far below (at, say, -1e6 under a range
+    starting at -1e5) makes the state real but unreachable: the arrows would
+    take nine thousand presses to get there, so the only way in was to know the
+    magic number. One step down, and it is a thing the operator can find.
+    """
 
     def __init__(self, lo: float, hi: float, decimals: int, suffix: str,
                  step: float = 1.0, optional: bool = False, parent=None) -> None:
@@ -87,27 +104,28 @@ class _NumberDelegate(QStyledItemDelegate):
         self._lo, self._hi = lo, hi
         self._decimals, self._suffix, self._step = decimals, suffix, step
         self._optional = optional
+        self._blank = lo - step
 
     def createEditor(self, parent, _opt, _index):
         sb = QDoubleSpinBox(parent)
         sb.setDecimals(self._decimals)
         sb.setSingleStep(self._step)
         sb.setSuffix(self._suffix)
-        sb.setRange(_LEAVE if self._optional else self._lo, self._hi)
+        sb.setRange(self._blank if self._optional else self._lo, self._hi)
         if self._optional:
-            # Stepping down past the real minimum reads "leave", which is how
-            # an axis is cleared without a blank cell meaning two things.
-            sb.setSpecialValueText("leave")
+            sb.setSpecialValueText(NO_CHANGE)
+            sb.setToolTip(f"One step below {self._lo:g} is \"{NO_CHANGE}\": this "
+                          f"step leaves the axis where it is.")
         sb.setKeyboardTracking(False)
         return sb
 
     def setEditorData(self, editor, index) -> None:
         v = index.data(VALUE)
-        editor.setValue(_LEAVE if v is None else float(v))
+        editor.setValue(self._blank if v is None else float(v))
 
     def setModelData(self, editor, model, index) -> None:
         v = editor.value()
-        if self._optional and v <= _LEAVE:
+        if self._optional and v <= self._blank:
             model.setData(index, None, VALUE)
             return
         model.setData(index, float(min(max(v, self._lo), self._hi)), VALUE)
@@ -253,6 +271,27 @@ class StepTable(QTableWidget):
         if FIELDS[col] == "pattern":
             self.pattern_requested.emit(row)
 
+    # The two cells that can hold nothing are the two that are hard to empty
+    # through their editor — an axis has to be stepped under its range, and a
+    # pattern is chosen with a file dialog, which cannot express "none".
+    _CLEARABLE = ("x_um", "y_um", "pattern")
+
+    def keyPressEvent(self, ev) -> None:
+        if ev.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            item = self.currentItem()
+            if item is not None and FIELDS[item.column()] in self._CLEARABLE:
+                self.clear_cell(item.row(), FIELDS[item.column()])
+                return
+        super().keyPressEvent(ev)
+
+    def clear_cell(self, row: int, field: str) -> None:
+        """Empty one cell: an axis back to "no change", a pattern to none."""
+        if not (0 <= row < len(self._steps)):
+            return
+        setattr(self._steps[row], field, "" if field == "pattern" else None)
+        self._repaint_row(row)
+        self.changed.emit()
+
     # ── selection ────────────────────────────────────────────────────────────
     def selected_row(self) -> int:
         rows = {i.row() for i in self.selectedIndexes()}
@@ -266,7 +305,7 @@ class StepTable(QTableWidget):
 def _render(field: str, value) -> str:
     """One value as the operator reads it. The parse is the delegate's job."""
     if field in ("x_um", "y_um"):
-        return "leave" if value is None else f"{value:g} um"
+        return NO_CHANGE if value is None else f"{value:g} um"
     if field == "pattern":
         return Path(value).name if value else "—"
     if field == "project":

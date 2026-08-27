@@ -524,8 +524,10 @@ def check_step_table(r: Report, app) -> None:
     """
     from PyQt6.QtCore import Qt
 
+    from PyQt6.QtTest import QTest
+
     from acqApp.routines.panel import SettingsPanel
-    from acqApp.routines.table import FIELDS, VALUE
+    from acqApp.routines.table import FIELDS, NO_CHANGE, VALUE
 
     routine = Routine(steps=[Step(label="one", length=100, unit="frames"),
                              Step(label="two", length=2.0, unit="seconds")])
@@ -562,8 +564,21 @@ def check_step_table(r: Report, app) -> None:
     r.check(isinstance(ed, QDoubleSpinBox) and ed.suffix() == " s",
             f"a duration cell opens a spin box in seconds ({type(ed).__name__})")
     ed = editor(0, "x_um")
-    r.check(isinstance(ed, QDoubleSpinBox) and ed.specialValueText() == "leave",
-            "an axis cell opens a spin box with a 'leave' state")
+    r.check(isinstance(ed, QDoubleSpinBox) and ed.specialValueText() == NO_CHANGE,
+            f"an axis cell opens a spin box with a {NO_CHANGE!r} state")
+    # …and that state is REACHABLE. Qt puts specialValueText on the minimum, so
+    # a sentinel parked far below the range is a state the arrows can never get
+    # to — it was 9000 presses below the bottom of the range, i.e. settable
+    # only by knowing the magic number.
+    lo = ed.minimum() + ed.singleStep()
+    ed.setValue(lo)
+    ed.stepBy(-1)
+    r.check(ed.text() == NO_CHANGE,
+            f"…one step below the lowest position, not a magic number "
+            f"({ed.text()!r})")
+    ed.stepBy(+1)
+    r.check(ed.value() == lo and ed.text() != NO_CHANGE,
+            f"…and one step back up is a position again ({ed.text()!r})")
     # CONTROL: the free-text field is still free text — the point is typed
     # editors where the value is constrained, not spin boxes everywhere.
     idx = tbl.model().index(0, col["label"])
@@ -603,8 +618,25 @@ def check_step_table(r: Report, app) -> None:
             f"an axis takes a number ({tbl.item(0, col['x_um']).text()!r})")
     tbl.item(0, col["x_um"]).setData(VALUE, None)
     r.check(routine.steps[0].x_um is None and
-            tbl.item(0, col["x_um"]).text() == "leave",
-            f"…and clears back to 'leave' ({tbl.item(0, col['x_um']).text()!r})")
+            tbl.item(0, col["x_um"]).text() == NO_CHANGE,
+            f"…and clears back to {NO_CHANGE!r} "
+            f"({tbl.item(0, col['x_um']).text()!r})")
+
+    # Delete on the cell: the other way to say "this step does not move it",
+    # because an axis is otherwise cleared by stepping under the range.
+    tbl.item(1, col["x_um"]).setData(VALUE, 400.0)
+    tbl.setCurrentCell(1, col["x_um"])
+    QTest.keyClick(tbl, Qt.Key.Key_Delete)
+    r.check(routine.steps[1].x_um is None,
+            f"Delete on an axis cell sets it back to {NO_CHANGE!r}")
+    # CONTROL: Delete is not a general erase — a cell that cannot hold nothing
+    # must ignore it rather than blanking a length.
+    before = routine.steps[1].length
+    tbl.setCurrentCell(1, col["length"])
+    QTest.keyClick(tbl, Qt.Key.Key_Delete)
+    r.check(routine.steps[1].length == before,
+            f"control: Delete on a cell that must hold a number does nothing "
+            f"({routine.steps[1].length})")
 
     # A frames step is a whole number of frames — validate() refuses the
     # alternative, so the panel rounds rather than letting Start refuse it.
@@ -645,6 +677,7 @@ def check_step_table(r: Report, app) -> None:
     r.check(not (tbl.item(0, col["pattern"]).flags() & Qt.ItemFlag.ItemIsEditable),
             "…and is not typed into")
     panel._tbl.select_row(0)
+    panel._tbl.setCurrentCell(0, col["pattern"])
     panel._clear_pattern()
     r.check(routine.steps[0].pattern == "" and
             tbl.item(0, col["pattern"]).text() == "—",

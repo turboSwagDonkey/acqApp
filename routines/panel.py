@@ -103,7 +103,8 @@ class SettingsPanel(QWidget):
                  "the Pattern cell does the same."),
                 ("No pattern", self._clear_pattern,
                  "Leave the DMD showing whatever it already has for this "
-                 "step.")):
+                 "step. Delete on the cell does the same — as it does on a "
+                 "Stage X or Y cell, which sets it back to \"no change\".")):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
@@ -249,13 +250,11 @@ class SettingsPanel(QWidget):
 
     def _clear_pattern(self) -> None:
         """Back to "whatever the DMD has". The file dialog cannot express this
-        — cancelling it means "changed my mind", not "no pattern"."""
+        — cancelling it means "changed my mind", not "no pattern". The Delete
+        key on the cell does the same, through the same call."""
         row = self._selected()
-        if row < 0 or not self._r.steps[row].pattern:
-            return
-        self._r.steps[row].pattern = ""
-        self._reload_table()
-        self._emit()
+        if row >= 0 and self._r.steps[row].pattern:
+            self._tbl.clear_cell(row, "pattern")
 
     def _refresh_summary(self) -> None:
         """One line: how much work this is, and whether any of it emits light."""
