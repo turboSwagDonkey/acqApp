@@ -11,7 +11,7 @@ wrong once.
 |---|---|
 | **Last updated** | 2026-08-26 (ba) |
 | **What the app is** | see [README.md](README.md) — that stays the authoritative *description*. This file holds the *plan*. |
-| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). **2026-08-26: EyeLoop pupil tracking is integrated and complete in the app** — the panel, persistence, its own thread, and the ellipse recorded into the session file. Mock-verified only; step 8 (the live Basler) is a rig trip. **2026-08-26: the routines panel starts its own recording**, and its step list is edited through drop-downs and spin boxes rather than typed words. Suite **1044 checks, 27 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
+| **Progress** | Roadmap phases 0–5 done; audit remediation 100 % (22 of 22). The pupil tracker was retired 2026-08-24 into `archive/pupil_tracking/`, eye region kept **2026-08-24: DMD calibration is built, wired and has run at the rig** — a narrow stripe stepped across each axis, two line fits, an affine. Gray coding was tried and deleted; this relay scatters enough to erase any periodic pattern (§7). **2026-08-25: full-frame bin 1 records complete** — the writer's direct-chunk path (1304 → 2696 MB/s) and a 2 GB ring ended the 53 %-of-frames loss, in the bench; it has not run against the camera, which is §6 item 1. Also 2026-08-25: **instruments load and unload without restarting** (sidebar → Modules), and the sidebar carries one item per settings page. **2026-08-26: experiment routines are built and wired** — a protocol of stage positions and DMD patterns executed step by step, engine Qt-free over callables, loadable as a module. Mock-verified only; the per-step *file rolling* is the one piece deferred (§6). **2026-08-26: EyeLoop pupil tracking is integrated and complete in the app** — the panel, persistence, its own thread, and the ellipse recorded into the session file. Mock-verified only; step 8 (the live Basler) is a rig trip. **2026-08-26: the routines panel starts its own recording**, and its step list is edited through drop-downs and spin boxes rather than typed words. Suite **1049 checks, 27 files — all green**. §5b **A3 triggered** and is the one open architecture item. Next: §6 — the three rig measurements, none of which can be done from a keyboard. |
 
 ---
 
@@ -28,7 +28,8 @@ only when chasing a specific item number or an old decision.**
 **Where the project stands.** Phases 0–5 are built and mock-verified and the
 2026-08-10 audit is closed. **Phase 0 closed 2026-08-17** with the camera
 throughput number, so the roadmap is clear through phase 5. The test suite is
-the contract: **1044 checks, 27 files, ~65 s**, and it is ALL GREEN. Run it
+the contract: **1049 checks, 27 files, ~65 s**, and it is ALL GREEN, and it
+has **no known flaky test** (the last one was fixed 2026-08-26 (ba)). Run it
 before and after anything.
 
 **A pupil tracker is back on master — EyeLoop, since 2026-08-26** (operator's
@@ -565,7 +566,7 @@ Newest first. 3–6 lines per session: what changed, what it cost, what's next.
 
 ### 2026-08-26 (ba) — the routines panel: one Start button, and real editors
 
-Operator's request, both halves. Suite **1001 → 1044 checks**, 27 files, green.
+Operator's request, both halves. Suite **1001 → 1049 checks**, 27 files, green.
 Still mock-verified: no routine has actuated anything.
 
 - **Start opens its own recording.** It used to refuse until the operator had
@@ -592,6 +593,21 @@ Still mock-verified: no routine has actuated anything.
   the palette, so a disabled button still reads as the thing to press. Fixed in
   style.py, which also fixes **Emulate** and **Free run** — both disabled for
   the whole of a session.
+
+- **The suite's one flaky test is fixed**, found while running the above:
+  `test_closed_loop` failed about twice in fifteen **full-suite** runs and never
+  once on its own. **It was a cross-thread sampling race in the test**, and the
+  check that failed was not the timing-looking one: the recording sink is called
+  **on the worker's thread**, while `fired` crosses back as a **queued** signal,
+  so the two counters settle at different times and "one recorded event per
+  fire" compared them mid-flight (4 vs 3). It now stops the worker (which joins
+  the thread, fixing `events`), pumps the queue (fixing `fired`), and only then
+  counts. **Nothing is wrong with the closed loop** — the puffer does not fire
+  faster than its refractory, and there is now a check that says so (gaps
+  0.151/0.153 s against 0.15 s) where the old fixed window only implied it.
+  Verified over four consecutive full-suite runs. **If a test here ever fails
+  intermittently again, suspect two counters filled on different threads before
+  suspecting the device.**
 
 **Next: unchanged** — §6's three rig measurements, plus EyeLoop step 8. Nothing
 here has actuated anything either.

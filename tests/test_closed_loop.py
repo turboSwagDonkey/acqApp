@@ -220,11 +220,40 @@ def check_worker(r: Report, app) -> None:
             f"…but the readout still shows the condition is met (got {latest})")
 
     # Arm it: now the same condition fires, repeatedly, paced by the refractory.
+    #
+    # Waited for, not slept through. This used to be `pump(app, 0.5)` against a
+    # 0.15 s refractory — three fires' worth of room, and it failed about twice
+    # in fifteen full-suite runs and never once on its own. The claim is that it
+    # re-fires on the refractory, NOT that this machine schedules a thread
+    # inside a particular half-second, so a busy machine was failing a claim the
+    # test was not making. The deadline is what keeps it from hanging if the
+    # worker really is dead.
+    t_arm = time.perf_counter()
     w.set_armed(True)
-    pump(app, 0.5)
+    while len(fired) < 3 and time.perf_counter() - t_arm < 4.0:
+        pump(app, 0.02)
+    waited = time.perf_counter() - t_arm
+    # stop() joins the thread, so `events` is final after it. `fired` is not:
+    # the sink is called ON the worker's thread while `fired` crosses back as a
+    # QUEUED signal, so it lags by however long the GUI thread takes to get
+    # round to it — and the worker can fire once more in that gap. Comparing
+    # the two counters before flushing the queue is a race, and it is the race
+    # this test was actually losing (`one recorded event per fire`, 4 vs 3),
+    # not the pacing it looked like.
     w.stop()
+    pump(app, 0.2)
     n = len(fired)
-    r.check(n >= 2, f"armed, it fires and re-fires on the refractory (got {n})")
+    r.info(f"{n} fires in {waited:.2f}s "
+           f"(hold {s.hold_s:g}s, refractory {s.refractory_s:g}s)")
+    r.check(n >= 2, f"armed, it fires and re-fires (got {n} in {waited:.2f}s)")
+    # …and the pacing itself, which the old fixed window only implied. A gap
+    # SHORTER than the refractory is the bug that check was reaching for.
+    # events are (value, at) — `at` is the sample's own instant, and that is
+    # what the refractory is measured against, not the GUI hop after it.
+    gaps = [b[1] - a[1] for a, b in zip(events, events[1:])]
+    r.check(gaps and min(gaps) >= s.refractory_s - 0.02,
+            f"…paced by the refractory, never faster "
+            f"(gaps {[round(g, 3) for g in gaps]} vs {s.refractory_s:g}s)")
     r.check(all(f[0] == "puffer" and abs(f[1] - 0.07) < 1e-9 for f in fired),
             f"every fire carries the configured target and duration "
             f"(got {fired[:2]})")
