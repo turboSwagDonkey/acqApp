@@ -8,18 +8,29 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QWidget,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget,
 )
 
 from acqApp.saving.config import (_DEFAULT_SUBDIR, TOKENS, SaveConfig, _gb,
-                                  default_folder, free_bytes, list_drives)
+                                  benchmark_drive, default_folder, free_bytes,
+                                  list_drives)
 
 
 class SavePanel(QWidget):
     """Settings tab: destination drive/folder, naming, and capacity readout."""
 
     settings_changed = pyqtSignal()
+
+    # A short burst reads fast on any SSD — its own SLC write cache absorbs
+    # it — which is exactly the trap that hid a SATA drive's real ceiling
+    # behind the writer/GIL for a whole session (PLAN.md sec 6 item 1). 1 GiB
+    # is enough to run past that cache on the drives this rig actually has.
+    _SCAN_SIZE_MB = 1024
+    # The writer's own overhead over a raw write, measured in
+    # docs/CAMERA_TRANSFER.md (direct-chunk 2696 -> 2464 MB/s through the
+    # whole path, ~9%) — derate the raw measurement before calling it safe.
+    _SCAN_DERATE = 0.85
 
     def __init__(self, config: SaveConfig | None = None, parent=None):
         super().__init__(parent)
@@ -42,7 +53,24 @@ class SavePanel(QWidget):
         self._cmb_drive = QComboBox()
         self._reload_drives()
         self._cmb_drive.activated.connect(self._on_drive_picked)
-        lay.addRow("Drive:", self._cmb_drive)
+        self._btn_scan = QPushButton("Scan drives")
+        self._btn_scan.setToolTip(
+            "Write ~1 GiB to each drive to measure its real sustained write "
+            "speed, and flag any that would drop frames at the current "
+            "acquisition rate.")
+        self._btn_scan.clicked.connect(self._on_scan_drives)
+        drive_row = QHBoxLayout()
+        drive_row.setContentsMargins(0, 0, 0, 0)
+        drive_row.addWidget(self._cmb_drive, 1)
+        drive_row.addWidget(self._btn_scan)
+        drive_row_w = QWidget()
+        drive_row_w.setLayout(drive_row)
+        lay.addRow("Drive:", drive_row_w)
+
+        self._lbl_scan = QLabel()
+        self._lbl_scan.setWordWrap(True)
+        self._lbl_scan.setStyleSheet("color:#8a8a8a;")
+        lay.addRow("Drive scan:", self._lbl_scan)
 
         self._ed_folder = QLineEdit(self._cfg.folder)
         self._ed_folder.editingFinished.connect(self._on_edited)
@@ -139,6 +167,47 @@ class SavePanel(QWidget):
             os.startfile(str(folder))                    # noqa: S606 (Windows)
         except (OSError, AttributeError) as e:
             self._lbl_space.setText(f"Could not open {folder}: {e}")
+
+    def _on_scan_drives(self) -> None:
+        """Benchmark every fixed drive and flag any too slow for the current
+        acquisition rate. Synchronous (like dialogs.py's device probe loop) —
+        each drive is only ~1 GiB, a couple of seconds even on SATA, and
+        `processEvents()` between drives keeps the window from looking frozen.
+        """
+        self._btn_scan.setEnabled(False)
+        html = []
+        try:
+            for root, free, total in list_drives():
+                self._lbl_scan.setText(f"scanning {root}…")
+                self._lbl_scan.setStyleSheet("color:#8a8a8a;")
+                QApplication.processEvents()
+                need = (self._SCAN_SIZE_MB << 20) * 4     # leave the drive most of its room
+                if free < need:
+                    html.append(f"{root}&nbsp;&nbsp;skipped — only {_gb(free)} free "
+                                f"(need some room to test meaningfully)")
+                    continue
+                mbps = benchmark_drive(root, self._SCAN_SIZE_MB << 20)
+                if mbps is None:
+                    html.append(f"{root}&nbsp;&nbsp;write test failed (permissions?)")
+                    continue
+                line = f"{root}&nbsp;&nbsp;{mbps:.0f} MB/s"
+                if self._rate_mbps > 0:
+                    safe = mbps * self._SCAN_DERATE
+                    if safe < self._rate_mbps:
+                        pct = 100 * (1 - safe / self._rate_mbps)
+                        line = (f'<span style="color:#c62828; font-weight:bold;">'
+                                f'{line} ⚠ would drop ~{pct:.0f}% of frames '
+                                f'at {self._rate_mbps:.0f} MB/s</span>')
+                    else:
+                        line += ' <span style="color:#2e7d32;">— OK at the current rate</span>'
+                html.append(line)
+            if self._rate_mbps <= 0:
+                html.append("(no acquisition rate known yet — showing raw "
+                            "write speed only)")
+            self._lbl_scan.setStyleSheet("")
+            self._lbl_scan.setText("<br>".join(html))
+        finally:
+            self._btn_scan.setEnabled(True)
 
     def _on_edited(self, *_a) -> None:
         self._cfg.folder    = self._ed_folder.text().strip()

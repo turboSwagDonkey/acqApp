@@ -340,34 +340,55 @@ def check_skip_report_blames_the_loop(r: Report) -> None:
 
 
 def check_memory_capped_buffer_is_announced(r: Report) -> None:
-    """The 2 s of slack the constant promises silently becomes 0.33 s at full
-    frame. Announcing which bound won is the whole fix."""
+    """768 MB used to make full frame silently fall from 2 s of slack to 0.33 s
+    — a real ~6% frame loss on hardware even after the writer stopped being the
+    bottleneck (PLAN.md sec 6 item 1). Fixed by raising `_BUFFER_BYTES` to 6 GiB
+    (the rig has 51 GiB free); full frame at the real CXP rate now gets the
+    full 2 s. The memory-cap branch itself still has to work for whatever
+    budget is configured, so it's exercised here with a shrunk budget rather
+    than asserting a specific machine's headroom."""
     import io
     from contextlib import redirect_stdout
     from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
     from acqApp.devices.voltage_cam.presets import AcqConfig
 
-    w = OrcaFireWorker(0, AcqConfig())
-
-    def sizing(cfg, fps):
+    def sizing(worker, cfg, fps):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            n = w._buffer_frames(cfg, fps)
+            n = worker._buffer_frames(cfg, fps)
         return n, buf.getvalue()
 
-    big = AcqConfig()                                   # full frame, 21 MB
-    n_big, out_big = sizing(big, 115.0)
-    r.check(n_big < 115.0 * OrcaFireWorker._BUFFER_SECONDS,
-            f"full frame really is memory-capped ({n_big} frames)")
-    r.check("MEMORY-capped" in out_big,
+    full = AcqConfig()                                  # full frame, ~21 MB
+
+    # The fix: at the real full-frame CXP rate, 6 GiB is no longer the tight
+    # bound — full frame now gets the full 2.0 s the constant promises.
+    w = OrcaFireWorker(0, full)
+    n_full, out_full = sizing(w, full, 115.0)
+    r.check(n_full == int(115.0 * OrcaFireWorker._BUFFER_SECONDS),
+            f"full frame at the real CXP rate now gets the full "
+            f"{OrcaFireWorker._BUFFER_SECONDS} s ({n_full} frames), not "
+            f"memory-capped")
+    r.check("MEMORY-capped" not in out_full,
+            "and stays quiet now that the budget covers it")
+
+    # The branch: an under-provisioned machine (or a faster future preset)
+    # must still get a correct, announced shortfall — verified by shrinking
+    # the instance's own budget rather than hard-coding today's headroom.
+    w_tight = OrcaFireWorker(0, full)
+    w_tight._BUFFER_BYTES = 768 << 20
+    n_tight, out_tight = sizing(w_tight, full, 115.0)
+    r.check(n_tight < 115.0 * OrcaFireWorker._BUFFER_SECONDS,
+            f"a tight budget really does cap full frame ({n_tight} frames)")
+    r.check("MEMORY-capped" in out_tight,
             "and the shortfall is announced, not left in the arithmetic")
-    r.check("GiB" in out_big,
+    r.check("GiB" in out_tight,
             "the announcement says what the full slack would cost")
 
-    # Control: a small frame is NOT capped, and must stay quiet — otherwise the
-    # check above would pass on a warning that always fires.
+    # Control: a small frame is NOT capped even under the tight budget, and
+    # must stay quiet — otherwise the checks above would pass on a warning
+    # that always fires.
     small = AcqConfig(preset_key="4432x512", binning=4)  # ~0.28 MB
-    n_small, out_small = sizing(small, 115.0)
+    n_small, out_small = sizing(w_tight, small, 115.0)
     r.check(n_small == int(115.0 * OrcaFireWorker._BUFFER_SECONDS),
             f"a small frame gets the full {OrcaFireWorker._BUFFER_SECONDS} s "
             f"({n_small} frames)")

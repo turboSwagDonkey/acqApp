@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import string
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +70,42 @@ def free_bytes(path: str) -> int | None:
 
 def _gb(n: float) -> str:
     return f"{n / (1 << 30):.0f} GB"
+
+
+def benchmark_drive(root: str, size_bytes: int) -> float | None:
+    """Raw sustained sequential write speed of `root`, in MiB/s.
+
+    Writes `size_bytes` of random data (not zeros — some SSD firmware
+    fast-paths an all-zero write, which would over-report) in 8 MB chunks,
+    flushes and fsyncs so the OS write-back cache can't fake the number, then
+    deletes the file. **The test file must be large enough to run past the
+    drive's own SLC write cache** or a slow drive reads fast — this is why
+    the ceiling one session mistook for the writer/GIL (PLAN.md sec 6 item 1)
+    turned out to be a SATA drive: a short burst would have hidden it.
+
+    Returns None if the drive refuses the write (permission, disconnected,
+    not enough room) — the caller decides how to report that.
+    """
+    chunk = os.urandom(8 << 20)
+    n = max(1, size_bytes // len(chunk))
+    path = Path(root) / ".acqapp_drive_speedtest.tmp"
+    try:
+        t0 = time.perf_counter()
+        with open(path, "wb") as f:
+            for _ in range(n):
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        elapsed = time.perf_counter() - t0
+    except OSError:
+        return None
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    written_mb = n * len(chunk) / (1 << 20)
+    return written_mb / elapsed if elapsed > 0 else None
 
 
 @dataclass

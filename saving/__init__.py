@@ -18,6 +18,7 @@ _LAZY = {
     "list_drives":    "config",
     "free_bytes":     "config",
     "default_folder": "config",
+    "benchmark_drive": "config",
     "SavePanel":      "panel",
 }
 

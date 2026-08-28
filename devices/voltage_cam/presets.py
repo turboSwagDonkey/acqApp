@@ -146,19 +146,15 @@ def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
 # Sustained end-to-end write rate, MiB/s (worker → Recorder → HDF5Writer →
 # NVMe). Here because the worker and the panel must agree what can be recorded.
 #
-# Measured 2026-08-27 with the real ORCA, bin-1 full-frame, 30 s: ~513 MB/s
-# kept, TWICE — once with the full six-stream session running (693/3068
-# frames kept) and again with voltage_cam alone, nothing else selected
-# (949/4264 kept, near-identical throughput). That rules out contention from
-# the other five device threads as the cause: the ceiling is in the
-# camera-read + writer path itself under the real running app (with its GUI
-# event loop, live preview, everything the isolated writer-only bench never
-# had). The prior 1800 was that isolated bench (2464 MB/s, synthetic frames,
-# no camera, no Qt) derated by a guess — not reproducible with the camera
-# actually running. Root cause still open: prime suspects are the per-frame
-# copy out of the driver buffer and the live preview's GIL hold (see
-# `_skip_report` in acquisition.py). Re-measure if either changes.
-WRITER_MBPS: float = 510.0
+# The ~510 figure measured 2026-08-27 was the SAVE DRIVE, not the writer or
+# the GIL: acqapp_local.json's saving.folder was E: (SATA MX500, ~550 MB/s
+# cap). A zero-Qt harness (worker+Recorder+writer, no QApplication, no
+# preview) got 472 MB/s / 29% kept on E: — reproducing the historical number
+# with no GUI in the loop at all — and 1533 MB/s / 100% kept on D: (NVMe),
+# the drive the save folder now points at. Set conservatively BELOW that
+# measured 1533 pending one confirmation run through the real app (GUI, live
+# preview, D:) — re-measure and raise this once that run is clean.
+WRITER_MBPS: float = 1300.0
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1

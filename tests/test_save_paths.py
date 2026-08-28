@@ -26,7 +26,7 @@ from pathlib import Path
 from _harness import Report
 
 from acqApp.acq.writer import HDF5Writer
-from acqApp.saving import SaveConfig, sanitize
+from acqApp.saving import SaveConfig, benchmark_drive, sanitize
 
 WHEN = datetime(2026, 8, 12, 14, 30, 5)
 
@@ -123,6 +123,21 @@ def check_writer_refuses(r: Report, tmp: Path) -> None:
     r.check(fresh.is_file(), "overwrite=True still truncates when asked for")
 
 
+def check_benchmark_drive(r: Report, tmp: Path) -> None:
+    """The Save panel's drive-scan button (SavePanel._on_scan_drives) trusts
+    this for a real number — it must actually measure, not just succeed."""
+    mbps = benchmark_drive(str(tmp), 2 << 20)      # 2 MB — fast, not realistic
+    r.check(mbps is not None and mbps > 0,
+            f"a writable folder returns a positive rate (got {mbps!r})")
+
+    leftover = list(tmp.glob(".acqapp_drive_speedtest*"))
+    r.check(not leftover, f"the test file is cleaned up (found {leftover})")
+
+    missing = benchmark_drive(str(tmp / "does_not_exist_at_all"), 2 << 20)
+    r.check(missing is None,
+            f"an unwritable/missing path returns None, not a crash (got {missing!r})")
+
+
 def main() -> int:
     r = Report("save-paths")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_savepaths_"))
@@ -130,6 +145,7 @@ def main() -> int:
         check_stem(r)
         check_unique(r, tmp)
         check_writer_refuses(r, tmp)
+        check_benchmark_drive(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()

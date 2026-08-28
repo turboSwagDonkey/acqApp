@@ -46,8 +46,13 @@ class OrcaFireWorker(PullWorker):
     _STOP_WAIT_MS = 5000
     # Ring buffer holds this many seconds of frames, so a GC pause or disk stall
     # doesn't overwrite un-read ones. Bounded by memory: a full frame is ~21 MB.
+    # 768 MB (0.38 s at full frame) was too tight with headroom to spare: the
+    # rig has 64 GiB RAM, ~51 GiB free (2026-08-27), and 768 MB was shedding
+    # ~6% of frames on real hardware even after the writer stopped being the
+    # bottleneck (PLAN.md sec 6 item 1). 6 GiB covers the full 2.0 s at full
+    # frame (115 fps) with margin, and is still <12% of free RAM.
     _BUFFER_SECONDS = 2.0
-    _BUFFER_BYTES   = 768 << 20
+    _BUFFER_BYTES   = 6 << 30
     _BUFFER_MIN     = 16
     _BUFFER_MAX     = 4096
     # One number, shared with the settings panel — see presets.WRITER_MBPS.
