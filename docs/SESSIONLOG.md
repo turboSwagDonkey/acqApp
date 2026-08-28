@@ -4,6 +4,94 @@ Older entries from `PLAN.md` §7, newest first. The most recent sessions stay in
 PLAN.md; everything before them lives here so a fresh session reads the plan
 rather than the whole history.
 
+### 2026-08-27 (bf) — root-caused §6 item 1: it was the save drive, not the writer or the GIL
+
+- **A zero-Qt harness** (`OrcaFireWorker` → `Recorder` → `RingBuffer` →
+  `HDF5Writer`, real camera, no `QApplication`/timer/preview) cleared the
+  GIL/preview suspect outright: **D:** (NVMe) **1533 MB/s, 100% kept**; **E:**
+  (SATA) **472 MB/s, 29% kept** — reproducing the historical ~510 MB/s with
+  no Qt in the loop at all.
+- **Cause: `acqapp_local.json`** (gitignored, §0's own "read it first"
+  gotcha) — `saving.folder` was `E:/acq_sessions`. **Fixed** (operator
+  approved): moved to D:; `WRITER_MBPS` 510 → 1300 (presets.py, below 1533
+  measured).
+- **Also fixed the DCAM-ring loss the harness exposed**: `_BUFFER_BYTES`
+  768 MB → 6 GiB (acquisition.py) — camera-side drops 140 → 0 on re-run
+  (96.2% kept, 1502 MB/s; the residual 90 frames were a one-time ramp-up
+  stall). `test_recording_losses.py` rewritten to test the cap *branch*
+  against a shrunk instance budget, not today's headroom.
+- **Scan drives button, Save tab** (operator asked mid-session): a wrong
+  drive is now a click, not a lost session — `benchmark_drive()` writes
+  ~1 GiB per drive (past a consumer SSD's SLC cache) and flags any that
+  would drop frames at the current rate. `test_save_paths.py` gained
+  `check_benchmark_drive`.
+- Suite 1118 → **1123 checks / 27 files**.
+- **Still open**: one confirmation run through the real app (GUI, live
+  preview, recording to D:) before raising `WRITER_MBPS` further.
+
+### 2026-08-27 (be) — isolating the writer number, a recording-timer bug, and Rate next to Exposure
+
+- **The multi-stream theory in (bd) was wrong.** A second 30 s bin-1 run,
+  `voltage_cam` alone, lost frames just as badly as the six-stream run
+  (949/4264 vs 693/3068, both ~510 MB/s). Rewrote §6 item 1: it's the
+  camera+writer path itself, not ring contention between streams.
+- **The recording readout counted from Live, not Record.** `_on_tick` fed
+  the session clock's elapsed time straight into `_refresh_rec_readout`, so
+  starting Record after Live had run a while showed that head start as
+  recording time. `MainWindow._rec_t0` now captures `self._sync.elapsed()`
+  at Record, readout subtracts it (`main.py`).
+- **`SettingsPanel` (voltage_cam) gained a Rate (Hz) field beside Exposure**,
+  Link checkbox. Rate always caps Exposure's maximum to `1e6/rate` — a frame
+  can't expose longer than its period — regardless of Link; Link also drives
+  Exposure to that cap (and back). Unlinked, Rate is just an operator ceiling.
+  No new `AcqConfig` field — Exposure stays the one persisted value, Rate
+  derived at load.
+- Suite 1118/27 (`closed-loop` reconfirmed flaky in isolation, see header).
+
+### 2026-08-27 (bd) — committed a stray session's fixes, then measured the real writer number
+
+- **Committed six files left uncommitted from the prior session**: puffer
+  fire-order (don't log a puff that never happened), DMD reload guard (both
+  real and mock controllers skipped clearing a stale frame on MODE_PATTERN
+  with no file), the stage `_FrameWorker` moved off `QThread` onto
+  `PullWorker` so a bug in `establish_frame()` reports instead of
+  qFatal-aborting the process, and the DMD adapter re-adopting the sibling
+  app's scale/rotation whenever it moves, not just on first install. Suite
+  unchanged at 1118/27 both before and after — these were finished, tested
+  work with nothing left to verify, just sitting.
+- **§6 item 1 done, and it was worse than the plan expected.** The 30 s
+  full-frame bin-1 recording was run at the ordinary Record button, which
+  meant the full six-stream session, not the camera alone — 77 % of frames
+  lost, `WRITER_MBPS` 1800 → **513**. The ring contention that number now
+  documents is itself unfixed; see the rewritten item 1.
+
+### 2026-08-27 (bc) — the routines panel, and a window of its own
+
+The operator's four asks, then two more. Suite 1049 → **1118 checks / 27 files**.
+
+- **Progress is position-based**, not `steps_done()` — Resume repeats a step,
+  and a bar that went backwards would read as a fault. Drawn as a bar plus
+  elapsed/left, and the **row header carries the ▶ marker**, which survives a
+  scrolled table where the bold row does not.
+- **One `StepTable.move_row`** behind drag, Ctrl+Up/Down and the arrows. Qt's
+  `InternalMove` shuffles the *cells*: the table would look reordered while the
+  engine ran the old protocol.
+- **`estimate.py` converts frames to seconds and names the rate**; recording
+  still never does. `ModuleHost.frame_rate_hz()` supplies it, pooled by `_first`
+  like `stage_target` — 6 lines of main.py, **operator approved**.
+- **`templates.py`: a folder of JSON, not another config key**, so a protocol
+  copies to the rig machine. `isolate_user_state()` redirects it (an unisolated
+  run would delete from the operator's library) and `test_structure`'s SKIP_DIRS
+  ignores it like `sessions/`.
+- **`config.ALWAYS_ON` + `ModuleAdapter.own_window`.** Always-on is enforced in
+  three places — no checkbox, `selected()` re-adds, `set_modules` re-adds —
+  because any one alone leaves a way to drop it. `PanelWindow.release()` runs
+  before the window is deleted: a `QScrollArea` owns its widget and would
+  otherwise take the adapter's panel with it.
+- **Then this file and `acqApp/CLAUDE.md` were compressed** (§8's budget), and
+  the testing instruction in CLAUDE.md was corrected: `run_all` selects by short
+  name and ignores `-q`, which belongs to the individual test script.
+
 ### 2026-08-26 (bb) — prose sweep, and a number on the budget
 
 PLAN.md 818 → 525 lines and both CLAUDE.md files trimmed, cutting the mandatory
