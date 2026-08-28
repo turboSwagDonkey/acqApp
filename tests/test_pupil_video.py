@@ -208,8 +208,10 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
     def built(video: str, emulate: bool):
         win = FakeWin()
         m = PupilCamModule(win)
-        m.panel = type("P", (), {"settings": PupilSettings(video_path=video,
-                                                           fps=30.0)})()
+        m.panel = type("P", (), {
+            "settings": PupilSettings(video_path=video, fps=30.0),
+            "set_measured_rate": lambda self, *a, **kw: None,
+        })()
         m.build_session(emulate)
         return m, win
 

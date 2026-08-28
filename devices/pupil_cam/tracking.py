@@ -16,16 +16,23 @@ from acqApp.devices.pupil_cam.settings import PupilSettings
 
 
 class PupilTracking:
-    """One tracker, kept armed and re-armed as the eye region changes.
+    """One tracker, kept armed and re-armed as the eye region — or the model —
+    changes.
 
     Holds the crop box it was armed for; when the operator drags or resizes the
     region the box changes and the tracker is rebuilt, because `Shape` computes
-    its walk corners once from the frame size it was given.
+    its walk corners once from the frame size it was given. The fit model
+    (ellipse/circle) is the same story: EyeLoop bakes it into the `Shape` it
+    builds in `arm()` (`config.arguments.model`, read once at construction), so
+    it is not one of `apply_settings`'s live knobs either — switching it has to
+    re-arm, or the operator keeps fitting the old shape until something else
+    (moving the region, restarting the session) happens to force a re-arm.
     """
 
     def __init__(self) -> None:
         self._tracker = None
         self._box: tuple[int, int, int, int] | None = None
+        self._model: str | None = None
         self._error: str | None = None
         self.last_fit = None
         self.last_mask: np.ndarray | None = None
@@ -44,6 +51,7 @@ class PupilTracking:
         """Drop the tracker; the next frame re-arms it and re-seeds from centre."""
         self._tracker = None
         self._box = None
+        self._model = None
         self.last_fit = None
         self.last_mask = None
 
@@ -85,7 +93,8 @@ class PupilTracking:
             pins=tuple(Pin(px - x0, py - y0, pr) for px, py, pr in st.cr_pins),
         )
 
-        if self._tracker is None or self._box != box:
+        if (self._tracker is None or self._box != box
+                or self._model != st.track_model):
             try:
                 self._tracker = EyeLoopTracker(
                     threshold=st.track_threshold, blur=st.track_blur,
@@ -93,6 +102,7 @@ class PupilTracking:
                 self._tracker.arm(x1 - x0, y1 - y0,
                                   ((x1 - x0) / 2.0, (y1 - y0) / 2.0))
                 self._box = box
+                self._model = st.track_model
                 self._error = None
             except EyeLoopUnavailable as e:
                 self._tracker = None
@@ -100,7 +110,6 @@ class PupilTracking:
                 return None
         else:
             self._tracker.glint = glint
-            self._tracker.model = st.track_model
             self._tracker.apply_settings(threshold=st.track_threshold,
                                          blur=st.track_blur)
 

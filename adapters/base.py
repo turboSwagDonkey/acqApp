@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pyqtgraph as pg
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QWidget
 
 from acqApp import style
@@ -34,17 +35,53 @@ def _plot(title: str, left: str, units: str, bottom: str, key: str):
     return pw, curve
 
 
-def _image_view():
+class DragRectViewBox(pg.ViewBox):
+    """A ViewBox where an armed left-drag draws a rectangle instead of panning.
+
+    A real override, not a monkeypatch: earlier the pupil eye-region tool
+    swapped `vb.mouseDragEvent` for a bound method and swapped it back on
+    disarm, which works but depends on nobody else touching that attribute
+    between the two calls. Subclassing needs no restoring — `set_draw_mode`
+    just falls through to `super().mouseDragEvent()` when off, or for any
+    button but Left, so panning and zooming are never something to remember.
+    """
+
+    dragged = pyqtSignal(float, float, float, float, bool)  # x0,y0,x1,y1,finished
+
+    def __init__(self, *a, **kw) -> None:
+        super().__init__(*a, **kw)
+        self._draw = False
+
+    def set_draw_mode(self, on: bool) -> None:
+        self._draw = bool(on)
+        self.setCursor(Qt.CursorShape.CrossCursor if on
+                       else Qt.CursorShape.ArrowCursor)
+
+    def mouseDragEvent(self, ev, axis=None) -> None:
+        if not self._draw or ev.button() != Qt.MouseButton.LeftButton:
+            super().mouseDragEvent(ev, axis=axis)
+            return
+        ev.accept()
+        a = self.mapSceneToView(ev.buttonDownScenePos())
+        b = self.mapSceneToView(ev.scenePos())
+        x0, x1 = sorted((a.x(), b.x()))
+        y0, y1 = sorted((a.y(), b.y()))
+        self.dragged.emit(x0, y0, x1, y1, ev.isFinish())
+
+
+def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     """Image + LUT bar in a row -> (image, hist, graphics_view, viewbox, row).
 
-    The LUT bar makes contrast draggable; both cameras want exactly this layout.
+    The LUT bar makes contrast draggable; both cameras want exactly this
+    layout. `vb_cls` swaps in a ViewBox subclass (e.g. `DragRectViewBox`) for
+    a caller that needs more than pan/zoom from it.
     """
     img = pg.ImageItem()
     hist = pg.HistogramLUTWidget()
     hist.setImageItem(img)
     hist.setFixedWidth(86)
     gv = pg.GraphicsView()
-    vb = pg.ViewBox(lockAspect=True, invertY=True)
+    vb = vb_cls(lockAspect=True, invertY=True)
     gv.setCentralItem(vb)
     vb.addItem(img)
 

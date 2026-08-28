@@ -69,12 +69,13 @@ def main() -> int:
 
     # ── the contract that must hold with NO clone ────────────────────────────
     # A rig that has never set EyeLoop up must run exactly as it did before.
-    st_off = PupilSettings(track=False, limit_x=200, limit_y=200, limit_r=150)
+    st_off = PupilSettings(track=False, limit_x0=50, limit_y0=50,
+                           limit_x1=350, limit_y1=350)
     pt_off = PupilTracking()
     r.check(pt_off.track(synthetic_eye(), st_off) is None,
             "tracking off returns None regardless of anything else")
 
-    st_noregion = PupilSettings(track=True, limit_r=0.0)
+    st_noregion = PupilSettings(track=True)
     r.check(PupilTracking().track(synthetic_eye(), st_noregion) is None,
             "no eye region means no tracking (the crop is not optional)")
 
@@ -87,7 +88,7 @@ def main() -> int:
     eye = synthetic_eye(glint=(180, 215, 9))
     full = frame_with_eye(eye)
     st = PupilSettings(track=True, track_threshold=60, cr_remove=False,
-                       limit_x=850, limit_y=490, limit_r=200)
+                       limit_x0=650, limit_y0=290, limit_x1=1050, limit_y1=690)
 
     pt = PupilTracking()
     fit = pt.track(full, st)
@@ -104,7 +105,7 @@ def main() -> int:
     # CONTROL: the same eye with no region to crop to — a full rig frame is
     # what EyeLoop cannot fit, and it is why the eye region is mandatory.
     st_full = PupilSettings(track=True, track_threshold=60, cr_remove=False,
-                            limit_x=964, limit_y=604, limit_r=600)
+                            limit_x0=364, limit_y0=4, limit_x1=1564, limit_y1=1204)
     ctl = PupilTracking().track(full, st_full)
     r.check(ctl is None or abs(ctl.radius - 55) > 15,
             "control: a region covering the whole frame does NOT recover it")
@@ -126,7 +127,7 @@ def main() -> int:
     # ── settings changes must not silently kill every frame ─────────────────
     # Floats in the walk radius make np.clip raise inside a bare except.
     st_moved = PupilSettings(track=True, track_threshold=60, cr_remove=False,
-                             limit_x=850, limit_y=490, limit_r=120)
+                             limit_x0=730, limit_y0=370, limit_x1=970, limit_y1=610)
     pt3 = PupilTracking()
     pt3.track(full, st)
     box_a = pt3._box
@@ -134,6 +135,27 @@ def main() -> int:
     r.check(box_a != pt3._box, "resizing the eye region re-arms the tracker")
     r.check(pt3.track(full, st_moved) is not None,
             "and it still tracks after the re-arm")
+
+    # Switching Ellipse<->Circle must ALSO re-arm, even with the region
+    # untouched: EyeLoop bakes the model into the Shape it builds in arm(), so
+    # it is not a live knob the way threshold/blur are — the operator saw this
+    # as "the model can't be changed without closing and reopening" (the box
+    # happening to change was the only thing that ever forced a re-arm).
+    st_circle = PupilSettings(track=True, track_threshold=60, cr_remove=False,
+                              limit_x0=650, limit_y0=290, limit_x1=1050,
+                              limit_y1=690, track_model="circular")
+    pt4b = PupilTracking()
+    pt4b.track(full, st)                # armed with the default "ellipsoid"
+    tracker_before = pt4b._tracker
+    r.check(pt4b._model == "ellipsoid", f"…and remembers which ({pt4b._model!r})")
+    pt4b.track(full, st_circle)         # same box, model only
+    r.check(pt4b._model == "circular",
+            f"a model change alone re-arms — the box did not move "
+            f"({pt4b._model!r})")
+    r.check(pt4b._tracker is not tracker_before,
+            "…a genuinely new EyeLoopTracker, not the old one relabelled")
+    r.check(pt4b.track(full, st_circle) is not None,
+            "…and it still tracks after switching models")
 
     # ── reflection removal: it removes, and it stays inside the pupil ────────
     glinty = synthetic_eye(glint=(180, 215, 9))
@@ -163,11 +185,11 @@ def main() -> int:
     r.check(m_pin.sum() > 0, "a pin can — pins are exempt from reach")
 
     # pins are stored in full-frame pixels and must survive a region move
-    st_pin = PupilSettings(track=True, track_threshold=60, limit_x=850,
-                           limit_y=490, limit_r=200,
+    st_pin = PupilSettings(track=True, track_threshold=60,
+                           limit_x0=650, limit_y0=290, limit_x1=1050, limit_y1=690,
                            cr_pins=[(830.0, 505.0, 12.0)])
     box = st_pin.crop_box(full.shape)
-    r.check(box == (650, 290, 1050, 690), f"crop box from the circle: {box}")
+    r.check(box == (650, 290, 1050, 690), f"crop box from the region: {box}")
     pt4 = PupilTracking()
     r.check(pt4.track(full, st_pin) is not None,
             "a pinned reflection does not break tracking")
@@ -180,7 +202,8 @@ def main() -> int:
             continue
         rd = AviReader(str(path))
         s = PupilSettings(track=True, track_threshold=60, cr_remove=False,
-                          limit_x=ex, limit_y=ey, limit_r=200)
+                          limit_x0=ex - 200, limit_y0=ey - 200,
+                          limit_x1=ex + 200, limit_y1=ey + 200)
         p = PupilTracking()
         fits = [p.track(rd.luma(i), s) for i in range(len(rd))]
         ok = [f for f in fits if f is not None]

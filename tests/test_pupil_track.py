@@ -32,7 +32,7 @@ from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker
 
 
-REGION = dict(limit_x=160.0, limit_y=120.0, limit_r=100.0)
+REGION = dict(limit_x0=60.0, limit_y0=20.0, limit_x1=260.0, limit_y1=220.0)
 
 
 def eye_frame(w=320, h=240, r=40) -> np.ndarray:
@@ -79,7 +79,7 @@ def run_worker(app, r: Report, st: PupilSettings, *, frames: int = 6,
 
     w = PupilTrackWorker(source, st)
     sink: list[tuple] = []
-    w.set_fit_sink(lambda fit, at: sink.append((fit, at)))
+    w.set_fit_sink(lambda fit, is_blink, at: sink.append((fit, is_blink, at)))
     seen: list = []
     crashed: list[str] = []
     w.error.connect(crashed.append)     # the Qt signal, NOT `track_error`
@@ -98,7 +98,7 @@ def run_worker(app, r: Report, st: PupilSettings, *, frames: int = 6,
             deadline = time.perf_counter() + 4.0
         if served["n"] >= frames and reconfigure is None:
             break
-    radii = w.take_radii()
+    radii = [radius for radius, _blink in w.take_tracked()]
     w.stop()
     r.check(not w.isRunning(), "the worker stops when told to")
     r.check(crashed == [], f"…without an exception escaping its thread ({crashed})")
@@ -136,9 +136,9 @@ def main() -> int:
             f"one sink call per tracked frame ({len(sink)} vs {w.frames_seen})")
     r.check(len(radii) == w.frames_seen,
             f"…and one trace point per tracked frame ({len(radii)})")
-    r.check(all(isinstance(at, float) and at > 0 for _f, at in sink),
+    r.check(all(isinstance(at, float) and at > 0 for _f, _b, at in sink),
             "each carries the time the frame was pulled")
-    r.check(w.fits == sum(1 for f, _ in sink if f is not None),
+    r.check(w.fits == sum(1 for f, _b, _at in sink if f is not None),
             f"the fit counter matches the fits ({w.fits}/{w.frames_seen})")
 
     # CONTROL: with tracking off nothing is recorded and nothing is traced,
@@ -168,6 +168,88 @@ def main() -> int:
     r.check(w.track_error is None or isinstance(w.track_error, str),
             f"`track_error` is the message ({w.track_error!r})")
 
+    # ── 5b. the fit smoother — a rolling mean, with a circular angle mean ────
+    from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
+    from acqApp.devices.pupil_cam.track_worker import _FitSmoother
+
+    sm = _FitSmoother()
+    f1 = sm.apply(PupilFit(100.0, 100.0, 40.0, 30.0, 10.0), window=1)
+    r.check(f1 == PupilFit(100.0, 100.0, 40.0, 30.0, 10.0),
+            "window=1 is a no-op — the raw fit, unchanged")
+
+    sm = _FitSmoother()
+    fits = [PupilFit(100.0 + d, 100.0, 40.0, 30.0, 10.0) for d in (0.0, 10.0, 20.0)]
+    out = [sm.apply(f, window=3) for f in fits]
+    r.check(abs(out[0].center_x - 100.0) < 1e-9,
+            f"the first fit in a run is unaveraged, one value in ({out[0].center_x})")
+    r.check(abs(out[1].center_x - 105.0) < 1e-9,
+            f"two fits in, the mean of both ({out[1].center_x})")
+    r.check(abs(out[2].center_x - 110.0) < 1e-9,
+            f"three fits in (=window), the mean of all three ({out[2].center_x})")
+
+    sm = _FitSmoother()
+    for f in fits:
+        sm.apply(f, window=3)
+    f4 = sm.apply(PupilFit(140.0, 100.0, 40.0, 30.0, 10.0), window=3)
+    r.check(abs(f4.center_x - (110.0 + 120.0 + 140.0) / 3.0) < 1e-9,
+            f"a fourth fit drops the oldest — mean of the last 3 (110,120,140), "
+            f"not all 4 ({f4.center_x})")
+
+    # CONTROL: a lost frame must clear the buffer, not be skipped over — else
+    # the first fit after a loss would blend in a pupil position from before it.
+    sm = _FitSmoother()
+    for f in fits:
+        sm.apply(f, window=3)
+    r.check(sm.apply(None, window=3) is None,
+            "a lost frame reports no fit, same as unsmoothed")
+    f_after = sm.apply(PupilFit(500.0, 500.0, 40.0, 30.0, 10.0), window=3)
+    r.check(f_after.center_x == 500.0,
+            f"control: the fit right after a loss is raw, not blended with "
+            f"pre-loss history ({f_after.center_x})")
+
+    # An ellipse's angle repeats every 180 deg, so 179 and 1 deg are 2 deg
+    # apart, not ~178 — a plain mean gets this wrong at the wrap.
+    sm = _FitSmoother()
+    sm.apply(PupilFit(0.0, 0.0, 40.0, 30.0, 179.0), window=2)
+    wrapped = sm.apply(PupilFit(0.0, 0.0, 40.0, 30.0, 1.0), window=2)
+    r.check(wrapped.angle_deg < 5.0 or wrapped.angle_deg > 175.0,
+            f"the angle mean wraps at 180 deg, not through the middle "
+            f"({wrapped.angle_deg:.1f})")
+
+    # ── 5c. the blink detector — a sudden drop against a rolling baseline ────
+    from acqApp.devices.pupil_cam.track_worker import _BlinkDetector
+
+    bd = _BlinkDetector()
+    steady = [bd.check(30.0, drop_frac=0.35, window=10) for _ in range(6)]
+    r.check(not any(steady),
+            f"a steady radius never flags, warm-up included ({steady})")
+
+    bd = _BlinkDetector()
+    for _ in range(6):
+        bd.check(30.0, drop_frac=0.35, window=10)
+    r.check(not bd.check(25.0, drop_frac=0.35, window=10),
+            "a 17% dip under a 35% threshold does not flag")
+    r.check(bd.check(15.0, drop_frac=0.35, window=10),
+            "a 50% drop under the same threshold does")
+    r.check(bd.check(14.0, drop_frac=0.35, window=10),
+            "…and stays flagged while the radius stays down")
+    r.check(not bd.check(29.0, drop_frac=0.35, window=10),
+            "…and clears once the radius recovers")
+
+    # CONTROL: a run of blink frames must not drag the baseline down — or a
+    # blink long enough would talk itself into looking normal.
+    bd = _BlinkDetector()
+    for _ in range(6):
+        bd.check(30.0, drop_frac=0.35, window=10)
+    for _ in range(20):                 # a long blink, well past `window`
+        bd.check(10.0, drop_frac=0.35, window=10)
+    r.check(bd.check(28.0, drop_frac=0.35, window=10) is False,
+            "control: the baseline held at ~30 through a long blink, so the "
+            "eventual recovery reads as recovery, not as a fresh baseline")
+
+    r.check(bd.check(None, drop_frac=0.35, window=10) is False,
+            "no radius (no fit) is never itself a flagged blink")
+
     # ══ the app half ═════════════════════════════════════════════════════════
     sys.argv = ["main.py", "--mock"]
     import acqApp.main as M
@@ -179,21 +261,30 @@ def main() -> int:
 
     # ── 6. what the recorder is offered, stream by stream ────────────────────
     from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
+    all_streams = list(mod.FIT_STREAMS) + [mod.BLINK_STREAM]
     rec = FakeRec()
-    mod._record_fit(rec, PupilFit(101.0, 202.0, 30.0, 20.0, 45.0), 1.5)
-    r.check([p[0] for p in rec.puts] == list(mod.FIT_STREAMS),
-            f"a fit writes the five ellipse streams ({[p[0] for p in rec.puts]})")
-    r.check([p[1] for p in rec.puts] == [101.0, 202.0, 30.0, 20.0, 45.0],
-            f"…with the ellipse in them ({[p[1] for p in rec.puts]})")
+    mod._record_fit(rec, PupilFit(101.0, 202.0, 30.0, 20.0, 45.0), False, 1.5)
+    r.check([p[0] for p in rec.puts] == all_streams,
+            f"a fit writes the five ellipse streams plus the blink flag "
+            f"({[p[0] for p in rec.puts]})")
+    r.check([p[1] for p in rec.puts] == [101.0, 202.0, 30.0, 20.0, 45.0, 0.0],
+            f"…with the ellipse in them, and 0.0 = not flagged "
+            f"({[p[1] for p in rec.puts]})")
     r.check(all(p[2] == 1.5 for p in rec.puts),
             "…all stamped at the frame's own time, not the write's")
 
+    rec1b = FakeRec()
+    mod._record_fit(rec1b, PupilFit(0.0, 0.0, 10.0, 10.0, 0.0), True, 1.6)
+    r.check(rec1b.puts[-1][:2] == (mod.BLINK_STREAM, 1.0),
+            f"a flagged frame records 1.0, not just True ({rec1b.puts[-1]})")
+
     rec2 = FakeRec()
-    mod._record_fit(rec2, None, 2.5)
-    r.check([p[0] for p in rec2.puts] == list(mod.FIT_STREAMS),
-            "a LOST frame writes the same five streams")
+    mod._record_fit(rec2, None, False, 2.5)
+    r.check([p[0] for p in rec2.puts] == all_streams,
+            "a LOST frame writes the same six streams")
     r.check(all(math.isnan(p[1]) for p in rec2.puts),
-            f"…as NaN, so the gap is in the file ({[p[1] for p in rec2.puts]})")
+            f"…all NaN including the blink flag — a blink cannot be judged "
+            f"without a radius ({[p[1] for p in rec2.puts]})")
 
     # ── 7. the settings behind the number are recorded ───────────────────────
     panel._chk_track.setChecked(True)
@@ -204,6 +295,13 @@ def main() -> int:
             f"the threshold is in the metadata ({md.get('pupil_track_threshold')})")
     r.check(md.get("pupil_tracker") == "eyeloop",
             f"…and which tracker produced it ({md.get('pupil_tracker')!r})")
+    panel._chk_smooth.setChecked(True)
+    panel._spn_smooth_win.setValue(9)
+    md = mod.metadata()
+    r.check(md.get("pupil_smooth") is True and md.get("pupil_smooth_window") == 9,
+            f"stabilization travels with the trace, like threshold does "
+            f"({md.get('pupil_smooth')}, {md.get('pupil_smooth_window')})")
+    panel._chk_smooth.setChecked(False)
     r.check(md.get("pupil_cr_pins") == [11.0, 22.0, 3.0, 44.0, 55.0, 6.0],
             f"…and the pins, flattened for HDF5 ({md.get('pupil_cr_pins')})")
     r.check(mod.final_metadata() == {},
@@ -234,6 +332,34 @@ def main() -> int:
     mod._draw_fit(None)
     r.check(npoints(mod._fit_curve) == 0,
             "a frame with no fit clears the outline rather than leaving a stale one")
+
+    # ── 8b. blink runs are shaded on the radius plot ──────────────────────────
+    blink = [False, False, True, True, True, False, False, True, False]
+    mod._trace = [(0.0, b) for b in blink]
+    mod._update_blink_overlay()
+    r.check(sum(reg.isVisible() for reg in mod._blink_regions) == 2,
+            f"two separate runs of True become two shaded regions "
+            f"({sum(reg.isVisible() for reg in mod._blink_regions)})")
+    spans = sorted(reg.getRegion() for reg in mod._blink_regions if reg.isVisible())
+    r.check(abs(spans[0][0] - 1.5) < 1e-9 and abs(spans[0][1] - 4.5) < 1e-9,
+            f"the first run (indices 2-4) spans (1.5, 4.5) ({spans[0]})")
+    r.check(abs(spans[1][0] - 6.5) < 1e-9 and abs(spans[1][1] - 7.5) < 1e-9,
+            f"the second, one-frame run (index 7) spans (6.5, 7.5) ({spans[1]})")
+
+    pool_after_two = len(mod._blink_regions)
+    mod._trace = [(0.0, False) for _ in mod._trace]      # the blink passes
+    mod._update_blink_overlay()
+    r.check(all(not reg.isVisible() for reg in mod._blink_regions),
+            "no runs left: every region is hidden")
+    r.check(len(mod._blink_regions) == pool_after_two,
+            "…but the pool is kept, not torn down and rebuilt next time")
+
+    mod._trace = [(0.0, True)] * 5
+    mod._update_blink_overlay()
+    r.check(len(mod._blink_regions) == pool_after_two,
+            "one run reuses a pooled region rather than growing the pool")
+    r.check(sum(reg.isVisible() for reg in mod._blink_regions) == 1,
+            "…and exactly one of them is shown")
 
     # ── 9. pins go on and come off, on the preview ───────────────────────────
     win._btn_run.setChecked(True)

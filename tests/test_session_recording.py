@@ -94,7 +94,7 @@ def main() -> int:
     # crop is what EyeLoop needs to fit anything at all, and without a region
     # nothing is tracked. Set before Record so the trace covers the file.
     pupil_panel = mod["pupil_cam"].panel
-    pupil_panel.set_limit(160.0, 120.0, 100.0)
+    pupil_panel.set_limit(60.0, 20.0, 260.0, 220.0)
     pupil_panel._chk_track.setChecked(True)
     pupil_panel._spn_thr.setValue(PUPIL_THRESHOLD)
     r.check(mod["pupil_cam"].panel.settings.track, "pupil tracking is on")

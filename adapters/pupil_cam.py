@@ -17,13 +17,13 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
+                             QVBoxLayout, QWidget)
 
 from acqApp import config
 from acqApp.acq.devices import ExposureControl
-from acqApp.adapters.base import (PLOT_HISTORY, ModuleAdapter, _image_view,
-                                  _plot)
+from acqApp.adapters.base import (PLOT_HISTORY, DragRectViewBox, ModuleAdapter,
+                                  _image_view, _plot)
 from acqApp.devices.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
 from acqApp.devices.pupil_cam.control import LedController, MockLedController
@@ -43,23 +43,32 @@ class PupilCamModule(ModuleAdapter):
         self._img = None
         # Empty until build_views: the module can be loaded without ever
         # building its dock, and _on_settings fires from the panel before then.
-        self._limit_curve = None        # the circle in force
-        self._limit_ghost = None        # rubber band while it is being placed
-        self._limit_centre: tuple[float, float] | None = None   # first click
+        self._limit_curve = None        # the box in force
+        self._limit_ghost = None        # rubber band while it is being dragged
         self._vb = None
         self._gv = None
         self._btn_limit = None
         self._btn_limit_off = None
         self._lbl_limit = None
+        self._cmb_view = None
+        self._view_mode = "full"        # "full" | "bare" | "crop"
         self._theta = np.linspace(0, 2 * np.pi, 48)
+        # Cached copy of the panel's settings, refreshed by `_on_settings` —
+        # so the per-tick display path reads a plain attribute instead of
+        # rebuilding a whole PupilSettings from ~25 widgets every frame.
+        self._settings: PupilSettings | None = None
+        self._last_img_rect: QRectF | None = None   # skip a no-op setRect
         # ── tracking ──
         self._track: PupilTrackWorker | None = None
         self._fit_curve = None          # the fitted ellipse
         self._pin_curve = None          # the operator's pinned reflections
         self._mask_img = None           # what reflection removal blanked
+        self._mask_rgba = None          # reused buffer for _draw_mask
         self._btn_pin = None
         self._curve = None              # the radius trace
-        self._y: list[float] = []
+        self._trace: list[tuple[float, bool]] = []  # (radius, is_blink), rolling
+        self._blink_regions: list = []  # pooled LinearRegionItems, shown/hidden
+        self._plot_widget = None
         self._last_frame = None         # newest displayed frame, for sizing a pin
         self._said: str | None = None   # last tracker complaint, so it is said once
 
@@ -70,24 +79,33 @@ class PupilCamModule(ModuleAdapter):
         self.panel.exposure_changed.connect(self._on_exposure)
         self.panel.led_toggled.connect(self._on_led)
         self.panel.settings_changed.connect(self._on_settings)
-        return self.panel
+        self._settings = self.panel.settings    # seed the cache; _on_settings
+        return self.panel                       # keeps it fresh from here on
 
     def build_plot(self) -> QWidget:
         pw, self._curve = _plot("Pupil radius", "Radius", "px", "Frame", self.key)
+        self._plot_widget = pw
         return pw
 
     def _on_settings(self, s) -> None:
         config.save_settings(self.key, asdict(s))
+        prev_limit = None if self._settings is None else self._settings.search_limit()
+        self._settings = s
         self._draw_limit(s)
         self._draw_pins(s)
         self._refresh_limit_bar()
+        # Only refit on an actual region change — this fires on every edit in
+        # the panel (exposure, threshold, ...), not just a moved region.
+        if (self._view_mode == "crop" and self._vb is not None
+                and s.search_limit() != prev_limit):
+            self._vb.autoRange()
         # The worker holds its own copy so it never reads a half-edited panel
         # from another thread.
         if self._track is not None:
             self._track.configure(s)
 
     def build_views(self) -> None:
-        self._img, hist, gv, vb, row = _image_view()
+        self._img, hist, gv, vb, row = _image_view(DragRectViewBox)
         # Pupil frames are 8-bit, so pin the histogram to 0–255: the bar then
         # shows an absolute brightness scale instead of rescaling to each frame,
         # and the handles still drag to adjust contrast.
@@ -117,10 +135,11 @@ class PupilCamModule(ModuleAdapter):
             vb.addItem(item)
         self._vb, self._gv = vb, gv
         vb.scene().sigMouseClicked.connect(self._on_click)
-        vb.scene().sigMouseMoved.connect(self._on_move)
+        vb.dragged.connect(self._on_limit_drag)
         if self.panel is not None:
             self._draw_limit(self.panel.settings)
             self._draw_pins(self.panel.settings)
+            self._apply_view_mode()
 
         # The region controls live over the image, not in the settings window:
         # picking a region of the frame means looking at the frame, and the
@@ -135,28 +154,21 @@ class PupilCamModule(ModuleAdapter):
                           accent=self.key)
 
     def _on_click(self, ev) -> None:
-        """Place the region, or a pin. A pan drag never gets here — pyqtgraph
-        only emits `sigMouseClicked` for a press+release that did not become a
-        drag."""
+        """Place a pin. The eye region uses a drag (`_on_limit_drag`), not a
+        click, so only pinning is left here."""
         if self.panel is None or self._vb is None:
             return
-        armed_limit = self._btn_limit.isChecked()
-        armed_pin = self._btn_pin is not None and self._btn_pin.isChecked()
-        if not (armed_limit or armed_pin):
+        if self._btn_pin is None or not self._btn_pin.isChecked():
             return
         if not self._vb.sceneBoundingRect().contains(ev.scenePos()):
             return
         p = self._vb.mapSceneToView(ev.scenePos())
-        if armed_limit:
-            self._place_limit(p.x(), p.y())
-        else:
-            self._place_pin(p.x(), p.y())
+        self._place_pin(p.x(), p.y())
 
     # ── the eye region ──
-    # Placed by two clicks — centre, then edge — with the circle following the
-    # cursor in between. Not a press-drag: the viewbox owns dragging for
-    # pan/zoom, and taking that over would cost the ability to look around the
-    # frame while placing the region.
+    # Placed by a press-drag from one corner to the other, with the box
+    # following the cursor as it is dragged — `DragRectViewBox` owns the
+    # armed/unarmed drag-vs-pan split, so wheel-zoom is untouched either way.
     def _build_limit_bar(self) -> QWidget:
         bar = QWidget()
         lay = QHBoxLayout(bar)
@@ -166,8 +178,8 @@ class PupilCamModule(ModuleAdapter):
         self._btn_limit = QPushButton("Set eye region")
         self._btn_limit.setCheckable(True)
         self._btn_limit.setToolTip(
-            "Click the centre of the eye, then click again further out to set "
-            "the radius. Panning and zooming still work.")
+            "Press and drag a box around the eye. While armed, drag draws the "
+            "box instead of panning; wheel-zoom still works.")
         self._btn_limit.toggled.connect(self._arm_limit)
 
         self._btn_limit_off = QPushButton("Clear")
@@ -188,37 +200,52 @@ class PupilCamModule(ModuleAdapter):
             "when the optics move.")
         self._btn_pin.toggled.connect(self._arm_pin)
 
+        self._cmb_view = QComboBox()
+        for label, key in (("Full + region", "full"),
+                           ("Full, no overlay", "bare"),
+                           ("Cropped to region", "crop")):
+            self._cmb_view.addItem(label, key)
+        self._cmb_view.setToolTip(
+            "How the preview shows the frame — the region itself is unchanged "
+            "by this, only how it is displayed.")
+        self._cmb_view.currentIndexChanged.connect(self._on_view_mode_changed)
+
         lay.addWidget(QLabel("Eye:"))
         for w in (self._btn_limit, self._btn_limit_off, self._btn_pin):
             lay.addWidget(w)
         lay.addWidget(self._lbl_limit, 1)
+        lay.addWidget(QLabel("View:"))
+        lay.addWidget(self._cmb_view)
         self._refresh_limit_bar()
         return bar
 
     def _arm_limit(self, on: bool) -> None:
         if on and self._btn_pin is not None:
             self._btn_pin.setChecked(False)     # one mode at a time
-        self._limit_centre = None
         if self._limit_ghost is not None:
             self._limit_ghost.setData([], [])
-        if self._gv is not None:
-            self._gv.setCursor(Qt.CursorShape.CrossCursor if on
-                               else Qt.CursorShape.ArrowCursor)
+        if self._vb is not None:
+            self._vb.set_draw_mode(on)
         self._refresh_limit_bar()
 
-    def _place_limit(self, x: float, y: float) -> None:
-        if self._limit_centre is None:
-            self._limit_centre = (x, y)
-            self._refresh_limit_bar()
-            return
-        cx, cy = self._limit_centre
-        r = float(np.hypot(x - cx, y - cy))
-        if r < 1.0:                 # a double-click on the centre: keep waiting
-            return
-        self.panel.set_limit(cx, cy, r)
-        self._limit_centre = None
-        self._btn_limit.setChecked(False)       # done — no toggle to remember
-        self.win.status(f"eye region set at ({cx:.0f}, {cy:.0f}) r={r:.0f} px")
+    def _on_limit_drag(self, x0: float, y0: float, x1: float, y1: float,
+                       finished: bool) -> None:
+        """`DragRectViewBox.dragged`, only ever emitted while armed."""
+        self._limit_ghost.setData(*self._rect_xy(x0, y0, x1, y1))
+        self._refresh_limit_bar()
+        if finished:
+            if x1 - x0 >= 1.0 and y1 - y0 >= 1.0:
+                self.panel.set_limit(x0, y0, x1, y1)
+                self.win.status(
+                    f"eye region set at ({x0:.0f}, {y0:.0f})-({x1:.0f}, {y1:.0f})")
+            self._limit_ghost.setData([], [])
+            self._btn_limit.setChecked(False)   # done — no toggle to remember
+
+    @staticmethod
+    def _rect_xy(x0: float, y0: float, x1: float, y1: float):
+        """A closed rectangle outline as (xs, ys), for PlotCurveItem."""
+        return (np.array([x0, x1, x1, x0, x0], float),
+                np.array([y0, y0, y1, y1, y0], float))
 
     def _clear_limit(self) -> None:
         self._btn_limit.setChecked(False)
@@ -280,41 +307,41 @@ class PupilCamModule(ModuleAdapter):
             return
         lim = self.panel.settings.search_limit()
         if self._btn_limit.isChecked():
-            self._lbl_limit.setText("click the centre of the eye"
-                                    if self._limit_centre is None
-                                    else "now click the outer edge")
+            self._lbl_limit.setText("drag from one corner to the other")
         elif self._btn_pin is not None and self._btn_pin.isChecked():
             self._lbl_limit.setText("click a reflection to pin or unpin it")
         elif lim is None:
             self._lbl_limit.setText("no region")
         else:
             self._lbl_limit.setText(
-                f"({lim[0]:.0f}, {lim[1]:.0f}) r {lim[2]:.0f}")
+                f"({lim[0]:.0f}, {lim[1]:.0f})-({lim[2]:.0f}, {lim[3]:.0f})")
         self._btn_limit_off.setEnabled(lim is not None)
 
-    def _on_move(self, pos) -> None:
-        """Follow the cursor between the two clicks, so the region is placed by
-        looking at it rather than by reading back three numbers."""
-        if self._limit_centre is None or self._vb is None:
-            return
-        p = self._vb.mapSceneToView(pos)
-        cx, cy = self._limit_centre
-        r = float(np.hypot(p.x() - cx, p.y() - cy))
-        th = self._theta
-        self._limit_ghost.setData(cx + r * np.cos(th), cy + r * np.sin(th))
+    def _on_view_mode_changed(self, *_a) -> None:
+        if self._cmb_view is not None:
+            self._view_mode = self._cmb_view.currentData()
+        self._apply_view_mode()
+
+    def _apply_view_mode(self) -> None:
+        """"bare" hides every overlay; "crop" (re)fits the view to the region
+        the next time a frame is drawn — see `_display_frame`."""
+        bare = self._view_mode == "bare"
+        for item in (self._limit_curve, self._fit_curve, self._pin_curve,
+                     self._mask_img):
+            if item is not None:
+                item.setVisible(not bare)
+        if self._vb is not None:
+            self._vb.autoRange()
 
     def _draw_limit(self, s) -> None:
         """Outline the region in force, or clear it when there is none."""
         if self._limit_curve is None:
             return
-        self._limit_ghost.setData([], [])
         lim = s.search_limit()
         if lim is None:
             self._limit_curve.setData([], [])
             return
-        cx, cy, r = lim
-        th = self._theta
-        self._limit_curve.setData(cx + r * np.cos(th), cy + r * np.sin(th))
+        self._limit_curve.setData(*self._rect_xy(*lim))
 
     # ── controllers ──
     def build_controller(self, emulate: bool) -> None:
@@ -339,11 +366,21 @@ class PupilCamModule(ModuleAdapter):
     def build_session(self, emulate: bool) -> None:
         s = self.panel.settings
         cam = self._build_camera(s, emulate)
+        # Show the camera's REAL measured rate, not the requested one — the
+        # same pattern as devices/voltage_cam/panel.py's set_measured_rate.
+        # Binds `panel`, not `self`, so the connection (which outlives this
+        # call, living on `cam`) only keeps the panel alive, not the whole
+        # adapter — worker, tracker and plot curves included.
+        if hasattr(cam, "fps_update"):
+            panel = self.panel
+            cam.fps_update.connect(lambda _n, fps: panel.set_measured_rate(fps))
         # A fresh tracker per session: EyeLoop walks out from the previous
         # frame's centre, and last session's centre describes a different eye.
         self._track = PupilTrackWorker(cam.get_latest, s, history=PLOT_HISTORY)
         self._track.error.connect(self.win.on_worker_error)
-        self._y.clear()
+        self._trace.clear()
+        for reg in self._blink_regions:     # a stale band must not outlive its session
+            reg.setVisible(False)
         self._said = None
 
     def _build_camera(self, s, emulate: bool):
@@ -377,6 +414,7 @@ class PupilCamModule(ModuleAdapter):
             self._track.stop()
             self._track = None
         super().stop()
+        self.panel.set_measured_rate(None)          # back to the requested rate
 
     # ── display ──
     def update_display(self) -> None:
@@ -389,21 +427,84 @@ class PupilCamModule(ModuleAdapter):
         if self._track is None:
             return
         self._say_tracker_state()
-        radii = self._track.take_radii()
-        if radii and self._curve is not None:
-            self._y.extend(radii)
-            del self._y[:-PLOT_HISTORY]
-            self._curve.setData(self._y)
+        tracked = self._track.take_tracked()
+        if tracked and self._curve is not None:
+            self._trace.extend(tracked)
+            del self._trace[:-PLOT_HISTORY]
+            self._curve.setData([radius for radius, _blink in self._trace])
+            self._update_blink_overlay()
 
         tr = self._track.get_latest()
         if tr is None:
             return
         self._last_frame = tr.frame
+        shown, rect = self._display_frame(tr.frame)
         # No `levels=` here: the LUT bar owns the levels, so forcing them every
         # frame would undo any contrast the user drags.
-        self._img.setImage(tr.frame, autoLevels=False)
+        self._img.setImage(shown, autoLevels=False)
+        # Positions the image at its own full-frame pixel coordinates even when
+        # cropped, so the fit/pin/region overlays (still in full-frame pixels)
+        # stay aligned instead of drawing over a shifted image. Skipped when
+        # unchanged — every tick in "full"/"bare" view, since the frame size
+        # doesn't move — rather than making pyqtgraph redo the transform for
+        # the same rect it already has.
+        if rect != self._last_img_rect:
+            self._img.setRect(rect)
+            self._last_img_rect = rect
         self._draw_fit(tr.fit)
         self._draw_mask(tr)
+
+    def _display_frame(self, frame):
+        """What `update_display` paints: the region crop in "crop" view, the
+        whole frame otherwise. `(array, QRectF)` — the rect positions it.
+
+        Reads the cached `self._settings`, not `self.panel.settings` — that
+        property rebuilds a whole `PupilSettings` from every widget in the
+        panel, and this runs once a display tick.
+        """
+        h, w = frame.shape[:2]
+        if self._view_mode == "crop" and self._settings is not None:
+            box = self._settings.crop_box(frame.shape)
+            if box is not None:
+                x0, y0, x1, y1 = box
+                return frame[y0:y1, x0:x1], QRectF(x0, y0, x1 - x0, y1 - y0)
+        return frame, QRectF(0, 0, w, h)
+
+    def _update_blink_overlay(self) -> None:
+        """Shade each contiguous run of suspected-blink frames behind the
+        radius trace. Rebuilt from `self._trace` every tick — the trace is a
+        rolling window, so a frame's x position (its index in `_trace`) shifts
+        as older points drop off the front, and every region must shift with
+        it.
+
+        A pool of `LinearRegionItem`s is reused rather than recreated: a run
+        of blinks would otherwise churn plot items every display tick.
+        """
+        runs: list[tuple[float, float]] = []
+        n = len(self._trace)
+        i = 0
+        while i < n:
+            if self._trace[i][1]:
+                j = i
+                while j < n and self._trace[j][1]:
+                    j += 1
+                runs.append((i - 0.5, j - 0.5))     # padded to cover the point
+                i = j
+            else:
+                i += 1
+        while len(self._blink_regions) < len(runs):
+            reg = pg.LinearRegionItem(movable=False,
+                                      brush=pg.mkBrush(220, 40, 40, 60),
+                                      pen=pg.mkPen(None))
+            reg.setZValue(-10)          # behind the radius curve
+            if self._plot_widget is not None:
+                self._plot_widget.addItem(reg)
+            self._blink_regions.append(reg)
+        for reg, span in zip(self._blink_regions, runs):
+            reg.setRegion(span)
+            reg.setVisible(True)
+        for reg in self._blink_regions[len(runs):]:
+            reg.setVisible(False)
 
     def last_frame(self):
         return self._last_frame
@@ -442,18 +543,22 @@ class PupilCamModule(ModuleAdapter):
         """
         if self._mask_img is None:
             return
-        # Cheap tests first: `panel.settings` builds a whole dataclass (6 us,
-        # measured), and most frames have no mask to draw at all.
+        # Cheap test first: most frames have no mask to draw at all.
         show = (tr.mask is not None and tr.box is not None
-                and self.panel is not None and self.panel.settings.cr_show_mask)
+                and self._settings is not None and self._settings.cr_show_mask)
         if not show:
             self._mask_img.clear()
             return
-        rgba = np.zeros(tr.mask.shape + (4,), np.uint8)
-        rgba[..., 0] = 255
-        rgba[..., 3] = np.where(tr.mask, 140, 0)
+        # Reused across ticks rather than a fresh np.zeros(...) every one —
+        # this runs every display tick for as long as "Show what was removed"
+        # is left on, which is exactly the tuning workflow it exists for.
+        # Only the alpha channel changes frame to frame; red is fixed once.
+        if self._mask_rgba is None or self._mask_rgba.shape[:2] != tr.mask.shape:
+            self._mask_rgba = np.zeros(tr.mask.shape + (4,), np.uint8)
+            self._mask_rgba[..., 0] = 255
+        self._mask_rgba[..., 3] = np.where(tr.mask, 140, 0)
         x0, y0, x1, y1 = tr.box
-        self._mask_img.setImage(rgba, autoLevels=False)
+        self._mask_img.setImage(self._mask_rgba, autoLevels=False)
         self._mask_img.setRect(QRectF(x0, y0, x1 - x0, y1 - y0))
 
     # ── recording ──
@@ -461,17 +566,21 @@ class PupilCamModule(ModuleAdapter):
     # `/<stream>/values` beside the frames and share the session clock.
     FIT_STREAMS = ("pupil_x", "pupil_y", "pupil_major", "pupil_minor",
                    "pupil_angle")
+    # A sixth, alongside them: 1.0/0.0 flagged/not, NaN where there was no fit
+    # at all — a blink cannot be judged without a radius to judge it against.
+    BLINK_STREAM = "pupil_blink"
 
     def attach_sink(self, rec) -> None:
         if self.worker is not None:
             self.worker.set_sink(lambda fr: rec.put("pupil_cam", fr))
         if self._track is not None:
             self._track.set_fit_sink(
-                lambda fit, at: self._record_fit(rec, fit, at))
+                lambda fit, is_blink, at: self._record_fit(rec, fit, is_blink, at))
 
-    def _record_fit(self, rec, fit, at: float) -> None:
-        """One tracked frame's ellipse; NaN in all five where there was no fit,
-        so a gap is in the file rather than a row nobody wrote.
+    def _record_fit(self, rec, fit, is_blink: bool, at: float) -> None:
+        """One tracked frame's ellipse (+ blink flag); NaN in all six where
+        there was no fit, so a gap is in the file rather than a row nobody
+        wrote.
 
         Runs on the tracker's thread. `at` is when the frame was pulled, not
         exposed — these frames carry no camera timestamp, so this stream and
@@ -481,6 +590,8 @@ class PupilCamModule(ModuleAdapter):
                  fit.angle_deg) if fit is not None else (float("nan"),) * 5)
         for name, v in zip(self.FIT_STREAMS, vals):
             rec.put(name, float(v), at=at)
+        rec.put(self.BLINK_STREAM,
+                float("nan") if fit is None else float(is_blink), at=at)
 
     def detach_sink(self) -> None:
         super().detach_sink()
@@ -491,11 +602,12 @@ class PupilCamModule(ModuleAdapter):
         s = self.panel.settings
         return {"pupil_exposure_us": s.exposure_us,
                 "pupil_fps":         s.fps,
-                # 0 = no region. Recorded because it is operator-set geometry
-                # that nothing else in the file would show.
-                "pupil_limit_x":     s.limit_x,
-                "pupil_limit_y":     s.limit_y,
-                "pupil_limit_r":     s.limit_r,
+                # All 0 = no region. Recorded because it is operator-set
+                # geometry that nothing else in the file would show.
+                "pupil_limit_x0":    s.limit_x0,
+                "pupil_limit_y0":    s.limit_y0,
+                "pupil_limit_x1":    s.limit_x1,
+                "pupil_limit_y1":    s.limit_y1,
                 # "" for the camera. Recorded because frames replayed from a
                 # clip are not this session's data.
                 "pupil_video":       s.video_path,
@@ -508,6 +620,16 @@ class PupilCamModule(ModuleAdapter):
                 "pupil_track_threshold": s.track_threshold,
                 "pupil_track_blur":      s.track_blur,
                 "pupil_track_model":     s.track_model,
+                # Averaging changes the trace itself (not just the display),
+                # so it must travel with it the same way threshold does.
+                "pupil_smooth":          s.smooth,
+                "pupil_smooth_window":   s.smooth_window,
+                # Same reasoning: the flag is a property of the recorded trace,
+                # not a display-only choice, so the threshold that produced it
+                # travels with it too.
+                "pupil_blink_detect":         s.blink_detect,
+                "pupil_blink_drop_frac":      s.blink_drop_frac,
+                "pupil_blink_baseline_window": s.blink_baseline_window,
                 "pupil_cr_remove":       s.cr_remove,
                 "pupil_cr_threshold":    s.cr_threshold,
                 "pupil_cr_pad":          s.cr_pad,
@@ -527,5 +649,8 @@ class PupilCamModule(ModuleAdapter):
         """
         if self._track is None or not self.panel.settings.track:
             return {}
-        return {"pupil_frames_tracked": self._track.frames_seen,
-                "pupil_fits":           self._track.fits}
+        out = {"pupil_frames_tracked": self._track.frames_seen,
+               "pupil_fits":           self._track.fits}
+        if self.panel.settings.blink_detect:
+            out["pupil_blinks_flagged"] = self._track.blinks
+        return out
