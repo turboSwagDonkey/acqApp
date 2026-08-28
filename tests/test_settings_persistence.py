@@ -38,8 +38,8 @@ EDITS = [
      lambda p: p.get_config().binning,          2),
     ("pupil_cam",   "exposure",  lambda p: p._spn_exp.setValue(4321.0),
      lambda p: p._spn_exp.value(),              4321.0),
-    ("pupil_cam",   "region R",  lambda p: p._spn_lr.setValue(118.0),
-     lambda p: p.settings.limit_r,              118.0),
+    ("pupil_cam",   "region X1", lambda p: p._spn_lx1.setValue(118.0),
+     lambda p: p.settings.limit_x1,             118.0),
     # The tracking knobs. The operator lost one set of tuning to a panel that
     # held these and never wrote them, so each is checked through a restart —
     # threshold above all, since it sets the reported radius.
@@ -50,6 +50,16 @@ EDITS = [
     ("pupil_cam",   "model",
      lambda p: p._cmb_model.setCurrentIndex(p._cmb_model.findData("circular")),
      lambda p: p.settings.track_model,          "circular"),
+    ("pupil_cam",   "smooth",     lambda p: p._chk_smooth.setChecked(True),
+     lambda p: p.settings.smooth,               True),
+    ("pupil_cam",   "smooth win", lambda p: p._spn_smooth_win.setValue(11),
+     lambda p: p.settings.smooth_window,        11),
+    ("pupil_cam",   "blink on",   lambda p: p._chk_blink.setChecked(True),
+     lambda p: p.settings.blink_detect,         True),
+    ("pupil_cam",   "blink drop", lambda p: p._spn_blink_drop.setValue(0.42),
+     lambda p: p.settings.blink_drop_frac,      0.42),
+    ("pupil_cam",   "blink win",  lambda p: p._spn_blink_win.setValue(23),
+     lambda p: p.settings.blink_baseline_window, 23),
     ("pupil_cam",   "CR reach",  lambda p: p._spn_cr_reach.setValue(0.55),
      lambda p: p.settings.cr_reach,             0.55),
     # Pins are rig geometry, not a preference — and the only pupil setting
@@ -172,6 +182,20 @@ def main() -> int:
             and not win._page_actions["wheel"].isChecked(),
             "choosing a TAB moves the sidebar highlight to match")
 
+    # The Devices monitor (not a module page) gets the same lit-while-open
+    # treatment (2026-08-27) — it used to give no cue it was already open.
+    r.check(not win._devices_action.isChecked(),
+            "the Devices item starts unlit")
+    win._devices_action.trigger()
+    pump(app, 0.1)
+    r.check(win._devices_action.isChecked() and win._devices_dialog.isVisible(),
+            "opening it lights the sidebar item")
+    win._devices_dialog.close()
+    pump(app, 0.1)
+    r.check(not win._devices_action.isChecked(),
+            "…and closing it with the window's own Close button un-lights it, "
+            "the same way a panel window's own X does (_on_panel_window)")
+
     # First-run size is measured from the panels, then clamped to the screen —
     # checked on default_size() rather than on the shown window, whose final
     # size the window manager has the last word on.
@@ -251,7 +275,8 @@ def main() -> int:
     pump(app, 0.05)
     r.check(not p._btn_limit_clear.isEnabled(),
             "…and unfolding does not wrongly re-enable it")
-    r.check(all(c.isVisibleTo(box) for c in (p._spn_lx, p._spn_ly, p._spn_lr)),
+    r.check(all(c.isVisibleTo(box) for c in
+                (p._spn_lx0, p._spn_ly0, p._spn_lx1, p._spn_ly1)),
             "…while the rest of the box comes back")
 
     box.setChecked(False)       # left folded, read back after the restart below

@@ -300,6 +300,11 @@ class ConnectionMonitor(QDialog):
     _DOT = {"ok": "#2e7d32", "missing": "#c62828", "error": "#e0860a", "stub": "#8a8a8a"}
     _WORD = {"ok": "connected", "missing": "not found", "error": "error", "stub": "stub"}
 
+    # Same signal PanelWindow carries, for the same reason: the sidebar's
+    # Devices item used to give no cue the monitor was already open elsewhere
+    # on screen, unlike every other sidebar item.
+    visibility_changed = pyqtSignal(bool)
+
     def __init__(self, module_keys: list[str], probe_kwargs=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Device connections")
@@ -338,6 +343,14 @@ class ConnectionMonitor(QDialog):
         root.addLayout(buttons)
 
         self.refresh()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.visibility_changed.emit(True)
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.visibility_changed.emit(False)
 
     def refresh(self) -> None:
         """Probe one module at a time, painting each row as it lands.

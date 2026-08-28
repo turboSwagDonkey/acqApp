@@ -30,6 +30,24 @@ FRAME_STOP = -1
 MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
 
 
+# Keyed on path, invalidated on mtime — `roi_frame` is called from the panel's
+# preview on every resize/nudge as well as from an actual upload, and a fresh
+# JSON load + parse on every preview tick was most of its cost (2026-08-27).
+_calib_cache: dict[str, tuple[int, object]] = {}
+
+
+def _load_calibration(path):
+    from acqApp.devices.dmd.calibration import DmdCalibration
+    p = Path(path)
+    mtime = p.stat().st_mtime_ns
+    cached = _calib_cache.get(str(p))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    calib = DmdCalibration.load(p)
+    _calib_cache[str(p)] = (mtime, calib)
+    return calib
+
+
 def roi_frame(settings, width: int, height: int):
     """The ROI mask as a device-sized frame, or None with the reason printed.
 
@@ -46,9 +64,8 @@ def roi_frame(settings, width: int, height: int):
               "turned into mirrors. Run Calibrate… first.")
         return None
     try:
-        from acqApp.devices.dmd.calibration import DmdCalibration
         from acqApp.devices.dmd.roi import RoiSet
-        calib = DmdCalibration.load(settings.calib_path)
+        calib = _load_calibration(settings.calib_path)
         frame = RoiSet.from_list(list(settings.rois)).dmd_frame(calib)
     except Exception as e:                        # noqa: BLE001
         print(f"[DMD] ROI mode: could not build the mask ({type(e).__name__}: "

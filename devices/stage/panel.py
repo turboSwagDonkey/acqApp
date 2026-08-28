@@ -261,6 +261,7 @@ class SettingsPanel(QWidget):
         self._s = settings or load_settings()
         self._ctrl = None                       # bound while a session is running
         self._last_xy = (0.0, 0.0)
+        self._last_map_xy: tuple[float, float] | None = None
         self._axis_widgets: dict[str, dict] = {}
         self._cal_dialog: CalibrationDialog | None = None
         self._build()
@@ -563,11 +564,21 @@ class SettingsPanel(QWidget):
         self._call("STOP ALL failed", lambda c: c.stop_all())
 
     # ── live readout from the poll worker ───────────────────────────────────
+    # Below this, a move isn't visually distinguishable on the map (a few mm
+    # of travel drawn into ~300 px) — StageMap.set_position always repaints
+    # unconditionally, so guard here like wheel.py's _axis/_title do for the
+    # analogous reason: a stationary stage otherwise repaints every poll tick.
+    _MAP_EPS_UM = 0.5
+
     def set_readout(self, x_um: float, y_um: float) -> None:
         self._last_xy = (x_um, y_um)
         self._lbl_x.setText(f"{x_um:8.1f}")
         self._lbl_y.setText(f"{y_um:8.1f}")
-        self._map.set_position(x_um, y_um)
+        last = self._last_map_xy
+        if (last is None or abs(x_um - last[0]) >= self._MAP_EPS_UM
+                or abs(y_um - last[1]) >= self._MAP_EPS_UM):
+            self._last_map_xy = (x_um, y_um)
+            self._map.set_position(x_um, y_um)
 
     def _emit_settings(self, *_a) -> None:
         self.settings_changed.emit(self.settings)

@@ -15,7 +15,7 @@ from typing import Callable
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QListWidget, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from acqApp import style
 
@@ -202,7 +202,7 @@ class SettingsPanel(QWidget):
 
         btn_test = QPushButton("Test puff")
         btn_test.setStyleSheet(style.solid_btn("puffer"))
-        btn_test.clicked.connect(self.test_requested)
+        btn_test.clicked.connect(self._on_test_clicked)
         lay.addRow(btn_test)
         root.addWidget(grp)
 
@@ -236,6 +236,19 @@ class SettingsPanel(QWidget):
 
     def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)
+
+    def _on_test_clicked(self) -> None:
+        """Confirm before an immediate, manually-triggered puff — matching
+        the stage's confirm-before-move pattern for physical actuation.
+        Scheduled puffs (`_schedule`) are a deliberate act of their own and
+        fire later, mid-session; they are not gated here."""
+        dur = self._spn_dur.value()
+        if QMessageBox.question(
+            self, "Test puff",
+            f"Fire a {dur:.3f} s puff now on {self._cmb_chan.currentText()}?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.test_requested.emit()
 
     def _schedule(self) -> None:
         at, dur = self._spn_at.value(), self._spn_dur.value()

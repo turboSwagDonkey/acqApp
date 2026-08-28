@@ -334,7 +334,17 @@ class StepTable(QTableWidget):
         if dest == src:
             return False
         self._steps.insert(dest, self._steps.pop(src))
-        self.reload()
+        # Only src..dest actually shifted — a full reload() repainted every
+        # row (7 columns x N) for what is always a contiguous shift of the
+        # rows between them; drag-drop and Ctrl+Up/Down both land here.
+        lo, hi = min(src, dest), max(src, dest)
+        self._loading = True
+        try:
+            for row in range(lo, hi + 1):
+                self._paint_row(row, self._steps[row])
+            self._paint_numbers()
+        finally:
+            self._loading = False
         self.select_row(dest)          # so a second press moves the same step
         self.reordered.emit(dest)
         self.changed.emit()

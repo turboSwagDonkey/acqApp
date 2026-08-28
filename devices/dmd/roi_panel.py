@@ -4,8 +4,9 @@ Owns its image view rather than reaching into the voltage camera's dock. The
 snapshot is handed in (`set_image`), so this never knows which camera took it
 and the DMD adapter can host it without the two modules importing each other.
 
-The reachable field is outlined and enforced on drag: an ROI outside it is not
-a small error, it is a stimulus that never arrives.
+The reachable field is outlined — not clamped: an ROI can be dragged outside
+it, and the only feedback is `_refresh_status()` naming it below the list.
+An ROI outside it is not a small error, it is a stimulus that never arrives.
 """
 from __future__ import annotations
 
@@ -146,6 +147,7 @@ class RoiEditor(QWidget):
         root.addLayout(view_row, 1)
 
         bar = QHBoxLayout()
+        bar.addWidget(QLabel("Shape:"))
         self._cmb = QComboBox()
         self._cmb.addItems(["rectangle", "circle"])
         bar.addWidget(self._cmb)

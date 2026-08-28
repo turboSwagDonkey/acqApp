@@ -707,6 +707,41 @@ def check_step_table(r: Report, app) -> None:
     app.processEvents()
 
 
+def check_move_row_repaint(r: Report) -> None:
+    """A reorder repaints only the rows between src and dest, not the whole
+    table (2026-08-27) — `move_row` used to call `reload()`, which repainted
+    every row for what is always a contiguous shift of the rows in between.
+    """
+    from acqApp.routines.panel import SettingsPanel
+
+    routine = Routine(steps=[Step(label=c, length=1, unit="frames")
+                             for c in "ABCDE"])
+    panel = SettingsPanel(routine)
+    tbl = panel._tbl
+
+    touched: list[int] = []
+    real_paint_row = tbl._paint_row
+    tbl._paint_row = lambda row, s: (touched.append(row), real_paint_row(row, s))[1]
+
+    touched.clear()
+    tbl.move_row(0, 1)                  # adjacent — only rows 0,1 shifted
+    r.check(sorted(set(touched)) == [0, 1],
+            f"an adjacent move repaints only the two rows involved, not all "
+            f"5 ({sorted(set(touched))})")
+    r.check([s.label for s in routine.steps] == list("BACDE"),
+            f"…and the reorder itself is still correct ({[s.label for s in routine.steps]})")
+
+    touched.clear()
+    tbl.move_row(4, 0)                  # far move — every row in between shifts
+    r.check(sorted(set(touched)) == [0, 1, 2, 3, 4],
+            f"a move spanning the whole table repaints every row it actually "
+            f"shifted ({sorted(set(touched))})")
+    r.check([s.label for s in routine.steps] == list("EBACD"),
+            f"…correctly ({[s.label for s in routine.steps]})")
+
+    tbl._paint_row = real_paint_row
+
+
 # ── how long it takes ─────────────────────────────────────────────────────────
 
 def check_estimate(r: Report) -> None:
@@ -1243,6 +1278,7 @@ def main() -> int:
             check_templates(r)
             check_panel_repaint(r, app)
             check_step_table(r, app)
+            check_move_row_repaint(r)
             check_panel_tracker(r, app)
             check_app(r, app, state)
         finally:

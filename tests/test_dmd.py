@@ -326,6 +326,7 @@ def main() -> int:
     shutil.rmtree(tmp, ignore_errors=True)
 
     check_roi_wiring(r)
+    check_mode_switch_and_cache(r)
     return r.finish()
 
 
@@ -387,6 +388,67 @@ def check_roi_wiring(r) -> None:
 
     win._btn_run.setChecked(False)
     pump(app, 0.3)
+    win.close()
+    pump(app, 0.1)
+
+
+def check_mode_switch_and_cache(r) -> None:
+    """A mode click must not double-fire, and an unchanged preview must not
+    re-run the pattern transform (2026-08-27 cleanup sweep findings)."""
+    import sys as _s
+    import tempfile
+    from pathlib import Path
+    from PIL import Image
+    from _harness import isolate_user_state, pump, qt_app
+
+    isolate_user_state()
+    app = qt_app()
+    import acqApp.main as M
+    _s.argv = ["main.py", "--mock"]
+    win = M.MainWindow(cam_info=None, mock=True, enabled={"dmd"}, cam_handle=None)
+    dmd = next(m for m in win._modules if m.key == "dmd")
+    panel = dmd.panel
+
+    from acqApp.devices.dmd.control import MODE_ALL_ON, MODE_PATTERN
+
+    # ── each toggled radio in a QButtonGroup fires once — the switch is one
+    # user action, and a single settings_changed/preview-rebuild per click ──
+    seen: list = []
+    panel.settings_changed.connect(lambda s: seen.append(s))
+    panel._rb[MODE_ALL_ON].setChecked(True)
+    pump(app, 0.05)
+    seen.clear()
+    panel._rb[MODE_PATTERN].setChecked(True)
+    pump(app, 0.05)
+    r.check(len(seen) == 1,
+            f"a mode click emits settings_changed once, not once per radio "
+            f"in the switch ({len(seen)})")
+
+    # ── the built frame is cached: an unchanged preview reuses it ───────────
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmdcache_"))
+    pat = tmp / "square.png"
+    Image.fromarray(np.full((64, 64), 255, np.uint8), mode="L").save(pat)
+    panel._pattern_path = pat
+    panel._emit()
+    pump(app, 0.05)
+    panel.resize(400, 300)
+    pump(app, 0.05)
+    before = panel._frame_cache[1] if panel._frame_cache else None
+    r.check(before is not None, "fixture: a pattern frame was built")
+    panel._update_preview()             # nothing that affects the frame changed
+    after = panel._frame_cache[1] if panel._frame_cache else None
+    r.check(after is before,
+            "an unchanged preview reuses the built frame rather than "
+            "re-running alp.build_frame")
+
+    panel._spn_scale.setValue(panel._spn_scale.value() + 5.0)
+    pump(app, 0.05)
+    changed = panel._frame_cache[1] if panel._frame_cache else None
+    r.check(changed is not before,
+            "…but a real parameter change rebuilds it")
+
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
     win.close()
     pump(app, 0.1)
 

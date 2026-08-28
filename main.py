@@ -231,6 +231,11 @@ class MainWindow(QMainWindow):
         self._recorder: Recorder | None = None
         self._rec_path: Path | None = None      # file the last recording went to
         self._rec_t0: float = 0.0     # session-clock time Record was pressed
+        # Throttles the file-size stat() in _refresh_rec_readout to ~1 Hz
+        # rather than every 100 ms tick — a stat() on a flaky network share
+        # blocks the GUI thread, and the readout doesn't need finer than 1 Hz.
+        self._rec_size_t0: float = 0.0
+        self._rec_size_txt: str = ""
         self._save_panel: SavePanel | None = None
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         # Modules whose panel is a window of its own, by key. Hidden until the
@@ -580,8 +585,16 @@ class MainWindow(QMainWindow):
         self._lbl_rec = QLabel("")
         self._lbl_rec.setStyleSheet("color:#9aa0a6;")
 
+        # The session clock, likewise permanent — it used to be routed through
+        # the transient status message every 100 ms tick, which meant a
+        # worker-error or any other status() call was visible for at most
+        # ~100 ms before the next tick clobbered it.
+        self._lbl_time = QLabel("")
+        self._lbl_time.setStyleSheet("color:#9aa0a6;")
+
         sb = QStatusBar()
         self.setStatusBar(sb)
+        sb.addPermanentWidget(self._lbl_time)
         sb.addPermanentWidget(self._lbl_rec)
         sb.addPermanentWidget(self._btn_emulate)
         sb.addPermanentWidget(self._btn_free)
@@ -639,7 +652,12 @@ class MainWindow(QMainWindow):
         self._sidebar.addAction(self._modules_action)
 
         # Device connection monitor (probe-based; safe to open any time).
+        # Checkable purely as an indicator — lit for as long as the monitor
+        # is open, the same way a panel window's own sidebar item is
+        # (`_on_panel_window`), so a monitor left open elsewhere on screen
+        # isn't invisible from here.
         self._devices_action = QAction(self._swatch(None), "🔌 Devices", self)
+        self._devices_action.setCheckable(True)
         self._devices_action.setToolTip("Check which devices are detected")
         self._devices_action.triggered.connect(self._show_devices)
         self._sidebar.addAction(self._devices_action)
@@ -814,6 +832,8 @@ class MainWindow(QMainWindow):
             # Probe in load-order, only the modules this session loaded.
             self._devices_dialog = ConnectionMonitor(
                 [m.key for m in self._modules], self._probe_kwargs, parent=self)
+            self._devices_dialog.visibility_changed.connect(
+                self._devices_action.setChecked)
         else:
             self._devices_dialog.refresh()
         self._devices_dialog.show()
@@ -880,6 +900,7 @@ class MainWindow(QMainWindow):
         self._btn_run.setText("Live view")
         self._btn_emulate.setEnabled(True)
         self._btn_free.setEnabled(True)
+        self._lbl_time.setText("")
         self.status("Stopped (free run)" if self._free_run else "Stopped")
 
     def _on_emulate_toggled(self, on: bool) -> None:
@@ -1158,6 +1179,9 @@ class MainWindow(QMainWindow):
         # The session clock may already be running (Live started earlier) — the
         # readout counts from Record, not from the clock's own origin.
         self._rec_t0 = self._sync.elapsed()
+        # Force an immediate (not up-to-1s-stale) size stat on the next tick.
+        self._rec_size_t0 = 0.0
+        self._rec_size_txt = ""
 
         # The Recorder stamps each sample on the shared clock, so every stream
         # in the file shares one time origin.
@@ -1211,7 +1235,10 @@ class MainWindow(QMainWindow):
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 
     def _on_tick(self, elapsed: float) -> None:
-        self.status(f"t = {elapsed:.1f} s")
+        # A permanent label, not `status()`: that is transient, and clobbering
+        # it 10x/second (this fires every 100 ms) made a worker-error or any
+        # other status() call unreadable for the whole time a session runs.
+        self._lbl_time.setText(f"t = {elapsed:.1f} s")
         self._refresh_rec_readout(elapsed)
 
     def _refresh_rec_readout(self, elapsed: float) -> None:
@@ -1227,11 +1254,18 @@ class MainWindow(QMainWindow):
             return
         mins, secs = divmod(int(elapsed - self._rec_t0), 60)
         txt = f"● REC  {mins:d}:{secs:02d}"
-        try:
-            mb = self._rec_path.stat().st_size / (1 << 20)
-            txt += f"   {mb / 1024:.2f} GB" if mb >= 1024 else f"   {mb:.0f} MB"
-        except OSError:
-            pass                          # not created yet, or on a flaky share
+        # stat() is a blocking syscall — on a flaky network share it can stall
+        # the GUI thread. Throttled to ~1 Hz; the readout doesn't need finer.
+        now = time.monotonic()
+        if now - self._rec_size_t0 >= 1.0:
+            self._rec_size_t0 = now
+            try:
+                mb = self._rec_path.stat().st_size / (1 << 20)
+                self._rec_size_txt = (f"   {mb / 1024:.2f} GB" if mb >= 1024
+                                      else f"   {mb:.0f} MB")
+            except OSError:
+                pass                       # not created yet, or on a flaky share
+        txt += self._rec_size_txt
         dropped = self._recorder.drop_count + self._recorder.late_count
         if dropped:
             txt += f"   ⚠ {dropped} samples shed"

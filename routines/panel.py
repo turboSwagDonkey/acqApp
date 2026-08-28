@@ -140,7 +140,20 @@ class SettingsPanel(QWidget):
                  "Ctrl+Up do the same."),
                 ("↓", self._move_down,
                  "Move the selected step later. Dragging the row and "
-                 "Ctrl+Down do the same."),
+                 "Ctrl+Down do the same.")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        btns.addStretch(1)
+        lay.addLayout(btns)
+
+        # A secondary row, not folded into the one above: both of these
+        # duplicate an interaction already on the cell itself (their own
+        # tooltips say so) — they read as pattern shortcuts, not list
+        # operations, and crowded the primary row before this split.
+        pat_btns = QHBoxLayout()
+        for text, slot, tip in (
                 ("Pattern…", self._pick_pattern,
                  "Set the selected step's DMD pattern file. Double-clicking "
                  "the Pattern cell does the same."),
@@ -151,9 +164,9 @@ class SettingsPanel(QWidget):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
-            btns.addWidget(b)
-        btns.addStretch(1)
-        lay.addLayout(btns)
+            pat_btns.addWidget(b)
+        pat_btns.addStretch(1)
+        lay.addLayout(pat_btns)
 
         # What is about to happen, in one line — a step list is not something
         # you can total up by eye once it is longer than a screen.

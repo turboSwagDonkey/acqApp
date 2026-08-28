@@ -44,6 +44,11 @@ class SettingsPanel(QWidget):
         self._pattern_path: Path | None = (
             Path(self._s.pattern_path) if self._s.pattern_path else None)
         self._pattern_cache: tuple[tuple, np.ndarray] | None = None
+        # The transformed (scale/rotation/offset-applied) frame, keyed on
+        # everything that changes it. A plain widget resize changes only the
+        # preview label's size, not this key, so it reuses the built frame
+        # instead of re-running alp.build_frame() (2026-08-27).
+        self._frame_cache: tuple[tuple, np.ndarray] | None = None
         # Plain state, not widget values: a list of ROI dicts and a path.
         self._rois: tuple = tuple(self._s.rois or ())
         self._calib_path: str = self._s.calib_path or ""
@@ -398,12 +403,18 @@ class SettingsPanel(QWidget):
         self._update_preview()
         self.settings_changed.emit(self.settings)
 
-    def _on_mode_changed(self, *_a) -> None:
+    def _on_mode_changed(self, checked: bool = True) -> None:
         """Only the image mode uses the pattern file and the alignment.
 
         Greyed rather than hidden: an operator who set a 104 % scale wants to
         see it is still there when they switch to ROIs and back.
+
+        Each radio's `toggled` is wired here, so a mode switch fires it twice
+        — False for the outgoing button, True for the incoming one. Without
+        this guard, one click rebuilt the preview and emitted settings twice.
         """
+        if not checked:
+            return
         pattern = self.mode == MODE_PATTERN
         self._btn_browse.setEnabled(pattern)
         self._chk_fit.setEnabled(pattern)
@@ -484,16 +495,29 @@ class SettingsPanel(QWidget):
         else:
             self._lbl_pattern.setText(p.name)
             try:
+                arr = self._pattern_array(p)
                 s = self.settings
-                frame = alp.build_frame(
-                    self._pattern_array(p), w, h,
-                    scale_pct=s.scale_pct,
-                    rotation_deg=s.rotation_deg,
-                    offset_x=s.offset_x,
-                    offset_y=s.offset_y,
-                    invert=s.invert,
-                    fit=s.fit
-                )
+                # `pw`/`ph` (the preview LABEL's size) are deliberately not in
+                # this key — only what actually changes the built frame is.
+                # `_update_preview` also runs on plain widget resize
+                # (resizeEvent) and on every arrow-key nudge, and re-running
+                # alp.build_frame() (a PIL resize+rotate, ~17ms) for a resize
+                # that changed nothing about the pattern was most of that cost
+                # (2026-08-27).
+                key = (self._pattern_cache[0], w, h, s.scale_pct, s.rotation_deg,
+                      s.offset_x, s.offset_y, s.invert, s.fit)
+                if self._frame_cache is None or self._frame_cache[0] != key:
+                    built = alp.build_frame(
+                        arr, w, h,
+                        scale_pct=s.scale_pct,
+                        rotation_deg=s.rotation_deg,
+                        offset_x=s.offset_x,
+                        offset_y=s.offset_y,
+                        invert=s.invert,
+                        fit=s.fit
+                    )
+                    self._frame_cache = (key, built)
+                frame = self._frame_cache[1]
             except Exception as e:
                 self._preview.setText(f"(render error: {e})")
                 return

@@ -195,6 +195,29 @@ def check_real_config_untouched(r: Report) -> None:
             "the panel wrote no calibration at all — it only reads")
 
 
+def check_map_repaint_guard(r: Report) -> None:
+    """A stationary stage must not repaint the travel map every poll tick
+    (2026-08-27) — `StageMap.set_position` always calls `update()`, so
+    `set_readout` guards it with an epsilon rather than relying on the map."""
+    p = _panel(None)
+    calls: list[tuple] = []
+    p._map.set_position = lambda x, y: calls.append((x, y))
+
+    p.set_readout(100.0, 200.0)
+    r.check(calls == [(100.0, 200.0)], f"the first readout always repaints ({calls})")
+
+    calls.clear()
+    p.set_readout(100.0 + p._MAP_EPS_UM / 4, 200.0)   # well under the epsilon
+    r.check(calls == [], f"a sub-epsilon move does not repaint the map ({calls})")
+    r.check(p._lbl_x.text().strip() != "",
+            "…but the numeric readout label still updates regardless")
+
+    calls.clear()
+    p.set_readout(100.0 + p._MAP_EPS_UM * 4, 200.0)   # well past the epsilon
+    r.check(len(calls) == 1,
+            f"control: a real move still repaints ({calls})")
+
+
 def main() -> int:
     r = Report("stage-panel")
     isolate_user_state()
@@ -208,6 +231,7 @@ def main() -> int:
     check_dead_link(r)
     check_unbound(r)
     check_frame_gating(r)
+    check_map_repaint_guard(r)
     check_real_config_untouched(r)
 
     after = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None
