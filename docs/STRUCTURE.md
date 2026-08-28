@@ -168,18 +168,19 @@ saving/                 where the session file goes
   config.py             SaveConfig + path building — no Qt
   panel.py
 docs/
-  AUDIT-2026-08.md      closed audit — archive
+  AUDIT-2026-08.md      closed audit — archive — gitignored, private repo
   CAMERA_TRANSFER.md
-  DECISIONS.md          closed items, kept for their reasoning — archive
+  DECISIONS.md          closed items, kept for their reasoning — archive — gitignored, private repo
   EYELOOP-INTEGRATION.md  the plan for moving it into devices/ — start here
   EYELOOP.md            EyeLoop tried 2026-08-26 — and eyeloop-3.14-patches.diff
                         beside it, the only durable copy of the 4 patches
   HANDOFF.md
   PUPIL_CAMERA_TRANSFER.md
   README.md
-  SESSIONLOG.md         older session entries — archive
+  SESSIONLOG.md         older session entries — archive — gitignored, private repo
   STAGE_TRANSFER.md
   STRUCTURE.md          this file
+  USER_GUIDE.md         operator quick-start, screenshots in images/guide/
   WHEEL_TRANSFER.md
 tests/                  plain scripts, not pytest; each runs in its own process
   _harness.py           Report, qt_app(), isolate_user_state()
@@ -221,8 +222,8 @@ dialogs.py              module picker (startup + sidebar), device monitor,
 probe.py                presence checks; enumeration only, never opens a device
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
-CLAUDE.md               how to work in here
-PLAN.md                 the living plan — read first
+CLAUDE.md               how to work in here — gitignored, private repo
+PLAN.md                 the living plan — read first — gitignored, private repo
 README.md               the authoritative description
 requirements.txt
 .gitignore
