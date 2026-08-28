@@ -79,6 +79,11 @@ previous contents as `.bak`.
 
 ## Running
 
+> **Operating it?** [docs/USER_GUIDE.md](docs/USER_GUIDE.md) is the
+> screenshot-illustrated walkthrough — launch, pick instruments, configure
+> one, go live, record. This section and the rest of this file describe what
+> the app *is*, not how to click through it.
+
 No manual setup needed — just launch it **any** of these ways. A bootstrap in
 `main.py` creates `acqApp/.venv` on first run if it's missing, re-execs into it,
 fixes the import path, and installs `requirements.txt`:

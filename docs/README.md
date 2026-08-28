@@ -13,6 +13,7 @@ to get oriented.
 
 | File | What it's for |
 |------|---------------|
+| [USER_GUIDE.md](USER_GUIDE.md) | **Not historical — the operator quick-start.** Screenshots included; run and re-shoot after any GUI-visible change worth showing. |
 | [STRUCTURE.md](STRUCTURE.md) | **The map: what is where, and what may import what.** A mermaid flow of the layering plus the annotated tree. Not historical and not prose-on-trust — `tests/test_structure.py` checks the tree against the filesystem and the arrows against the AST, so it fails the suite rather than rotting. Update it in the same commit as any move or new module. |
 | [AUDIT-2026-08.md](AUDIT-2026-08.md) | The 2026-08-10 full-app audit, all 22 items, each with what the bug was, why it mattered on a rig and which test now guards it. Referenced by item number (#1–#20, C1–C3, B1–B2) from PLAN.md §5b and `tests/README.md`. |
 | [SESSIONLOG.md](SESSIONLOG.md) | Session entries older than the three PLAN.md §7 keeps. |
