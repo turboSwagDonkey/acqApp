@@ -235,6 +235,13 @@ class SettingsPanel(QWidget):
         for w in self._locked:
             w.setEnabled(not running)
 
+    def set_preset(self, key: str) -> None:
+        """Programmatically select a resolution preset (e.g. forcing full
+        frame before a DMD calibration). Structural, like a user's own combo
+        click: it only takes effect at the next Start."""
+        if key in PRESET_KEYS:
+            self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(key))
+
     @property
     def exposure_us(self) -> float:
         return self._spn_exposure.value()

@@ -39,6 +39,16 @@ class VoltageCamModule(ModuleAdapter):
     def last_frame(self):
         return self._last_frame
 
+    # ── the sensor's capture area ──
+    def preset_key(self) -> str:
+        return self.panel.get_config().preset_key
+
+    def set_preset(self, key: str) -> None:
+        """Change the resolution preset. Structural — like the operator's own
+        combo click, it only takes effect the next time the session (re)starts;
+        the caller decides whether that means a live-view restart."""
+        self.panel.set_preset(key)
+
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = CamSettingsPanel(self._load_config())

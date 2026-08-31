@@ -14,13 +14,15 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QGraphicsEllipseItem, QGraphicsRectItem, QHBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QGraphicsEllipseItem, QGraphicsRectItem, QHBoxLayout, QInputDialog,
+    QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
+from acqApp.devices.dmd import roi_store
 from acqApp.devices.dmd.calibration import DmdCalibration
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet
+from acqApp.devices.dmd.roi_picker import RoiSetPicker
 
 # The reachable field is the DMD's own boundary, so it wears the DMD accent —
 # the same magenta the tab, its buttons and the panel preview use. The ROI pens
@@ -169,6 +171,20 @@ class RoiEditor(QWidget):
         bar.addStretch()
         root.addLayout(bar)
 
+        save_row = QHBoxLayout()
+        btn_save = QPushButton("Save…")
+        btn_save.setToolTip(
+            "Save this set under a name, into this session's quick list.")
+        btn_save.clicked.connect(self._on_save_roi)
+        btn_load = QPushButton("Load…")
+        btn_load.setToolTip(
+            "Load a set saved this session, or Browse older ones.")
+        btn_load.clicked.connect(self._on_load_roi)
+        save_row.addWidget(btn_save)
+        save_row.addWidget(btn_load)
+        save_row.addStretch()
+        root.addLayout(save_row)
+
         self._list = QListWidget()
         self._list.currentRowChanged.connect(self._on_row)
         # An index, not the main event: it used to take half the window while
@@ -278,6 +294,31 @@ class RoiEditor(QWidget):
     def _on_clear(self) -> None:
         self._set.clear()
         self._rebuild_items()
+        self._emit()
+
+    # ── save / load ──────────────────────────────────────────────────────────
+    def _on_save_roi(self) -> None:
+        self._sync_from_items()
+        if not len(self._set):
+            self._status.setText("Nothing to save — draw an ROI first.")
+            return
+        name, ok = QInputDialog.getText(self, "Save ROI set", "Name:")
+        if not ok or not name.strip():
+            return
+        path = roi_store.save(name.strip(), self._set)
+        self._status.setText(f"Saved {len(self._set)} ROI(s) to {path.name}")
+
+    def _on_load_roi(self) -> None:
+        dlg = RoiSetPicker(self)
+        if not dlg.exec() or dlg.path is None:
+            return
+        try:
+            rois = roi_store.load(dlg.path)
+        except (OSError, ValueError, KeyError) as e:
+            self._status.setText(
+                f"Could not load {dlg.path.name} ({type(e).__name__})")
+            return
+        self.load(rois)
         self._emit()
 
     def _on_row(self, i: int) -> None:

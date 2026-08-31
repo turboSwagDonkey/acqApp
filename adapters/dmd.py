@@ -57,6 +57,7 @@ class DmdModule(ModuleAdapter):
         from PyQt6.QtWidgets import QMessageBox
 
         from acqApp.devices.dmd.sweep import CalibrationDialog
+        from acqApp.devices.voltage_cam.presets import DEFAULT_PRESET
 
         if self.controller is None:
             return
@@ -67,12 +68,51 @@ class DmdModule(ModuleAdapter):
                 "that module is not loaded.\n\n"
                 "Restart and tick Voltage camera in the startup picker.")
             return
-        dlg = CalibrationDialog(
-            self.controller, lambda: self.win.latest_frame("voltage_cam"),
-            parent=self.panel, real=self._real,
-            on_saved=self._adopt_calibration,
-            set_live=self.win.set_live)
-        dlg.exec()
+
+        # A calibration measured against a cropped capture area only means
+        # what it says for THAT area — the sensor's ROI shifts the captured
+        # frame's own pixel origin, not just its size, so switching back to a
+        # different capture area afterwards silently invalidates the fit (the
+        # reachable-field outline and any ROI keep drawing against the old
+        # pixel grid). Forcing full frame for the measurement removes the
+        # whole class of mismatch, so always calibrate against it.
+        prev_preset = self.win.camera_preset("voltage_cam")
+        needs_switch = prev_preset is not None and prev_preset != DEFAULT_PRESET
+        was_live = None
+        if needs_switch:
+            if self.win.is_recording():
+                QMessageBox.warning(
+                    self.panel, "Recording in progress",
+                    "The voltage camera is not on its full-frame capture "
+                    "area, and calibration needs it — but a recording is "
+                    "running, and changing the capture area needs a "
+                    "restart.\n\nStop recording first, then calibrate.")
+                return
+            QMessageBox.information(
+                self.panel, "Switching to full frame",
+                "The voltage camera is cropped to a smaller capture area. "
+                "Calibration only means what it says for the area it was "
+                "measured against, so this switches to full frame for the "
+                "run and puts the camera back the way it was afterwards.")
+            # Changing the preset only takes effect at the next Start (see
+            # SettingsPanel.set_preset), so live view has to be stopped first
+            # for full frame to actually be what the sweep sees — the dialog
+            # below starts it again itself.
+            was_live = self.win.set_live(False)
+            self.win.set_camera_preset("voltage_cam", DEFAULT_PRESET)
+
+        try:
+            dlg = CalibrationDialog(
+                self.controller, lambda: self.win.latest_frame("voltage_cam"),
+                parent=self.panel, real=self._real,
+                on_saved=self._adopt_calibration,
+                set_live=self.win.set_live)
+            dlg.exec()
+        finally:
+            if needs_switch:
+                self.win.set_live(False)
+                self.win.set_camera_preset("voltage_cam", prev_preset)
+                self.win.set_live(was_live)
 
     def _adopt_calibration(self, path: str) -> None:
         """Point the panel at the calibration the sweep just wrote — otherwise
@@ -100,7 +140,7 @@ class DmdModule(ModuleAdapter):
             QMessageBox.information(
                 self.panel, "No camera frame",
                 "The ROI editor draws on a voltage-camera frame, and none has "
-                "arrived yet.\n\nLoad the voltage camera and press Free run "
+                "arrived yet.\n\nLoad the voltage camera and press Live view "
                 "(or Record), then try again.\n\nTo see the projected field in "
                 "the snapshot, put the DMD in all-on and press Display first.")
             return
@@ -241,9 +281,23 @@ class DmdModule(ModuleAdapter):
         return self if self.controller is not None else None
 
     def set_pattern(self, path: str) -> None:
-        """Load a pattern file. Uploads, projects nothing."""
-        self.panel.set_pattern_path(Path(path))
-        self.load(Path(path))
+        """Load a pattern file, or a saved ROI set. Uploads, projects nothing.
+
+        A `.roi.json` is resolved through the panel's own ROI mode (`roi_frame`,
+        `apply_settings`) rather than `load_pattern`, which expects an image —
+        the same route the operator's own Draw/Load already takes.
+        """
+        from acqApp.devices.dmd import roi_store
+
+        p = Path(path)
+        if roi_store.is_roi_file(p):
+            name, rois = roi_store.load_named(p)
+            self.panel.set_roi_pattern(name, rois.to_list())
+            if self.controller is not None:
+                self.controller.apply_settings(self.panel.settings)
+        else:
+            self.panel.set_pattern_path(p)
+            self.load(p)
 
     def set_light(self, on: bool) -> None:
         """THE call that emits light. `display()` re-applies the panel's

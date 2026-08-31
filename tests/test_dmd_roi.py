@@ -465,6 +465,61 @@ def main() -> int:
     r.check(len(ed2.roi_set) == 1,
             "…but still allows drawing, so ROIs can be prepared beforehand")
 
+    # ── 7. saved ROI sets: session/archive storage, the picker, routines ────
+    from acqApp.devices.dmd import roi_store
+    from acqApp.routines.settings import pattern_label
+
+    saved = _set(RectRoi(x=10, y=10, w=4, h=4), CircleRoi(x=50, y=50, r=6))
+    p1 = roi_store.save("column A", saved)
+    r.check(p1.name.endswith(".roi.json") and p1.parent == roi_store.SESSION_DIR,
+            f"save() writes into the session folder ({p1})")
+    back = roi_store.load(p1)
+    r.check(len(back) == 2 and np.array_equal(back.mask((CH, CW)),
+                                              saved.mask((CH, CW))),
+            "a saved set survives roi_store save/load unchanged")
+
+    p2 = roi_store.save("column A", saved)      # same name, twice
+    r.check(p2 != p1 and p2.exists(),
+            f"saving under a taken name does not clobber the first ({p1.name}, "
+            f"{p2.name})")
+
+    listed = roi_store.list_session()
+    r.check({s.path for s in listed} == {p1, p2},
+            f"list_session sees both ({[s.path.name for s in listed]})")
+    r.check(roi_store.is_roi_file(p1) and not roi_store.is_roi_file("frame.png"),
+            "is_roi_file distinguishes a saved set from a raw pattern file")
+
+    # A second "run" (module re-touched with _rotated reset) must move the
+    # first run's session sets into archive, not delete or duplicate them.
+    roi_store._rotated = False
+    moved = roi_store.list_archive()
+    r.check({s.path.name for s in moved} == {p1.name, p2.name},
+            f"rotation moves the previous run's sets into archive "
+            f"({[s.path.name for s in moved]})")
+    r.check(roi_store.list_session() == [],
+            "…and leaves the session folder empty for the new run")
+
+    # Display: a routine step's pattern reads as "ROI: <name>", not the
+    # raw <name>.roi.json filename a plain image would show.
+    r.check(pattern_label(str(p1)) == "ROI: column A",
+            f"pattern_label names a saved ROI set ({pattern_label(str(p1))!r})")
+    r.check(pattern_label("frame.png") == "frame.png",
+            "control: a raw pattern file's label is untouched")
+
+    # ── the panel adopts a routine-chosen ROI set the way it adopts a file ──
+    from acqApp.devices.dmd.panel import SettingsPanel
+
+    panel = SettingsPanel()
+    emitted: list = []
+    panel.settings_changed.connect(emitted.append)
+    panel.set_roi_pattern("column A", saved.to_list())
+    r.check(panel.mode == "roi" and len(panel.settings.rois) == 2,
+            f"set_roi_pattern switches to ROI mode with the loaded set "
+            f"({panel.mode}, {len(panel.settings.rois)} ROI(s))")
+    r.check(len(emitted) >= 1, "…and emits settings_changed once switched")
+    r.check('"column A"' in panel._lbl_rois.text(),
+            f"the loaded set's name is shown ({panel._lbl_rois.text()!r})")
+
     return r.finish()
 
 

@@ -32,6 +32,18 @@ SAVE_MODES: dict[str, str] = {
 MAX_SETTLE_S = 120.0
 
 
+def pattern_label(path: str) -> str:
+    """How a step's pattern reads in the table and the log.
+
+    A saved ROI set (`devices/dmd/roi_store.py`) is a `<name>.roi.json`, not a
+    device frame — naming it "ROI: <name>" rather than the raw filename reads
+    as an ROI set at a glance, the way a plain image's own name does."""
+    p = Path(path)
+    if p.name.endswith(".roi.json"):
+        return f"ROI: {p.name[:-len('.roi.json')]}"
+    return p.name
+
+
 @dataclass
 class Step:
     """One leg of a routine: a place, a pattern, and how long to capture."""
@@ -48,7 +60,7 @@ class Step:
         """One line for the panel and the log."""
         where = ", ".join(f"{a}={v:.0f}um" for a, v in
                           (("x", self.x_um), ("y", self.y_um)) if v is not None)
-        what = Path(self.pattern).name if self.pattern else ""
+        what = pattern_label(self.pattern) if self.pattern else ""
         bits = [b for b in (where, what, "light" if self.project else "") if b]
         head = self.label or f"{self.length:g} {self.unit}"
         return f"{head}" + (f" ({'; '.join(bits)})" if bits else "")

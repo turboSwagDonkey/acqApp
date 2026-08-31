@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.devices.dmd import alp
+from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings)
 
@@ -52,6 +52,10 @@ class SettingsPanel(QWidget):
         # Plain state, not widget values: a list of ROI dicts and a path.
         self._rois: tuple = tuple(self._s.rois or ())
         self._calib_path: str = self._s.calib_path or ""
+        # Set only when a routine step loaded a saved ROI set, so `_show_rois`
+        # can name it; the editor clears it (an edited set is no longer "the
+        # file", the way `set_pattern_path` overwrites in the other mode).
+        self._roi_pattern_name: str = ""
         self._shortcuts: list[QShortcut] = []
         self._build()
         self._init_shortcuts()
@@ -91,6 +95,10 @@ class SettingsPanel(QWidget):
         self._lbl_pattern.setWordWrap(True)
         self._btn_browse = QPushButton("Browse…")
         self._btn_browse.setFixedWidth(90)
+        self._btn_browse.setToolTip(
+            "In Image mode: a pattern file (.png/.bmp/.tif).\n"
+            "In ROIs mode: a saved ROI set (.roi.json) — the same ones "
+            "'Edit ROIs… -> Load…' opens, without a trip through the editor.")
         self._btn_browse.clicked.connect(self._browse)
 
         pat_lay.addWidget(self._lbl_pattern, 1)
@@ -333,13 +341,30 @@ class SettingsPanel(QWidget):
     def set_rois(self, rois) -> None:
         """Store what the editor produced. Called by the adapter, not the user."""
         self._rois = tuple(rois)
+        self._roi_pattern_name = ""     # hand-edited — no longer "the" saved set
         self._show_rois()
         self._emit()
 
+    def set_roi_pattern(self, name: str, rois: list) -> None:
+        """Adopt a saved ROI set an experiment routine chose, and switch to ROIs.
+
+        Mirrors `set_pattern_path`: the mode has to follow the data, or Display
+        re-applies the panel's old mode and projects the wrong thing.
+        """
+        self._rois = tuple(rois)
+        self._roi_pattern_name = name
+        self._show_rois()
+        if not self._rb[MODE_ROI].isChecked():
+            self._rb[MODE_ROI].setChecked(True)   # -> _on_mode_changed -> _emit
+        else:
+            self._emit()
+
     def _show_rois(self) -> None:
         n = len(self._rois)
-        self._lbl_rois.setText(f"{n} ROI{'' if n == 1 else 's'} defined"
-                               if n else "No ROIs yet")
+        base = f"{n} ROI{'' if n == 1 else 's'} defined" if n else "No ROIs yet"
+        self._lbl_rois.setText(
+            f'{base} — "{self._roi_pattern_name}"' if self._roi_pattern_name
+            else base)
         self._lbl_calib.setText(
             f"Calibration: {Path(self._calib_path).name}" if self._calib_path
             else "No calibration — ROIs can be drawn but not projected")
@@ -416,7 +441,10 @@ class SettingsPanel(QWidget):
         if not checked:
             return
         pattern = self.mode == MODE_PATTERN
-        self._btn_browse.setEnabled(pattern)
+        # ROIs mode gets the browse button too — it opens a saved ROI set
+        # instead of a pattern file, the same shortcut `set_pattern()` gives
+        # a routine's own pattern picker.
+        self._btn_browse.setEnabled(pattern or self.mode == MODE_ROI)
         self._chk_fit.setEnabled(pattern)
         self._chk_invert.setEnabled(pattern)
         fit_active = self._chk_fit.isChecked()
@@ -433,6 +461,17 @@ class SettingsPanel(QWidget):
         self._update_preview()
 
     def _browse(self) -> None:
+        """In ROIs mode this opens a saved ROI set instead of a pattern file —
+        the same file `set_pattern()` accepts from a routine's own picker, so
+        an operator gets there without a trip through Edit ROIs… -> Load…."""
+        if self.mode == MODE_ROI:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Select ROI set", str(roi_store.SESSION_DIR),
+                "ROI sets (*.roi.json)")
+            if path:
+                name, rois = roi_store.load_named(path)
+                self.set_roi_pattern(name, rois.to_list())
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Select pattern", "", "Images (*.png *.bmp *.tif)"
         )

@@ -13,10 +13,10 @@ a Hamamatsu ORCA-Fire via **pylablib's DCAM wrapper** (`pylablib==1.4.5`,
 DCAM-API installed on this machine). It runs in two contexts:
 
 - **Bring the camera up alone** — start the app, tick only this module in the
-  startup picker, and press **Free run**: live image + ΔF/F trace + settings,
-  with no session clock and no recording. **This is where camera work should
-  happen first.** It replaced `voltage_cam/_toy.py`, which duplicated the panel
-  and had already drifted from it.
+  startup picker, and press **Live view**: live image + ΔF/F trace + settings,
+  with nothing else loaded. **This is where camera work should happen first.**
+  It replaced `voltage_cam/_toy.py`, which duplicated the panel and had
+  already drifted from it.
 - **Main app** — the full multi-instrument suite; the camera is the central
   image and records into the shared-clock HDF5 session.
 
@@ -51,7 +51,7 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 | [devices/voltage_cam/acquisition.py](../devices/voltage_cam/acquisition.py) | `OrcaFireWorker` (real, DCAM) + `MockCameraWorker`. The capture thread. **Most camera logic lives here.** |
 | [devices/voltage_cam/presets.py](../devices/voltage_cam/presets.py) | `ResolutionPreset`, `AcqConfig`, the datasheet-derived `PRESETS`, binning/trigger options. |
 | [devices/voltage_cam/settings.py](../devices/voltage_cam/settings.py) | `SettingsPanel` — resolution/binning/exposure/trigger UI; `get_config()` → `AcqConfig`. |
-| Free run (status bar) | Brings the camera up with no clock and no recording — what `voltage_cam/_toy.py` used to do. |
+| Live view, one module ticked | Brings the camera up alone — what `voltage_cam/_toy.py` used to do. |
 | ~~voltage_cam/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records through `acq/`. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base class: `get_latest`/`set_sink`/`stop` scaffolding all workers share. |
 | [acq/recorder.py](../acq/recorder.py) | `Recorder` — main-app writer thread draining the ring buffer (stamps the shared clock). |

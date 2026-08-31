@@ -23,9 +23,11 @@ from collections import defaultdict
 from _harness import APP_DIR, Report
 
 DOC = APP_DIR / "docs" / "STRUCTURE.md"
-# routine_templates/ is the operator's saved protocols, written by the app
-# at runtime like sessions/ — its contents are not part of the tree.
-SKIP_DIRS = {".venv", "__pycache__", ".git", "sessions", "routine_templates"}
+# routine_templates/ and rois/ are the operator's saved protocols and ROI
+# sets, written by the app at runtime like sessions/ — their contents are not
+# part of the tree.
+SKIP_DIRS = {".venv", "__pycache__", ".git", "sessions", "routine_templates",
+            "rois"}
 KEEP_SUFFIX = {".py", ".json", ".txt", ".md"}
 # Root modules are their own node; these packages are one node each.
 PACKAGES = {"acq", "adapters", "closed_loop", "devices", "routines", "saving"}

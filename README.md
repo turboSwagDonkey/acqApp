@@ -390,10 +390,11 @@ way back out. A value that was never set reads as an empty string.
 - `acq/devices.py` — the `Protocol`s an adapter reads its worker/controller
   through, and `ModuleHost`, the surface an adapter may ask of the window.
 - `devices/` — one package per subsystem, each with `acquisition.py` (a `QThread` worker with
-  a mock twin), `settings.py`/`control.py` (a Qt panel), `recording.py`, and a
-  **Free run** button: tick one module at startup and run it with no session
-  clock and no recording. The pupil cam's tuning overlay — the pixels
-  reflection removal blanked — is the **Show what was removed** box in its tab.
+  a mock twin), `settings.py`/`control.py` (a Qt panel), `recording.py`.
+  Tick one module at startup and press **Live view** to bring it up alone,
+  isolated from the rest of the session. The pupil cam's tuning overlay — the
+  pixels reflection removal blanked — is the **Show what was removed** box in
+  its tab.
 - `devices/dmd/alp.py` — the whole of the Vialux hardware knowledge, Qt-free: where the
   vendor API lives, `build_frame` (image → the binary panel frame, which is
   where a mispositioned stimulus would come from, so it is unit-tested), and the

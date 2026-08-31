@@ -1,9 +1,9 @@
 """Where the camera's view lands on the DMD.
 
 ROIs are camera px, masks are DMD mirrors; this measures the affine between
-them. A narrow stripe at nine signed offsets per axis, a line fit to where each
-lands, and the two lines are the transform. Signed offsets carry direction, so
-a mirror flip cannot pass.
+them. A narrow stripe at a set of signed mirror offsets per axis, a line fit to
+where each lands, and the two lines are the transform. Signed offsets carry
+direction, so a mirror flip cannot pass.
 
 **Coarse patterns only, and that is measured.** On this rig (2026-08-24) a solid
 bar images cleanly, a 280 px checkerboard modulates 13 % of the frame and a
@@ -31,10 +31,13 @@ ON, OFF = np.uint8(255), np.uint8(0)
 # Well under a real lit/unlit contrast, well over sensor noise.
 MIN_MODULATION = 0.15
 
-# Stripe offsets from the panel centre, as fractions of the half-extent.
-STRIPE_OFFSETS = (-0.80, -0.60, -0.40, -0.20, 0.0, 0.20, 0.40, 0.60, 0.80)
-STRIPE_WIDTH = 0.05         # stripe thickness, fraction of the panel
-STRIPE_CROSS = 0.30         # its length across the other axis
+# Stripe offsets from the panel centre, in mirrors — same units the log prints.
+# ±500 reaches past the y half-extent (384) and close to the x half-extent
+# (512), so a stripe run off the true panel edge shows up as "invisible" here
+# rather than being mistaken for a camera-FOV limit.
+STRIPE_OFFSETS = tuple(range(-500, 501, 50))
+STRIPE_WIDTH = 0.025         # stripe thickness, fraction of the panel
+STRIPE_CROSS = 0.25         # its length across the other axis
 
 
 class CalibrationError(RuntimeError):
@@ -102,8 +105,8 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
 
     out: dict = {0: [], 1: []}
     for axis in (0, 1):
-        for frac in offsets:
-            d = frac * half[axis]
+        for d in offsets:
+            frac = d / half[axis]
             project(offset_stripe(w, h, axis, d))
             mod = np.abs(modulation(np.asarray(grab(), dtype=np.float32), dark))
             m = mod >= min_modulation

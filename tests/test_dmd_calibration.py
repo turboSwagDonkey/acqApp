@@ -172,7 +172,10 @@ def main() -> int:
             f"({100 * hit_bad:.0f}% covered)")
 
     # ── 4b. knowing when not to trust it ─────────────────────────────────────
-    r.check(0 < c.holdout_px < 4.0,
+    # >= 0, not > 0: a clean synthetic fit with enough surviving points can
+    # average the centroid noise down to (near) exact, and that is a GOOD
+    # result, not a broken check — the real assertion is the upper bound.
+    r.check(0 <= c.holdout_px < 4.0,
             f"a stripe left OUT of the fit is predicted to {c.holdout_px:.2f} px")
     # The point of hold-out: the residual is optimistic BY CONSTRUCTION, since
     # least squares sits closest to the points it was handed. Prove the two are
@@ -251,9 +254,11 @@ def main() -> int:
             "…and preserves handedness, so it cannot mirror the registration")
 
     # The raw stripes travel with the result, so a fit can be redone offline.
-    r.check(len(c.stripes) == c.n_points and len(c.stripes[0]) == 4,
+    # n_points is AFTER outlier rejection, so stripes >= n_points, not ==.
+    r.check(len(c.stripes) >= c.n_points and len(c.stripes[0]) == 4,
             f"the {len(c.stripes)} raw stripe measurements are stored "
-            f"[axis, offset, cam_x, cam_y]")
+            f"[axis, offset, cam_x, cam_y] ({c.n_points} kept after outlier "
+            f"rejection)")
 
     # Stripes that run off the frame are dropped, not fitted. This is what the
     # rig does: its DMD field is ~1.9x the camera's area.

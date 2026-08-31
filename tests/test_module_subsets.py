@@ -75,55 +75,6 @@ def main() -> int:
             traceback.print_exc()
             r.check(False, f"{label}: {type(e).__name__}: {e}")
 
-    # ── free run: devices without the session clock ──────────────────────────
-    # What the per-device `_toy.py` harnesses used to provide, and the reason
-    # they could be deleted: one instrument brought up with none of the session
-    # machinery, to separate "the device is broken" from "my session code is".
-    # The bargain is that nothing can be recorded — `SessionClock.at()` raises
-    # rather than invent a timebase — so the test checks both halves.
-    try:
-        win = M.MainWindow(cam_info=None, mock=True, enabled={"wheel"},
-                           cam_handle=None)
-        win._btn_free.setChecked(True)
-        r.check(not win._btn_rec.isEnabled(), "free run disables Record")
-
-        win._btn_run.setChecked(True)
-        pump(app, 0.4)
-        for _ in range(3):
-            win._display_tick()
-            pump(app, 0.03)
-
-        wheel = win._modules[0]
-        r.check(wheel.worker is not None and wheel.worker.isRunning(),
-                "…the device still runs")
-        r.check(not win._sync.running, "…with the session clock NOT started")
-        r.check(win._session_on, "…and the window still knows a session is up")
-
-        # CONTROL: the clock really is unusable, so the disabled Record button
-        # is load-bearing rather than decoration.
-        try:
-            win._clock.at(0.0)
-            clock_raised = False
-        except RuntimeError:
-            clock_raised = True
-        r.check(clock_raised,
-                "control: the unstarted clock raises rather than inventing t=0")
-
-        # Forcing Record must refuse rather than reach the Recorder.
-        win._btn_rec.setChecked(True)
-        pump(app, 0.05)
-        r.check(not win._btn_rec.isChecked() and win._recorder is None,
-                "…and forcing Record on is refused, not half-done")
-
-        win._btn_run.setChecked(False)
-        pump(app, 0.2)
-        r.check(wheel.worker is None, "free-run teardown releases the worker")
-        win.close()
-        pump(app, 0.1)
-    except Exception as e:
-        traceback.print_exc()
-        r.check(False, f"free-run: {type(e).__name__}: {e}")
-
     # ── teardown survives one module failing to stop ─────────────────────────
     # Stopping touches hardware: a stage whose serial port went away, a camera
     # that will not release. `_stop_session` stops every adapter in one loop, so

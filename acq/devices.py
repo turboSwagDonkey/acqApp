@@ -242,6 +242,33 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def is_recording(self) -> bool:
+        """Read-only: whether a session is already saving to disk.
+
+        Not `set_recording`'s job — passing it the wrong desired state to
+        "check" would actually stop a running recording as a side effect.
+        """
+        ...
+
+    def camera_preset(self, key: str) -> str | None:
+        """Module `key`'s current resolution preset, or None if it is not
+        loaded (or has no such notion of a preset)."""
+        ...
+
+    def set_camera_preset(self, key: str, preset: str) -> str | None:
+        """Switch module `key`'s resolution preset; returns the PREVIOUS key,
+        or None if the module is not loaded.
+
+        Added for the DMD calibration, which forces the voltage camera to full
+        frame before measuring (§ PLAN — a calibration measured against a
+        cropped capture area does not describe a different one, since the
+        sensor ROI shifts the frame's own pixel origin, not just its size).
+        Structural, like the operator's own combo click: it only takes effect
+        at the next session start, so a caller changing it while live has to
+        restart live view itself for it to matter.
+        """
+        ...
+
     def stage_target(self) -> Any:
         """The loaded module a routine may move, or None.
 

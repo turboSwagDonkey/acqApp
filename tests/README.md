@@ -85,8 +85,8 @@ condition they detect quietly stopped being reachable.
 These test logic against fakes. They cannot tell you that DCAM populates
 `timestamp_us` on the real ORCA-Fire, that the NI lines are wired to what the
 config says, or that the stage's serial framing matches the firmware. Those need
-the rig — start the app with one module ticked and press **Free run** to bring
-on its own.
+the rig — start the app with one module ticked and press **Live view** to bring
+it up alone.
 
 The DMD is the exception so far: `test_dmd` covers the call sequence and the
 geometry, and the same path has additionally been run against the real ALP-4.2

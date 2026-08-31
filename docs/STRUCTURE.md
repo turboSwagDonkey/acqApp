@@ -48,6 +48,7 @@ flowchart TD
     closed_loop --> acq
     closed_loop --> style
     routines --> style
+    routines --> devices
     dialogs --> config
     dialogs --> probe
     dialogs --> style
@@ -55,10 +56,13 @@ flowchart TD
     probe --> devices
 ```
 
-Two edges surprise people, so they are drawn rather than explained away:
+Three edges surprise people, so they are drawn rather than explained away:
 `probe.py → devices` (the DMD probe resolves the ALP path through
-`devices/dmd/alp.py`), and `adapters → closed_loop` (the loop is a module like
-any other, and its adapter is what arms it).
+`devices/dmd/alp.py`), `adapters → closed_loop` (the loop is a module like
+any other, and its adapter is what arms it), and `routines → devices` (a
+step's pattern picker opens `devices/dmd/roi_picker.py` to choose a saved ROI
+set — routines still touches no device directly, `adapters/routines.py` still
+is).
 
 **An instrument appears in two places and they are not duplicates:**
 
@@ -121,6 +125,8 @@ devices/                one package per instrument
     panel.py
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
     roi_panel.py        draw and edit ROIs over a snapshot
+    roi_picker.py        dialog to choose a saved ROI set: session list + Browse
+    roi_store.py         save/load named ROI sets; session/archive rotation (no Qt)
     sweep.py            runs calibration.py against the rig: the fresh-frame
                         grabber and the dialog that asks before emitting light
   puffer/

@@ -272,6 +272,9 @@ def main() -> int:
         def latest_frame(self, key): return None
         def set_live(self, on): return False
         def set_recording(self, on): return False
+        def is_recording(self): return False
+        def camera_preset(self, key): return None
+        def set_camera_preset(self, key, preset): return None
         def set_modules(self, keys): return [], []
         def stage_target(self): return None
         def pattern_target(self): return None

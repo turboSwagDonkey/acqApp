@@ -48,7 +48,7 @@ vanish partway through a file.
   with the live frame, the fitted pupil outline, the eye region, and any
   pinned reflections.
 - **Bottom status bar** — session clock, recording readout, then
-  **Emulate** / **Free run** / **Live view** / **● Record**.
+  **Emulate** / **Live view** / **● Record**.
 
 Every dock and plot panel is **draggable** — pull one out to float it, tab it
 with another, or re-dock it elsewhere. The layout is remembered across runs.
@@ -63,8 +63,9 @@ with another, or re-dock it elsewhere. The layout is remembered across runs.
 - **Emulate** swaps every device for its mock twin — flip it on to rehearse
   or test with no hardware attached, same as `--mock` at launch but
   toggleable per session.
-- **Free run** ticks a single module with no session clock and no
-  recording — for checking one instrument in isolation.
+- To check one instrument in isolation, tick only that module in the startup
+  picker and press **Live view** — the rest of the session machinery still
+  runs, but there is nothing else loaded for it to synchronize with.
 
 ## 4. Configuring an instrument
 

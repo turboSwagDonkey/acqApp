@@ -157,6 +157,10 @@ class SettingsPanel(QWidget):
                 ("Pattern…", self._pick_pattern,
                  "Set the selected step's DMD pattern file. Double-clicking "
                  "the Pattern cell does the same."),
+                ("ROI set…", self._pick_roi,
+                 "Set the selected step's pattern to a saved photostimulation "
+                 "ROI set — the same ones saved from the DMD's ROI editor — "
+                 "resolved through the current calibration when the step runs."),
                 ("No pattern", self._clear_pattern,
                  "Leave the DMD showing whatever it already has for this "
                  "step. Delete on the cell does the same — as it does on a "
@@ -313,6 +317,20 @@ class SettingsPanel(QWidget):
             "Images (*.png *.bmp *.tif);;All files (*)")
         if path:                    # empty = cancelled, which must not clear it
             self._r.steps[row].pattern = path
+            self._reload_table()
+            self._emit()
+
+    def _pick_roi(self) -> None:
+        self._pick_roi_for(self._selected())
+
+    def _pick_roi_for(self, row: int) -> None:
+        if not (0 <= row < len(self._r.steps)):
+            return
+        from acqApp.devices.dmd.roi_picker import RoiSetPicker
+
+        dlg = RoiSetPicker(self)
+        if dlg.exec() and dlg.path is not None:
+            self._r.steps[row].pattern = str(dlg.path)
             self._reload_table()
             self._emit()
 

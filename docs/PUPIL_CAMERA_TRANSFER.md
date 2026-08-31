@@ -14,9 +14,9 @@ grabs **Mono8** (8-bit grayscale) frames from a **Basler** camera via `pypylon`,
 runs a per-frame pupil detector, and reports/records the radius. Two contexts:
 
 - **Bring the pupil cam up alone** — start the app, tick only this module in the
-  startup picker, and press **Free run**: live image, pupil outline and radius
-  trace, with no session clock and no recording. This is where pupil-cam work
-  should happen first.
+  startup picker, and press **Live view**: live image, pupil outline and radius
+  trace, with nothing else loaded. This is where pupil-cam work should happen
+  first.
 
   **Turn on "Show search overlay"** in the Pupil cam settings tab for the rest
   of what `pupil_cam/_toy.py` used to give you, and the reason that toy outlived
@@ -52,8 +52,8 @@ acqApp\.venv\Scripts\python.exe acqApp\main.py --mock              # synthetic p
 acqApp\.venv\Scripts\python.exe acqApp\devices\pupil_cam\_test_tracking.py # tracker vs ground truth
 ```
 
-Tick **Pupil cam** alone in the startup picker and press **Free run** for the
-device without the session clock; Emulate falls back to the synthetic pupil.
+Tick **Pupil cam** alone in the startup picker and press **Live view** for the
+device with nothing else loaded; Emulate falls back to the synthetic pupil.
 Then tick **Show search overlay** in the Pupil cam settings tab: **click the
 image** to place the annulus by hand, green edge points were used in the fit,
 red ones were rejected as outliers, and the dashed rings are the annulus band
@@ -76,7 +76,7 @@ smoke tests use `QT_QPA_PLATFORM=offscreen`,
 | [devices/pupil_cam/_test_tracking.py](../devices/pupil_cam/_test_tracking.py) | Ground-truth validation of the tracker on synthetic eyes. No hardware. |
 | [devices/pupil_cam/control.py](../devices/pupil_cam/control.py) | `LedController` / `MockLedController` — eye-tracking LED on NI `Dev3/port0/line1`. |
 | [devices/pupil_cam/settings.py](../devices/pupil_cam/settings.py) | `PupilSettings` + `SettingsPanel` — exposure/fps, tracking params (threshold, min/max radius), LED toggle. |
-| Free run + "Show search overlay" | Bring-up and tuning, in the app: annulus band, per-ray edge points (inlier/outlier), click-to-seed. Replaced `pupil_cam/_toy.py` on 2026-08-13. |
+| Live view (one module ticked) + "Show search overlay" | Bring-up and tuning, in the app: annulus band, per-ray edge points (inlier/outlier), click-to-seed. Replaced `pupil_cam/_toy.py` on 2026-08-13. |
 | ~~pupil_cam/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records through `acq/`. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base: `get_latest`/`set_sink`/`stop` scaffolding both workers share. |
 | [acq/recorder.py](../acq/recorder.py), [acq/ring_buffer.py](../acq/ring_buffer.py), [acq/writer.py](../acq/writer.py), [acq/clock.py](../acq/clock.py) | Main-app shared-clock recording pipeline. |

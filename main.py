@@ -208,12 +208,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         # Simulated signals; OFF by default, togglable only between sessions.
         self._emulate = mock
-        # Devices without the session clock, so nothing can be recorded. Never
-        # persisted — a launch that quietly came up unable to record would be
-        # worse than useless on a rig (as with the closed loop's `armed`).
-        self._free_run = False
-        # Tracked, not read off `_sync.running`: free run leaves the sync
-        # controller deliberately stopped, so that would answer no mid-session.
         self._session_on = False
         self._enabled = (enabled if enabled is not None
                          else set(config.MODULES)) | config.ALWAYS_ON
@@ -361,6 +355,45 @@ class MainWindow(QMainWindow):
             self._btn_rec.setChecked(bool(on))
         return was
 
+    def is_recording(self) -> bool:
+        """Read-only twin of `set_recording`: whether a session is already
+        saving to disk. A caller that only needs to check must not use
+        `set_recording` for that — passing it the wrong desired state would
+        actually stop a running recording as a side effect of "checking"."""
+        return self._btn_rec.isChecked()
+
+    def _module(self, key: str):
+        """The loaded module keyed `key`, or None. The one place that scans
+        `self._modules` by key, so `latest_frame`/`camera_preset`/
+        `set_camera_preset` share a single lookup instead of three copies."""
+        for m in self._modules:
+            if m.key == key:
+                return m
+        return None
+
+    def camera_preset(self, key: str) -> str | None:
+        """Module `key`'s current resolution preset, or None if it is not
+        loaded (or has no such notion of a preset)."""
+        m = self._module(key)
+        return m.preset_key() if m is not None else None
+
+    def set_camera_preset(self, key: str, preset: str) -> str | None:
+        """Switch module `key`'s resolution preset. Returns the PREVIOUS key
+        so a caller (the DMD calibration, forcing full frame on the voltage
+        camera) can restore it, or None if that module is not loaded.
+
+        Structural, like the operator's own combo click: it only takes effect
+        the next time the session (re)starts, so a caller after a LIVE change
+        must stop and restart live view itself (`set_live`) for it to matter —
+        this does not touch whether the camera is running.
+        """
+        m = self._module(key)
+        if m is None:
+            return None
+        prev = m.preset_key()
+        m.set_preset(preset)
+        return prev
+
     def latest_frame(self, key: str):
         """The newest frame from module `key`'s camera, or None. Why it exists:
         `devices.ModuleHost`. Why it reads the cache: `ModuleAdapter.last_frame`.
@@ -368,10 +401,8 @@ class MainWindow(QMainWindow):
         Never commands the camera. Grabbing on demand would mean deciding when
         the DMD is all-on, and that is the operator's call, not this method's.
         """
-        for m in self._modules:
-            if m.key == key:
-                return m.last_frame()
-        return None
+        m = self._module(key)
+        return m.last_frame() if m is not None else None
 
     def register_pg_view(self, view) -> None:
         self._pg_views.append(view)
@@ -558,19 +589,6 @@ class MainWindow(QMainWindow):
         self._btn_run.setToolTip("Show live signals from all devices (not saved)")
         self._btn_run.toggled.connect(self._on_run_toggled)
 
-        # Devices and previews with NO session clock — what the `_toy.py`
-        # harnesses did, without a second copy of every panel. Answers "camera
-        # or my session code?" on limited rig time. Recording is impossible
-        # here: with no clock, `SessionClock.at()` raises.
-        self._btn_free = QPushButton("Free run")
-        self._btn_free.setCheckable(True)
-        self._btn_free.setStyleSheet(style.toggle_btn("stage"))
-        self._btn_free.setToolTip(
-            "Bring devices up with no session clock and no recording — for "
-            "isolating a device from the session machinery.\n"
-            "Pair with the startup module picker to run one instrument alone.")
-        self._btn_free.toggled.connect(self._on_free_toggled)
-
         # Record: live view + save to HDF5 (auto-starts live view if needed).
         # Deliberately the largest control here — it is the only one whose wrong
         # state costs an experiment, and it used to be the same size as Emulate.
@@ -597,7 +615,6 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self._lbl_time)
         sb.addPermanentWidget(self._lbl_rec)
         sb.addPermanentWidget(self._btn_emulate)
-        sb.addPermanentWidget(self._btn_free)
         sb.addPermanentWidget(self._btn_run)
         sb.addPermanentWidget(self._btn_rec)
         sb.showMessage("Ready")
@@ -848,27 +865,13 @@ class MainWindow(QMainWindow):
         else:
             self._stop_session()
 
-    def _on_free_toggled(self, on: bool) -> None:
-        """Free run: devices up, no clock, no recording."""
-        self._free_run = on
-        self._btn_rec.setEnabled(not on)
-        self._btn_rec.setToolTip(
-            "Not available in free run — with no session clock there is no "
-            "timebase to stamp samples against"
-            if on else "Live view and save every stream to disk")
-        self.status("Free run — devices only, no clock and no recording"
-                    if on else "Ready")
-
     def _start_session(self) -> None:
         # Build the workers but don't start them: the shared clock must reach
         # t=0 BEFORE any device pushes a timestamped sample.
         for m in self._modules:
             m.build_session(self._emulate)
 
-        # Free run leaves the clock unstarted on purpose: workers stamp with
-        # `perf_counter` and only the Recorder converts — and there isn't one.
-        if not self._free_run:
-            self._sync.start_all()
+        self._sync.start_all()
         for m in self._modules:
             m.start()
 
@@ -876,7 +879,6 @@ class MainWindow(QMainWindow):
         self._disp_timer.start()
         self._btn_run.setText("Stop")
         self._btn_emulate.setEnabled(False)   # can't switch real/mock mid-session
-        self._btn_free.setEnabled(False)      # …nor the clock, for the same reason
 
     def _stop_session(self) -> None:
         # Ensure recording is closed before tearing down the clock/workers.
@@ -894,14 +896,13 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.status(f"{m.key}: stop failed ({type(e).__name__}: {e})")
                 print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
-        self._sync.stop_all()          # harmless if free run never started it
+        self._sync.stop_all()
 
         self._session_on = False
         self._btn_run.setText("Live view")
         self._btn_emulate.setEnabled(True)
-        self._btn_free.setEnabled(True)
         self._lbl_time.setText("")
-        self.status("Stopped (free run)" if self._free_run else "Stopped")
+        self.status("Stopped")
 
     def _on_emulate_toggled(self, on: bool) -> None:
         # Only togglable between sessions (the button is disabled while running).
@@ -1119,13 +1120,6 @@ class MainWindow(QMainWindow):
 
     def _on_record_toggled(self, on: bool) -> None:
         if on:
-            if self._free_run:
-                # The button is disabled in free run, but a programmatic
-                # setChecked would still reach the Recorder, and every put()
-                # would raise out of a worker thread.
-                self.status("Cannot record in free run — no session clock")
-                self._btn_rec.setChecked(False)
-                return
             # Record implies live view — start the session if it isn't running.
             if not self._session_on:
                 self._btn_run.setChecked(True)   # → _start_session()

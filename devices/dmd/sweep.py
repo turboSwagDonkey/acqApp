@@ -83,7 +83,7 @@ class FreshGrabber:
                 raise CalibrationError(
                     f"no new camera frame in {self._timeout:g} s. The voltage "
                     f"camera has to be RUNNING for the sweep to see anything — "
-                    f"press Free run (or Record) and try again.")
+                    f"press Live view (or Record) and try again.")
             time.sleep(0.002)          # a bare spin starves the Qt thread
 
 

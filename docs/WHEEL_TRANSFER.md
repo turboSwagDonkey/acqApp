@@ -13,9 +13,9 @@ voltage** on the NI DAQ (`Dev3/ai2`). It's the simplest module — a single scal
 stream, no image, no device SDK (just `nidaqmx`). Two contexts:
 
 - **Bring the encoder up alone** — start the app, tick only this module in the
-  startup picker, and press **Free run**: voltage and speed traces with no
-  session clock and no recording. Where wheel work should happen first. It
-  replaced `wheel/_toy.py`, which duplicated the panel and had drifted from it.
+  startup picker, and press **Live view**: voltage and speed traces with
+  nothing else loaded. Where wheel work should happen first. It replaced
+  `wheel/_toy.py`, which duplicated the panel and had drifted from it.
 - **Main app** — `main.py`: recorded as the `/wheel` scalar stream on the shared
   clock; shown as the "Wheel velocity" trace in the Signals dock.
 
@@ -46,7 +46,7 @@ Real hardware needs **NI-DAQmx + `nidaqmx`** and the 6363 present as `Dev3`
 |------|------|
 | [devices/wheel/acquisition.py](../devices/wheel/acquisition.py) | `EncoderWorker` (real NI ai) + `MockEncoderWorker`. The poll thread. |
 | [devices/wheel/settings.py](../devices/wheel/settings.py) | `EncoderSettings` + `SettingsPanel` — channel, sample rate, and (unused) scaling fields. |
-| Free run (status bar) | Brings the encoder up with no clock and no recording — what `wheel/_toy.py` used to do. (That toy never wrote CSV; this table said it did.) |
+| Live view, one module ticked | Brings the encoder up alone — what `wheel/_toy.py` used to do. (That toy never wrote CSV; this table said it did.) |
 | ~~wheel/recording.py~~ | Deleted 2026-08-13 with the toy it served. The app records via the shared pipeline. |
 | [acq/worker.py](../acq/worker.py) | `PullWorker` base both workers subclass. |
 | [main.py](../main.py) | Builds the worker in `_start_session` (real vs mock by the Emulate toggle), records `/wheel`, plots it in `_pull_frames`. |

@@ -56,8 +56,8 @@ def toggle_btn(key: str) -> str:
 
     The disabled rule is not optional, for the reason `solid_btn` spells out: a
     stylesheet background overrides the palette, so a greyed-out button without
-    one still reads as the thing to press. Emulate and Free run are disabled
-    for the whole of a session, which is exactly when it matters.
+    one still reads as the thing to press. Emulate is disabled for the whole
+    of a session, which is exactly when it matters.
     """
     c = HEX[key]
     tint = QColor(c).lighter(185).name()

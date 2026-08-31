@@ -8,6 +8,9 @@ env/
 
 # --- Acquisition data / outputs (never commit experiment data) ---
 sessions/
+# Saved photostimulation ROI sets (devices/dmd/roi_store.py) — rig- and
+# calibration-specific, like acqapp_local.json, so not portable across rigs.
+/rois/
 *.tif
 *.tiff
 *.h5

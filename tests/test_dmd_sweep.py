@@ -169,7 +169,7 @@ def check_end_to_end(r: Report) -> None:
                        - apply_transform(M, pts)).max())
     r.check(err < 4.0,
             f"…and agrees with the transform we projected through ({err:.2f} px)")
-    r.check(n["n"] == sweep_exposures() == 1 + 2 * len(STRIPE_OFFSETS) == 19,
+    r.check(n["n"] == sweep_exposures() == 1 + 2 * len(STRIPE_OFFSETS),
             f"sweep_exposures() is what the run really costs "
             f"({sweep_exposures()} quoted, {n['n']} run) — the operator is "
             f"shown that number before any light is emitted")

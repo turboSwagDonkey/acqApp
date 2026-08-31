@@ -107,6 +107,13 @@ def isolate_user_state() -> Path:
     from acqApp.routines import templates
     templates.DIR = tmp / "routine_templates"
 
+    # Same reason: an unisolated run would rotate/write into the operator's
+    # own rois/session and rois/archive folders.
+    from acqApp.devices.dmd import roi_store
+    roi_store.SESSION_DIR = tmp / "rois" / "session"
+    roi_store.ARCHIVE_DIR = tmp / "rois" / "archive"
+    roi_store._rotated = False
+
     MemorySettings.store = {}
     import PyQt6.QtCore
     PyQt6.QtCore.QSettings = MemorySettings

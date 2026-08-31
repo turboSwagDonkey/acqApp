@@ -16,8 +16,6 @@ edits, `routines/settings.py` owns.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -25,7 +23,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem,
 )
 
-from acqApp.routines.settings import UNITS, Step
+from acqApp.routines.settings import UNITS, Step, pattern_label
 
 VALUE = Qt.ItemDataRole.UserRole
 
@@ -392,7 +390,7 @@ def _render(field: str, value) -> str:
     if field in ("x_um", "y_um"):
         return NO_CHANGE if value is None else f"{value:g} um"
     if field == "pattern":
-        return Path(value).name if value else "—"
+        return pattern_label(value) if value else "—"
     if field == "project":
         return "yes" if value else "no"
     if field == "length":
