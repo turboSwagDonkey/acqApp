@@ -116,9 +116,19 @@ class RoiEditor(QWidget):
 
     rois_changed = pyqtSignal(object)      # emits the RoiSet
 
-    def __init__(self, calib: DmdCalibration | None = None, parent=None):
+    def __init__(self, calib: DmdCalibration | None = None, parent=None, *,
+                 offset: tuple[float, float] = (0.0, 0.0)):
+        """`offset` is the active camera preset's (hpos, vpos): the sensor
+        pixel the displayed frame's (0, 0) actually is. The model (and every
+        calibration, which is always measured full-frame) stays in absolute
+        sensor coordinates; only the on-screen frame and pyqtgraph items are
+        in preset-local ones, so this is the one seam that converts between
+        them — get it wrong and every ROI drawn on a cropped preset lands
+        (hpos, vpos) away from where it was clicked.
+        """
         super().__init__(parent)
         self._calib = calib
+        self._ox, self._oy = offset
         self._set = RoiSet()
         self._items: list = []             # pyqtgraph ROI items, index-aligned
         self._image: np.ndarray | None = None
@@ -237,8 +247,8 @@ class RoiEditor(QWidget):
             self._field.setData([], [])
             return
         c = self._calib.accessible_corners()
-        self._field.setData(np.append(c[:, 0], c[0, 0]),
-                            np.append(c[:, 1], c[0, 1]))
+        self._field.setData(np.append(c[:, 0] - self._ox, c[0, 0] - self._ox),
+                            np.append(c[:, 1] - self._oy, c[0, 1] - self._oy))
 
     # ── add / remove ─────────────────────────────────────────────────────────
     def _default_centre(self) -> tuple[float, float, float]:
@@ -250,8 +260,8 @@ class RoiEditor(QWidget):
             return float(c[:, 0].mean()), float(c[:, 1].mean()), max(8.0, span / 8)
         if self._image is not None:
             h, w = self._image.shape[:2]
-            return w / 2.0, h / 2.0, max(8.0, min(w, h) / 8)
-        return 50.0, 50.0, 20.0
+            return w / 2.0 + self._ox, h / 2.0 + self._oy, max(8.0, min(w, h) / 8)
+        return 50.0 + self._ox, 50.0 + self._oy, 20.0
 
     def _on_add(self) -> None:
         cx, cy, s = self._default_centre()
@@ -266,8 +276,8 @@ class RoiEditor(QWidget):
 
     def _on_drawn(self, a, b) -> None:
         """A drag on the image became an ROI. Ignores a stray click."""
-        x0, y0 = a
-        x1, y1 = b
+        x0, y0 = a[0] + self._ox, a[1] + self._oy
+        x1, y1 = b[0] + self._ox, b[1] + self._oy
         w, h = abs(x1 - x0), abs(y1 - y0)
         if w < 3 or h < 3:              # a click, not a drag
             return
@@ -334,11 +344,12 @@ class RoiEditor(QWidget):
 
         for roi in self._set:
             if isinstance(roi, RectRoi):
-                it = pg.RectROI([roi.x - roi.w / 2, roi.y - roi.h / 2],
+                it = pg.RectROI([roi.x - roi.w / 2 - self._ox,
+                                 roi.y - roi.h / 2 - self._oy],
                                 [roi.w, roi.h], pen=_ROI_PEN, rotatable=True)
                 it.addRotateHandle([1, 0], [0.5, 0.5])
             else:
-                it = pg.CircleROI([roi.x - roi.r, roi.y - roi.r],
+                it = pg.CircleROI([roi.x - roi.r - self._ox, roi.y - roi.r - self._oy],
                                   [2 * roi.r, 2 * roi.r], pen=_ROI_PEN)
             it.sigRegionChangeFinished.connect(self._on_item_changed)
             self._vb.addItem(it)
@@ -365,12 +376,12 @@ class RoiEditor(QWidget):
                 t = np.radians(roi.angle_deg)
                 c, s = np.cos(t), np.sin(t)
                 hx, hy = roi.w / 2.0, roi.h / 2.0
-                roi.x = float(pos[0] + c * hx - s * hy)
-                roi.y = float(pos[1] + s * hx + c * hy)
+                roi.x = float(pos[0] + self._ox + c * hx - s * hy)
+                roi.y = float(pos[1] + self._oy + s * hx + c * hy)
             else:
                 roi.r = float(size[0]) / 2.0
-                roi.x = float(pos[0]) + roi.r
-                roi.y = float(pos[1]) + roi.r
+                roi.x = float(pos[0]) + self._ox + roi.r
+                roi.y = float(pos[1]) + self._oy + roi.r
 
     def _on_item_changed(self, *_a) -> None:
         self._sync_from_items()

@@ -4,9 +4,9 @@
     ...\\_roi_editor.py --image snapshot.npy      # a real ORCA frame
     ...\\_roi_editor.py --calib dmd_calib.json    # a measured registration
 
-`RoiEditor` is built and tested (`tests/test_dmd_roi.py`) but is **not wired
-into the DMD tab** — see PLAN.md §6 item 2. This is how to look at it until it
-is. Nothing here opens a device or projects anything.
+`RoiEditor` is wired into the DMD tab (`adapters/dmd.py: edit_rois`) and
+tested (`tests/test_dmd_roi.py`); this is a way to look at it against a
+synthetic or saved frame with no rig and no light attached.
 
 Without `--calib` there is no measured DMD↔camera transform, so a plausible
 stand-in is invented to draw the reachable field with: **the outline is then

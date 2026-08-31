@@ -465,6 +465,59 @@ def main() -> int:
     r.check(len(ed2.roi_set) == 1,
             "…but still allows drawing, so ROIs can be prepared beforehand")
 
+    # ── offset: a cropped preset's frame origin isn't the sensor's ─────────
+    # devices/voltage_cam/presets.py crops vertically (hpos always 0, vpos
+    # variable), and the calibration is always fit full-frame, so an ROI
+    # drawn on a cropped preset's frame must land (hpos, vpos) away in the
+    # MODEL (absolute sensor) coordinates the calibration expects — not
+    # where it was clicked on screen.
+    ox, oy = 37.0, 82.0
+    ed3 = RoiEditor(c, offset=(ox, oy))
+    ed3.set_image(np.zeros((CH, CW), np.uint8))
+    ed3._on_drawn((100.0, 80.0), (160.0, 130.0))
+    roi3 = list(ed3.roi_set)[-1]
+    r.check(abs(roi3.x - (130 + ox)) < 1 and abs(roi3.y - (105 + oy)) < 1,
+            f"a drag on a cropped preset's frame is stored in absolute "
+            f"sensor coordinates, shifted by the preset offset "
+            f"({roi3.x:.0f}, {roi3.y:.0f})")
+
+    # The on-screen item must stay where it was clicked (display-local),
+    # even though the model just stored an absolute position.
+    it3 = ed3._items[-1]
+    r.check(abs(it3.pos()[0] - 100.0) < 1 and abs(it3.pos()[1] - 80.0) < 1,
+            f"…but the on-screen item stays at the display-local drag "
+            f"position ({it3.pos()[0]:.0f}, {it3.pos()[1]:.0f})")
+
+    # Moving the on-screen (display-local) item must still write back an
+    # absolute-coordinate model position. `roi3` and the set's entry are the
+    # SAME object, so its pre-move coordinates are captured as plain floats
+    # first — reading them back off `roi3` after the move would just compare
+    # the mutated value to itself.
+    x3, y3 = roi3.x, roi3.y
+    before3 = it3.pos()
+    it3.setPos([before3[0] + 15, before3[1] - 9])
+    ed3._on_item_changed()
+    moved3 = list(ed3.roi_set)[-1]
+    r.check(abs(moved3.x - x3 - 15) < 0.6 and abs(moved3.y - y3 + 9) < 0.6,
+            "moving the on-screen item still writes an absolute-coordinate "
+            "model position")
+
+    # The reachable-field outline is absolute (calibration) space too, so it
+    # must shift into display-local coordinates the same way ROI items do.
+    corners = c.accessible_corners()
+    xdata, ydata = ed3._field.getData()
+    r.check(np.allclose(xdata[:-1], corners[:, 0] - ox)
+            and np.allclose(ydata[:-1], corners[:, 1] - oy),
+            "the reachable-field outline is drawn display-local too")
+
+    # CONTROL: zero offset (the default, and the common full-frame case)
+    # reproduces the pre-existing no-offset behaviour exactly.
+    ed4 = RoiEditor(c)
+    ed4._on_drawn((100.0, 80.0), (160.0, 130.0))
+    roi4 = list(ed4.roi_set)[-1]
+    r.check(abs(roi4.x - 130) < 1 and abs(roi4.y - 105) < 1,
+            "control: zero offset behaves exactly as before")
+
     # ── 7. saved ROI sets: session/archive storage, the picker, routines ────
     from acqApp.devices.dmd import roi_store
     from acqApp.routines.settings import pattern_label

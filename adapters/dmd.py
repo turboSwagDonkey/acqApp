@@ -134,6 +134,7 @@ class DmdModule(ModuleAdapter):
 
         from acqApp.devices.dmd.roi import RoiSet
         from acqApp.devices.dmd.roi_panel import RoiEditor
+        from acqApp.devices.voltage_cam.presets import PRESETS
 
         frame = self.win.latest_frame("voltage_cam")
         if frame is None:
@@ -146,6 +147,13 @@ class DmdModule(ModuleAdapter):
             return
 
         calib, why = self._calibration()
+        # The calibration is always fit against full-frame sensor coordinates
+        # (calibrate() forces that) — if the camera is cropped to a preset with
+        # a non-zero (hpos, vpos), the frame's own pixel (0, 0) is not the
+        # sensor's, and a click drawn on it must be shifted before it means
+        # what the calibration thinks it means.
+        preset = PRESETS.get(self.win.camera_preset("voltage_cam"))
+        offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
         dlg.resize(1000, 760)
@@ -154,7 +162,7 @@ class DmdModule(ModuleAdapter):
         from acqApp import style
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
-        ed = RoiEditor(calib)
+        ed = RoiEditor(calib, offset=offset)
         ed.set_image(frame)
         if self.panel.rois:
             ed.load(RoiSet.from_list(list(self.panel.rois)))
