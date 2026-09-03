@@ -68,21 +68,19 @@ def check_settings_roundtrip(r: Report) -> None:
 
     s = VisStimSettings(
         trial_type=TRIAL_MAP, screen_index=1, stretch_to_screen=True,
-        params=StimParams(Orientation=45.0, RegionIgnoredColumn=1.0,
-                          MapTicksPerRegion=7.0, TuningRegion=4.0,
-                          ContrastRegion=2.0),
+        params=StimParams(Orientation=45.0, MapTicksPerRegion=7.0,
+                          TuningRegion=4.0, ContrastRegion=2.0),
         loops={"Orientation": LoopVar("Orientation", (0.0, 45.0, 90.0))})
     back = VisStimSettings.from_dict(s.to_dict())
     r.check(back.trial_type == TRIAL_MAP, "trial type round-trips")
     r.check(back.screen_index == 1, "screen index round-trips")
     r.check(back.stretch_to_screen, "the stretch flag round-trips")
     r.check(back.params.Orientation == 45.0, "nested StimParams round-trips")
-    r.check(back.params.RegionIgnoredColumn == 1.0
-            and back.params.MapTicksPerRegion == 7.0
+    r.check(back.params.MapTicksPerRegion == 7.0
             and back.params.TuningRegion == 4.0
             and back.params.ContrastRegion == 2.0,
-            "the new Map*/Tuning*/Contrast*/RegionIgnoredColumn fields "
-            "round-trip like any other StimParams field")
+            "the Map*/Tuning*/Contrast* fields round-trip like any other "
+            "StimParams field")
     r.check(back.loops["Orientation"].values == (0.0, 45.0, 90.0),
             "loop values round-trip as a tuple")
     r.check(VisStimSettings.from_dict({}) == VisStimSettings(),
@@ -104,7 +102,7 @@ def check_regions(r: Report) -> None:
     from acqApp.devices.vis_stim.regions import (N_REGIONS, ignored_rect,
                                                   region_rects)
 
-    regions = region_rects(ignored_column=3, screen_w=400, screen_h=300)
+    regions = region_rects(screen_w=400, screen_h=300)
     r.check(len(regions) == N_REGIONS == 9, f"9 regions returned ({len(regions)})")
     r.check(regions[0] == (0.0, 0.0, 100.0, 100.0),
             f"region 1 is column 0's top row ({regions[0]})")
@@ -114,17 +112,8 @@ def check_regions(r: Report) -> None:
             f"region 4 starts column 1 — column-major order ({regions[3]})")
     r.check(regions[8] == (200.0, 200.0, 100.0, 100.0),
             f"region 9 is column 2's bottom row ({regions[8]})")
-    r.check(ignored_rect(3, 400, 300) == (300.0, 0.0, 100.0, 300.0),
-            "the ignored column is the 4th, full height")
-
-    # A non-default ignored column: the 9 regions still sit at their real
-    # screen position, not at a "visible-index" position.
-    mid = region_rects(ignored_column=1, screen_w=400, screen_h=300)
-    xs = sorted({x for x, _y, _w, _h in mid})
-    r.check(xs == [0.0, 200.0, 300.0],
-            f"columns 0, 2, 3 remain, at their real screen x-positions ({xs})")
-    r.check(ignored_rect(1, 400, 300) == (100.0, 0.0, 100.0, 300.0),
-            "ignoring column 1 blacks out the second column")
+    r.check(ignored_rect(400, 300) == (300.0, 0.0, 100.0, 300.0),
+            "the ignored column is always the 4th, full height")
 
 
 def check_tick_driven_map_run(r: Report) -> None:
@@ -181,18 +170,18 @@ def check_circle_geometry(r: Report) -> None:
     r.check(N_ORIENTATIONS == 8 and N_PRETRIALS == 2,
             "8 orientations, 2 pretrials")
 
-    cx, cy, d = circle_geometry(1, ignored_column=3, screen_w=400, screen_h=300)
+    cx, cy, d = circle_geometry(1, screen_w=400, screen_h=300)
     r.check((cx, cy, d) == (50.0, 50.0, 100.0),
             f"region 1's circle centred on it, diameter = region WIDTH "
             f"({cx}, {cy}, {d})")
-    cx, cy, d = circle_geometry(5, ignored_column=3, screen_w=400, screen_h=300)
+    cx, cy, d = circle_geometry(5, screen_w=400, screen_h=300)
     r.check((cx, cy, d) == (150.0, 150.0, 100.0),
             f"region 5 (2nd visible column, middle row) ({cx}, {cy}, {d})")
 
-    lo = circle_geometry(0, 3, 400, 300)
-    hi = circle_geometry(99, 3, 400, 300)
-    r.check(lo == circle_geometry(1, 3, 400, 300), "region 0 clamps to region 1")
-    r.check(hi == circle_geometry(9, 3, 400, 300),
+    lo = circle_geometry(0, 400, 300)
+    hi = circle_geometry(99, 400, 300)
+    r.check(lo == circle_geometry(1, 400, 300), "region 0 clamps to region 1")
+    r.check(hi == circle_geometry(9, 400, 300),
             "region 99 clamps to region 9, the last")
 
 
@@ -297,6 +286,112 @@ def check_tick_driven_contrast_run(r: Report) -> None:
     c.close()
 
 
+def check_tick_driven_size_run(r: Report) -> None:
+    """A size trial is also entirely tick-driven — 2 pretrials then the
+    size-fraction sweep — no pump() needed, same shape as tuning/contrast.
+    Unlike tuning/contrast, the swept quantity is the aperture's own
+    diameter, so this also checks the aperture actually shrinks."""
+    from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
+    from acqApp.devices.vis_stim.settings import (TRIAL_SIZE, StimParams,
+                                                   VisStimSettings)
+    from acqApp.devices.vis_stim.size import N_PRETRIALS, N_SIZES, \
+        SIZE_FRACTIONS
+
+    params = StimParams(WaitTrigger=1, SizeTicksPerPretrial=1,
+                        SizeTicksPerLevel=1, SizeRepeats=1, SizeRegion=1)
+    s = VisStimSettings(trial_type=TRIAL_SIZE, params=params)
+    c = VisStimController(s)
+
+    r.check(c.run() is True, "run() starts priming for a size trial too")
+    c.on_tick(0.1)                     # WaitTrigger=1 -> primed
+    r.check(c.phase == RUNNING, f"primed straight into the trial ({c.phase})")
+    r.check(c._window._solid is True,
+            "the trial opens on pretrial 1 (solid white)")
+    pretrial_radius = c._window._radius
+
+    c.on_tick(0.2)                     # pretrial 1 elapses -> pretrial 2
+    r.check(c._size_step_idx == 1 and c._window._solid,
+            f"pretrial 2 is still solid white ({c._size_step_idx})")
+    c.on_tick(0.3)                     # pretrial 2 elapses -> size step 0
+    r.check(c._size_step_idx == 2 and not c._window._solid,
+            f"the sweep starts at the first size fraction ({c._size_step_idx})")
+    ratio = c._window._radius / pretrial_radius
+    r.check(abs(ratio - SIZE_FRACTIONS[0]) < 1e-9,
+            f"the aperture actually shrinks to the first fraction of the "
+            f"pretrial's full-region size ({ratio} vs {SIZE_FRACTIONS[0]})")
+
+    delivered = 2                       # RUNNING ticks so far (0.2, 0.3)
+    total_ticks = (int(params.SizeTicksPerPretrial) * N_PRETRIALS
+                  + int(params.SizeTicksPerLevel) * N_SIZES
+                  * int(params.SizeRepeats))
+    for _ in range(total_ticks - delivered):
+        c.on_tick(0.0)
+    r.check(c.phase == IDLE,
+            f"the trial completes once the whole sweep has run ({c.phase})")
+    r.check(c.last_run_stats == {"trials_total": 1, "trials_completed": 1,
+                                 "aborted": False},
+            f"the one trial completed cleanly ({c.last_run_stats})")
+    r.check(c.trial_log[0]["size_steps_completed"] == N_PRETRIALS + N_SIZES,
+            f"all pretrial + size steps were reached ({c.trial_log[0]})")
+    c.close()
+
+
+def check_visuomotor_run(r: Report, app) -> None:
+    """Visuomotor's own thing: drift comes from a wheel-speed reader x Gain
+    each painted frame instead of a fixed temporal frequency, and the trial
+    ends on VisuomotorDurationTicks instead of PeriodsToShow — blank/stim
+    gating and geometry are otherwise the plain grating path."""
+    from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
+    from acqApp.devices.vis_stim.settings import (TRIAL_VISUOMOTOR, StimParams,
+                                                   VisStimSettings)
+
+    # No wheel_speed source injected (the default) — the common case when
+    # the wheel module isn't loaded — must degrade to a static grating,
+    # not crash.
+    params = StimParams(WaitTrigger=1, TriggersBlank=1, TriggersStim=1,
+                        VisuomotorDurationTicks=100000, VisuomotorGain=2.0,
+                        WaveSpPeriod=1000.0)
+    s = VisStimSettings(trial_type=TRIAL_VISUOMOTOR, params=params)
+    c = VisStimController(s)
+    r.check(c.run() is True, "run() starts priming for a visuomotor trial too")
+    c.on_tick(0.1)                      # WaitTrigger=1 -> primed
+    r.check(c.phase == RUNNING, f"primed straight into the trial ({c.phase})")
+    pump(app, 0.3)
+    r.check(c._xoffset == 0.0,
+            "no wheel_speed source -> the grating never drifts (stays static)")
+    c.close()
+
+    # A fixed live wheel speed injected: drift should actually move, and
+    # scale with VisuomotorGain rather than WaveTempPeriodInHz (unused here).
+    params2 = StimParams(WaitTrigger=1, TriggersBlank=1, TriggersStim=1,
+                         VisuomotorDurationTicks=100000, VisuomotorGain=1.0,
+                         WaveSpPeriod=1_000_000.0)
+    s2 = VisStimSettings(trial_type=TRIAL_VISUOMOTOR, params=params2)
+    c2 = VisStimController(s2, wheel_speed=lambda: (50.0, 0.0))
+    c2.run()
+    c2.on_tick(0.1)
+    pump(app, 0.3)
+    r.check(c2._xoffset > 0.0,
+            f"a live wheel_speed source drives the drift forward "
+            f"({c2._xoffset})")
+    c2.close()
+
+    # VisuomotorDurationTicks ends the trial on a tick count, since there's
+    # no PeriodsToShow/WaveTempPeriodInHz to count cycles of.
+    params3 = StimParams(WaitTrigger=1, TriggersBlank=100000,
+                         TriggersStim=100000, VisuomotorDurationTicks=2)
+    s3 = VisStimSettings(trial_type=TRIAL_VISUOMOTOR, params=params3)
+    c3 = VisStimController(s3)
+    c3.run()
+    c3.on_tick(0.1)                     # WaitTrigger=1 -> primed, RUNNING begins
+    c3.on_tick(0.2)                     # 1st RUNNING tick: count 1/2
+    r.check(c3.phase == RUNNING, f"tick 1/2: still running ({c3.phase})")
+    c3.on_tick(0.3)                     # 2nd RUNNING tick: count 2/2 -> ends
+    r.check(c3.phase == IDLE,
+            f"ends once VisuomotorDurationTicks is reached ({c3.phase})")
+    c3.close()
+
+
 def check_tick_driven_run(r: Report, app) -> None:
     """The whole priming -> per-trial gating -> finish flow, driven entirely
     by direct on_tick() calls — deterministic, no real DAQ or sleep-based
@@ -380,6 +475,8 @@ def main() -> int:
     check_tick_driven_map_run(r)
     check_tick_driven_tuning_run(r)
     check_tick_driven_contrast_run(r)
+    check_tick_driven_size_run(r)
+    check_visuomotor_run(r, app)
 
     from acqApp.main import MainWindow
 

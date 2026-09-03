@@ -152,8 +152,8 @@ devices/                one package per instrument
     stage_config.json   fallback copy only — the live calibration is the shared one
   vis_stim/
     circle.py           the circle-in-a-region aperture geometry (regions.py
-                        grid + region width -> diameter) tuning/contrast/
-                        (eventually size) all share, no Qt
+                        grid + region width -> diameter) tuning/contrast/size
+                        all share, no Qt
     contrast.py         contrast-tuning trial: the 6 contrast levels swept +
                         pretrial count, no Qt
     control.py          VisStimController: priming -> per-trial trigger
@@ -166,6 +166,8 @@ devices/                one package per instrument
     regions.py          the 3x3 region grid the map/tuning/contrast/size
                         trial types share, no Qt
     settings.py         StimParams/LoopVar/VisStimSettings — no Qt
+    size.py             size-tuning trial: fractions of the region's own
+                        width swept + pretrial count, no Qt
     trials.py           loop variables -> full-factorial trial list, no Qt
     tuning.py           orientation-tuning trial: the 8 orientations swept +
                         pretrial count, no Qt

@@ -15,6 +15,13 @@ Otherwise unlike a camera or encoder module, vis_stim owns no per-session
 acquisition worker: the run state machine is always-on, built in
 build_controller like puffer/DMD's controllers, matching guiVisStimDAQ.m
 building its own state at GUI construction.
+
+The Visuomotor trial type additionally needs the wheel's live speed
+(`_read_wheel_speed`) to drive the grating's drift — pooled through
+`self.win.signal_sources()`, the same mechanism closed_loop uses, rather
+than reaching for `devices/wheel` directly, so vis_stim depends on *a
+signal* and works (drift just stays at zero) whether or not the wheel
+module happens to be loaded.
 """
 from __future__ import annotations
 
@@ -67,12 +74,24 @@ class VisStimModule(ModuleAdapter):
     # ── the always-on controller ──
     def build_controller(self, emulate: bool) -> None:
         s = self.panel.settings if self.panel is not None else VisStimSettings()
-        self.controller = VisStimController(s)
+        self.controller = VisStimController(s, wheel_speed=self._read_wheel_speed)
         # One shared-clock tick = one "trigger" pulse (see control.py).
         self.win.sync.tick.connect(self.controller.on_tick)
         self.controller.progress_changed.connect(self.panel.set_progress)
         self.controller.run_state_changed.connect(self._on_run_state)
         self.controller.trial_boundary.connect(self._on_trial_boundary)
+
+    def _read_wheel_speed(self) -> tuple[float, float] | None:
+        """The Visuomotor trial's drift source — looked up fresh on every
+        call (not cached at build_controller time) via the same
+        `signal_sources()` pool closed_loop reads from, so this stays
+        correct whether the wheel module is loaded, hot-unloaded, or never
+        loaded at all. `wheel_speed_live` (the EMA, not the ~1 s-lagged
+        recorded one) so the coupling to locomotion feels immediate."""
+        for src in self.win.signal_sources():
+            if src.key == "wheel_speed_live":
+                return src.read()
+        return None
 
     def close_controller(self) -> None:
         if self.controller is not None:

@@ -25,9 +25,10 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from acqApp import style
+from acqApp.acq.sync import DEFAULT_TICK_MS
 from .settings import (IMPLEMENTED_TRIAL_TYPES, TRIAL_CONTRAST, TRIAL_GRATING,
                        TRIAL_MAP, TRIAL_SIZE, TRIAL_TUNING, TRIAL_TYPES,
                        TRIAL_VISUOMOTOR, LoopVar, StimParams, VisStimSettings,
@@ -42,7 +43,26 @@ _TRIAL_TYPE_LABELS = {
     TRIAL_VISUOMOTOR: "Visuomotor",
 }
 
-# (field, label, min, max, step, decimals)
+# The shared session clock ticks at DEFAULT_TICK_MS (main.py constructs its
+# one SyncController with it) — StimParams still stores these as raw tick
+# counts (control.py's on_tick counts them directly, and the field names
+# match the original MATLAB code for config parity), but the operator
+# shouldn't have to think in ticks, so the panel shows/edits them as seconds.
+# `_TICK_FIELDS` names which fields get that conversion; MapRepeats/
+# TuningRepeats/ContrastRepeats are sweep counts, not durations, so they're
+# left alone.
+_TICK_HZ = 1000.0 / DEFAULT_TICK_MS
+_TICK_FIELDS = frozenset({
+    "WaitTrigger", "TriggersBlank", "TriggersStim",
+    "MapTicksPerRegion", "MapTicksPerFlip",
+    "TuningTicksPerPretrial", "TuningTicksPerOrientation",
+    "ContrastTicksPerPretrial", "ContrastTicksPerLevel",
+    "SizeTicksPerPretrial", "SizeTicksPerLevel",
+    "VisuomotorDurationTicks",
+})
+
+# (field, label, min, max, step, decimals) — min/max/step are in ticks for
+# any field in _TICK_FIELDS; _field_group converts them to seconds.
 _GEOMETRY_FIELDS = [
     ("StimDiameter",  "Diameter (px)",     0, 20000, 10, 0),
     ("StimXPosition", "X position (px)", -10000, 10000, 5, 0),
@@ -58,49 +78,46 @@ _GRATING_FIELDS = [
     ("BKGColor",             "Background level",     0, 1, 0.01, 3),
     ("PeriodsToShow",        "Periods to show",      0, 1_000_000, 1, 0),
 ]
-# Counted in shared-clock ticks (10 Hz by default — acq/sync.py), not DAQ
-# pulses: see control.py's on_tick.
 _TRIGGER_FIELDS = [
-    ("WaitTrigger",   "Wait ticks (prime)", 0, 100000, 1, 0),
-    ("TriggersBlank", "Ticks per blank",    0, 100000, 1, 0),
-    ("TriggersStim",  "Ticks per stim",     0, 100000, 1, 0),
-]
-# Shared by every region-grid trial type (map/tuning/contrast/size).
-_REGION_FIELDS = [
-    ("RegionIgnoredColumn", "Ignored column (0-3)", 0, 3, 1, 0),
+    ("WaitTrigger",   "Prime wait",     0, 100000, 1, 0),
+    ("TriggersBlank", "Blank duration", 0, 100000, 1, 0),
+    ("TriggersStim",  "Stim duration",  0, 100000, 1, 0),
 ]
 # Only meaningful when Trial type = Map (see regions.py / control.py).
 _MAP_FIELDS = [
-    ("MapTicksPerRegion", "Ticks per region",       1, 100000, 1, 0),
-    ("MapTicksPerFlip",   "Ticks per flip",         1, 100000, 1, 0),
-    ("MapRepeats",        "Repeats (full passes)",  1, 1000, 1, 0),
+    ("MapTicksPerRegion", "Region duration",       1, 100000, 1, 0),
+    ("MapTicksPerFlip",   "Flip duration",         1, 100000, 1, 0),
+    ("MapRepeats",        "Repeats (full passes)", 1, 1000, 1, 0),
 ]
 # Only meaningful when Trial type = Tuning (see tuning.py / control.py).
 _TUNING_FIELDS = [
-    ("TuningRegion",             "Region (1-9)",         1, 9, 1, 0),
-    ("TuningTicksPerPretrial",   "Ticks per pretrial",   1, 100000, 1, 0),
-    ("TuningTicksPerOrientation", "Ticks per orientation", 1, 100000, 1, 0),
+    ("TuningRegion",             "Region (1-9)",          1, 9, 1, 0),
+    ("TuningTicksPerPretrial",   "Pretrial duration",     1, 100000, 1, 0),
+    ("TuningTicksPerOrientation", "Orientation duration", 1, 100000, 1, 0),
     ("TuningRepeats",            "Repeats (full sweeps)", 1, 1000, 1, 0),
 ]
 # Only meaningful when Trial type = Contrast (see contrast.py / control.py).
 _CONTRAST_FIELDS = [
     ("ContrastRegion",           "Region (1-9)",          1, 9, 1, 0),
-    ("ContrastTicksPerPretrial", "Ticks per pretrial",    1, 100000, 1, 0),
-    ("ContrastTicksPerLevel",    "Ticks per level",       1, 100000, 1, 0),
+    ("ContrastTicksPerPretrial", "Pretrial duration",     1, 100000, 1, 0),
+    ("ContrastTicksPerLevel",    "Level duration",        1, 100000, 1, 0),
     ("ContrastRepeats",          "Repeats (full sweeps)", 1, 1000, 1, 0),
 ]
-# Carried over from the MATLAB defaults for config parity — as in the current
-# .m code, none of these are read by the renderer yet (see settings.py).
-_LEGACY_FIELDS = [
-    ("BarWidth",           "Bar width",            0, 5000, 1, 2),
-    ("RotationPeriodInHz", "Rotation period (Hz)", -200, 200, 0.1, 3),
-    ("FlashPeriodInHz",    "Flash period (Hz)",    -200, 200, 0.1, 3),
-    ("LUTStart",           "LUT start",             0, 1_000_000, 1, 0),
-    ("LUTEnd",              "LUT end",              0, 1_000_000, 1, 0),
-    ("DoubleStim",           "Double stim",          0, 1, 1, 0),
-    ("FlashType",            "Flash type",           0, 100, 1, 0),
-    ("ModulationType",       "Modulation type",      0, 100, 1, 0),
-    ("WaveType",             "Wave type",            0, 100, 1, 0),
+# Only meaningful when Trial type = Size (see size.py / control.py). Sweeps
+# fractions of the region's own width (size.SIZE_FRACTIONS), not a field.
+_SIZE_FIELDS = [
+    ("SizeRegion",           "Region (1-9)",          1, 9, 1, 0),
+    ("SizeTicksPerPretrial", "Pretrial duration",     1, 100000, 1, 0),
+    ("SizeTicksPerLevel",    "Size step duration",    1, 100000, 1, 0),
+    ("SizeRepeats",          "Repeats (full sweeps)", 1, 1000, 1, 0),
+]
+# Only meaningful when Trial type = Visuomotor (see control.py's
+# _begin_visuomotor_trial/_visuomotor_frame). Everything else the grating
+# needs (geometry, spatial period, contrast, ...) is shared with Grating —
+# only the drift source and trial length differ.
+_VISUOMOTOR_FIELDS = [
+    ("VisuomotorGain", "Gain (px drift / wheel unit)", -100, 100, 0.1, 3),
+    ("VisuomotorDurationTicks", "Trial duration", 1, 100000, 1, 0),
 ]
 
 
@@ -119,25 +136,31 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._trial_type_group())
-        root.addWidget(self._field_group("Stimulus geometry", _GEOMETRY_FIELDS))
-        root.addWidget(self._field_group("Grating & timing", _GRATING_FIELDS))
-        root.addWidget(self._field_group("Trial timing (shared clock ticks)",
-                                         _TRIGGER_FIELDS))
-        root.addWidget(self._field_group(
-            "Region grid — used by Map/Tuning/Contrast/Size", _REGION_FIELDS))
-        root.addWidget(self._field_group(
-            "Map trial — used when Trial type = Map", _MAP_FIELDS))
-        root.addWidget(self._field_group(
-            "Tuning trial — used when Trial type = Tuning", _TUNING_FIELDS))
-        root.addWidget(self._field_group(
-            "Contrast trial — used when Trial type = Contrast",
-            _CONTRAST_FIELDS))
-        root.addWidget(self._field_group("Flash / LUT (not yet rendered)",
-                                         _LEGACY_FIELDS))
+        self._grp_geometry = self._field_group("Stimulus geometry",
+                                                _GEOMETRY_FIELDS)
+        root.addWidget(self._grp_geometry)
+        self._grp_grating = self._field_group("Grating & timing", _GRATING_FIELDS)
+        root.addWidget(self._grp_grating)
+        self._grp_trigger = self._field_group(
+            "Trial timing (shared clock ticks)", _TRIGGER_FIELDS)
+        root.addWidget(self._grp_trigger)
+        self._grp_map = self._field_group("Map trial", _MAP_FIELDS)
+        root.addWidget(self._grp_map)
+        self._grp_tuning = self._field_group("Tuning trial", _TUNING_FIELDS)
+        root.addWidget(self._grp_tuning)
+        self._grp_contrast = self._field_group("Contrast trial",
+                                               _CONTRAST_FIELDS)
+        root.addWidget(self._grp_contrast)
+        self._grp_size = self._field_group("Size trial", _SIZE_FIELDS)
+        root.addWidget(self._grp_size)
+        self._grp_visuomotor = self._field_group("Visuomotor trial",
+                                                  _VISUOMOTOR_FIELDS)
+        root.addWidget(self._grp_visuomotor)
         root.addWidget(self._loop_group())
         root.addWidget(self._display_group())
         root.addWidget(self._run_group())
         root.addStretch()
+        self._update_group_visibility()
 
     # ── trial type ────────────────────────────────────────────────────────
     def _trial_type_group(self) -> QGroupBox:
@@ -157,8 +180,52 @@ class SettingsPanel(QWidget):
         idx = self._cmb_trial.findData(self._s.trial_type)
         self._cmb_trial.setCurrentIndex(idx if idx >= 0 else 0)
         self._cmb_trial.currentIndexChanged.connect(self._emit)
+        self._cmb_trial.currentIndexChanged.connect(self._update_group_visibility)
         lay.addRow("Type:", self._cmb_trial)
         return grp
+
+    def _update_group_visibility(self, *_a) -> None:
+        """Show only what control.py actually reads for the selected Trial
+        type. Map/Tuning/Contrast/Size each build their own trial in
+        control.py's `_begin_map_trial`/`_begin_tuning_trial`/
+        `_begin_contrast_trial`/`_begin_size_trial`; Grating and Visuomotor
+        both fall through to the plain-grating code path instead
+        (`_begin_grating_trial`/`_begin_visuomotor_trial`), so grating
+        fields stay live for Visuomotor too — only its own duration/gain
+        fields and the drift source differ (`_visuomotor_frame`).
+
+        Within "Stimulus geometry", Map/Tuning/Size override Diameter/X/Y
+        entirely (region-derived geometry) so none of it applies; Contrast
+        and Size both leave Orientation live (it still rotates the grating
+        drawn inside the circle) while Tuning/Map don't — see control.py's
+        `_begin_*_trial` methods."""
+        t = self._cmb_trial.currentData()
+        region_like = t in (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
+        grating_like = not region_like
+        self._grp_map.setVisible(t == TRIAL_MAP)
+        self._grp_tuning.setVisible(t == TRIAL_TUNING)
+        self._grp_contrast.setVisible(t == TRIAL_CONTRAST)
+        self._grp_size.setVisible(t == TRIAL_SIZE)
+        self._grp_visuomotor.setVisible(t == TRIAL_VISUOMOTOR)
+
+        self._grp_grating.setVisible(grating_like)
+        # WaveTempPeriodInHz/PeriodsToShow drive the fixed-frequency drift
+        # _begin_grating_trial uses; Visuomotor drives drift from the wheel
+        # instead (_visuomotor_frame), so neither applies there.
+        grating_lay = self._grp_grating.layout()
+        for name in ("WaveTempPeriodInHz", "PeriodsToShow"):
+            grating_lay.setRowVisible(self._spins[name], t != TRIAL_VISUOMOTOR)
+
+        trig_lay = self._grp_trigger.layout()
+        for name in ("TriggersBlank", "TriggersStim"):
+            trig_lay.setRowVisible(self._spins[name], grating_like)
+
+        geo_lay = self._grp_geometry.layout()
+        show_orientation = grating_like or t in (TRIAL_CONTRAST, TRIAL_SIZE)
+        for name in ("StimDiameter", "StimXPosition", "StimYPosition"):
+            geo_lay.setRowVisible(self._spins[name], grating_like)
+        geo_lay.setRowVisible(self._spins["Orientation"], show_orientation)
+        self._grp_geometry.setVisible(grating_like or show_orientation)
 
     def _field_group(self, title: str, fields) -> QGroupBox:
         grp = QGroupBox(title)
@@ -166,10 +233,17 @@ class SettingsPanel(QWidget):
         lay.setSpacing(4)
         for name, label, lo, hi, step, dec in fields:
             spin = QDoubleSpinBox()
-            spin.setRange(lo, hi)
-            spin.setSingleStep(step)
-            spin.setDecimals(dec)
-            spin.setValue(getattr(self._s.params, name))
+            if name in _TICK_FIELDS:
+                spin.setRange(lo / _TICK_HZ, hi / _TICK_HZ)
+                spin.setSingleStep(max(step / _TICK_HZ, 0.1 / _TICK_HZ))
+                spin.setDecimals(max(dec, 2))
+                spin.setSuffix(" s")
+                spin.setValue(getattr(self._s.params, name) / _TICK_HZ)
+            else:
+                spin.setRange(lo, hi)
+                spin.setSingleStep(step)
+                spin.setDecimals(dec)
+                spin.setValue(getattr(self._s.params, name))
             spin.valueChanged.connect(self._emit)
             self._spins[name] = spin
             lay.addRow(f"{label}:", spin)
@@ -255,6 +329,13 @@ class SettingsPanel(QWidget):
         self._cmb_screen.currentIndexChanged.connect(self._emit)
         lay.addRow("Show on:", self._cmb_screen)
 
+        self._btn_identify = QPushButton("Identify displays")
+        self._btn_identify.setToolTip(
+            "Briefly show each display's number/name on that monitor, so "
+            "you can match it to a \"Show on:\" entry above.")
+        self._btn_identify.clicked.connect(self._identify_displays)
+        lay.addRow(self._btn_identify)
+
         self._chk_stretch = QCheckBox("Stretch to screen")
         self._chk_stretch.setChecked(self._s.stretch_to_screen)
         self._chk_stretch.toggled.connect(self._emit)
@@ -271,6 +352,32 @@ class SettingsPanel(QWidget):
         if 0 <= self._s.screen_index < self._cmb_screen.count():
             self._cmb_screen.setCurrentIndex(self._s.screen_index)
         self._cmb_screen.blockSignals(False)
+
+    def _identify_displays(self) -> None:
+        """One borderless window per connected screen, each showing that
+        screen's index/name — the same index/name shown in "Show on:" — so
+        the operator can match a combo entry to a physical monitor without
+        trial-and-error. Self-closes after a few seconds."""
+        self._identify_windows: list[QWidget] = []
+        for i, scr in enumerate(QGuiApplication.screens()):
+            win = QWidget(None, Qt.WindowType.FramelessWindowHint
+                              | Qt.WindowType.WindowStaysOnTopHint)
+            win.setStyleSheet("background-color: black;")
+            win.setGeometry(scr.geometry())
+            lbl = QLabel(f"{i}\n{scr.name()}", win)
+            lbl.setStyleSheet(
+                "color: white; font-size: 96px; font-weight: bold;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            QVBoxLayout(win).addWidget(lbl)
+            win.show()
+            self._identify_windows.append(win)
+        QTimer.singleShot(3000, self._close_identify_windows)
+
+    def _close_identify_windows(self) -> None:
+        for win in getattr(self, "_identify_windows", []):
+            win.close()
+            win.deleteLater()
+        self._identify_windows = []
 
     # ── run ───────────────────────────────────────────────────────────────
     def _run_group(self) -> QGroupBox:
@@ -310,8 +417,10 @@ class SettingsPanel(QWidget):
 
     @property
     def settings(self) -> VisStimSettings:
-        p = StimParams(**{name: spin.value()
-                          for name, spin in self._spins.items()})
+        p = StimParams(**{
+            name: (round(spin.value() * _TICK_HZ) if name in _TICK_FIELDS
+                  else spin.value())
+            for name, spin in self._spins.items()})
         return VisStimSettings(
             trial_type=self._cmb_trial.currentData() or TRIAL_GRATING,
             screen_index=max(0, self._cmb_screen.currentIndex()),

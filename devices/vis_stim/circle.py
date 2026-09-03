@@ -12,11 +12,10 @@ from __future__ import annotations
 from . import regions as regions_mod
 
 
-def circle_geometry(region_1based: int, ignored_column: int,
-                    screen_w: int, screen_h: int
+def circle_geometry(region_1based: int, screen_w: int, screen_h: int
                     ) -> tuple[float, float, float]:
     """(center_x, center_y, diameter) for the aperture."""
-    regs = regions_mod.region_rects(ignored_column, screen_w, screen_h)
+    regs = regions_mod.region_rects(screen_w, screen_h)
     idx = max(0, min(int(region_1based) - 1, len(regs) - 1))
     x, y, w, h = regs[idx]
     return (x + w / 2.0, y + h / 2.0, w)

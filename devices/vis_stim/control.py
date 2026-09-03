@@ -29,6 +29,19 @@ drifting grating above, or:
   `contrast` the same circle, sweeping the grating's Contrast through fixed
            levels (`contrast.py`) instead of Orientation — otherwise the
            same 2-pretrial-then-sweep shape as tuning.
+  `size`   the same circle, sweeping the circle's own diameter through
+           fixed fractions of the region's width (`size.py`) instead of
+           Orientation/Contrast — otherwise the same 2-pretrial-then-sweep
+           shape as tuning/contrast.
+  `visuomotor` a normal drifting grating (full StimParams geometry, same as
+           plain Grating) except the drift offset each painted frame is
+           driven by the wheel's live speed (`_visuomotor_frame`) instead of
+           a fixed WaveTempPeriodInHz, scaled by VisuomotorGain — the
+           classic locomotion/optic-flow closed-loop coupling. Blank/stim
+           gating is still tick-counted exactly like Grating
+           (`_grating_gate_tick`); trial length is VisuomotorDurationTicks
+           instead of PeriodsToShow, since there is no fixed temporal
+           frequency to count cycles of.
 Priming (`WaitTrigger`) is shared by every trial type; `_begin_trial`/
 `_gate_tick`/`_on_frame` each branch to a trial-type-specific half.
 """
@@ -36,7 +49,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, replace
-from typing import Any
+from typing import Any, Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
@@ -44,11 +57,18 @@ from PyQt6.QtGui import QGuiApplication
 from . import circle as circle_mod
 from . import contrast as contrast_mod
 from . import regions as regions_mod
+from . import size as size_mod
 from . import trials as trials_mod
 from . import tuning as tuning_mod
-from .settings import (TRIAL_CONTRAST, TRIAL_MAP, TRIAL_TUNING, StimParams,
-                       VisStimSettings)
+from .settings import (TRIAL_CONTRAST, TRIAL_MAP, TRIAL_SIZE, TRIAL_TUNING,
+                       TRIAL_VISUOMOTOR, StimParams, VisStimSettings)
 from .window import StimDisplay
+
+# A region/tick-based trial type builds its own geometry and finishes on
+# ticks, not painted frames or a fixed temporal frequency — Grating and
+# Visuomotor both fall through to the plain-grating code path instead
+# (_begin_grating_trial/_begin_visuomotor_trial), so they're excluded here.
+_REGION_TRIAL_TYPES = (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
 
 IDLE, PRIMING, RUNNING = "IDLE", "PRIMING", "RUNNING"
 
@@ -60,11 +80,18 @@ class VisStimController(QObject):
     # Recorder, the same shape adapters/routines.py uses for step boundaries.
     trial_boundary = pyqtSignal(int, bool, object)
 
-    def __init__(self, settings: VisStimSettings, parent=None) -> None:
+    def __init__(self, settings: VisStimSettings, parent=None,
+                 wheel_speed: Callable[[], tuple[float, float] | None] | None
+                 = None) -> None:
         super().__init__(parent)
         self._s = settings
         self._phase = IDLE
         self._window: StimDisplay | None = None
+        # visuomotor trial only — a live-speed reader the adapter injects
+        # (mirrors closed_loop's SignalSource.read: (value, acquired_at) or
+        # None while unavailable). None if no wheel module is loaded; the
+        # trial then just degrades to a static grating rather than crashing.
+        self._wheel_speed = wheel_speed
 
         # Run-time state, valid only while PRIMING/RUNNING.
         self._prime_count = 0
@@ -102,6 +129,16 @@ class VisStimController(QObject):
         self._contrast_tick_count = 0
         self._contrast_total_steps = 0
         self._contrast_total_ticks = 0
+        # size trial only
+        self._size_base: StimParams | None = None
+        self._size_region_diameter = 0.0
+        self._size_step_idx = 0
+        self._size_tick_in_step = 0
+        self._size_tick_count = 0
+        self._size_total_steps = 0
+        self._size_total_ticks = 0
+        # visuomotor trial only
+        self._visuomotor_tick_count = 0
         # Per-trial records (params + outcome) for final_metadata — rec.put()
         # only ever carries a float (Writer.write coerces via float(data)), so
         # the detail travels as one JSON file attribute at the end, the same
@@ -178,7 +215,7 @@ class VisStimController(QObject):
         # Regions/tuning circles already have their own explicit geometry;
         # stretch-to-screen is a plain-grating concept and has nothing to
         # act on here.
-        if (self._s.trial_type not in (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST)
+        if (self._s.trial_type not in _REGION_TRIAL_TYPES
                 and self._s.stretch_to_screen):
             diag = int((w * w + h * h) ** 0.5) + 1
             self._trials = [replace(t, StimDiameter=diag, StimXPosition=0.0,
@@ -197,6 +234,10 @@ class VisStimController(QObject):
             self._begin_tuning_trial(p)
         elif self._s.trial_type == TRIAL_CONTRAST:
             self._begin_contrast_trial(p)
+        elif self._s.trial_type == TRIAL_SIZE:
+            self._begin_size_trial(p)
+        elif self._s.trial_type == TRIAL_VISUOMOTOR:
+            self._begin_visuomotor_trial(p)
         else:
             self._begin_grating_trial(p)
         self.trial_boundary.emit(self._trial_idx, True, asdict(p))
@@ -231,8 +272,8 @@ class VisStimController(QObject):
 
     def _begin_map_trial(self, p: StimParams) -> None:
         w, h = self._window.width(), self._window.height()
-        ignored = regions_mod.ignored_rect(p.RegionIgnoredColumn, w, h)
-        regions = regions_mod.region_rects(p.RegionIgnoredColumn, w, h)
+        ignored = regions_mod.ignored_rect(w, h)
+        regions = regions_mod.region_rects(w, h)
         self._window.set_map_trial(ignored, regions, p.BKGColor)
         self._map_region_idx = 0
         self._map_tick_in_region = 0
@@ -248,8 +289,7 @@ class VisStimController(QObject):
 
     def _begin_tuning_trial(self, p: StimParams) -> None:
         w, h = self._window.width(), self._window.height()
-        cx, cy, diameter = circle_mod.circle_geometry(
-            p.TuningRegion, p.RegionIgnoredColumn, w, h)
+        cx, cy, diameter = circle_mod.circle_geometry(p.TuningRegion, w, h)
         # The plain grating's own render path, just repositioned/resized to
         # the region — "a normal grating within that circle" needs no new
         # paint code, only these three fields swapped from the operator's.
@@ -272,8 +312,7 @@ class VisStimController(QObject):
 
     def _begin_contrast_trial(self, p: StimParams) -> None:
         w, h = self._window.width(), self._window.height()
-        cx, cy, diameter = circle_mod.circle_geometry(
-            p.ContrastRegion, p.RegionIgnoredColumn, w, h)
+        cx, cy, diameter = circle_mod.circle_geometry(p.ContrastRegion, w, h)
         # Unlike orientation, Contrast bakes into the grating texture itself
         # (grating.build_grating), so each level needs a real set_trial()
         # rebuild rather than a lightweight setter — _contrast_base is kept
@@ -298,6 +337,57 @@ class VisStimController(QObject):
               * contrast_mod.N_LEVELS * repeats)
         self._trial_t0 = time.perf_counter()
 
+    def _begin_size_trial(self, p: StimParams) -> None:
+        w, h = self._window.width(), self._window.height()
+        cx, cy, region_diameter = circle_mod.circle_geometry(p.SizeRegion, w, h)
+        # Unlike contrast/tuning, the SWEPT quantity here is the aperture's
+        # own diameter — center stays fixed at the region's center, but each
+        # step needs a real set_trial() rebuild (geometry, not just texture).
+        # The pretrial flash is shown at the full region size (fraction 1.0)
+        # regardless of the sweep, same "fixed reference size" role
+        # tuning/contrast's constant-size pretrial plays.
+        self._size_base = replace(p, StimXPosition=cx - w / 2.0,
+                                  StimYPosition=cy - h / 2.0)
+        self._size_region_diameter = region_diameter
+        self._window.set_trial(
+            replace(self._size_base, StimDiameter=region_diameter), w, h)
+        self._window.set_visible(True)
+        self._window.set_solid(True)      # pretrial 1 starts white
+        self._size_step_idx = 0
+        self._size_tick_in_step = 0
+        self._size_tick_count = 0
+        repeats = max(1, int(p.SizeRepeats))
+        self._size_total_steps = (size_mod.N_PRETRIALS
+                                  + size_mod.N_SIZES * repeats)
+        self._size_total_ticks = (
+            max(1, int(p.SizeTicksPerPretrial)) * size_mod.N_PRETRIALS
+            + max(1, int(p.SizeTicksPerLevel)) * size_mod.N_SIZES * repeats)
+        self._trial_t0 = time.perf_counter()
+
+    def _begin_visuomotor_trial(self, p: StimParams) -> None:
+        """Full grating geometry/appearance, same as plain Grating — only the
+        per-frame drift source and the trial-length condition differ (see
+        `_visuomotor_frame`/`_grating_gate_tick`), so this is
+        `_begin_grating_trial` minus the WaveTempPeriodInHz/PeriodsToShow
+        bookkeeping that drift source replaces."""
+        w, h = self._window.width(), self._window.height()
+        mask_key = (p.StimDiameter, p.StimXPosition, p.StimYPosition,
+                   p.WaveSpPeriod, p.Contrast, p.Orientation, p.Phase,
+                   p.BKGColor)
+        if mask_key != self._last_mask_key:
+            self._window.set_trial(p, w, h)
+            self._last_mask_key = mask_key
+        self._xoffset = float(p.Phase)
+        self._window.set_offset(self._xoffset)
+        self._is_stim_phase = False
+        self._is_visible = False
+        self._window.set_visible(False)
+        self._trigger_count = 0
+        self._visuomotor_tick_count = 0
+        self._blank_frames = 0
+        self._stim_frames = 0
+        self._trial_t0 = time.perf_counter()
+
     def _gate_tick(self) -> None:
         """One shared-clock tick arrived while RUNNING — the direct analog of
         one DAQ edge in runAnimationLoop's per-sample loop."""
@@ -307,6 +397,8 @@ class VisStimController(QObject):
             self._tuning_tick()
         elif self._s.trial_type == TRIAL_CONTRAST:
             self._contrast_tick()
+        elif self._s.trial_type == TRIAL_SIZE:
+            self._size_tick()
         else:
             self._grating_gate_tick()
 
@@ -321,6 +413,16 @@ class VisStimController(QObject):
             self._trigger_count = 0
         if self._window is not None:
             self._window.set_visible(self._is_visible)
+        # Grating's own trial length is frame-counted in `_on_frame`
+        # (PeriodsToShow/WaveTempPeriodInHz); Visuomotor has no fixed
+        # temporal frequency to count cycles of, so it's tick-counted here
+        # instead, same mechanism as WaitTrigger/TriggersBlank/TriggersStim.
+        if self._s.trial_type == TRIAL_VISUOMOTOR:
+            self._visuomotor_tick_count += 1
+            if self._visuomotor_tick_count >= max(
+                    1, int(p.VisuomotorDurationTicks)):
+                self._end_trial(interrupted=False)
+                self._advance_trial()
 
     def _map_tick(self) -> None:
         """One tick: advance the white/black flip and, every
@@ -421,15 +523,57 @@ class VisStimController(QObject):
             self._window.set_trial(replace(self._contrast_base, Contrast=level),
                                    w, h)
 
+    def _size_tick(self) -> None:
+        """One tick: the current step (a pretrial or a size fraction) counts
+        down; when it runs out, move to the next step in the fixed sequence
+        [pretrial, pretrial, size 0, 1, ..., N-1 (x SizeRepeats)]."""
+        p = self._trials[self._trial_idx]
+        self._size_tick_count += 1
+        is_pretrial = self._size_step_idx < size_mod.N_PRETRIALS
+        duration = (p.SizeTicksPerPretrial if is_pretrial
+                   else p.SizeTicksPerLevel)
+
+        self._size_tick_in_step += 1
+        if self._size_tick_in_step >= max(1, int(duration)):
+            self._size_tick_in_step = 0
+            self._size_step_idx += 1
+            self._apply_size_step()
+
+        if self._size_tick_count >= self._size_total_ticks:
+            self._end_trial(interrupted=False)
+            self._advance_trial()
+
+    def _apply_size_step(self) -> None:
+        """Push whatever the new `_size_step_idx` calls for onto the window
+        — white at full region size for the 2 pretrials, else the next size
+        fraction (a full set_trial() rebuild, since the aperture's own
+        diameter is what's swept, not just the texture)."""
+        if (self._window is None
+                or self._size_step_idx >= self._size_total_steps):
+            return                        # the trial is ending this tick anyway
+        if self._size_step_idx < size_mod.N_PRETRIALS:
+            self._window.set_solid(True)
+        else:
+            k = self._size_step_idx - size_mod.N_PRETRIALS
+            fraction = size_mod.SIZE_FRACTIONS[k % size_mod.N_SIZES]
+            w, h = self._window.width(), self._window.height()
+            self._window.set_trial(
+                replace(self._size_base,
+                       StimDiameter=self._size_region_diameter * fraction),
+                w, h)
+
     def _on_frame(self) -> None:
         """One painted frame — advances the drift phase and frame counters.
         Phase gating itself happens in `_gate_tick`, on its own (slower,
         shared) cadence; this only reads whatever `_is_visible` currently is.
-        `map`/`tuning`/`contrast` trials have no per-frame drift or
+        `map`/`tuning`/`contrast`/`size` trials have no per-frame drift or
         frame-count completion — they finish on ticks, so this is a no-op
-        for them."""
-        if (self._phase != RUNNING
-                or self._s.trial_type in (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST)):
+        for them. `visuomotor` has its own per-frame drift source
+        (`_visuomotor_frame`) instead of the fixed-frequency one below."""
+        if self._phase != RUNNING or self._s.trial_type in _REGION_TRIAL_TYPES:
+            return
+        if self._s.trial_type == TRIAL_VISUOMOTOR:
+            self._visuomotor_frame()
             return
         if self._frame_i >= self._total_frames:
             self._end_trial(interrupted=False)
@@ -446,6 +590,34 @@ class VisStimController(QObject):
             p.WaveSpPeriod, 1e-9)
         self._window.set_offset(self._xoffset)
         self._frame_i += 1
+
+    def _visuomotor_frame(self) -> None:
+        """Per painted frame: advance the drift phase by however far the
+        wheel actually moved since the last frame, scaled by
+        VisuomotorGain — a stationary wheel means a stationary grating,
+        closing the loop between locomotion and optic flow. Trial-end and
+        blank/stim gating are tick-driven, in `_grating_gate_tick`, same as
+        the plain grating; this only ever updates the offset."""
+        if self._is_visible:
+            self._stim_frames += 1
+        else:
+            self._blank_frames += 1
+        p = self._trials[self._trial_idx]
+        speed = self._read_wheel_speed()
+        ifi = 1.0 / self._fps
+        self._xoffset = (self._xoffset + speed * p.VisuomotorGain * ifi) % max(
+            p.WaveSpPeriod, 1e-9)
+        self._window.set_offset(self._xoffset)
+
+    def _read_wheel_speed(self) -> float:
+        """Live wheel speed, in whatever unit the wheel module itself
+        reports (mm/s with a diameter configured there, else rev/s) — 0.0 if
+        no wheel is loaded or it hasn't produced a sample yet, which is what
+        makes Visuomotor degrade to a static grating instead of crashing."""
+        if self._wheel_speed is None:
+            return 0.0
+        sample = self._wheel_speed()
+        return 0.0 if sample is None else float(sample[0])
 
     def _advance_trial(self) -> None:
         if self._trial_idx + 1 < len(self._trials):
@@ -468,6 +640,9 @@ class VisStimController(QObject):
         elif self._s.trial_type == TRIAL_CONTRAST:
             record["contrast_ticks"] = self._contrast_tick_count
             record["contrast_steps_completed"] = self._contrast_step_idx
+        elif self._s.trial_type == TRIAL_SIZE:
+            record["size_ticks"] = self._size_tick_count
+            record["size_steps_completed"] = self._size_step_idx
         else:
             record["blank_frames"] = self._blank_frames
             record["stim_frames"] = self._stim_frames
@@ -495,9 +670,20 @@ class VisStimController(QObject):
 
     def _finish_run(self, *, aborted: bool) -> None:
         self.last_run_stats["aborted"] = aborted
+        n = len(self._trials)
+        done = self.last_run_stats["trials_completed"]
         self._teardown_window()
         self._phase = IDLE
-        self.progress_changed.emit("Progress: 0%")
+        # _begin_trial only ever reports "trials completed so far", so a run
+        # that finishes normally never actually showed 100% — it just
+        # dropped straight back to "Progress: 0%", indistinguishable from a
+        # run that was stopped early. Report the real outcome instead.
+        if aborted:
+            self.progress_changed.emit(
+                f"Progress: stopped ({done}/{n} trials completed)")
+        else:
+            self.progress_changed.emit(
+                f"Progress: 100%   {done}/{n} trials complete")
         self.run_state_changed.emit(IDLE)
 
     def _teardown_window(self) -> None:

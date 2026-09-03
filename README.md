@@ -105,8 +105,13 @@ plain grating swept through 8 orientations (0°-315° in 45° steps), preceded
 by 2 white "pretrial" flashes — again one continuous, tick-timed trial.
 **Contrast** is the same shape, sweeping the grating's contrast through six
 fixed levels (0, 0.1, 0.25, 0.5, 0.75, 1.0) instead of orientation, also
-preceded by the 2 white pretrials. Two more paradigms (size, visuomotor) are
-named in the selector for the roadmap but not yet built.
+preceded by the 2 white pretrials. **Size** is the same shape again,
+sweeping the circle's own diameter through five fractions of the region's
+width (0.2-1.0) instead of orientation/contrast. **Visuomotor** is a normal
+drifting grating like the plain one, except its drift is driven by the
+wheel's live speed each frame (scaled by a Gain parameter) instead of a
+fixed temporal frequency — the standard locomotion/optic-flow closed-loop
+coupling; with no wheel module loaded it just stays a static grating.
 
 ## Running
 

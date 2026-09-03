@@ -19,6 +19,12 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from acqApp.acq.clock import AbstractClock, SessionClock
 
+# main.py constructs the app's one SyncController with this; anything that
+# needs to convert its own tick-counted units to/from seconds (e.g.
+# devices/vis_stim/panel.py) should import it rather than re-hardcoding the
+# rate, so the two can't drift apart.
+DEFAULT_TICK_MS = 100
+
 
 @dataclass
 class _TriggerSpec:
@@ -37,7 +43,7 @@ class SyncController(QObject):
     trigger_fired  = pyqtSignal(str, float) # (trigger_name, duration_s)
 
     def __init__(self, clock: AbstractClock | None = None,
-                 tick_ms: int = 100, parent=None):
+                 tick_ms: int = DEFAULT_TICK_MS, parent=None):
         super().__init__(parent)
         self._clock: AbstractClock = clock or SessionClock()
         self._triggers: list[_TriggerSpec] = []

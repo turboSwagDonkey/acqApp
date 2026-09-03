@@ -8,11 +8,12 @@ periodic tick instead (`acq/sync.py`'s SyncController, 10 Hz by default) —
 the same timing sequence every other module already shares, rather than
 inventing a second one. See control.py's `on_tick`.
 
-BarWidth, RotationPeriodInHz, FlashPeriodInHz, LUTStart/End, DoubleStim,
-FlashType, ModulationType and WaveType are carried over from the MATLAB
-defaults for config parity — but, as in the current .m code, nothing renders
-them yet; only a drifting sinusoid (the MATLAB default WaveType) is
-implemented (`grating.py`).
+Only a drifting sinusoid is implemented (`grating.py`); the MATLAB defaults'
+other wave/flash/LUT fields (BarWidth, RotationPeriodInHz, FlashPeriodInHz,
+LUTStart/End, DoubleStim, FlashType, ModulationType, WaveType) were dropped
+rather than carried over unrendered — nothing in this codebase ever read
+them, and a saved config's stale values for them are just ignored by
+`from_dict` like any other unknown key.
 
 `VisStimSettings` nests `StimParams`/`LoopVar`, so it does not go through
 config.load_dataclass (that helper only handles flat dataclasses — see
@@ -21,9 +22,10 @@ to_dict/from_dict instead, the same shape as routines/settings.py's Routine.
 
 Beyond the grating, `VisStimSettings.trial_type` selects among the
 paradigms the operator's rig runs — string constants, the same convention
-`devices/dmd/control.py` uses for MODE_ALL_ON/MODE_PATTERN/MODE_ROI. Only
-`TRIAL_GRATING` and `TRIAL_MAP` are implemented; the rest are reserved names
-the panel shows but disables, so the roadmap is visible.
+`devices/dmd/control.py` uses for MODE_ALL_ON/MODE_PATTERN/MODE_ROI. All six
+are implemented (control.py); `IMPLEMENTED_TRIAL_TYPES` exists so a future
+reserved-but-unbuilt paradigm can still be named in the panel (shown,
+disabled) before its control.py half exists.
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ TRIAL_SIZE       = "size"
 TRIAL_VISUOMOTOR = "visuomotor"
 TRIAL_TYPES = (TRIAL_GRATING, TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST,
               TRIAL_SIZE, TRIAL_VISUOMOTOR)
-IMPLEMENTED_TRIAL_TYPES = (TRIAL_GRATING, TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST)
+IMPLEMENTED_TRIAL_TYPES = TRIAL_TYPES
 
 
 @dataclass
@@ -53,22 +55,10 @@ class StimParams:
     StimXPosition: float = 0.0
     StimYPosition: float = 0.0
     PeriodsToShow: float = 1000.0
-    BarWidth: float = 6.0
-    RotationPeriodInHz: float = 0.0
     BKGColor: float = 0.5
-    FlashPeriodInHz: float = 0.0
-    LUTStart: float = 1.0
-    LUTEnd: float = 10000.0
-    DoubleStim: float = 0.0
-    FlashType: float = 3.0
-    ModulationType: float = 1.0
-    WaveType: float = 3.0
     TriggersBlank: float = 10.0
     TriggersStim: float = 5.0
     WaitTrigger: float = 5.0
-    # shared by every region-grid trial type (map/tuning/contrast/size,
-    # regions.py) — which of the 4 columns is blacked out.
-    RegionIgnoredColumn: float = 3.0
     # map trial only — the shared-clock-tick counts that pace region
     # advance/flip.
     MapTicksPerRegion: float = 10.0
@@ -88,6 +78,27 @@ class StimParams:
     ContrastTicksPerPretrial: float = 10.0
     ContrastTicksPerLevel: float = 10.0
     ContrastRepeats: float = 1.0
+    # size trial only (size.py) — which of the 9 regions (1-9) the circle
+    # sits at, and the tick counts that pace the 2 white pretrials and the
+    # size-fraction sweep (repeated SizeRepeats-style). The swept diameter
+    # itself is a fixed set of fractions of the region's own width
+    # (size.SIZE_FRACTIONS), not a StimParams field.
+    SizeRegion: float = 1.0
+    SizeTicksPerPretrial: float = 10.0
+    SizeTicksPerLevel: float = 10.0
+    SizeRepeats: float = 1.0
+    # visuomotor trial only (control.py's _begin_visuomotor_trial) — a
+    # normal drifting grating (same geometry/appearance fields as Grating)
+    # except the drift offset is driven by the wheel's live speed each
+    # painted frame instead of WaveTempPeriodInHz, scaled by this gain (px
+    # of grating drift per unit the wheel travels — mm if the wheel module
+    # has a diameter configured, else rev). 0 gain = a static grating
+    # regardless of locomotion, useful as an open-loop control condition.
+    # Blank/stim gating is still tick-counted (TriggersBlank/TriggersStim,
+    # shared with Grating); trial length is this instead of PeriodsToShow,
+    # since there is no fixed temporal frequency to count cycles of.
+    VisuomotorGain: float = 1.0
+    VisuomotorDurationTicks: float = 100.0
 
 
 @dataclass

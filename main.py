@@ -97,6 +97,8 @@ _bootstrap()
 from datetime import datetime
 from typing import Any
 
+from acqApp import config
+
 # ── Hardware pre-init ─────────────────────────────────────────────────────────
 # Open the camera ONCE and keep the handle; the worker reuses it. Re-opening a
 # just-closed DCAM device crashes natively (docs/HANDOFF.md), and a fresh open
@@ -139,11 +141,18 @@ def _open_camera() -> None:
                   f"to run without it.")
 
 
-if not _mock:
+if not _mock and "voltage_cam" in config.load_enabled_modules():
     # Threaded, so the ~7.9 s open overlaps the Qt import and the module
     # picker. Verified on the real camera: opening on a worker and driving the
     # handle from the GUI thread works and closes cleanly. The load-bearing
     # rule is lifetime, not threads — see the pre-init note above.
+    #
+    # Gated on the *last-used* module selection (the picker isn't up yet, so
+    # this run's choice isn't known) — skips probing hardware the operator
+    # doesn't even have loaded. If they re-enable voltage_cam in the picker
+    # this run despite it, the worker just opens its own handle on first
+    # Start instead (OrcaFireWorker's own_cam fallback) — a one-time ~7 s
+    # cost instead of the free overlap, not a correctness issue.
     _cam_thread = threading.Thread(target=_open_camera, name="cam-open")
     _cam_thread.start()
 
@@ -172,7 +181,7 @@ from acqApp import adapters, config, style
 from acqApp.dialogs import (ConnectionMonitor, ModuleSelectDialog, PanelWindow,
                             SettingsDialog)
 from acqApp.saving import SaveConfig, SavePanel
-from acqApp.acq.sync import SyncController
+from acqApp.acq.sync import DEFAULT_TICK_MS, SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
@@ -218,7 +227,7 @@ class MainWindow(QMainWindow):
 
         # ── The single session-wide clock, shared by sync + recorder + devices ──
         self._clock = SessionClock()
-        self._sync  = SyncController(self._clock, tick_ms=100)
+        self._sync  = SyncController(self._clock, tick_ms=DEFAULT_TICK_MS)
         self._sync.tick.connect(self._on_tick)
         self._sync.trigger_fired.connect(self._on_trigger)
 
