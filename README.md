@@ -1,7 +1,7 @@
 # acqApp
 
 Multi-instrument in-vivo acquisition suite for the ICN rig. One PyQt6 app that
-runs and records six subsystems against a single shared session clock:
+runs and records seven subsystems against a single shared session clock:
 
 | Subsystem    | Package        | Device                                            |
 |--------------|----------------|---------------------------------------------------|
@@ -11,6 +11,7 @@ runs and records six subsystems against a single shared session clock:
 | Puffer       | `puffer/`      | Air-puff TTL on NI `Dev3/port0/line0`             |
 | XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
 | DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
+| Visual stim  | `vis_stim/`    | Drifting sinusoidal grating on a display screen, gated by the shared session clock |
 
 …plus two that own no device: **Experiment routines** (`routines/`), which
 executes a protocol of stage positions and DMD patterns step by step, and
@@ -23,9 +24,9 @@ instruments.
 > twin, and the whole suite is verified against the mocks (`tests/`). Two have
 > been run against the real hardware: the wheel encoder, and the **DMD** —
 > opened, a pattern rendered and uploaded, projected and held, then halted and
-> released, on 2026-08-12. The camera, puffer and stage paths have **not** been
-> run on the rig; treat their rates, timings and device quirks as unconfirmed
-> until they have.
+> released, on 2026-08-12. The camera, puffer, stage and visual-stim paths have
+> **not** been run on the rig; treat their rates, timings and device quirks as
+> unconfirmed until they have.
 
 Panels are **dockable** — drag any plot or video panel to re-dock, float, or tab
 it with another; drag the tabs to reorder. The layout is remembered across runs.
@@ -76,6 +77,36 @@ standalone `stage_control` app** (`../stage_control/config.json`, falling back
 to `devices/stage/stage_config.json`), so both programs agree on where 0,0 is. Only one
 program can hold the serial port at a time. Every write to that file leaves the
 previous contents as `.bak`.
+
+The **Visual stim** tab drives a drifting sinusoidal grating, shown full-screen
+through a circular aperture on a chosen display, gated on and off by
+"trigger" pulses. Ported from a standalone MATLAB/Psychtoolbox tool
+(`guiVisStimDAQ.m` and friends) that read those pulses off an external DAQ
+line — this rig has none, so the pulses are the shared session clock's own
+periodic tick instead (10 Hz by default), the same timing sequence every
+other module already shares rather than a second one invented for this
+module alone. Loop variables expand into a full-factorial trial list — name a
+parameter and a value list (or a `start:step:stop` range) and every
+combination runs in turn. **Priming** waits for a configurable number of
+ticks before the first trial starts; each trial then alternates blank/stim
+phases on further tick counts. Run puts live view on if it is not already
+running (the clock only ticks while live), the same way starting a routine
+opens the recording it needs. Unlike the .m tool's single blocking run loop,
+a stimulus run here advances one video frame at a time, so the rest of the
+app — cameras, recording, other modules — keeps running live while it plays.
+
+A **Trial type** selector chooses the paradigm for the whole run. Alongside
+the grating there is **Map**: the screen splits into 4 columns (one blacked
+out) each cut into 3 rows, and one of the resulting 9 regions at a time
+flips white/black while the rest stay a mid grey — a single continuous trial
+that cycles through all 9. There is also **Tuning**: a circle at one of
+those same 9 regions (diameter equal to the region's width) showing the
+plain grating swept through 8 orientations (0°-315° in 45° steps), preceded
+by 2 white "pretrial" flashes — again one continuous, tick-timed trial.
+**Contrast** is the same shape, sweeping the grating's contrast through six
+fixed levels (0, 0.1, 0.25, 0.5, 0.75, 1.0) instead of orientation, also
+preceded by the 2 white pretrials. Two more paradigms (size, visuomotor) are
+named in the selector for the roadmap but not yet built.
 
 ## Running
 

@@ -112,6 +112,13 @@ def _closed_loop() -> ProbeResult:
     return ProbeResult("stub", "software rule — no device of its own")
 
 
+def _vis_stim() -> ProbeResult:
+    """No DAQ line either: gating rides the shared session clock's own tick
+    (acq/sync.py), not hardware this module reads itself."""
+    return ProbeResult("stub", "shows on a display screen, gated by the "
+                              "shared session clock — no device of its own")
+
+
 def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
           stage_port: str = DEFAULT_STAGE_PORT,
           cam_open: bool = False) -> ProbeResult:
@@ -127,6 +134,8 @@ def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
             return _stage(stage_port)
         if module == "dmd":
             return _dmd()
+        if module == "vis_stim":
+            return _vis_stim()
         if module == "closed_loop":
             return _closed_loop()
         return ProbeResult("error", "unknown module")

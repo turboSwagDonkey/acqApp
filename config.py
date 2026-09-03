@@ -22,6 +22,7 @@ MODULES: dict[str, str] = {
     "puffer":      "Puffer",
     "stage":       "XY stage",
     "dmd":         "DMD",
+    "vis_stim":    "Visual stim",
     # Not an instrument either: it drives the stage and the DMD through a
     # protocol the operator wrote. Before closed_loop so that stays last.
     "routines":    "Experiment routines",

@@ -34,6 +34,7 @@ from acqApp.adapters.puffer import PufferModule
 from acqApp.adapters.pupil_cam import PupilCamModule
 from acqApp.adapters.routines import RoutinesModule
 from acqApp.adapters.stage import StageModule
+from acqApp.adapters.vis_stim import VisStimModule
 from acqApp.adapters.voltage_cam import VoltageCamModule
 from acqApp.adapters.wheel import WheelModule
 
@@ -47,6 +48,7 @@ ADAPTERS: dict[str, Callable[[Any], ModuleAdapter]] = {
     "puffer":      PufferModule,
     "stage":       StageModule,
     "dmd":         DmdModule,
+    "vis_stim":    VisStimModule,
     "routines":    RoutinesModule,
     "closed_loop": ClosedLoopModule,
 }

@@ -108,6 +108,7 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
   pupil_cam.py
   routines.py           the ONLY routine code that touches a real device
   stage.py
+  vis_stim.py
   voltage_cam.py
   wheel.py
 closed_loop/            phase 5: watch one module's signal, fire another's output
@@ -149,6 +150,26 @@ devices/                one package per instrument
     panel.py
     settings.py         calibration, SHARED with ../../stage_control/config.json
     stage_config.json   fallback copy only — the live calibration is the shared one
+  vis_stim/
+    circle.py           the circle-in-a-region aperture geometry (regions.py
+                        grid + region width -> diameter) tuning/contrast/
+                        (eventually size) all share, no Qt
+    contrast.py         contrast-tuning trial: the 6 contrast levels swept +
+                        pretrial count, no Qt
+    control.py          VisStimController: priming -> per-trial trigger
+                        gating, counted off the shared session clock's own
+                        tick (no DAQ line, unlike the .m code) and replacing
+                        its blocking while loop with one step per painted frame
+    grating.py          gamma-corrected drifting sinusoid + aperture geometry,
+                        no Qt — ported from visStimCode's genGratingTex
+    panel.py
+    regions.py          the 3x3 region grid the map/tuning/contrast/size
+                        trial types share, no Qt
+    settings.py         StimParams/LoopVar/VisStimSettings — no Qt
+    trials.py           loop variables -> full-factorial trial list, no Qt
+    tuning.py           orientation-tuning trial: the 8 orientations swept +
+                        pretrial count, no Qt
+    window.py           the full-screen QWidget the grating paints into
   voltage_cam/
     _check_link.py      script: CoaXPress or USB3? run after any cabling change
     acquisition.py      ORCA worker + mock twin
@@ -200,6 +221,10 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_dmd_calibration.py
   test_dmd_roi.py
   test_dmd_sweep.py           the wiring: fresh grabs, untransformed patterns
+  test_vis_stim.py            trial expansion, grating/region/circle
+                              geometry, the tick-driven priming/gating state
+                              machine (grating, map, tuning, contrast),
+                              settings round-trip, hot-load
   test_encoder_derive.py
   test_encoder_timing.py
   test_module_hotload.py       loading instruments without restarting
