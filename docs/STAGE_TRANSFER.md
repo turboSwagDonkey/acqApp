@@ -4,7 +4,83 @@ Continuation notes for the **XY stage** device in `acqApp`. Companion to
 [HANDOFF.md](HANDOFF.md) and the other device transfers (camera, wheel, pupil).
 Read this before touching stage code or moving the stage.
 
-The hardware is a **Thorlabs PLS-XY** stage on an **MCM6101** controller. There are
+## 2026-09 — controller swapped to MCM301; backend is now pluggable
+
+The rig's controller changed from the MCM6101 (below) to a **Thorlabs MCM301**
+on **COM10**, addressing its three axes by fixed slot (4=X, 5=Y, 6=Z) instead of
+the MCM6101's dest-offset scheme (0=X, 1=Y, 2=Z). Rather than replace the old
+driver, [devices/stage/backend.py](../devices/stage/backend.py) now sits between
+`StageController` and the hardware:
+
+- [devices/stage/mcm301_driver.py](../devices/stage/mcm301_driver.py) — the MCM301
+  driver, wrapping Thorlabs' vendor DLL ([mcm301_sdk/](../devices/stage/mcm301_sdk/))
+  via ctypes rather than speaking APT-over-serial like the MCM6101 does. Notably
+  simpler than the MCM6101: `move_to_readout()` targets the encoder count
+  directly (no coarse command-unit scale), and `GetStageParams` reports real
+  `counts_per_unit`/travel straight from the controller instead of requiring a
+  hand-measured frame.
+- [devices/stage/backend.py](../devices/stage/backend.py) — the registry.
+  `StageSettings.controller` is `"auto"` by default: `StageController.connect()`
+  probes the configured port (MCM301 first — its DLL enumerates devices without
+  opening a port, so that probe is free; MCM6101 second, since identifying it
+  means actually opening the port and asking) and picks whichever backend
+  answers. Pin `"mcm301"`/`"mcm6101"` explicitly only to force one.
+- Both drivers expose the same axis-indexed surface (`get_status`,
+  `move_to_readout`, `jog_by_readout`, `stop`, `stop_all`, `set_linear_map`) so
+  `control.py` never branches on which one is connected — `StageAxis.index` in
+  the calibration JSON is simply whatever address that backend expects (0/1/2
+  vs. 4/5/6). The one exception is `establish_frame()`, which exists only to
+  work around the MCM6101's command-origin drift; the MCM301 doesn't implement
+  it, and `StageController.establish_frame()` reports that plainly instead of
+  raising `AttributeError`.
+- **Adding another controller** in the future: write its driver with that same
+  surface, register it in `backend.py`'s `BACKENDS` dict with a `probe()` that
+  identifies it, done — no changes needed in `control.py`, `settings.py`, or the
+  panel.
+- **Not yet done**: the MCM301's X/Y have real `counts_per_um`/`span_counts`
+  (read live via `GetStageParams`) in the fallback config, but `true_center` /
+  `travel_*` / `soft_*` are still null — nobody has run **Set 0,0 = center** on
+  this hardware yet. Z (slot 6) stays `active:false`, same as before.
+
+### ⚠️ A duplicate COM number silently wedges this controller
+
+Cost an hour on 2026-09-03, and the symptoms point everywhere except the cause.
+While the stage was unplugged, Windows handed **COM3** to a Bpod interface as
+well; when the stage came back, *both* devices claimed COM3. Then:
+
+- the Thorlabs SDK still listed the controller (it enumerates by USB
+  VID/PID/serial, not by port), so everything looked healthy;
+- `Open()` still succeeded in 0.3 s — on a port routing elsewhere;
+- and **every** subsequent query blocked *forever*, on every slot. The vendor
+  DLL does not honour the timeout passed to `Open()`.
+
+Check it with `Get-CimInstance Win32_PnPEntity | Where Name -match '\(COM\d+\)'`
+— two rows sharing a number is the tell. Fix it in Device Manager (the stage
+now lives at COM10, away from the Bpod block), not in software.
+
+Two defences are in the code, because a blocked read would otherwise freeze the
+poll worker with no error at all:
+
+- `MCM301.open()` ends with `_verify_responds()` — one `get_info()` on a
+  watchdog thread, 5 s budget. A wedged controller fails session start with an
+  explanation instead of hanging. It deliberately does **not** `Close()` there:
+  a thread is still stuck inside the DLL and closing under it isn't safe.
+- Port numbers are advisory. A single enumerated MCM301 is used whatever number
+  it landed on, and the real one is recorded — so a renumber doesn't need a
+  config edit. Match by `com_name()`, never by substring: `"COM1"` *is* a
+  substring of `"…COM10&COM"`.
+
+Note also that the port lives in **three** places, and the panel's saved value
+wins: `acqapp_local.json` (`settings.stage.port`, written by the panel) overrides
+`stage_config.json`. Changing only the latter looks like it does nothing.
+
+The rest of this document describes the **MCM6101** hardware and its
+frame-calibration model in detail; it's kept because that backend is still in
+the codebase and may reappear on another rig.
+
+---
+
+The old hardware was a **Thorlabs PLS-XY** stage on an **MCM6101** controller. There are
 **two** codebases for it — keep them straight:
 
 - **`stage_control/`** (sibling folder, NOT in acqApp) — the standalone, **proven**

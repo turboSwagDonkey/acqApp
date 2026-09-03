@@ -21,17 +21,26 @@ class StageController:
     def __init__(self, settings: StageSettings):
         self._s = settings
         self._dev = None
+        self.backend_kind: str | None = None   # which driver connect() picked; see backend.py
 
     # ── connection ──────────────────────────────────────────────────────────
     def connect(self) -> None:
-        from .driver import MCM6101
-        dev = MCM6101(self._s.port)
-        dev.open()
+        from .backend import BackendError, connect_auto, open_backend
+        kind = self._s.controller or "auto"
+        try:
+            if kind == "auto":
+                kind, dev = connect_auto(self._s.port)
+            else:
+                dev = open_backend(kind, self._s.port)
+        except BackendError as e:
+            raise StageControllerError(str(e)) from e
         # The calibrated command→encoder map, so absolute moves land right.
+        # (A no-op on backends with no such scale, e.g. the MCM301.)
         for ax in (self._s.x, self._s.y):
             if ax.slope is not None and ax.offset is not None:
                 dev.set_linear_map(ax.index, ax.slope, ax.offset)
         self._dev = dev
+        self.backend_kind = kind
 
     def close(self) -> None:
         if self._dev is not None:
@@ -39,6 +48,7 @@ class StageController:
                 self._dev.close()
             finally:
                 self._dev = None
+                self.backend_kind = None
 
     def _axis(self, which: str) -> StageAxis:
         return self._s.x if which == "x" else self._s.y
@@ -119,6 +129,11 @@ class StageController:
         """
         if self._dev is None:
             raise StageControllerError("not connected")
+        if not hasattr(self._dev, "establish_frame"):
+            raise StageControllerError(
+                f"The {self.backend_kind} backend has no drifting command "
+                "origin to re-establish — its position readout is already a "
+                "stable encoder count. Use 'Set 0,0 = center' instead.")
 
         def say(msg: str) -> None:
             if progress is not None:
@@ -191,6 +206,8 @@ class StageController:
 class MockStageController:
     """Simulated stage: position eases toward the last commanded target."""
     _STEP_UM = 300.0        # max µm moved per read (visible motion at poll rate)
+
+    backend_kind = "mock"
 
     def __init__(self, settings: StageSettings):
         self._s = settings

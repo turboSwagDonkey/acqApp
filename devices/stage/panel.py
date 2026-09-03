@@ -25,6 +25,21 @@ from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
                                    load_settings)
 
 
+def _available_ports(current: str) -> list[str]:
+    """Serial ports present on this machine, `current` first so the saved
+    setting is never dropped just because the device is unplugged right now.
+    Enumeration failing must not stop the panel from being built."""
+    ports = []
+    try:
+        from serial.tools import list_ports
+        ports = [p.device for p in list_ports.comports()]
+    except Exception:                       # noqa: BLE001 — a combo box is not worth a crash
+        pass
+    ordered = [current] if current else []
+    ordered += [p for p in sorted(ports) if p != current]
+    return ordered
+
+
 class _FrameWorker(PullWorker):
     """Runs controller.establish_frame() off the GUI thread — it drives both axes
     into their reverse hard limits and can block for minutes.
@@ -277,7 +292,11 @@ class SettingsPanel(QWidget):
 
         self._cmb_port = QComboBox()
         self._cmb_port.setEditable(True)
-        self._cmb_port.addItems([self._s.port, "COM54", "COM3", "COM4"])
+        # Offer the ports that actually exist right now, not a list of numbers
+        # that were true for the hardware of the day. Windows renumbers these
+        # freely — a stale suggestion is how you end up pointed at the port
+        # some other device took over.
+        self._cmb_port.addItems(_available_ports(self._s.port))
         self._cmb_port.setCurrentText(self._s.port)
         lay.addRow("Port:", self._cmb_port)
 
@@ -588,6 +607,7 @@ class SettingsPanel(QWidget):
         s = self._s
         return StageSettings(
             port=self._cmb_port.currentText(),
+            controller=s.controller,
             poll_hz=self._spn_rate.value(),
             confirm_move_um=s.confirm_move_um,
             margin_um=s.margin_um,

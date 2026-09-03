@@ -62,6 +62,7 @@ class StageModule(ModuleAdapter):
         except Exception as e:
             self.win.status(f"stage: could not connect ({e})")
             return
+        self.win.status(f"stage: connected ({ctrl.backend_kind})")
         self.controller = ctrl
         self._adopt(StagePollWorker(ctrl, s.poll_hz))
         self.panel.bind_controller(ctrl)

@@ -144,9 +144,14 @@ devices/                one package per instrument
     video.py            third frame source: replay recorded footage
   stage/
     acquisition.py      read-only position poller; never issues motion
+    backend.py          which driver is plugged in; probes the port and picks
     control.py          StageController + mock; microns, soft-limit clamped
     driver.py           MCM6101 APT/serial driver; copy of stage_control's
     map_widget.py
+    mcm301_driver.py    MCM301 driver (the current rig); wraps the vendor DLL
+    mcm301_sdk/
+      README.md         the vendored MCM301Lib_x64.dll (+ Thorlabs EULA): why
+                        it is here, and how to update it
     panel.py
     settings.py         calibration, SHARED with ../../stage_control/config.json
     stage_config.json   fallback copy only — the live calibration is the shared one

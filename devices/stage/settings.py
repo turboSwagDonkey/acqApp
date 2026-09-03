@@ -135,6 +135,11 @@ class StageAxis:
 @dataclass
 class StageSettings:
     port:    str = "COM54"
+    # Which driver talks to the controller on `port`. "auto" (the default)
+    # probes the port at connect() time and picks whichever registered
+    # backend answers — see backend.py. Pin an explicit name ("mcm301",
+    # "mcm6101") only to force one, e.g. while debugging a probe.
+    controller: str = "auto"
     poll_hz: float = 4.0
     confirm_move_um: float = 3000.0    # ask before moves larger than this
     margin_um: float = 50.0            # soft-limit inset from the travel ends
@@ -188,6 +193,7 @@ def load_settings() -> StageSettings:
     confirm_counts = cfg.get("max_unconfirmed_move_counts", 200000)
     return StageSettings(
         port            = cfg.get("port", "COM54"),
+        controller      = cfg.get("controller", "auto"),
         poll_hz         = 1000.0 / cfg.get("poll_interval_ms", 250),
         confirm_move_um = confirm_counts / (x.counts_per_um or 1.0),
         margin_um       = float(cfg.get("margin_um", 50)),
