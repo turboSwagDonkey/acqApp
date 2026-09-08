@@ -85,10 +85,8 @@ class ClosedLoopWorker(PullWorker):
                 self._rule.configure(pending)
 
             sample = self._source.read()
-            if sample is None:
-                value, at = None, now
-            else:
-                value, at = float(sample[0]), float(sample[1])
+            value, at = (None, now) if sample is None \
+                else (float(sample[0]), float(sample[1]))
 
             if self._armed:
                 hit = self._rule.update(value, at)

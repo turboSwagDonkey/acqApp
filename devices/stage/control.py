@@ -17,6 +17,21 @@ class StageControllerError(Exception):
     pass
 
 
+def _pick_axis(s: StageSettings, which: str) -> StageAxis:
+    return s.x if which == "x" else s.y
+
+
+def _center_here_updates(s: StageSettings, cx: int, cy: int) -> dict[int, dict]:
+    """Shared by StageController and MockStageController: compute the
+    origin/soft-limit updates for both axes and fold them into the live axis
+    objects. Persisting (or not) is left to the caller."""
+    updates = {s.x.index: s.x.center_updates(cx, s.margin_um),
+               s.y.index: s.y.center_updates(cy, s.margin_um)}
+    for ax, upd in ((s.x, updates[s.x.index]), (s.y, updates[s.y.index])):
+        ax.apply_updates(upd)
+    return updates
+
+
 class StageController:
     def __init__(self, settings: StageSettings):
         self._s = settings
@@ -51,7 +66,7 @@ class StageController:
                 self.backend_kind = None
 
     def _axis(self, which: str) -> StageAxis:
-        return self._s.x if which == "x" else self._s.y
+        return _pick_axis(self._s, which)
 
     # ── reads ───────────────────────────────────────────────────────────────
     def read_xy_um(self) -> tuple[float, float]:
@@ -103,11 +118,7 @@ class StageController:
         around it (keeps the stage inside the encoder's no-wrap zone). Does NOT
         move the stage — centre it first. Persists to the shared config."""
         cx, cy = self.read_xy_counts()
-        updates = {self._s.x.index: self._s.x.center_updates(cx, self._s.margin_um),
-                   self._s.y.index: self._s.y.center_updates(cy, self._s.margin_um)}
-        for ax, upd in ((self._s.x, updates[self._s.x.index]),
-                        (self._s.y, updates[self._s.y.index])):
-            ax.apply_updates(upd)
+        updates = _center_here_updates(self._s, cx, cy)
         save_axis_updates(updates)
         return updates
 
@@ -222,7 +233,7 @@ class MockStageController:
         self._open = False
 
     def _axis(self, which: str) -> StageAxis:
-        return self._s.x if which == "x" else self._s.y
+        return _pick_axis(self._s, which)
 
     def _clamp_um(self, which: str, um: float) -> float:
         lo, hi = self._axis(which).soft_limits_um()
@@ -260,11 +271,7 @@ class MockStageController:
 
     def set_center_here(self) -> dict[int, dict]:
         cx, cy = self.read_xy_counts()
-        updates = {self._s.x.index: self._s.x.center_updates(cx, self._s.margin_um),
-                   self._s.y.index: self._s.y.center_updates(cy, self._s.margin_um)}
-        for ax, upd in ((self._s.x, updates[self._s.x.index]),
-                        (self._s.y, updates[self._s.y.index])):
-            ax.apply_updates(upd)
+        updates = _center_here_updates(self._s, cx, cy)
         self._pos = {"x": 0.0, "y": 0.0}        # "here" is now the origin
         self._target = dict(self._pos)
         return updates

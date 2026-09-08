@@ -15,11 +15,13 @@ Nothing here decides to actuate; `CalibrationDialog` asks (PLAN §2).
 from __future__ import annotations
 
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QGroupBox, QHBoxLayout, QLabel,
+    QApplication, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
     QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
 )
 
@@ -272,11 +274,6 @@ class CalibrationDialog(QDialog):
         return self._calib
 
     def _save(self) -> None:
-        from datetime import datetime
-        from pathlib import Path
-
-        from PyQt6.QtWidgets import QFileDialog
-
         if self._calib is None:
             return
         name = f"dmd_calib_{datetime.now():%Y%m%d_%H%M%S}.json"

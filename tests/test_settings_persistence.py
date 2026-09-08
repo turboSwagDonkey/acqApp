@@ -18,7 +18,7 @@ import json
 import shutil
 import sys
 
-from _harness import Report, isolate_user_state, pump, qt_app
+from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 # (module key, panel attribute, setter, reader, expected) — one distinctive,
 # non-default value per panel so a stuck default cannot pass.
@@ -139,7 +139,7 @@ def main() -> int:
     enabled = set(config.MODULES)
 
     # ── first launch: edit every panel ───────────────────────────────────────
-    win = M.MainWindow(cam_info=None, mock=True, enabled=enabled, cam_handle=None)
+    win = make_window(enabled)
 
     # The panels live in a pop-up window, not a dock. Everything below edits them
     # while it has never been shown, which is the point: the settings window is
@@ -349,7 +349,7 @@ def main() -> int:
     C._CONFIG_PATH = keep_path
 
     # ── second launch: read the panels back ──────────────────────────────────
-    win2 = M.MainWindow(cam_info=None, mock=True, enabled=enabled, cam_handle=None)
+    win2 = make_window(enabled)
     panels2 = {m.key: m.panel for m in win2._modules}
     for key, label, _setter, reader, expected in EDITS:
         got = reader(panels2[key])

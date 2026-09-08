@@ -18,7 +18,7 @@ import shutil
 import sys
 import traceback
 
-from _harness import Report, isolate_user_state, pump, qt_app
+from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 SUBSETS = [
     ["voltage_cam"],
@@ -40,13 +40,11 @@ def main() -> int:
     sys.argv = ["main.py", "--mock"]
     app = qt_app()
     from acqApp import config, probe
-    import acqApp.main as M
 
     for subset in SUBSETS + [list(config.MODULES)]:
         label = "+".join(subset)
         try:
-            win = M.MainWindow(cam_info=None, mock=True, enabled=set(subset),
-                               cam_handle=None)
+            win = make_window(set(subset))
             # A session: build workers -> start clock -> start -> display -> stop.
             win._btn_run.setChecked(True)
             pump(app, 0.4)
@@ -83,8 +81,7 @@ def main() -> int:
     # while the UI said "Stopped"). Via closeEvent it also skipped the DCAM
     # handle close, which is the native crash the pre-init note describes.
     try:
-        win = M.MainWindow(cam_info=None, mock=True,
-                           enabled={"wheel", "stage", "puffer"}, cam_handle=None)
+        win = make_window({"wheel", "stage", "puffer"})
         win._btn_run.setChecked(True)
         pump(app, 0.3)
 

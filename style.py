@@ -52,6 +52,11 @@ def line() -> str:
 
 # ── Reusable QSS snippets ─────────────────────────────────────────────────────
 
+def _tint(c: str) -> str:
+    """A pale, lightened version of an accent colour, for an unchecked toggle."""
+    return QColor(c).lighter(185).name()
+
+
 def toggle_btn(key: str) -> str:
     """Checkable button: a pale accent tint when off, full accent when checked.
 
@@ -61,7 +66,7 @@ def toggle_btn(key: str) -> str:
     of a session, which is exactly when it matters.
     """
     c = HEX[key]
-    tint = QColor(c).lighter(185).name()
+    tint = _tint(c)
     return (
         "QPushButton{"
         f"background:{tint};color:#333;border:1px solid {c};"
@@ -78,7 +83,7 @@ def record_btn(key: str) -> str:
     accidental state costs an experiment. Bigger hit area, a red ring while
     armed, so "am I recording?" is answerable from across the rig."""
     c = HEX[key]
-    tint = QColor(c).lighter(185).name()
+    tint = _tint(c)
     return (
         "QPushButton{"
         f"background:{tint};color:#333;border:2px solid {c};"

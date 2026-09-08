@@ -23,7 +23,8 @@ _SHARED_CONFIG = Path(__file__).resolve().parents[3] / "stage_control" / "config
 
 FULL_TRAVEL_UM = 25400.0        # 1 inch of travel per axis
 
-# Legend swatches — kept in step with map_widget's pens.
+# Legend swatches — the single definition; map_widget.py's pens import these
+# rather than repeating the hex values.
 _C_CUR, _C_ORIGIN, _C_HOME, _C_SOFT = "#1f77b4", "#2ca02c", "#ff7f0e", "#b58900"
 _BAD = "#c0392b"
 
@@ -90,11 +91,7 @@ class StageAxis:
             else:
                 self.ref_counts = float(upd["true_center"])
                 self.origin_set = True
-        if "slope" in upd:
-            self.slope = upd["slope"]
-        if "offset" in upd:
-            self.offset = upd["offset"]
-        for k in ("soft_min", "soft_max", "travel_min", "travel_max"):
+        for k in ("slope", "offset", "soft_min", "soft_max", "travel_min", "travel_max"):
             if k in upd:
                 setattr(self, k, upd[k])
 

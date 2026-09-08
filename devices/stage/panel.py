@@ -51,7 +51,7 @@ class _FrameWorker(PullWorker):
     finished_ok = pyqtSignal()
     failed = pyqtSignal(str)
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller):
         super().__init__()
         self._ctrl = controller
 
@@ -230,7 +230,7 @@ class CalibrationDialog(QDialog):
             return
         self._busy(True)
         self._lbl_progress.setText("Starting…")
-        self._worker = _FrameWorker(self._ctrl, self)
+        self._worker = _FrameWorker(self._ctrl)
         self._worker.progress.connect(self._lbl_progress.setText)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.failed.connect(self._on_failed)

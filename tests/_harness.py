@@ -197,3 +197,17 @@ def pump(app, seconds: float) -> None:
     while time.perf_counter() < end:
         app.processEvents()
         time.sleep(0.005)
+
+
+def make_window(enabled, **kw):
+    """A MainWindow built the way every GUI test builds one: mocked, no real
+    camera handle, an explicit module set."""
+    import acqApp.main as M
+    return M.MainWindow(cam_info=None, mock=True, enabled=enabled,
+                        cam_handle=None, **kw)
+
+
+def npoints(item) -> int:
+    """How many points a PlotCurveItem is drawing (None before any setData)."""
+    xs = item.getData()[0]
+    return 0 if xs is None else len(xs)

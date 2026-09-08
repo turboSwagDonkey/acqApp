@@ -141,20 +141,16 @@ class StimDisplay(QWidget):
         painter.fillRect(self.rect(), self._bg)
         if not self._visible or self._radius <= 0:
             return
+        if not self._solid and self._img is None:
+            return
+        painter.save()
+        cx, cy = self._center
+        path = QPainterPath()
+        path.addEllipse(QPointF(cx, cy), self._radius, self._radius)
+        painter.setClipPath(path)
         if self._solid:
-            painter.save()
-            cx, cy = self._center
-            path = QPainterPath()
-            path.addEllipse(QPointF(cx, cy), self._radius, self._radius)
-            painter.setClipPath(path)
             painter.fillRect(self.rect(), QColor(255, 255, 255))
-            painter.restore()
-        elif self._img is not None:
-            painter.save()
-            cx, cy = self._center
-            path = QPainterPath()
-            path.addEllipse(QPointF(cx, cy), self._radius, self._radius)
-            painter.setClipPath(path)
+        else:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             side = self._radius * 2.0
             painter.translate(cx, cy)
@@ -162,7 +158,7 @@ class StimDisplay(QWidget):
             painter.translate(-side / 2.0, -side / 2.0)
             painter.drawImage(QRectF(0.0, 0.0, side, side), self._img,
                               QRectF(self._offset, 0.0, side, 1.0))
-            painter.restore()
+        painter.restore()
 
     def _paint_map(self, painter: QPainter) -> None:
         # Black first: covers the ignored column and any rounding gaps

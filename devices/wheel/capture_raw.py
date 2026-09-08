@@ -91,8 +91,7 @@ def main() -> None:
     np.savetxt(out, np.column_stack([t, v]), delimiter=",",
                header="t_s,voltage", comments="")
 
-    dv = np.diff(v)
-    big = int(np.count_nonzero(np.abs(dv) > 0.5))     # sample-to-sample >0.5 V
+    big = int(np.count_nonzero(np.abs(np.diff(v)) > 0.5))  # sample-to-sample >0.5 V
     print("\n─── summary ───────────────────────────────────────────────")
     print(f"saved         {out.resolve()}")
     print(f"samples       {n}  ({n / args.rate:.1f} s @ {args.rate:.0f} Hz)")

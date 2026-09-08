@@ -11,13 +11,17 @@ from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
+from .settings import _BAD, _C_CUR, _C_HOME, _C_ORIGIN, _C_SOFT
+
 _TRAVEL_EDGE = QColor("#8a8a8a")
 _TRAVEL_FILL = QColor("#f4f4f4")
-_SOFT_EDGE   = QColor("#b58900")
-_CURRENT     = QColor("#1f77b4")
-_ORIGIN      = QColor("#2ca02c")
-_HOME        = QColor("#ff7f0e")
-_STALE       = QColor("#c0392b")
+# Same colors settings.py's legend swatches use — one definition, not two
+# hex literals kept in step by hand.
+_SOFT_EDGE   = QColor(_C_SOFT)
+_CURRENT     = QColor(_C_CUR)
+_ORIGIN      = QColor(_C_ORIGIN)
+_HOME        = QColor(_C_HOME)
+_STALE       = QColor(_BAD)
 
 
 class StageMap(QWidget):

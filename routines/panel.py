@@ -30,6 +30,7 @@ that can only produce a legal value, which is why nothing here parses "yes".
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
@@ -73,6 +74,15 @@ class SettingsPanel(QWidget):
         self._set_phase(Phase.IDLE, "")
 
     # ── construction ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _add_buttons(layout, specs) -> None:
+        """Add one QPushButton per (text, slot, tip) spec, in order."""
+        for text, slot, tip in specs:
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            layout.addWidget(b)
+
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -89,19 +99,15 @@ class SettingsPanel(QWidget):
         self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces the "
                                  "step list below.")
         trow.addWidget(self._cmb_tpl, 1)
-        for text, slot, tip in (
-                ("Load", self._on_load_template,
-                 "Replace the protocol below with the selected template."),
-                ("Save as…", self._on_save_template,
-                 "Save the protocol below as a template, under a name you "
-                 "choose."),
-                ("Delete", self._on_delete_template,
-                 "Delete the selected template. The protocol below is not "
-                 "touched.")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            trow.addWidget(b)
+        self._add_buttons(trow, (
+            ("Load", self._on_load_template,
+             "Replace the protocol below with the selected template."),
+            ("Save as…", self._on_save_template,
+             "Save the protocol below as a template, under a name you "
+             "choose."),
+            ("Delete", self._on_delete_template,
+             "Delete the selected template. The protocol below is not "
+             "touched.")))
         lay.addLayout(trow)
 
         form = QFormLayout()
@@ -130,21 +136,17 @@ class SettingsPanel(QWidget):
         lay.addWidget(self._tbl, 1)
 
         btns = QHBoxLayout()
-        for text, slot, tip in (
-                ("+ Step", self._add_step, "Append a step to the list."),
-                ("Duplicate", self._dup_step,
-                 "Copy the selected step — a grid is one step edited N times."),
-                ("Remove", self._del_step, "Delete the selected step."),
-                ("↑", self._move_up,
-                 "Move the selected step earlier. Dragging the row and "
-                 "Ctrl+Up do the same."),
-                ("↓", self._move_down,
-                 "Move the selected step later. Dragging the row and "
-                 "Ctrl+Down do the same.")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
+        self._add_buttons(btns, (
+            ("+ Step", self._add_step, "Append a step to the list."),
+            ("Duplicate", self._dup_step,
+             "Copy the selected step — a grid is one step edited N times."),
+            ("Remove", self._del_step, "Delete the selected step."),
+            ("↑", self._move_up,
+             "Move the selected step earlier. Dragging the row and "
+             "Ctrl+Up do the same."),
+            ("↓", self._move_down,
+             "Move the selected step later. Dragging the row and "
+             "Ctrl+Down do the same.")))
         btns.addStretch(1)
         lay.addLayout(btns)
 
@@ -153,22 +155,18 @@ class SettingsPanel(QWidget):
         # tooltips say so) — they read as pattern shortcuts, not list
         # operations, and crowded the primary row before this split.
         pat_btns = QHBoxLayout()
-        for text, slot, tip in (
-                ("Pattern…", self._pick_pattern,
-                 "Set the selected step's DMD pattern file. Double-clicking "
-                 "the Pattern cell does the same."),
-                ("ROI set…", self._pick_roi,
-                 "Set the selected step's pattern to a saved photostimulation "
-                 "ROI set — the same ones saved from the DMD's ROI editor — "
-                 "resolved through the current calibration when the step runs."),
-                ("No pattern", self._clear_pattern,
-                 "Leave the DMD showing whatever it already has for this "
-                 "step. Delete on the cell does the same — as it does on a "
-                 "Stage X or Y cell, which sets it back to \"no change\".")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            pat_btns.addWidget(b)
+        self._add_buttons(pat_btns, (
+            ("Pattern…", self._pick_pattern,
+             "Set the selected step's DMD pattern file. Double-clicking "
+             "the Pattern cell does the same."),
+            ("ROI set…", self._pick_roi,
+             "Set the selected step's pattern to a saved photostimulation "
+             "ROI set — the same ones saved from the DMD's ROI editor — "
+             "resolved through the current calibration when the step runs."),
+            ("No pattern", self._clear_pattern,
+             "Leave the DMD showing whatever it already has for this "
+             "step. Delete on the cell does the same — as it does on a "
+             "Stage X or Y cell, which sets it back to \"no change\".")))
         pat_btns.addStretch(1)
         lay.addLayout(pat_btns)
 
@@ -276,7 +274,6 @@ class SettingsPanel(QWidget):
         row = self._selected()
         if row < 0:
             return
-        from dataclasses import replace
         self._r.steps.insert(row + 1, replace(self._r.steps[row]))
         self._reload_table()
         self._tbl.select_row(row + 1)

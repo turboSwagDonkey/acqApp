@@ -59,6 +59,16 @@ class _Roi:
         raise NotImplementedError
 
 
+def _to_local(dx: np.ndarray, dy: np.ndarray, angle_deg: float) -> tuple:
+    """Rotate centre-relative offsets into the rect's own unrotated frame,
+    shared by `RectRoi.mask_at` and `.contains`."""
+    if not angle_deg:
+        return dx, dy
+    t = np.radians(angle_deg)
+    c, s = np.cos(t), np.sin(t)
+    return c * dx + s * dy, -s * dx + c * dy
+
+
 @dataclass
 class RectRoi(_Roi):
     """Axis-aligned unless `angle_deg` says otherwise; (x, y) is the centre.
@@ -81,19 +91,13 @@ class RectRoi(_Roi):
         # the (H, W) bool is ever materialised.
         dx = np.asarray(xs, dtype=np.float64)[None, :] - self.x
         dy = np.asarray(ys, dtype=np.float64)[:, None] - self.y
-        if self.angle_deg:
-            t = np.radians(self.angle_deg)
-            c, s = np.cos(t), np.sin(t)
-            dx, dy = c * dx + s * dy, -s * dx + c * dy
+        dx, dy = _to_local(dx, dy, self.angle_deg)
         return (np.abs(dx) <= self.w / 2.0) & (np.abs(dy) <= self.h / 2.0)
 
     def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
         dx = np.asarray(px, dtype=np.float64) - self.x
         dy = np.asarray(py, dtype=np.float64) - self.y
-        if self.angle_deg:
-            t = np.radians(self.angle_deg)
-            c, s = np.cos(t), np.sin(t)
-            dx, dy = c * dx + s * dy, -s * dx + c * dy
+        dx, dy = _to_local(dx, dy, self.angle_deg)
         return (np.abs(dx) <= self.w / 2.0) & (np.abs(dy) <= self.h / 2.0)
 
     def boundary(self, n: int = 64) -> np.ndarray:

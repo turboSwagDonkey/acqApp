@@ -144,12 +144,15 @@ class WheelModule(ModuleAdapter):
         s = self.panel.settings if self.panel is not None else EncoderSettings()
         return "mm/s" if (s.volts_per_rev and s.wheel_dia_mm) else "rev/s"
 
+    def _snapshot(self):
+        return self.worker.snapshot() if self.worker is not None else None
+
     def _read_live(self) -> tuple[float, float] | None:
-        snap = self.worker.snapshot() if self.worker is not None else None
+        snap = self._snapshot()
         return None if snap is None else (snap[2], snap[3])
 
     def _read_reported(self) -> tuple[float, float] | None:
-        snap = self.worker.snapshot() if self.worker is not None else None
+        snap = self._snapshot()
         return None if snap is None else (snap[1], snap[3])
 
     # ── recording ──

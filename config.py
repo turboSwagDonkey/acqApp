@@ -90,20 +90,25 @@ def save_config(cfg: dict) -> None:
             pass
 
 
+def order_modules(keys) -> list[str]:
+    """`keys` restricted to known modules, in MODULES order, dropping anything
+    unknown/removed, and with ALWAYS_ON modules always included — a config
+    written before a module became always-on would not name it."""
+    keys = set(keys)
+    return [k for k in MODULES if k in keys or k in ALWAYS_ON]
+
+
 def load_enabled_modules() -> list[str]:
     """Last-used module keys (validated + ordered). Defaults to all modules."""
     saved = load_config().get("enabled_modules")
     if not isinstance(saved, list):
         return list(MODULES)
-    # keep MODULES order, drop anything unknown/removed, and put ALWAYS_ON back
-    # — a config written before a module became always-on would not name it.
-    return [k for k in MODULES if k in saved or k in ALWAYS_ON]
+    return order_modules(saved)
 
 
 def save_enabled_modules(enabled: list[str]) -> None:
     cfg = load_config()
-    cfg["enabled_modules"] = [k for k in MODULES
-                             if k in enabled or k in ALWAYS_ON]
+    cfg["enabled_modules"] = order_modules(enabled)
     save_config(cfg)
 
 

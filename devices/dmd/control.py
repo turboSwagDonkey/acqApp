@@ -36,6 +36,14 @@ MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
 _calib_cache: dict[str, tuple[int, object]] = {}
 
 
+def _emit_frame(sink: Callable[[int], None] | None, signal, idx: int) -> None:
+    """Shared by the real and mock controllers' `_frame`: tell the sink, then
+    the Qt signal."""
+    if sink is not None:
+        sink(idx)
+    signal.emit(idx)
+
+
 def _load_calibration(path):
     from acqApp.devices.dmd.calibration import DmdCalibration
     p = Path(path)
@@ -55,7 +63,6 @@ def roi_frame(settings, width: int, height: int):
     is currently loaded", and the mock has to answer `on_pixels` truthfully for
     the same reason the real one does.
     """
-    import numpy as _np
     if not settings.rois:
         print("[DMD] ROI mode: no ROIs drawn — nothing to project")
         return None
@@ -79,7 +86,7 @@ def roi_frame(settings, width: int, height: int):
     if not int((frame > 0).sum()):
         print("[DMD] ROI mode: the ROIs map to no mirrors at all — they may be "
               "outside the DMD's reachable field")
-    return _np.asarray(frame)
+    return np.asarray(frame)
 
 
 @dataclass
@@ -148,10 +155,7 @@ class DmdController(QObject):
         self._sink = sink
 
     def _frame(self, idx: int) -> None:
-        sink = self._sink
-        if sink is not None:
-            sink(idx)
-        self.frame_displayed.emit(idx)
+        _emit_frame(self._sink, self.frame_displayed, idx)
 
     def apply_settings(self, settings: DmdSettings) -> None:
         geometry_changed = (
@@ -297,10 +301,7 @@ class MockDmdController(QObject):
             self.load_pattern(settings.pattern_path)
 
     def _frame(self, idx: int) -> None:
-        sink = self._sink
-        if sink is not None:
-            sink(idx)
-        self.frame_displayed.emit(idx)
+        _emit_frame(self._sink, self.frame_displayed, idx)
 
     def load_pattern(self, path: Path | None = None) -> None:
         if self._s.display_mode == MODE_ALL_ON:

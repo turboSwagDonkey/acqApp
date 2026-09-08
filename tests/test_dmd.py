@@ -339,13 +339,11 @@ def check_roi_wiring(r) -> None:
     the frame and starving the camera's own preview.
     """
     import sys as _s
-    from _harness import isolate_user_state, pump, qt_app
+    from _harness import isolate_user_state, make_window, pump, qt_app
     isolate_user_state()
     app = qt_app()
-    import acqApp.main as M
     _s.argv = ["main.py", "--mock"]
-    win = M.MainWindow(cam_info=None, mock=True,
-                       enabled={"voltage_cam", "dmd"}, cam_handle=None)
+    win = make_window({"voltage_cam", "dmd"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     cam = next(m for m in win._modules if m.key == "voltage_cam")
 
@@ -399,13 +397,12 @@ def check_mode_switch_and_cache(r) -> None:
     import tempfile
     from pathlib import Path
     from PIL import Image
-    from _harness import isolate_user_state, pump, qt_app
+    from _harness import isolate_user_state, make_window, pump, qt_app
 
     isolate_user_state()
     app = qt_app()
-    import acqApp.main as M
     _s.argv = ["main.py", "--mock"]
-    win = M.MainWindow(cam_info=None, mock=True, enabled={"dmd"}, cam_handle=None)
+    win = make_window({"dmd"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     panel = dmd.panel
 

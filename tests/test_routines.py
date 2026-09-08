@@ -30,7 +30,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _harness import Report, isolate_user_state, pump, qt_app
+from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineError, RoutineHooks
 from acqApp.routines.settings import (UNITS, RigLimits, Routine, Step,
@@ -1057,12 +1057,8 @@ def check_app(r: Report, app, tmp) -> None:
     """
     import h5py
 
-    import acqApp.main as M
-
     out = tmp / "routine_rec"
-    win = M.MainWindow(cam_info=None, mock=True,
-                       enabled={"voltage_cam", "stage", "dmd", "routines"},
-                       cam_handle=None)
+    win = make_window({"voltage_cam", "stage", "dmd", "routines"})
     mod = {m.key: m for m in win._modules}
     adapter, panel = mod["routines"], mod["routines"].panel
 

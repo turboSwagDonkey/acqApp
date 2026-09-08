@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-from _harness import Report, isolate_user_state, pump, qt_app
+from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 
 def check_trials(r: Report) -> None:
@@ -478,9 +478,7 @@ def main() -> int:
     check_tick_driven_size_run(r)
     check_visuomotor_run(r, app)
 
-    from acqApp.main import MainWindow
-
-    win = MainWindow(mock=True, enabled={"voltage_cam"})
+    win = make_window({"voltage_cam"})
     try:
         check_hotload(r, win)
     finally:

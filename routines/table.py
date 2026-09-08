@@ -299,7 +299,8 @@ class StepTable(QTableWidget):
     _CLEARABLE = ("x_um", "y_um", "pattern")
 
     def keyPressEvent(self, ev) -> None:
-        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier and                 ev.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+        if (ev.modifiers() & Qt.KeyboardModifier.ControlModifier
+                and ev.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)):
             row = self.selected_row()
             self.move_row(row, row + (-1 if ev.key() == Qt.Key.Key_Up else +1))
             return

@@ -246,29 +246,41 @@ class VisStimController(QObject):
             f"Progress: {(self._trial_idx / n) * 100:.1f}%   "
             f"trial {self._trial_idx + 1}/{n}")
 
-    def _begin_grating_trial(self, p: StimParams) -> None:
-        w, h = self._window.width(), self._window.height()
+    def _rebuild_texture_if_changed(self, p: StimParams, w: int, h: int) -> None:
+        """Shared by `_begin_grating_trial`/`_begin_visuomotor_trial`: only
+        rebuild the texture/aperture when a field that affects them actually
+        changed between trials."""
         mask_key = (p.StimDiameter, p.StimXPosition, p.StimYPosition,
                    p.WaveSpPeriod, p.Contrast, p.Orientation, p.Phase,
                    p.BKGColor)
         if mask_key != self._last_mask_key:
             self._window.set_trial(p, w, h)
             self._last_mask_key = mask_key
-        ifi = 1.0 / self._fps
-        self._total_frames = max(
-            1, round(1.0 / (ifi * max(p.WaveTempPeriodInHz, 1e-9)))
-              * int(p.PeriodsToShow))
-        self._shift_per_frame = p.WaveSpPeriod * p.WaveTempPeriodInHz * ifi
+
+    def _reset_drift_gating(self, p: StimParams) -> None:
+        """Shared by `_begin_grating_trial`/`_begin_visuomotor_trial`: the
+        blank/stim gating state every trial starts from, before either one's
+        own trial-length bookkeeping."""
         self._xoffset = float(p.Phase)
         self._window.set_offset(self._xoffset)
         self._is_stim_phase = False
         self._is_visible = False
         self._window.set_visible(False)
         self._trigger_count = 0
-        self._frame_i = 0
         self._blank_frames = 0
         self._stim_frames = 0
         self._trial_t0 = time.perf_counter()
+
+    def _begin_grating_trial(self, p: StimParams) -> None:
+        w, h = self._window.width(), self._window.height()
+        self._rebuild_texture_if_changed(p, w, h)
+        ifi = 1.0 / self._fps
+        self._total_frames = max(
+            1, round(1.0 / (ifi * max(p.WaveTempPeriodInHz, 1e-9)))
+              * int(p.PeriodsToShow))
+        self._shift_per_frame = p.WaveSpPeriod * p.WaveTempPeriodInHz * ifi
+        self._frame_i = 0
+        self._reset_drift_gating(p)
 
     def _begin_map_trial(self, p: StimParams) -> None:
         w, h = self._window.width(), self._window.height()
@@ -371,22 +383,9 @@ class VisStimController(QObject):
         `_begin_grating_trial` minus the WaveTempPeriodInHz/PeriodsToShow
         bookkeeping that drift source replaces."""
         w, h = self._window.width(), self._window.height()
-        mask_key = (p.StimDiameter, p.StimXPosition, p.StimYPosition,
-                   p.WaveSpPeriod, p.Contrast, p.Orientation, p.Phase,
-                   p.BKGColor)
-        if mask_key != self._last_mask_key:
-            self._window.set_trial(p, w, h)
-            self._last_mask_key = mask_key
-        self._xoffset = float(p.Phase)
-        self._window.set_offset(self._xoffset)
-        self._is_stim_phase = False
-        self._is_visible = False
-        self._window.set_visible(False)
-        self._trigger_count = 0
+        self._rebuild_texture_if_changed(p, w, h)
         self._visuomotor_tick_count = 0
-        self._blank_frames = 0
-        self._stim_frames = 0
-        self._trial_t0 = time.perf_counter()
+        self._reset_drift_gating(p)
 
     def _gate_tick(self) -> None:
         """One shared-clock tick arrived while RUNNING — the direct analog of

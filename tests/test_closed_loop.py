@@ -25,7 +25,7 @@ import shutil
 import sys
 import time
 
-from _harness import Report, isolate_user_state, pump, qt_app
+from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 RATE = 200.0            # synthetic trace rate, Hz
 DUR  = 20.0             # synthetic trace length, s
@@ -267,12 +267,8 @@ def check_worker(r: Report, app) -> None:
 # ── 5. the whole app ─────────────────────────────────────────────────────────
 
 def check_app(r: Report, app, tmp) -> int:
-    import acqApp.main as M
-
     out = tmp / "loop_rec"
-    enabled = {"wheel", "puffer", "closed_loop"}
-    win = M.MainWindow(cam_info=None, mock=True, enabled=enabled,
-                       cam_handle=None)
+    win = make_window({"wheel", "puffer", "closed_loop"})
     mod = {m.key: m for m in win._modules}
 
     win._save_panel._ed_folder.setText(str(out))

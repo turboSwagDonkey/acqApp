@@ -26,7 +26,7 @@ import time
 
 import numpy as np
 
-from _harness import Report, isolate_user_state, pump, qt_app
+from _harness import Report, isolate_user_state, make_window, npoints, pump, qt_app
 
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker
@@ -42,11 +42,6 @@ def eye_frame(w=320, h=240, r=40) -> np.ndarray:
     img[(xx - w // 2) ** 2 + (yy - h // 2) ** 2 <= r ** 2] = 20
     img[(xx - (w // 2 + 12)) ** 2 + (yy - (h // 2 - 10)) ** 2 <= 25] = 245
     return img
-
-
-def npoints(item) -> int:
-    xs = item.getData()[0]
-    return 0 if xs is None else len(xs)
 
 
 class FakeRec:
@@ -252,10 +247,8 @@ def main() -> int:
 
     # ══ the app half ═════════════════════════════════════════════════════════
     sys.argv = ["main.py", "--mock"]
-    import acqApp.main as M
 
-    win = M.MainWindow(cam_info=None, mock=True, enabled={"pupil_cam"},
-                       cam_handle=None)
+    win = make_window({"pupil_cam"})
     mod = win._modules[0]
     panel = mod.panel
 

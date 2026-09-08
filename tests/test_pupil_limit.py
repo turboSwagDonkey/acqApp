@@ -19,13 +19,7 @@ import sys
 
 from PyQt6.QtCore import QPointF, Qt
 
-from _harness import Report, isolate_user_state, pump, qt_app
-
-
-def npoints(item) -> int:
-    """How many points a PlotCurveItem is drawing (None before any setData)."""
-    xs = item.getData()[0]
-    return 0 if xs is None else len(xs)
+from _harness import Report, isolate_user_state, make_window, npoints, pump, qt_app
 
 
 class _DragEv:
@@ -73,11 +67,9 @@ def main() -> int:
     # ══ the app half ═════════════════════════════════════════════════════════
     app = qt_app()
     isolate_user_state()
-    import acqApp.main as M
     sys.argv = ["main.py", "--mock"]
 
-    win = M.MainWindow(cam_info=None, mock=True, enabled={"pupil_cam"},
-                       cam_handle=None)
+    win = make_window({"pupil_cam"})
     mod = win._modules[0]
     panel = mod.panel
 

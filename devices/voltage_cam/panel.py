@@ -160,7 +160,8 @@ class SettingsPanel(QWidget):
             self._on_hz_changed(self._spn_hz.value())
 
     def _refresh_rate(self) -> None:
-        self._refresh_recordability()
+        cfg = self.get_config()
+        self._refresh_recordability(cfg)
         # Prefer the camera's own measured rate once a capture is running — it
         # can't disagree with the real link the way the datasheet estimate can.
         if self._measured is not None:
@@ -169,7 +170,6 @@ class SettingsPanel(QWidget):
             self._lbl_rate.setText(f"{fps:.1f} fps — measured by camera{note}")
             self._lbl_rate.setStyleSheet("color:#2e7d32; font-weight:bold;")
             return
-        cfg = self.get_config()
         link = LINK_LABEL.get(cfg.link, cfg.link)
         if cfg.exposure_limited:
             self._lbl_rate.setText(
@@ -182,7 +182,7 @@ class SettingsPanel(QWidget):
                 f"{cfg.expected_fps:.1f} fps — at {link} readout limit")
             self._lbl_rate.setStyleSheet("color:#2e7d32;")
 
-    def _refresh_recordability(self) -> None:
+    def _refresh_recordability(self, cfg: AcqConfig | None = None) -> None:
         """Say whether a recording of this configuration fits the writer.
 
         `WRITER_MBPS` is the whole path (worker → Recorder → HDF5Writer →
@@ -191,7 +191,7 @@ class SettingsPanel(QWidget):
         camera it cuts bytes, not time, so 2×2 keeps the full frame rate at a
         quarter of the data.
         """
-        cfg = self.get_config()
+        cfg = cfg if cfg is not None else self.get_config()
         fps = self._measured[0] if self._measured is not None else cfg.expected_fps
         mbps = cfg.frame_bytes * fps / (1 << 20)
         if mbps <= WRITER_MBPS:

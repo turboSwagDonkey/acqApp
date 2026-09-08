@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sys
 
-from _harness import Report, isolate_user_state, qt_app
+from _harness import Report, isolate_user_state, make_window, qt_app
 
 from acqApp import config
 
@@ -430,9 +430,8 @@ def main() -> int:
     r = Report("hotload")
     isolate_user_state()
     app = qt_app()          # keep the reference: a GC'd QApplication aborts
-    from acqApp.main import MainWindow
 
-    win = MainWindow(mock=True, enabled={"voltage_cam", "wheel"})
+    win = make_window({"voltage_cam", "wheel"})
     try:
         check_always_on(r, win)
         check_own_window(r, win)

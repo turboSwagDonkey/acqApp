@@ -16,7 +16,7 @@ from __future__ import annotations
 import shutil
 import sys
 
-from _harness import MemorySettings, Report, isolate_user_state, pump, qt_app
+from _harness import MemorySettings, Report, isolate_user_state, make_window, pump, qt_app
 
 EXPECTED_STREAMS = [
     "voltage_cam", "voltage_cam_index", "pupil_cam",
@@ -63,11 +63,10 @@ def main() -> int:
     sys.argv = ["main.py", "--mock"]
     app = qt_app()
     from acqApp import config
-    import acqApp.main as M
 
     enabled = set(config.MODULES)
     r.note(f"modules: {sorted(enabled)}")
-    win = M.MainWindow(cam_info=None, mock=True, enabled=enabled, cam_handle=None)
+    win = make_window(enabled)
     mod = {m.key: m for m in win._modules}
 
     win._save_panel._ed_folder.setText(str(out))

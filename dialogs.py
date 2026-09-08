@@ -19,6 +19,12 @@ from PyQt6.QtWidgets import (
 
 from acqApp import config, probe, style, widgets
 
+_GEOM_ORG, _GEOM_APP = "acqApp", "acqApp"
+
+
+def _qsettings() -> QSettings:
+    return QSettings(_GEOM_ORG, _GEOM_APP)
+
 
 class ModuleSelectDialog(QDialog):
     """A checkbox per subsystem, pre-checked from what is loaded now.
@@ -65,9 +71,8 @@ class ModuleSelectDialog(QDialog):
 
     def selected(self) -> list[str]:
         """The ticked modules, plus the ones that are never untickable."""
-        return [k for k in config.MODULES
-                if k in config.ALWAYS_ON
-                or (k in self._boxes and self._boxes[k].isChecked())]
+        return config.order_modules(
+            k for k, cb in self._boxes.items() if cb.isChecked())
 
 
 def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
@@ -133,7 +138,7 @@ class PanelWindow(QDialog):
         widgets.collapsible_groups(panel, key)
 
         self._panel = panel
-        self._saved_geom = QSettings("acqApp", "acqApp").value(self._geom_key)
+        self._saved_geom = _qsettings().value(self._geom_key)
         self._sized = False
 
     def default_size(self) -> QSize:
@@ -155,8 +160,7 @@ class PanelWindow(QDialog):
         self.visibility_changed.emit(False)
 
     def save_geometry(self) -> None:
-        QSettings("acqApp", "acqApp").setValue(self._geom_key,
-                                               self.saveGeometry())
+        _qsettings().setValue(self._geom_key, self.saveGeometry())
 
     def closeEvent(self, event) -> None:
         self.save_geometry()
@@ -218,7 +222,7 @@ class SettingsDialog(QDialog):
 
         # Sizing waits for the first show: the panels are added after __init__,
         # and the size is measured from them.
-        self._saved_geom = QSettings("acqApp", "acqApp").value(self._GEOM_KEY)
+        self._saved_geom = _qsettings().value(self._GEOM_KEY)
         self._sized = False
 
     def default_size(self) -> QSize:
@@ -283,7 +287,7 @@ class SettingsDialog(QDialog):
         return self.tabs.currentWidget()
 
     def save_geometry(self) -> None:
-        QSettings("acqApp", "acqApp").setValue(self._GEOM_KEY, self.saveGeometry())
+        _qsettings().setValue(self._GEOM_KEY, self.saveGeometry())
 
     def closeEvent(self, event) -> None:
         # Remember where the operator put it, then hide (never delete).
