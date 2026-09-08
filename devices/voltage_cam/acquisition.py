@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
-from acqApp.acq.worker import PullWorker
+from acqApp.acq.worker import PullWorker, paced
 from .presets import AcqConfig, WRITER_MBPS
 
 # UI trigger label → pylablib's high-level trigger mode.
@@ -286,12 +286,12 @@ class OrcaFireWorker(PullWorker):
               f"({cfg.frame_bytes / (1 << 20):.2f} MB/frame × {fps:.0f} fps)")
         if mbps > self._WRITER_MBPS:
             keep = self._WRITER_MBPS / mbps
+            cap_fps = self._WRITER_MBPS / (cfg.frame_bytes / (1 << 20))
             print(f"[voltage_cam] ⚠ RECORDING CANNOT KEEP UP: the writer sustains"
                   f" ~{self._WRITER_MBPS:.0f} MB/s, so ~{(1 - keep) * 100:.0f}% of"
                   f" frames would be dropped.")
             print(f"[voltage_cam]   To record gap-free, cap the rate near "
-                  f"{self._WRITER_MBPS / (cfg.frame_bytes / (1 << 20)):.0f} fps "
-                  f"(exposure ≥ {1e6 / (self._WRITER_MBPS / (cfg.frame_bytes / (1 << 20))):.0f} µs), "
+                  f"{cap_fps:.0f} fps (exposure ≥ {1e6 / cap_fps:.0f} µs), "
                   f"or use a smaller ROI/binning. Live preview is unaffected.")
 
     def _run(self) -> None:
@@ -506,9 +506,11 @@ class MockCameraWorker(PullWorker):
 
         rng    = np.random.default_rng(0)
         period = 1.0 / self._FPS
-        n, t0  = 0, time.perf_counter()
+        t0     = time.perf_counter()
 
-        while not self._stop:
+        for n in paced(period, t0):
+            if self._stop:
+                break
             acquired = time.perf_counter()
             t     = acquired - t0
             frame = rng.integers(1500, 2500, (H, W), dtype=np.uint16)
@@ -516,13 +518,8 @@ class MockCameraWorker(PullWorker):
             frame[blob] = np.clip(
                 frame[blob].astype(np.int32) + sig, 0, 65535
             ).astype(np.uint16)
-            n += 1
             # Preview gets the bare frame; the sink gets the same triple the
             # real worker sends.
             self._publish(frame, record=(frame, acquired, n - 1))
             if n % int(self._FPS) == 0:
                 self.fps_update.emit(n, n / max(time.perf_counter() - t0, 1e-9))
-            nxt = t0 + n * period
-            slp = nxt - time.perf_counter()
-            if slp > 0:
-                time.sleep(slp)

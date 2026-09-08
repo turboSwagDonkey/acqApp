@@ -17,7 +17,7 @@ import time
 
 from PyQt6.QtCore import pyqtSignal
 
-from acqApp.acq.worker import PullWorker
+from acqApp.acq.worker import PullWorker, paced
 
 
 class StagePollWorker(PullWorker):
@@ -29,22 +29,24 @@ class StagePollWorker(PullWorker):
         self._hz   = max(0.5, poll_hz)
 
     def _run(self) -> None:
+        # NOTE: pacing uses acq.worker.paced(), which paces this REAL device
+        # poll loop. Verified equivalent to the old inline pacing idiom by
+        # replay test + jitter measurement, but NOT yet run against the
+        # physical stage — confirm poll cadence/no-missed-reads on real
+        # hardware before trusting this in an experiment. See paced()'s
+        # docstring.
         self._stop = False
         period = 1.0 / self._hz
         t0 = time.perf_counter()
-        n = 0
-        while not self._stop:
+        for n in paced(period, t0):
+            if self._stop:
+                break
             try:
                 xy = self._ctrl.read_xy_um()
             except Exception as e:
                 self.error.emit(f"stage: read failed ({e})")
                 break
-            n += 1
             self._publish(xy)
             elapsed = time.perf_counter() - t0
             if n % max(1, int(self._hz)) == 0 and elapsed > 0:
                 self.rate_update.emit(n / elapsed)
-            nxt = t0 + n * period
-            slp = nxt - time.perf_counter()
-            if slp > 0:
-                time.sleep(slp)

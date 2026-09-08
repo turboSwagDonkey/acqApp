@@ -21,7 +21,7 @@ from collections import deque
 import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
-from acqApp.acq.worker import PullWorker
+from acqApp.acq.worker import PullWorker, paced
 
 
 class _EncoderBase(PullWorker):
@@ -52,7 +52,6 @@ class _EncoderBase(PullWorker):
     def __init__(self, volts_per_rev: float | None = 5.0,
                  wheel_dia_mm: float | None = 150.0):
         super().__init__()
-        self.actual_rate = 0.0
         self._scale_lock = threading.Lock()
         self._vpr = volts_per_rev
         self._dia = wheel_dia_mm
@@ -273,7 +272,8 @@ class EncoderWorker(_EncoderBase):
                     anchor = now - (len(data) - 1) / rate
 
                 for v in data:
-                    self._emit_sample(float(v), i / rate, anchor + i / rate)
+                    t = i / rate
+                    self._emit_sample(float(v), t, anchor + t)
                     i += 1
 
                 n_win += len(data)
@@ -284,28 +284,30 @@ class EncoderWorker(_EncoderBase):
 
     # ── software-paced (fallback only) ───────────────────────────────────────
     def _run_software(self) -> None:
+        # NOTE: pacing uses acq.worker.paced(), which paces this REAL DAQ
+        # sample loop. Verified equivalent to the old inline pacing idiom by
+        # replay test + jitter measurement, but NOT yet run against the
+        # physical encoder — confirm sample cadence/no dropped reads on real
+        # hardware before trusting this in an experiment. See paced()'s
+        # docstring.
         from nidaqmx import Task
 
         self.timestamp_source = "software"
         self.actual_rate = self._rate
         period = 1.0 / self._rate
         t0 = time.perf_counter()
-        n = 0
 
         with Task() as task:
             self._add_channel(task)
-            while not self._stop:
+            for n in paced(period, t0):
+                if self._stop:
+                    break
                 voltage: float = task.read()  # type: ignore[assignment]
                 now = time.perf_counter()
-                n += 1
                 # Arrival is the best estimate here — no device timebase.
                 self._emit_sample(float(voltage), now - t0, now)
                 if n % max(1, int(self._rate)) == 0 and now > t0:
                     self.fps_update.emit(n / (now - t0))
-                nxt = t0 + n * period
-                slp = nxt - time.perf_counter()
-                if slp > 0:
-                    time.sleep(slp)
 
 
 class MockEncoderWorker(_EncoderBase):
@@ -321,9 +323,10 @@ class MockEncoderWorker(_EncoderBase):
         vfs = self._vpr or 5.0
         rng = np.random.default_rng()
         t0 = time.perf_counter()
-        n = 0
         rev = 0.0
-        while not self._stop:
+        for n in paced(period, t0):
+            if self._stop:
+                break
             t = time.perf_counter() - t0
             # 0.4 rev/s forward for 6 s, still for 3 s, 0.25 rev/s back — repeat.
             phase = t % 12.0
@@ -333,11 +336,6 @@ class MockEncoderWorker(_EncoderBase):
             # UP, which with _SIGN = +1.0 reads as positive speed and distance.
             voltage = float((rev % 1.0) * vfs + rng.normal(0, 0.045))
             voltage = min(max(voltage, 0.0), vfs)
-            n += 1
             self._emit_sample(voltage, t, t0 + t)
             if n % int(self.RATE) == 0 and t > 0:
                 self.fps_update.emit(n / t)
-            nxt = t0 + n * period
-            slp = nxt - time.perf_counter()
-            if slp > 0:
-                time.sleep(slp)

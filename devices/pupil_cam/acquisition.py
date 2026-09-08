@@ -19,7 +19,7 @@ import time
 import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
-from acqApp.acq.worker import PullWorker
+from acqApp.acq.worker import PullWorker, paced
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -286,12 +286,14 @@ class MockPupilCameraWorker(PullWorker):
 
     def _run(self) -> None:
         self._stop = False
-        n, t0 = 0, time.perf_counter()
+        t0 = time.perf_counter()
         period = 1.0 / self._fps
         cy, cx = self.H // 2, self.W // 2
         Y, X = np.ogrid[:self.H, :self.W]
 
-        while not self._stop:
+        for n in paced(period, t0):
+            if self._stop:
+                break
             t = time.perf_counter() - t0
             r = 35 + 15 * np.sin(2 * np.pi * 0.1 * t)
             frame = np.full((self.H, self.W), 180, dtype=np.uint8)
@@ -299,11 +301,6 @@ class MockPupilCameraWorker(PullWorker):
             gr = max(2.0, 0.16 * r)     # corneal glint, offset inside the pupil
             frame[((X - (cx + 0.35 * r)) ** 2
                    + (Y - (cy - 0.3 * r)) ** 2) < gr ** 2] = 245
-            n += 1
             self._publish(frame)
             if n % max(1, int(self._fps)) == 0:
                 self.fps_update.emit(n, n / (time.perf_counter() - t0))
-            nxt = t0 + n * period
-            slp = nxt - time.perf_counter()
-            if slp > 0:
-                time.sleep(slp)

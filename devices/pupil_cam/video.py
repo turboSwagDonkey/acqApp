@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
-from acqApp.acq.worker import PullWorker
+from acqApp.acq.worker import PullWorker, paced
 from acqApp.devices.pupil_cam.avi import AviReader
 
 
@@ -58,21 +58,22 @@ class VideoFileCameraWorker(PullWorker):
 
     def _run(self) -> None:
         self._stop = False
-        n, t0 = 0, time.perf_counter()
+        t0 = time.perf_counter()
         period = 1.0 / self._fps
         total = len(self._reader)
-        while not self._stop:
-            i = n % total if self._loop else n
+        # `paced()` yields the 1-based count of this attempt; the file index
+        # for that attempt is one less (0-based), matching the old pre-
+        # increment `n % total` / `n` indexing exactly.
+        for n in paced(period, t0):
+            if self._stop:
+                break
+            i = (n - 1) % total if self._loop else (n - 1)
             if i >= total:
                 break
             # Copy, not the memmap view: the tracker and the recording sink both
             # outlive this tick and a view would alias the next frame.
             self._publish(np.ascontiguousarray(self._reader.luma(i)))
-            n += 1
             self._n = n
             if n % max(1, int(self._fps)) == 0:
                 self.fps_update.emit(n, n / (time.perf_counter() - t0))
-            slp = t0 + n * period - time.perf_counter()
-            if slp > 0:
-                time.sleep(slp)
-        print(f"[pupil_cam] video source stopped after {n} frames")
+        print(f"[pupil_cam] video source stopped after {self._n} frames")

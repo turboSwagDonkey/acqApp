@@ -20,10 +20,50 @@ set_sink(fn) / set_sink(None). stop() flips the flag and joins the thread.
 from __future__ import annotations
 
 import threading
+import time
 import traceback
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from PyQt6.QtCore import QThread, pyqtSignal
+
+
+def paced(period: float, t0: float) -> Iterator[int]:
+    """Yield 1, 2, 3, ... at a fixed rate relative to `t0` (drift-free).
+
+    Recomputes the ABSOLUTE target time for iteration n from the fixed start
+    `t0`, rather than sleeping a flat `period` each time, so the loop
+    free-runs at the true average rate with no cumulative drift from
+    per-iteration overhead. Capture `t0` once, before the loop starts, and
+    pass the SAME value here and into any of the caller's own `now - t0`
+    timestamp math, so pacing and timestamps agree on the origin.
+
+    Usage (replaces the old duplicated idiom `nxt = t0 + n * period; slp =
+    nxt - time.perf_counter(); if slp > 0: time.sleep(slp)`):
+
+        t0 = time.perf_counter()
+        for n in paced(period, t0):
+            if self._stop:
+                break
+            ...do one iteration's work...
+
+    *** NOT YET VALIDATED ON REAL HARDWARE ***
+    This is verified equivalent to the old per-callsite inline idiom by a
+    deterministic replay test (byte-identical sleep durations and elapsed
+    time vs. the old code, across randomized work/overrun patterns on a
+    simulated clock) and by empirical jitter measurement on a dev machine —
+    but it has NOT been exercised against actual hardware. Any caller pacing
+    a REAL device poll/sample loop (as opposed to a mock or file-replay
+    source) must be run on the physical rig — confirming cadence and that no
+    reads/samples are dropped under real scheduling — before being trusted
+    in an experiment.
+    """
+    n = 0
+    while True:
+        n += 1
+        yield n
+        slp = t0 + n * period - time.perf_counter()
+        if slp > 0:
+            time.sleep(slp)
 
 
 class PullWorker(QThread):
