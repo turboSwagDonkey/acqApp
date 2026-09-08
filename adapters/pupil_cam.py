@@ -415,6 +415,12 @@ class PupilCamModule(ModuleAdapter):
             self._track = None
         super().stop()
         self.panel.set_measured_rate(None)          # back to the requested rate
+        # Last session's fit/mask must not linger on screen as if it were
+        # still live — the next session starts with nothing tracked yet.
+        if self._fit_curve is not None:
+            self._fit_curve.setData([], [])
+        if self._mask_img is not None:
+            self._mask_img.clear()
 
     # ── display ──
     def update_display(self) -> None:
