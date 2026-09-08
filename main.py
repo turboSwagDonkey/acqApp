@@ -25,6 +25,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # A segfault deep in the DCAM SDK can't be caught by try/except — the process
@@ -160,9 +161,9 @@ if not _mock and "voltage_cam" in config.load_enabled_modules():
 def _await_camera() -> None:
     """Block until the startup open has finished. Safe to call more than once,
     and a no-op under --mock."""
-    if _cam_thread is not None and _cam_thread.is_alive():
-        print("Waiting for the camera to finish opening…")
     if _cam_thread is not None:
+        if _cam_thread.is_alive():
+            print("Waiting for the camera to finish opening…")
         _cam_thread.join()
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -172,12 +173,12 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QDockWidget, QLabel, QMainWindow, QPushButton,
-    QStatusBar, QTabWidget, QToolBar, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QDockWidget, QLabel, QMainWindow,
+    QPushButton, QStatusBar, QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
 import pyqtgraph as pg
 
-from acqApp import adapters, config, style
+from acqApp import adapters, style
 from acqApp.dialogs import (ConnectionMonitor, ModuleSelectDialog, PanelWindow,
                             SettingsDialog)
 from acqApp.saving import SaveConfig, SavePanel
@@ -201,6 +202,12 @@ def _sample_nbytes(item) -> int:
     """Payload bytes of a Recorder ring item (stream, ts, data); 0 for scalars."""
     return getattr(item[2], "nbytes", 0)
 
+
+# The sidebar's Mode dropdown: named cross-module presets. "None" is a no-op —
+# manual control, whatever the operator already has set. New modes are new
+# branches in MainWindow._on_mode_changed, not new plumbing.
+MODE_NONE = "None"
+MODES = (MODE_NONE, "Scan")
 
 
 class MainWindow(QMainWindow):
@@ -299,10 +306,7 @@ class MainWindow(QMainWindow):
         rather than on the wheel: making pupil radius triggerable is one method
         on that adapter and no change here.
         """
-        out: list = []
-        for m in self._modules:
-            out.extend(m.signal_sources())
-        return out
+        return [s for m in self._modules for s in m.signal_sources()]
 
     def stage_target(self):
         """The loaded module an experiment routine may move, or None.
@@ -403,6 +407,23 @@ class MainWindow(QMainWindow):
         m.set_preset(preset)
         return prev
 
+    def set_mode(self, name: str) -> None:
+        """Apply the sidebar's named cross-module preset (the Mode dropdown).
+
+        Each branch only configures a module — same "takes effect at the next
+        Display/Start" contract as `set_camera_preset`/`DmdModule.set_all_on`
+        — this does not itself start or display anything. A module that is
+        not loaded is silently skipped, the same as `set_camera_preset`.
+        """
+        if name == "Scan":
+            dmd = self._module("dmd")
+            if dmd is not None:
+                dmd.set_all_on()
+            from acqApp.devices.voltage_cam.presets import DEFAULT_PRESET
+            self.set_camera_preset("voltage_cam", DEFAULT_PRESET)
+        # MODE_NONE (and any future default): no-op — whatever is set stands.
+        self.status(f"Mode: {name}")
+
     def latest_frame(self, key: str):
         """The newest frame from module `key`'s camera, or None. Why it exists:
         `devices.ModuleHost`. Why it reads the cache: `ModuleAdapter.last_frame`.
@@ -412,6 +433,16 @@ class MainWindow(QMainWindow):
         """
         m = self._module(key)
         return m.last_frame() if m is not None else None
+
+    @contextmanager
+    def _attributed_to(self, key: str):
+        """Run a block with `self._building_key` set to `key`, so `add_dock`
+        and `register_pg_view` calls inside it are charged to that module."""
+        self._building_key = key
+        try:
+            yield
+        finally:
+            self._building_key = None
 
     def register_pg_view(self, view) -> None:
         self._pg_views.append(view)
@@ -462,11 +493,8 @@ class MainWindow(QMainWindow):
 
     def _build_views_for(self, m) -> None:
         """Run a module's `build_views()` with its docks and views attributed."""
-        self._building_key = m.key
-        try:
+        with self._attributed_to(m.key):
             m.build_views()
-        finally:
-            self._building_key = None
 
     def _central_claimant(self):
         """The first loaded module that wants the centre pane, or None.
@@ -495,11 +523,8 @@ class MainWindow(QMainWindow):
         owner = self._central_claimant()
         view = None
         if owner is not None:
-            self._building_key = owner.key
-            try:
+            with self._attributed_to(owner.key):
                 view = owner.central_widget()
-            finally:
-                self._building_key = None
         self._central_owner = owner.key if view is not None else None
         if view is None:
             placeholder = QLabel("Voltage camera not loaded")
@@ -565,22 +590,24 @@ class MainWindow(QMainWindow):
             act.setChecked(visible)
 
     def _build_plots_dock(self) -> None:
-        self._plots_tabs = tabs = QTabWidget()
-        tabs.setMovable(True)
+        self._plots_tabs = QTabWidget()
+        self._plots_tabs.setMovable(True)
         for m in self._modules:
-            pw = m.build_plot()
-            if pw is None:
-                continue
-            idx = tabs.addTab(pw, m.plot_label)
-            tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[m.key]))
-            self._module_plots[m.key] = pw
-            self._building_key = m.key
-            try:
-                self.register_pg_view(pw)
-            finally:
-                self._building_key = None
-        self._plots_dock = self._make_dock("Signals", tabs,
+            self._add_plot_tab(m)
+        self._plots_dock = self._make_dock("Signals", self._plots_tabs,
                                            Qt.DockWidgetArea.RightDockWidgetArea)
+
+    def _add_plot_tab(self, m, index: int | None = None) -> None:
+        """Build and insert one module's Signals-tab plot, if it has one."""
+        pw = m.build_plot()
+        if pw is None:
+            return
+        idx = (self._plots_tabs.addTab(pw, m.plot_label) if index is None
+              else self._plots_tabs.insertTab(index, pw, m.plot_label))
+        self._plots_tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[m.key]))
+        self._module_plots[m.key] = pw
+        with self._attributed_to(m.key):
+            self.register_pg_view(pw)
 
     def _build_status_bar(self) -> None:
         # Emulate: simulated signals for testing (off = real hardware).
@@ -660,6 +687,19 @@ class MainWindow(QMainWindow):
         # the window has to move the sidebar's highlight with it.
         self._settings_dialog.tabs.currentChanged.connect(
             self._on_settings_tab_changed)
+
+        # Cross-module preset ("Scan" = full DMD illumination + the voltage
+        # camera's full-frame capture area). Config only — like the operator's
+        # own settings edits, a mode takes effect at the next Display/Start,
+        # it does not itself start anything.
+        self._sidebar.addWidget(QLabel("  Mode:"))
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItems(MODES)
+        self._mode_combo.setToolTip(
+            "Apply a named preset across modules (DMD illumination, camera "
+            "capture area, ...). \"None\" leaves everything as set.")
+        self._mode_combo.currentTextChanged.connect(self.set_mode)
+        self._sidebar.addWidget(self._mode_combo)
 
         # Dark/light theme toggle (persisted to config; default dark).
         self._theme_action = QAction(self._swatch(None), "☾ Theme", self)
@@ -848,10 +888,7 @@ class MainWindow(QMainWindow):
 
     def _probe_kwargs(self) -> dict:
         """Per-module arguments for probe.probe_all (e.g. the stage's port)."""
-        kwargs: dict = {}
-        for m in self._modules:
-            kwargs.update(m.probe_kwargs())
-        return kwargs
+        return {k: v for m in self._modules for k, v in m.probe_kwargs().items()}
 
     def _show_devices(self) -> None:
         if self._devices_dialog is None:
@@ -889,22 +926,25 @@ class MainWindow(QMainWindow):
         self._btn_run.setText("Stop")
         self._btn_emulate.setEnabled(False)   # can't switch real/mock mid-session
 
+    def _safe_stop(self, m) -> None:
+        """Stop one module, guarded: teardown touches hardware, and an
+        unguarded raise strands every module after it — threads running,
+        stop_all() skipped, clock alive with the UI saying "Stopped" (and, via
+        closeEvent, the DCAM close skipped — the native crash)."""
+        try:
+            m.stop()
+        except Exception as e:
+            self.status(f"{m.key}: stop failed ({type(e).__name__}: {e})")
+            print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
+
     def _stop_session(self) -> None:
         # Ensure recording is closed before tearing down the clock/workers.
         if self._btn_rec.isChecked():
             self._btn_rec.setChecked(False)   # triggers _on_record_toggled(False)
 
         self._disp_timer.stop()
-        # Guarded per module: teardown touches hardware, and unguarded one
-        # raise strands every module after it — threads running, stop_all()
-        # skipped, clock alive with the UI saying "Stopped". Via closeEvent it
-        # also skips the DCAM close, which is the native crash.
         for m in self._modules:
-            try:
-                m.stop()
-            except Exception as e:
-                self.status(f"{m.key}: stop failed ({type(e).__name__}: {e})")
-                print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
+            self._safe_stop(m)
         self._sync.stop_all()
 
         self._session_on = False
@@ -981,17 +1021,7 @@ class MainWindow(QMainWindow):
 
         m.build_panel()
         self._place_panel(m, index=self._settings_tab_index(key))
-        plot = m.build_plot()
-        if plot is not None:
-            idx = self._plots_tabs.insertTab(self._plot_tab_index(key), plot,
-                                             m.plot_label)
-            self._plots_tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
-            self._module_plots[key] = plot
-            self._building_key = key
-            try:
-                self.register_pg_view(plot)
-            finally:
-                self._building_key = None
+        self._add_plot_tab(m, index=self._plot_tab_index(key))
         self._build_views_for(m)
         m.build_controller(self._emulate)
 
@@ -1004,13 +1034,8 @@ class MainWindow(QMainWindow):
         m = next((x for x in self._modules if x.key == key), None)
         if m is None:
             return
-        # Same guard as _stop_session: teardown touches hardware, and a raise
-        # here would strand the widgets attached to a dead device.
-        try:
-            m.stop()
-        except Exception as e:
-            self.status(f"{key}: stop failed ({type(e).__name__}: {e})")
-            print(f"[main] {key}.stop() raised: {type(e).__name__}: {e}")
+        # A raise here would also strand the widgets attached to a dead device.
+        self._safe_stop(m)
         m.close_controller()
 
         # setParent(None) before deleteLater on all three: removeTab and

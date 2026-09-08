@@ -359,6 +359,15 @@ class SettingsPanel(QWidget):
         else:
             self._emit()
 
+    def set_all_on(self) -> None:
+        """Switch to All ON — every mirror on, full field. Mirrors
+        `set_pattern_path`/`set_roi_pattern`: toggling the radio drives
+        `_on_mode_changed` -> `_emit`, so the next Display projects it."""
+        if not self._rb[MODE_ALL_ON].isChecked():
+            self._rb[MODE_ALL_ON].setChecked(True)   # -> _on_mode_changed -> _emit
+        else:
+            self._emit()
+
     def _show_rois(self) -> None:
         n = len(self._rois)
         base = f"{n} ROI{'' if n == 1 else 's'} defined" if n else "No ROIs yet"

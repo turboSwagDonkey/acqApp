@@ -18,6 +18,10 @@ from acqApp.devices.dmd.control import DmdController, DmdSettings, MockDmdContro
 from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
 
+# The standalone dmdGUI_project app's alignment keys, and the DmdSettings
+# attribute (plus its "_shared_<attr>" provenance key) each tracks.
+_SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
+
 
 class DmdModule(ModuleAdapter):
     key = "dmd"
@@ -212,14 +216,11 @@ class DmdModule(ModuleAdapter):
         # (the standalone app re-aligned the optics) — not just on a fresh
         # install — so a saved scale/rotation can't pin a stale alignment
         # forever. `_shared_*` are provenance only: load_dataclass drops them.
-        if "defaultScale" in shared:
-            shared_scale = float(shared["defaultScale"])
-            if "scale_pct" not in saved or saved.get("_shared_scale_pct") != shared_scale:
-                s.scale_pct = shared_scale
-        if "defaultRot" in shared:
-            shared_rot = float(shared["defaultRot"])
-            if "rotation_deg" not in saved or saved.get("_shared_rotation_deg") != shared_rot:
-                s.rotation_deg = shared_rot
+        for shared_key, attr in _SHARED_ALIGNMENT:
+            if shared_key in shared:
+                val = float(shared[shared_key])
+                if attr not in saved or saved.get(f"_shared_{attr}") != val:
+                    setattr(s, attr, val)
         return s
 
     def _save(self, s) -> None:
@@ -227,10 +228,9 @@ class DmdModule(ModuleAdapter):
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
         d["rois"] = list(s.rois or ())      # JSON has no tuples
         shared = alp.sibling_config()
-        if "defaultScale" in shared:
-            d["_shared_scale_pct"] = float(shared["defaultScale"])
-        if "defaultRot" in shared:
-            d["_shared_rotation_deg"] = float(shared["defaultRot"])
+        for shared_key, attr in _SHARED_ALIGNMENT:
+            if shared_key in shared:
+                d[f"_shared_{attr}"] = float(shared[shared_key])
         config.save_settings(self.key, d)
 
     def build_controller(self, emulate: bool) -> None:
@@ -306,6 +306,13 @@ class DmdModule(ModuleAdapter):
         else:
             self.panel.set_pattern_path(p)
             self.load(p)
+
+    def set_all_on(self) -> None:
+        """Switch to full-field illumination (every mirror on). Config only,
+        like `set_pattern` — Display (or `set_light(True)`) is still what
+        actually projects it. Used by MainWindow.set_mode()'s "Scan" preset."""
+        if self.panel is not None:
+            self.panel.set_all_on()
 
     def set_light(self, on: bool) -> None:
         """THE call that emits light. `display()` re-applies the panel's
