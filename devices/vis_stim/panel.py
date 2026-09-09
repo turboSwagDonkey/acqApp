@@ -29,10 +29,10 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from acqApp import style
 from acqApp.acq.sync import DEFAULT_TICK_MS
-from .settings import (IMPLEMENTED_TRIAL_TYPES, TRIAL_CONTRAST, TRIAL_GRATING,
-                       TRIAL_MAP, TRIAL_SIZE, TRIAL_TUNING, TRIAL_TYPES,
-                       TRIAL_VISUOMOTOR, LoopVar, StimParams, VisStimSettings,
-                       parse_values)
+from .settings import (IMPLEMENTED_TRIAL_TYPES, REGION_TRIAL_TYPES,
+                       TRIAL_CONTRAST, TRIAL_GRATING, TRIAL_MAP, TRIAL_SIZE,
+                       TRIAL_TUNING, TRIAL_TYPES, TRIAL_VISUOMOTOR, LoopVar,
+                       StimParams, VisStimSettings, parse_values)
 
 _TRIAL_TYPE_LABELS = {
     TRIAL_GRATING:    "Grating (drifting)",
@@ -135,28 +135,42 @@ class SettingsPanel(QWidget):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(self._trial_type_group())
+
+        # Build every group `_update_group_visibility` touches BEFORE
+        # `_trial_type_group()` — which wires the trial-type combo's
+        # `currentIndexChanged` straight to it — rather than leaning on
+        # construction order alone to keep that signal from firing before
+        # its targets exist. Today nothing changes the combo's index between
+        # that connect and here, so building it first would still work, but
+        # that's fragile: any future reorder, or a second addItem/
+        # setCurrentIndex on `_cmb_trial` added later in `_build`, would
+        # raise `AttributeError` on a not-yet-created `_grp_*`. Visual order
+        # is set by the `addWidget` calls below, independent of this one.
         self._grp_geometry = self._field_group("Stimulus geometry",
                                                 _GEOMETRY_FIELDS)
-        root.addWidget(self._grp_geometry)
         self._grp_grating = self._field_group("Grating & timing", _GRATING_FIELDS)
-        root.addWidget(self._grp_grating)
         self._grp_trigger = self._field_group(
             "Trial timing (shared clock ticks)", _TRIGGER_FIELDS)
-        root.addWidget(self._grp_trigger)
         self._grp_map = self._field_group("Map trial", _MAP_FIELDS)
-        root.addWidget(self._grp_map)
         self._grp_tuning = self._field_group("Tuning trial", _TUNING_FIELDS)
-        root.addWidget(self._grp_tuning)
         self._grp_contrast = self._field_group("Contrast trial",
                                                _CONTRAST_FIELDS)
-        root.addWidget(self._grp_contrast)
         self._grp_size = self._field_group("Size trial", _SIZE_FIELDS)
-        root.addWidget(self._grp_size)
         self._grp_visuomotor = self._field_group("Visuomotor trial",
                                                   _VISUOMOTOR_FIELDS)
+        self._grp_loops = self._loop_group()
+        trial_type_group = self._trial_type_group()
+
+        root.addWidget(trial_type_group)
+        root.addWidget(self._grp_geometry)
+        root.addWidget(self._grp_grating)
+        root.addWidget(self._grp_trigger)
+        root.addWidget(self._grp_map)
+        root.addWidget(self._grp_tuning)
+        root.addWidget(self._grp_contrast)
+        root.addWidget(self._grp_size)
         root.addWidget(self._grp_visuomotor)
-        root.addWidget(self._loop_group())
+        root.addWidget(self._grp_loops)
         root.addWidget(self._display_group())
         root.addWidget(self._run_group())
         root.addStretch()
@@ -198,15 +212,23 @@ class SettingsPanel(QWidget):
         entirely (region-derived geometry) so none of it applies; Contrast
         and Size both leave Orientation live (it still rotates the grating
         drawn inside the circle) while Tuning/Map don't — see control.py's
-        `_begin_*_trial` methods."""
+        `_begin_*_trial` methods.
+
+        Loop variables are a Grating/Visuomotor-only concept too: Map/
+        Tuning/Contrast/Size each run their own dedicated internal sweep
+        (regions.py / tuning.py / contrast.py / size.py) already, and
+        control.py's `run()` skips the generic loop-variable expansion for
+        all four — so this hides a control that would otherwise look live
+        but do nothing (or worse, once a caller stops skipping it)."""
         t = self._cmb_trial.currentData()
-        region_like = t in (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
+        region_like = t in REGION_TRIAL_TYPES
         grating_like = not region_like
         self._grp_map.setVisible(t == TRIAL_MAP)
         self._grp_tuning.setVisible(t == TRIAL_TUNING)
         self._grp_contrast.setVisible(t == TRIAL_CONTRAST)
         self._grp_size.setVisible(t == TRIAL_SIZE)
         self._grp_visuomotor.setVisible(t == TRIAL_VISUOMOTOR)
+        self._grp_loops.setVisible(grating_like)
 
         self._grp_grating.setVisible(grating_like)
         # WaveTempPeriodInHz/PeriodsToShow drive the fixed-frequency drift

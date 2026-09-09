@@ -42,6 +42,16 @@ TRIAL_TYPES = (TRIAL_GRATING, TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST,
               TRIAL_SIZE, TRIAL_VISUOMOTOR)
 IMPLEMENTED_TRIAL_TYPES = TRIAL_TYPES
 
+# Map/Tuning/Contrast/Size each run their own dedicated internal sweep
+# (regions.py / tuning.py / contrast.py / size.py) over a region's geometry,
+# as opposed to Grating/Visuomotor's plain full-field/free-position grating.
+# The one source of truth for "is this trial type a region sweep" —
+# control.py (skipping the generic Loop-variable expansion) and panel.py
+# (hiding fields/groups that don't apply, incl. the Loop variables group
+# itself) each need the same answer and must not drift into two separately
+# maintained tuples.
+REGION_TRIAL_TYPES = (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
+
 
 @dataclass
 class StimParams:

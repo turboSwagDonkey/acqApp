@@ -440,6 +440,35 @@ def check_tick_driven_run(r: Report, app) -> None:
     c.close()
 
 
+def check_loops_dont_multiply_region_trials(r: Report) -> None:
+    """Loop variables are a Grating/Visuomotor-only concept — Map/Tuning/
+    Contrast/Size each run their own dedicated internal sweep already, so
+    leftover Loop variables (e.g. from a prior Grating session, since they
+    persist in settings regardless of trial type — see
+    check_settings_roundtrip) must not multiply a region trial into several
+    duplicate runs of that same internal sweep."""
+    from acqApp.devices.vis_stim.control import VisStimController
+    from acqApp.devices.vis_stim.settings import (LoopVar, StimParams,
+                                                   TRIAL_TUNING,
+                                                   VisStimSettings)
+
+    params = StimParams(WaitTrigger=1, TuningTicksPerPretrial=1,
+                        TuningTicksPerOrientation=1, TuningRepeats=1,
+                        TuningRegion=1)
+    s = VisStimSettings(
+        trial_type=TRIAL_TUNING, params=params,
+        loops={"Orientation": LoopVar("Orientation", (0.0, 45.0, 90.0))})
+    c = VisStimController(s)
+    r.check(c.run() is True, "run() still starts with loop variables set")
+    r.check(len(c._trials) == 1,
+            f"a region trial type ignores Loop variables — one trial, not "
+            f"three ({len(c._trials)})")
+    r.check(c.last_run_stats["trials_total"] == 1,
+            f"…and trials_total agrees, not overcounting the run "
+            f"({c.last_run_stats})")
+    c.close()
+
+
 def check_hotload(r: Report, win) -> None:
     keys = [m.key for m in win._modules]
     r.check("vis_stim" not in keys, f"not loaded by default here ({keys})")
@@ -476,6 +505,7 @@ def main() -> int:
     check_tick_driven_tuning_run(r)
     check_tick_driven_contrast_run(r)
     check_tick_driven_size_run(r)
+    check_loops_dont_multiply_region_trials(r)
     check_visuomotor_run(r, app)
 
     win = make_window({"voltage_cam"})

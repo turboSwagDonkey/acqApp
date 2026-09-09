@@ -60,15 +60,17 @@ from . import regions as regions_mod
 from . import size as size_mod
 from . import trials as trials_mod
 from . import tuning as tuning_mod
+from .settings import REGION_TRIAL_TYPES as _REGION_TRIAL_TYPES
 from .settings import (TRIAL_CONTRAST, TRIAL_MAP, TRIAL_SIZE, TRIAL_TUNING,
                        TRIAL_VISUOMOTOR, StimParams, VisStimSettings)
 from .window import StimDisplay
 
-# A region/tick-based trial type builds its own geometry and finishes on
-# ticks, not painted frames or a fixed temporal frequency — Grating and
-# Visuomotor both fall through to the plain-grating code path instead
-# (_begin_grating_trial/_begin_visuomotor_trial), so they're excluded here.
-_REGION_TRIAL_TYPES = (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
+# _REGION_TRIAL_TYPES: settings.REGION_TRIAL_TYPES, the one source of truth
+# shared with panel.py — see its docstring there. A region/tick-based trial
+# type builds its own geometry and finishes on ticks, not painted frames or
+# a fixed temporal frequency — Grating and Visuomotor both fall through to
+# the plain-grating code path instead (_begin_grating_trial/
+# _begin_visuomotor_trial), so they're excluded.
 
 IDLE, PRIMING, RUNNING = "IDLE", "PRIMING", "RUNNING"
 
@@ -165,7 +167,14 @@ class VisStimController(QObject):
         if self._phase != IDLE:
             return False
         base = self._s.params
-        self._trials = trials_mod.gen_param_combos(base, self._s.loops)
+        # Map/Tuning/Contrast/Size each run their own dedicated internal
+        # sweep (regions.py / tuning.py / contrast.py / size.py) — Loop
+        # variables are a Grating/Visuomotor-only concept (the panel hides
+        # the group for region trial types for the same reason). Expanding
+        # them here too would multiply an already-swept trial into several
+        # duplicate runs of the identical internal sweep, not add anything.
+        self._trials = ([base] if self._s.trial_type in _REGION_TRIAL_TYPES
+                        else trials_mod.gen_param_combos(base, self._s.loops))
         if not self._trials:
             return False
         self.trial_log = []
