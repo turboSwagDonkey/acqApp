@@ -117,7 +117,8 @@ class RoutinesModule(ModuleAdapter):
         # measured in frames.
         return RigLimits(x_um=x, y_um=y, has_stage=stage is not None,
                          has_dmd=self.win.pattern_target() is not None,
-                         has_frames=FRAME_STREAM in self.win.module_keys())
+                         has_frames=FRAME_STREAM in self.win.module_keys(),
+                         cam_trigger_mode=self.win.cam_trigger_mode() or "")
 
     def _hooks(self) -> RoutineHooks:
         stage = self.win.stage_target()
@@ -164,10 +165,14 @@ class RoutinesModule(ModuleAdapter):
         self._routine = routine
         self._n_steps = len(routine.steps)
         self._engine = RoutineEngine(routine, self._hooks())
-        self._engine.start()
+        self._engine.start(trigger=routine.start_trigger)
         self._timer.start()
-        self.win.status(f"routine '{routine.name}' started — "
-                        f"{routine.total_steps()} step(s)")
+        if routine.start_trigger == "ttl":
+            self.win.status(f"routine '{routine.name}' armed — waiting for "
+                            f"the camera's TTL trigger")
+        else:
+            self.win.status(f"routine '{routine.name}' started — "
+                            f"{routine.total_steps()} step(s)")
 
     def _open_recording(self) -> bool:
         """Start recording for this routine. False if it could not be started.
@@ -305,6 +310,12 @@ class RoutinesModule(ModuleAdapter):
         eng = self._engine
         if eng is None:
             return
+        if eng.phase == Phase.ARMED:
+            self.panel.set_state(eng.phase,
+                                 "ARMED — waiting for the camera's TTL "
+                                 "trigger", None)
+            self.panel.set_progress(0.0, f"{clock(eng.elapsed())} waiting")
+            return
         if eng.phase == Phase.PAUSED:
             self.panel.set_state(eng.phase, f"PAUSED — {eng.fault}",
                                  eng.position[0])
@@ -346,10 +357,11 @@ class RoutinesModule(ModuleAdapter):
         return {
             # The protocol as configured, in full: "which stage position was
             # step 4" cannot be recovered from the file any other way.
-            "routine_name":       r.name,
-            "routine_cycles":     r.cycles,
-            "routine_save_mode":  r.save_mode,
-            "routine_n_steps":    len(r.steps),
+            "routine_name":          r.name,
+            "routine_cycles":        r.cycles,
+            "routine_save_mode":     r.save_mode,
+            "routine_start_trigger": r.start_trigger,
+            "routine_n_steps":       len(r.steps),
             "routine_steps":      _steps_json(r),
             # A routine that was configured and never started, and one that ran,
             # leave the same step list. This is what tells them apart.

@@ -43,7 +43,7 @@ from acqApp import style
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import clock, estimate
-from acqApp.routines.settings import SAVE_MODES, Routine, Step
+from acqApp.routines.settings import SAVE_MODES, START_TRIGGERS, Routine, Step
 from acqApp.routines.table import StepTable
 
 
@@ -127,6 +127,19 @@ class SettingsPanel(QWidget):
         idx = self._cmb_save.findData(self._r.save_mode)
         self._cmb_save.setCurrentIndex(max(0, idx))
         form.addRow("Save as:", self._cmb_save)
+
+        self._cmb_trigger = QComboBox()
+        for key, label in START_TRIGGERS.items():
+            self._cmb_trigger.addItem(label, key)
+        idx = self._cmb_trigger.findData(self._r.start_trigger)
+        self._cmb_trigger.setCurrentIndex(max(0, idx))
+        self._cmb_trigger.setToolTip(
+            "Manual: Start begins the routine right away.\nTTL: Start opens "
+            "the recording and arms the routine, then waits for the voltage "
+            "camera to report a frame it did not have yet — which only "
+            "happens on a real pulse if the camera's own Trigger is set to "
+            "External edge.")
+        form.addRow("Start trigger:", self._cmb_trigger)
         lay.addLayout(form)
 
         self._tbl = StepTable(self._r.steps)
@@ -192,7 +205,9 @@ class SettingsPanel(QWidget):
             "Check the protocol, start recording if it is not already running, "
             "and run the steps.\nA recording this button started is stopped "
             "again when the routine ends; one you started yourself is left "
-            "alone.")
+            "alone.\nWith a TTL start trigger, this ARMS the routine instead "
+            "of moving right away — the steps begin on the camera's next "
+            "externally-triggered frame.")
         self._btn_start.clicked.connect(self.start_requested)
         rlay.addWidget(self._btn_start)
 
@@ -253,6 +268,7 @@ class SettingsPanel(QWidget):
         self._txt_name.editingFinished.connect(self._emit)
         self._spn_cycles.valueChanged.connect(self._emit)
         self._cmb_save.currentIndexChanged.connect(self._emit)
+        self._cmb_trigger.currentIndexChanged.connect(self._emit)
 
     # ── the step list ────────────────────────────────────────────────────────
     # The table edits `self._r.steps` in place; these are the operations on the
@@ -419,18 +435,22 @@ class SettingsPanel(QWidget):
         """
         if phase != self._painted:
             running = phase in (Phase.SETTLE, Phase.CAPTURE)
+            armed = phase == Phase.ARMED
             paused = phase == Phase.PAUSED
-            self._btn_start.setEnabled(not running and not paused)
+            held = running or armed or paused
+            self._btn_start.setEnabled(not held)
             self._btn_pause.setEnabled(running)
             for b in (self._btn_resume, self._btn_skip):
                 b.setEnabled(paused)
-            self._btn_abort.setEnabled(running or paused)
+            self._btn_abort.setEnabled(running or armed or paused)
             # The step list must not be edited out from under a running engine:
-            # it holds an index into it.
-            self._tbl.setEnabled(not running and not paused)
+            # it holds an index into it. Armed counts too — the recording it
+            # opened is already running, one TTL pulse from step 1.
+            self._tbl.setEnabled(not held)
             self._lbl_state.setStyleSheet(
                 "color:#d08770;" if paused else
-                (f"color:{style.HEX['routines']};" if running else ""))
+                (f"color:{style.HEX['routines']};" if (running or armed)
+                 else ""))
             self._painted = phase
         # The text moves within a phase (progress, step number); the styling
         # does not.
@@ -515,11 +535,14 @@ class SettingsPanel(QWidget):
         try:
             self._r.name, self._r.cycles = r.name, max(1, r.cycles)
             self._r.save_mode = r.save_mode
+            self._r.start_trigger = r.start_trigger
             self._r.steps[:] = r.steps
             self._txt_name.setText(self._r.name)
             self._spn_cycles.setValue(self._r.cycles)
             self._cmb_save.setCurrentIndex(
                 max(0, self._cmb_save.findData(self._r.save_mode)))
+            self._cmb_trigger.setCurrentIndex(
+                max(0, self._cmb_trigger.findData(self._r.start_trigger)))
         finally:
             self._loading = False
         self._reload_table()
@@ -538,5 +561,6 @@ class SettingsPanel(QWidget):
         self._r.name = self._txt_name.text().strip() or "routine"
         self._r.cycles = self._spn_cycles.value()
         self._r.save_mode = self._cmb_save.currentData() or "single"
+        self._r.start_trigger = self._cmb_trigger.currentData() or "manual"
         return self._r
 

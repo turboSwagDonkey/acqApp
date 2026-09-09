@@ -96,6 +96,12 @@ class VoltageCamModule(ModuleAdapter):
         panel turns "100 frames" into seconds with it; nothing records it."""
         return self.panel.get_config().expected_fps
 
+    def cam_trigger_mode(self) -> str | None:
+        """This camera's own trigger setting — a routine's TTL start trigger
+        validates against it, since a free-running camera never sees a frame
+        it didn't already have."""
+        return self.panel.get_config().trigger_mode
+
     def _on_exposure(self, us: float) -> None:
         if self.worker is not None:
             self.worker.set_exposure(us)

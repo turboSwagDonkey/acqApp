@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from acqApp.devices.voltage_cam.presets import TRIGGER_MODES
+
 UNITS = ("frames", "seconds")
 
 # key -> label. `single` keeps the one-file-per-session invariant; `per_step`
@@ -26,6 +28,21 @@ SAVE_MODES: dict[str, str] = {
     "single":   "One file for the whole routine",
     "per_step": "One file per step",
 }
+
+# key -> label. `manual` is the button; `ttl` arms the routine on Start and
+# holds it there until the voltage camera reports a frame it did not have at
+# arm time — the camera's own "External edge" trigger mode is what makes that
+# frame arrive on a real TTL pulse rather than on its own clock, so nothing
+# here reads a DAQ line: the camera already IS the TTL input.
+START_TRIGGERS: dict[str, str] = {
+    "manual": "Manual — click Start",
+    "ttl":    "TTL — waits for the camera's externally-triggered frame",
+}
+
+# The camera setting a "ttl" start trigger depends on. TRIGGER_MODES[1] rather
+# than a second literal, so the two cannot say different things about what
+# "External edge" is spelled as.
+CAM_EXT_TRIGGER = TRIGGER_MODES[1]
 
 # A settle a routine may ask for. Not a safety limit — an obviously-wrong entry
 # (3600 s between steps) is worth catching at validation.
@@ -69,10 +86,11 @@ class Step:
 @dataclass
 class Routine:
     """The whole protocol. `cycles` repeats the step list end to end."""
-    name:      str = "routine"
-    steps:     list[Step] = field(default_factory=list)
-    cycles:    int = 1
-    save_mode: str = "single"
+    name:          str = "routine"
+    steps:         list[Step] = field(default_factory=list)
+    cycles:        int = 1
+    save_mode:     str = "single"
+    start_trigger: str = "manual"
 
     def total_steps(self) -> int:
         return len(self.steps) * max(1, self.cycles)
@@ -83,6 +101,7 @@ class Routine:
     def to_dict(self) -> dict:
         return {"name": self.name, "cycles": self.cycles,
                 "save_mode": self.save_mode,
+                "start_trigger": self.start_trigger,
                 "steps": [vars(s).copy() for s in self.steps]}
 
     @classmethod
@@ -108,9 +127,12 @@ class Routine:
         except (TypeError, ValueError):
             cycles = 1
         mode = d.get("save_mode")
+        trigger = d.get("start_trigger")
         return cls(name=str(d.get("name") or "routine"), steps=steps,
                    cycles=cycles,
-                   save_mode=mode if mode in SAVE_MODES else "single")
+                   save_mode=mode if mode in SAVE_MODES else "single",
+                   start_trigger=trigger if trigger in START_TRIGGERS
+                                 else "manual")
 
 
 @dataclass(frozen=True)
@@ -120,11 +142,12 @@ class RigLimits:
     Built by the adapter from its neighbours, so a routine that projects is
     refused when the DMD is not loaded rather than half-running without light.
     """
-    x_um:       tuple[float, float] | None = None    # stage soft limits
-    y_um:       tuple[float, float] | None = None
-    has_stage:  bool = False
-    has_dmd:    bool = False
-    has_frames: bool = False        # a camera is loaded, so frames() ticks
+    x_um:            tuple[float, float] | None = None    # stage soft limits
+    y_um:            tuple[float, float] | None = None
+    has_stage:       bool = False
+    has_dmd:         bool = False
+    has_frames:      bool = False   # a camera is loaded, so frames() ticks
+    cam_trigger_mode: str = ""      # the loaded camera's OWN trigger setting
 
 
 def _limit_problem(axis: str, value: float,
@@ -150,6 +173,16 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         out.append(f"cycles = {routine.cycles}; must be at least 1")
     if routine.save_mode not in SAVE_MODES:
         out.append(f"unknown save mode {routine.save_mode!r}")
+    if routine.start_trigger not in START_TRIGGERS:
+        out.append(f"unknown start trigger {routine.start_trigger!r}")
+    elif routine.start_trigger == "ttl":
+        if not rig.has_frames:
+            out.append("start trigger is TTL, but no camera is loaded to "
+                       "receive it")
+        elif rig.cam_trigger_mode != CAM_EXT_TRIGGER:
+            out.append(f"start trigger is TTL, but the camera's trigger is "
+                       f"set to {rig.cam_trigger_mode or 'unknown'!r} — set "
+                       f"it to {CAM_EXT_TRIGGER!r} on the Voltage cam page")
 
     for i, s in enumerate(routine.steps, start=1):
         at = f"step {i}"

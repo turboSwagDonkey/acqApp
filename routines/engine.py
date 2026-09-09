@@ -38,6 +38,8 @@ MOVE_TIMEOUT_S = 30.0
 class Phase:
     """Where the engine is. Strings, so they go into the file and the panel."""
     IDLE    = "idle"
+    ARMED   = "armed"       # start_trigger="ttl": waiting for the camera's
+                            # first externally-triggered frame
     SETTLE  = "settle"      # moving / changing pattern / waiting to settle
     CAPTURE = "capture"
     PAUSED  = "paused"      # a fault, or the operator — resume/skip/abort
@@ -130,6 +132,7 @@ class RoutineEngine:
         self._issued_at = 0.0           # when this step's move went out
         self._arrived_at: float | None = None
         self._started_at: float | None = None   # session clock at start()
+        self._arm_frame0: int | None = None      # frame count when armed
 
     # ── readout ───────────────────────────────────────────────────────────────
     @property
@@ -139,8 +142,10 @@ class RoutineEngine:
     @property
     def running(self) -> bool:
         """Is the rig under this engine's control? PAUSED counts — the stage is
-        stopped but the routine still owns it, so modules must stay put."""
-        return self._phase in (Phase.SETTLE, Phase.CAPTURE, Phase.PAUSED)
+        stopped but the routine still owns it, so modules must stay put.
+        ARMED counts too — the recording it opened is already running."""
+        return self._phase in (Phase.ARMED, Phase.SETTLE, Phase.CAPTURE,
+                               Phase.PAUSED)
 
     @property
     def step(self) -> Step | None:
@@ -197,8 +202,15 @@ class RoutineEngine:
                    - self._started_at)
 
     # ── control ───────────────────────────────────────────────────────────────
-    def start(self) -> None:
-        if self._phase in (Phase.SETTLE, Phase.CAPTURE, Phase.PAUSED):
+    def start(self, trigger: str = "manual") -> None:
+        """Begin the routine. `trigger="ttl"` ARMS it instead of moving right
+        away: the caller has already opened the recording, so the camera (in
+        its own External-edge mode) is sitting there waiting for a pulse, and
+        step 1 does not begin until a frame the camera did not have at arm
+        time actually arrives — see `_tick_armed`.
+        """
+        if self._phase in (Phase.ARMED, Phase.SETTLE, Phase.CAPTURE,
+                           Phase.PAUSED):
             raise RoutineError("already running")
         if not self._r.steps:
             raise RoutineError("the routine has no steps")
@@ -207,7 +219,12 @@ class RoutineEngine:
         self._i = self._cycle = 0
         self._attempt = 1
         self._started_at = self._safe_value(self._h.now, 0.0)
-        self._enter_step()
+        if trigger == "ttl":
+            self._arm_frame0 = self._frames()
+            self._phase = Phase.ARMED
+            self._h.log("routine armed — waiting for the camera's TTL trigger")
+        else:
+            self._enter_step()
 
     def pause(self, reason: str = "paused by the operator") -> None:
         if self._phase not in (Phase.SETTLE, Phase.CAPTURE):
@@ -231,7 +248,7 @@ class RoutineEngine:
 
     def abort(self) -> None:
         """Stop for good. Capture is still the operator's to stop."""
-        if self._phase in (Phase.SETTLE, Phase.CAPTURE):
+        if self._phase in (Phase.ARMED, Phase.SETTLE, Phase.CAPTURE):
             self._halt("aborted")
         self._safe(self._h.stop_motion)
         self._safe(self._h.light, False)
@@ -241,10 +258,24 @@ class RoutineEngine:
     # ── the tick ──────────────────────────────────────────────────────────────
     def tick(self) -> None:
         """Advance the state machine. Cheap, and safe to call at any rate."""
-        if self._phase == Phase.SETTLE:
+        if self._phase == Phase.ARMED:
+            self._tick_armed()
+        elif self._phase == Phase.SETTLE:
             self._tick_settle()
         elif self._phase == Phase.CAPTURE:
             self._tick_capture()
+
+    def _tick_armed(self) -> None:
+        """Waiting for the TTL pulse: a frame the camera did not have when we
+        armed. Not `> 0` — the camera may already have been mid-stream on some
+        other trigger mode, and this must fire on ITS NEXT frame, not on one
+        that arrived before the operator pressed Start."""
+        n = self._frames()
+        if n is None or self._arm_frame0 is None:
+            self._halt("no frame count to detect the TTL trigger by")
+            return
+        if n > self._arm_frame0:
+            self._enter_step()
 
     def _tick_settle(self) -> None:
         step = self._r.steps[self._i]

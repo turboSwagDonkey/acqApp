@@ -309,6 +309,20 @@ Start opened is stopped again when the routine ends; one the operator started is
 left running. (`ModuleHost.set_recording`, the twin of the `set_live` the DMD
 calibration uses to turn the live view on for itself.)
 
+**Start trigger: manual, or TTL through the camera.** Manual is Start doing
+the above right away. TTL opens the recording and *arms* the routine instead —
+step 1 does not begin until the voltage camera reports a frame it did not
+have at arm time. No DAQ line is read for this: the camera's own trigger
+setting (Voltage cam tab, "External edge") is what makes that frame arrive on
+a real pulse into the camera's TTL input rather than on the camera's own
+clock, so the camera already **is** the TTL input the routine waits on.
+Validation refuses a TTL start trigger up front if no camera is loaded, or if
+the loaded one is not actually set to External edge — arming against a
+free-running camera would wait forever, since it never produces a frame it
+didn't already have. The panel shows **ARMED — waiting for the camera's TTL
+trigger** while it waits; Abort cancels the arm cleanly, since nothing has
+moved or lit up yet.
+
 **The step list is edited through widgets, not words.** Light is a no/yes
 drop-down, Unit a frames/seconds one, and X, Y, Capture and Settle are spin
 boxes; an axis a step should not move reads **no change** rather than being

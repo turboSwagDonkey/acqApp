@@ -279,6 +279,7 @@ def main() -> int:
         def stage_target(self): return None
         def pattern_target(self): return None
         def frame_rate_hz(self): return None
+        def cam_trigger_mode(self): return None
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

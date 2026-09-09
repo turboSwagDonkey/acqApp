@@ -33,11 +33,17 @@ from pathlib import Path
 from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineError, RoutineHooks
-from acqApp.routines.settings import (UNITS, RigLimits, Routine, Step,
-                                      validate)
+from acqApp.routines.settings import (CAM_EXT_TRIGGER, UNITS, RigLimits,
+                                      Routine, Step, validate)
 
 FULL_RIG = RigLimits(x_um=(-5000.0, 5000.0), y_um=(-5000.0, 5000.0),
                      has_stage=True, has_dmd=True, has_frames=True)
+# Same rig, but the camera is actually armed for External edge — the one
+# condition a TTL start trigger needs that a plain loaded camera does not
+# guarantee.
+TTL_RIG = RigLimits(x_um=FULL_RIG.x_um, y_um=FULL_RIG.y_um, has_stage=True,
+                    has_dmd=True, has_frames=True,
+                    cam_trigger_mode=CAM_EXT_TRIGGER)
 DT = 0.01                      # the worker's tick, near enough
 
 
@@ -138,6 +144,12 @@ def check_validation(r: Report, tmp: Path) -> None:
     r.check(validate(good, FULL_RIG) == [],
             "control: a valid routine on a full rig is accepted")
 
+    good_ttl = Routine(steps=[Step(length=1, unit="seconds")],
+                       start_trigger="ttl")
+    r.check(validate(good_ttl, TTL_RIG) == [],
+            "control: a TTL start trigger is accepted once the camera is "
+            "actually armed for External edge")
+
     cases = [
         ("a stage target outside the soft limits",
          Routine(steps=[Step(x_um=9_000.0)]), FULL_RIG, "soft limits"),
@@ -161,6 +173,12 @@ def check_validation(r: Report, tmp: Path) -> None:
          Routine(steps=[Step(pattern=str(tmp / "gone.png"), length=1,
                              unit="seconds")]), FULL_RIG, "not a file"),
         ("an empty routine", Routine(steps=[]), FULL_RIG, "no steps"),
+        ("a TTL start trigger with no camera loaded",
+         Routine(steps=[Step(length=1, unit="seconds")], start_trigger="ttl"),
+         RigLimits(), "no camera"),
+        ("a TTL start trigger against a camera not set to External edge",
+         Routine(steps=[Step(length=1, unit="seconds")], start_trigger="ttl"),
+         FULL_RIG, "External edge"),
     ]
     for label, routine, rig, needle in cases:
         problems = validate(routine, rig)
@@ -179,10 +197,14 @@ def check_validation(r: Report, tmp: Path) -> None:
 
     # Persistence round trip: the panel saves this into acqapp_local.json.
     src = Routine(name="grid", cycles=3, save_mode="per_step",
+                  start_trigger="ttl",
                   steps=[Step(label="a", x_um=1.0, length=5, unit="frames"),
                          Step(label="b", length=2.5, unit="seconds")])
     back = Routine.from_dict(src.to_dict())
     r.check(back == src, "a routine survives the JSON round trip unchanged")
+    r.check(Routine.from_dict({"start_trigger": "nonsense"}).start_trigger
+            == "manual",
+            "an unrecognised saved start trigger falls back to manual")
     r.check(Routine.from_dict({"steps": [{"gone": 1, "label": "x"}],
                                "cycles": "nonsense"}).steps[0].label == "x",
             "a stale saved routine drops unknown keys rather than raising")
@@ -472,6 +494,57 @@ def check_transitions(r: Report) -> None:
         r.check(False, "an empty routine must not start")
     except RoutineError:
         r.check(True, "an empty routine raises rather than finishing instantly")
+
+
+def check_ttl_start_trigger(r: Report) -> None:
+    """`start(trigger="ttl")` arms instead of moving right away, and only lets
+    step 1 begin once the camera reports a frame it did not have at arm time
+    — the fake's `fps` stands in for a real TTL pulse making an
+    externally-triggered camera emit its first frame.
+    """
+    rig = FakeRig(fps=0.0)          # frozen: the camera has not been pulsed
+    routine = Routine(steps=[Step(label="A", length=0.2, unit="seconds",
+                                  settle_s=0.0)])
+    eng = RoutineEngine(routine, rig.hooks())
+    eng.start(trigger="ttl")
+    r.check(eng.phase == Phase.ARMED and eng.running,
+            f"start(trigger='ttl') arms rather than moving right away "
+            f"({eng.phase})")
+    r.check(rig.log == [], "…and nothing has actuated yet")
+
+    for _ in range(20):
+        rig.advance()
+        eng.tick()
+    r.check(eng.phase == Phase.ARMED,
+            "with no pulse — the camera's frame count never moves — it "
+            "stays armed rather than timing out")
+
+    # The pulse: the camera, in External edge mode, produces its first frame.
+    rig.fps = 100.0
+    drive(eng, rig, until=lambda e: e.phase != Phase.ARMED)
+    r.check(eng.phase == Phase.SETTLE,
+            f"the first frame past the baseline starts step 1 ({eng.phase})")
+    r.check(rig.log and rig.log[0][0] == "light",
+            "…the same way a manual start begins a step")
+
+    # Abort while armed ends cleanly — nothing was ever opened to unwind.
+    rig2 = FakeRig(fps=0.0)
+    eng2 = RoutineEngine(routine, rig2.hooks())
+    eng2.start(trigger="ttl")
+    eng2.abort()
+    r.check(eng2.phase == Phase.DONE and eng2.runs == [],
+            "aborting while armed ends the routine with no run ever opened")
+
+    # The frame count going away while armed is a fault, the same shape as
+    # `check_frames_vanish` mid-capture.
+    rig3 = FakeRig(fps=0.0)
+    eng3 = RoutineEngine(routine, rig3.hooks())
+    eng3.start(trigger="ttl")
+    rig3.frames_running = False
+    rig3.advance()
+    eng3.tick()
+    r.check(eng3.phase == Phase.PAUSED and "frame count" in eng3.fault,
+            f"the camera going away while armed pauses ({eng3.fault!r})")
 
 
 def check_panel_repaint(r: Report, app) -> None:
@@ -1001,6 +1074,19 @@ def check_panel_tracker(r: Report, app) -> None:
             "the panel keeps the rate, so the run readout does not re-ask the "
             "camera 30 times a second")
 
+    # ── the start trigger ──
+    r.check(panel.settings.start_trigger == "manual",
+            f"a routine defaults to a manual start trigger "
+            f"({panel.settings.start_trigger!r})")
+    idx = panel._cmb_trigger.findData("ttl")
+    panel._cmb_trigger.setCurrentIndex(idx)
+    r.check(panel.settings.start_trigger == "ttl",
+            "picking TTL in the combo sets it on the routine")
+    reloaded = SettingsPanel(Routine.from_dict(panel.settings.to_dict()))
+    r.check(reloaded._cmb_trigger.currentData() == "ttl",
+            "…and it survives a save/reload round trip through the panel")
+    panel._cmb_trigger.setCurrentIndex(panel._cmb_trigger.findData("manual"))
+
     # ── 4. the library ──
     panel.save_template("saved one")
     r.check("saved one" in templates.names(),
@@ -1262,6 +1348,7 @@ def main() -> int:
         check_frames_vanish(r)
         check_cycles_and_attrs(r)
         check_transitions(r)
+        check_ttl_start_trigger(r)
         check_estimate(r)
         check_progress(r)
         # The window persists as a side effect of ordinary use, so isolate

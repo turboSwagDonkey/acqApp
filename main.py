@@ -329,6 +329,14 @@ class MainWindow(QMainWindow):
         """
         return self._first(lambda m: m.frame_rate_hz())
 
+    def cam_trigger_mode(self) -> str | None:
+        """The loaded voltage camera's own trigger setting, or None.
+
+        Pooled like `frame_rate_hz`: a routine's TTL start trigger validates
+        against this, without importing the camera adapter.
+        """
+        return self._first(lambda m: m.cam_trigger_mode())
+
     def _first(self, ask):
         """The first loaded module that answers `ask` with something."""
         for m in self._modules:

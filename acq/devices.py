@@ -292,6 +292,17 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def cam_trigger_mode(self) -> str | None:
+        """The loaded voltage camera's own trigger setting, or None.
+
+        Pooled like `frame_rate_hz`: a routine's TTL start trigger is only
+        real if the camera is actually configured for "External edge" —
+        `routines/settings.py`'s `validate()` reads this to refuse a TTL
+        routine armed against a free-running camera, which would never see a
+        frame it didn't already have.
+        """
+        ...
+
     def latest_frame(self, key: str) -> Any:
         """The newest frame from another module's camera, or None.
 
