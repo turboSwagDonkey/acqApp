@@ -40,54 +40,118 @@ MODULES: dict[str, str] = {
 ALWAYS_ON: frozenset[str] = frozenset({"routines"})
 
 _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")
+# Unlike acqapp_local.json (gitignored, the operator's own live working
+# state), this one is meant to be hand-edited and carried between sessions
+# or machines — so it is tracked, not gitignored. The sidebar's "Save as
+# preset" button does write it (`save_modes`, from main.py's
+# `_save_mode_as` — which re-reads the file first, so a hand-edit made
+# since startup isn't clobbered) — everywhere else treats it as read-only,
+# hand-curated input.
+_MODES_PATH = Path(__file__).with_name("modes.json")
 
 
-def load_config() -> dict:
-    """The saved config, or {} if there is none.
+def _load_json(path: Path) -> dict:
+    """The JSON object at `path`, or {} if missing/unreadable.
 
-    A damaged file is moved aside, not discarded: returning {} is right (the app
-    has to start), but the next `save_config` would then overwrite the only copy
-    of the operator's setup, turning recoverable corruption into a loss.
+    A damaged file is moved aside, not discarded: returning {} is right (the
+    app has to start), but the next save over `path` would then overwrite
+    the only copy of whatever was in it, turning recoverable corruption into
+    a loss. Shared by `load_config`/`load_modes` so both get this for free.
     """
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return {}
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-        keep = _CONFIG_PATH.with_suffix(".corrupt.json")
+        keep = path.with_suffix(".corrupt.json")
         try:
-            os.replace(_CONFIG_PATH, keep)
-            print(f"[config] {_CONFIG_PATH.name} is unreadable ({e}); kept as "
+            os.replace(path, keep)
+            print(f"[config] {path.name} is unreadable ({e}); kept as "
                   f"{keep.name} and starting from defaults")
         except OSError:
-            print(f"[config] {_CONFIG_PATH.name} is unreadable ({e})")
+            print(f"[config] {path.name} is unreadable ({e})")
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def save_config(cfg: dict) -> None:
-    """Write the config atomically: temp file in the same directory, then rename.
+def load_config() -> dict:
+    """The saved config, or {} if there is none. See `_load_json`."""
+    return _load_json(_CONFIG_PATH)
 
-    `open(path, "w")` truncates first, and this file is rewritten on every
-    spinbox step — so a native death mid-write (a PyQt6 qFatal from a worker, a
-    DCAM segfault) left a truncated file that `load_config` read as "no settings
-    at all". `os.replace` is atomic on Windows and POSIX alike.
 
-    No fsync: the threat is a process crash, not power loss, and fsync per
-    spinbox step would cost more than the write it protects.
+def _atomic_write_json(path: Path, data) -> None:
+    """Write `data` to `path` atomically: temp file in the same directory,
+    then rename. `open(path, "w")` truncates first, so a native death
+    mid-write (a PyQt6 qFatal from a worker, a DCAM segfault) would otherwise
+    leave a truncated file that the matching loader reads as empty.
+    `os.replace` is atomic on Windows and POSIX alike.
+
+    No fsync: the threat is a process crash, not power loss, and fsync on
+    every write (acqapp_local.json rewrites on every spinbox step) would cost
+    more than the write it protects.
     """
-    tmp = _CONFIG_PATH.with_name(f"{_CONFIG_PATH.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh, indent=2)
-        os.replace(tmp, _CONFIG_PATH)
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
     except OSError as e:
-        print(f"[config] could not save {_CONFIG_PATH}: {e}")
+        print(f"[config] could not save {path}: {e}")
         try:
             tmp.unlink()
         except OSError:
             pass
+
+
+def save_config(cfg: dict) -> None:
+    _atomic_write_json(_CONFIG_PATH, cfg)
+
+
+# ── Cross-module "Mode" presets (the sidebar's Mode dropdown) ─────────────────
+# modes.json, hand-edited by the operator and portable between sessions/rigs —
+# see _MODES_PATH above. Each entry is {name: recipe}; MainWindow.set_mode()
+# interprets the recipe, not this module — load_modes() only validates shape.
+def load_modes() -> dict:
+    """Named mode -> recipe dict, from modes.json ({} if missing/unreadable).
+
+    A malformed file must not stop the app from starting — worst case is an
+    empty Mode dropdown (just "None"), the same failure mode as a removed
+    preset in load_dataclass. Non-dict entries are dropped rather than
+    raising, so one bad hand-edit doesn't take out every mode. Also
+    sanitizes each recipe's `camera_presets`, the one field `set_mode()`
+    iterates (`.items()`) rather than merely truth-tests: a natural hand-edit
+    mistake — `null` for "no camera presets", or a list by typo — would
+    otherwise reach `set_mode()` as `None`/a list and raise there, since
+    `dict.get(key, {})` only substitutes the default when the key is
+    *absent*, not when it's present with a non-dict value.
+    """
+    data = _load_json(_MODES_PATH)
+    modes = {}
+    for name, recipe in data.items():
+        if not isinstance(name, str) or not isinstance(recipe, dict):
+            continue
+        recipe = dict(recipe)          # don't mutate the parsed JSON in place
+        presets = recipe.get("camera_presets")
+        if presets is None:
+            recipe.pop("camera_presets", None)
+        elif isinstance(presets, dict):
+            recipe["camera_presets"] = {
+                k: v for k, v in presets.items()
+                if isinstance(k, str) and isinstance(v, str)}
+        else:
+            recipe.pop("camera_presets")   # wrong type entirely -> drop it
+        modes[name] = recipe
+    return modes
+
+
+def save_modes(modes: dict) -> None:
+    """Overwrite modes.json with `modes` in full (not merged) — the whole
+    file IS the set of modes, unlike acqapp_local.json's namespaced sections.
+    Called by the sidebar's "Save as preset" action; still a plain text file
+    afterwards, so a further hand-edit remains just as valid the next time
+    the app loads it."""
+    _atomic_write_json(_MODES_PATH, modes)
 
 
 def order_modules(keys) -> list[str]:

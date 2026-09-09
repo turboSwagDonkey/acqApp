@@ -122,6 +122,24 @@ for _rows, _u, _c in _ROWS_FPS_BOTH:
 PRESET_KEYS: List[str] = list(PRESETS.keys())
 DEFAULT_PRESET: str = f"{SENSOR_W}x{SENSOR_H}"    # full frame
 
+# modes.json's friendly spelling of DEFAULT_PRESET (main.py's Mode dropdown,
+# both applying and capturing a mode) — readable in a hand-edited file, and
+# immune to a sensor swap changing what the literal key spells out. The two
+# directions live together so nothing else has to know which preset key
+# happens to be "full" right now.
+PRESET_ALIAS_FULL = "full"
+
+
+def resolve_preset_key(key: str) -> str:
+    """A modes.json preset value -> an actual PRESET_KEYS entry."""
+    return DEFAULT_PRESET if key == PRESET_ALIAS_FULL else key
+
+
+def preset_alias(key: str) -> str:
+    """The inverse of `resolve_preset_key` — what to write into modes.json
+    for a captured preset key, preferring the friendly alias when it applies."""
+    return PRESET_ALIAS_FULL if key == DEFAULT_PRESET else key
+
 
 def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
     """Datasheet 16-bit readout ceiling for an ROI of `rows` rows on `link`.

@@ -203,11 +203,11 @@ def _sample_nbytes(item) -> int:
     return getattr(item[2], "nbytes", 0)
 
 
-# The sidebar's Mode dropdown: named cross-module presets. "None" is a no-op —
-# manual control, whatever the operator already has set. New modes are new
-# branches in MainWindow._on_mode_changed, not new plumbing.
+# The sidebar's Mode dropdown. "None" is a no-op — manual control, whatever
+# the operator already has set — and is not in modes.json; every other entry
+# comes from config.load_modes(), so adding a mode is editing that file, not
+# this code. See MainWindow.set_mode() for what a recipe's keys mean.
 MODE_NONE = "None"
-MODES = (MODE_NONE, "Scan")
 
 
 class MainWindow(QMainWindow):
@@ -386,14 +386,18 @@ class MainWindow(QMainWindow):
 
     def camera_preset(self, key: str) -> str | None:
         """Module `key`'s current resolution preset, or None if it is not
-        loaded (or has no such notion of a preset)."""
+        loaded, or is loaded but has no notion of a preset."""
         m = self._module(key)
-        return m.preset_key() if m is not None else None
+        return m.preset_key() if m is not None and hasattr(m, "preset_key") else None
 
     def set_camera_preset(self, key: str, preset: str) -> str | None:
         """Switch module `key`'s resolution preset. Returns the PREVIOUS key
         so a caller (the DMD calibration, forcing full frame on the voltage
-        camera) can restore it, or None if that module is not loaded.
+        camera) can restore it, or None if that module is not loaded, or is
+        loaded but has no notion of a preset (no `set_preset`) — the same
+        ambiguity `camera_preset()` already carries, and needed here too:
+        `set_mode()`'s recipes come from hand-edited JSON, and a typo'd
+        module key must not raise.
 
         Structural, like the operator's own combo click: it only takes effect
         the next time the session (re)starts, so a caller after a LIVE change
@@ -401,7 +405,7 @@ class MainWindow(QMainWindow):
         this does not touch whether the camera is running.
         """
         m = self._module(key)
-        if m is None:
+        if m is None or not hasattr(m, "set_preset"):
             return None
         prev = m.preset_key()
         m.set_preset(preset)
@@ -410,19 +414,110 @@ class MainWindow(QMainWindow):
     def set_mode(self, name: str) -> None:
         """Apply the sidebar's named cross-module preset (the Mode dropdown).
 
-        Each branch only configures a module — same "takes effect at the next
-        Display/Start" contract as `set_camera_preset`/`DmdModule.set_all_on`
-        — this does not itself start or display anything. A module that is
-        not loaded is silently skipped, the same as `set_camera_preset`.
+        Recipes come from modes.json (`self._modes`, loaded once at startup
+        — see `config.load_modes`, which also sanitizes a recipe's shape)
+        rather than being hardcoded here, so a new mode is a JSON edit, not
+        a code change. A recipe is a dict of:
+          "dmd_all_on": true                     — DmdModule.set_all_on()
+          "camera_presets": {module_key: preset}  — set_camera_preset(), one
+                                                     call per entry; a literal
+                                                     preset key, or "full" for
+                                                     voltage_cam's full-frame
+                                                     preset (the only camera
+                                                     with a preset concept
+                                                     today) — see
+                                                     presets.resolve_preset_key
+
+        Same "takes effect at the next Display/Start" contract as
+        `set_camera_preset`/`DmdModule.set_all_on` — this does not itself
+        start or display anything, UNLESS the DMD panel's own "Live update"
+        toggle is on, in which case `dmd_all_on` still re-projects shortly
+        after (see `DmdModule`/`acqApp.devices.dmd.panel`'s Live update). An
+        unloaded module, or a preset key the target module doesn't
+        recognize, is silently skipped (`set_camera_preset` already no-ops
+        on both, including a module with no preset concept at all) — hand-
+        edited modes.json, so a typo'd module key must not crash the app.
         """
-        if name == "Scan":
+        from acqApp.devices.voltage_cam.presets import resolve_preset_key
+
+        recipe = self._modes.get(name, {})
+        if recipe.get("dmd_all_on"):
             dmd = self._module("dmd")
             if dmd is not None:
                 dmd.set_all_on()
-            from acqApp.devices.voltage_cam.presets import DEFAULT_PRESET
-            self.set_camera_preset("voltage_cam", DEFAULT_PRESET)
-        # MODE_NONE (and any future default): no-op — whatever is set stands.
+        for key, preset in recipe.get("camera_presets", {}).items():
+            self.set_camera_preset(key, resolve_preset_key(preset))
         self.status(f"Mode: {name}")
+
+    def _save_mode_as(self) -> None:
+        """The sidebar's "Save as preset" button: capture the DMD's and
+        voltage camera's CURRENT settings into a new modes.json entry.
+
+        Reads live state (`panel.mode`, `preset_key()`), not what a prior
+        `set_mode()` call last requested — the whole point is to let the
+        operator hand-tune a setup, then name what they actually ended up
+        with, rather than replay a recipe someone already had to write.
+        """
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+        from acqApp.devices.voltage_cam.presets import preset_alias
+
+        name, ok = QInputDialog.getText(self, "Save as preset",
+                                        "Preset name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name == MODE_NONE:
+            QMessageBox.warning(self, "Reserved name",
+                                f'"{MODE_NONE}" is reserved for "no preset" '
+                                f"— choose another name.")
+            return
+
+        # Re-read from disk now, not the startup-loaded `self._modes`: an
+        # operator may have hand-edited modes.json since this session
+        # started (exactly the workflow the file exists for), and saving
+        # must not silently overwrite that edit with a stale in-memory copy.
+        modes = config.load_modes()
+        if name in modes:
+            if QMessageBox.question(
+                    self, "Replace preset",
+                    f'A preset named "{name}" already exists — replace it '
+                    f"with the current settings?") != QMessageBox.StandardButton.Yes:
+                return
+
+        recipe: dict = {}
+        captured: list[str] = []
+
+        dmd = self._module("dmd")
+        if dmd is not None and dmd.panel is not None:
+            from acqApp.devices.dmd.control import MODE_ALL_ON
+            if dmd.panel.mode == MODE_ALL_ON:
+                recipe["dmd_all_on"] = True
+                captured.append("DMD all-on")
+
+        vcam = self._module("voltage_cam")
+        if vcam is not None and hasattr(vcam, "preset_key"):
+            key = vcam.preset_key()
+            recipe["camera_presets"] = {"voltage_cam": preset_alias(key)}
+            captured.append(f"voltage_cam preset {key!r}")
+
+        if not captured:
+            QMessageBox.information(
+                self, "Nothing to capture",
+                "Neither the DMD (in All ON) nor the voltage camera is "
+                "loaded, so there is no current state to save. Load them "
+                "(or set the DMD to All ON) and try again, or write the "
+                "entry into modes.json by hand.")
+            return
+
+        modes[name] = recipe
+        config.save_modes(modes)
+        self._modes = modes             # adopt the merged (not stale) set
+        if self._mode_combo.findText(name) < 0:
+            self._mode_combo.addItem(name)
+        self._mode_combo.setCurrentText(name)   # -> set_mode(name), a no-op
+                                                 # re-apply of what was just captured
+        self.status(f'Saved preset "{name}": {", ".join(captured)}')
 
     def latest_frame(self, key: str):
         """The newest frame from module `key`'s camera, or None. Why it exists:
@@ -688,18 +783,27 @@ class MainWindow(QMainWindow):
         self._settings_dialog.tabs.currentChanged.connect(
             self._on_settings_tab_changed)
 
-        # Cross-module preset ("Scan" = full DMD illumination + the voltage
-        # camera's full-frame capture area). Config only — like the operator's
-        # own settings edits, a mode takes effect at the next Display/Start,
-        # it does not itself start anything.
+        # Cross-module preset, defined in modes.json (config.load_modes) —
+        # hand-edited and portable between sessions, not hardcoded here. Config
+        # only — like the operator's own settings edits, a mode takes effect
+        # at the next Display/Start, it does not itself start anything.
+        self._modes = config.load_modes()
         self._sidebar.addWidget(QLabel("  Mode:"))
         self._mode_combo = QComboBox()
-        self._mode_combo.addItems(MODES)
+        self._mode_combo.addItems((MODE_NONE, *self._modes))
         self._mode_combo.setToolTip(
             "Apply a named preset across modules (DMD illumination, camera "
-            "capture area, ...). \"None\" leaves everything as set.")
+            "capture area, ...), defined in modes.json. \"None\" leaves "
+            "everything as set.")
         self._mode_combo.currentTextChanged.connect(self.set_mode)
         self._sidebar.addWidget(self._mode_combo)
+
+        self._btn_save_mode = QPushButton("💾 Save as preset…")
+        self._btn_save_mode.setToolTip(
+            "Capture the DMD's and voltage camera's CURRENT settings as a "
+            "new (or replacement) entry in modes.json.")
+        self._btn_save_mode.clicked.connect(self._save_mode_as)
+        self._sidebar.addWidget(self._btn_save_mode)
 
         # Dark/light theme toggle (persisted to config; default dark).
         self._theme_action = QAction(self._swatch(None), "☾ Theme", self)

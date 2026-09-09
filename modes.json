@@ -1,0 +1,8 @@
+{
+  "Scan": {
+    "dmd_all_on": true,
+    "camera_presets": {
+      "voltage_cam": "full"
+    }
+  }
+}
