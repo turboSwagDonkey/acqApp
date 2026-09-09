@@ -27,6 +27,53 @@ from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings)
 
 
+class _DraggablePreview(QLabel):
+    """The preview label — click-drag nudges the pattern's offset (device
+    px), the mouse-driven twin of the arrow-key nudge. `dragged` carries the
+    delta in PREVIEW px; the panel converts to device px (it alone knows the
+    current preview-to-device scale) and only when dragging is actually
+    meaningful (Image mode, Fit off) — see `SettingsPanel._on_preview_dragged`
+    and `set_draggable`.
+    """
+    dragged = pyqtSignal(float, float)   # (dx, dy) in PREVIEW px
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._draggable = False
+        self._drag_from = None
+
+    def set_draggable(self, on: bool) -> None:
+        self._draggable = on
+        if not on:
+            self._drag_from = None
+        self.setCursor(Qt.CursorShape.SizeAllCursor if on
+                       else Qt.CursorShape.ArrowCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if self._draggable and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_from = event.position()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_from is not None:
+            now = event.position()
+            delta = now - self._drag_from
+            self._drag_from = now
+            self.dragged.emit(delta.x(), delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._drag_from is not None:
+            self._drag_from = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)   # emits DmdSettings
     load_requested   = pyqtSignal(object)   # emits Path
@@ -36,6 +83,10 @@ class SettingsPanel(QWidget):
     # camera's frame (`ModuleHost.latest_frame`) and the live controller.
     rois_edit_requested = pyqtSignal()
     calibrate_requested = pyqtSignal()
+    # So the adapter can cancel a pending debounced re-project the instant
+    # Live update is turned off — settings_changed alone can't do that: it
+    # doesn't fire just from unchecking a box that isn't itself a setting.
+    live_toggled = pyqtSignal(bool)
 
     def __init__(self, settings: DmdSettings | None = None, parent=None):
         super().__init__(parent)
@@ -49,6 +100,10 @@ class SettingsPanel(QWidget):
         # preview label's size, not this key, so it reuses the built frame
         # instead of re-running alp.build_frame() (2026-08-27).
         self._frame_cache: tuple[tuple, np.ndarray] | None = None
+        # Device px per preview px, refreshed by `_update_preview` — how a
+        # drag delta (measured in preview px) converts to an offset_x/y
+        # delta (device px). 1.0 until the first real render.
+        self._preview_scale: float = 1.0
         # Plain state, not widget values: a list of ROI dicts and a path.
         self._rois: tuple = tuple(self._s.rois or ())
         self._calib_path: str = self._s.calib_path or ""
@@ -132,13 +187,17 @@ class SettingsPanel(QWidget):
         lay.addRow("Display:", mode_w)
 
         # ── Live preview box ─────────────────────────────────────────────────
-        self._preview = QLabel("No preview")
+        self._preview = _DraggablePreview("No preview")
         self._preview.setMinimumSize(200, 180)
         self._preview.setMaximumHeight(240)
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setStyleSheet(
             f"color:{style.muted()}; border:1px solid {style.line()}; "
             f"border-radius:3px;")
+        self._preview.setToolTip(
+            "In Image mode (Fit off), drag to move the pattern — the same "
+            "offset the Offset X/Y fields and arrow-key nudging use.")
+        self._preview.dragged.connect(self._on_preview_dragged)
         lay.addRow(self._preview)
 
         # ── Pattern Alignment (Geometry Card) ────────────────────────────────
@@ -224,6 +283,21 @@ class SettingsPanel(QWidget):
         self._cmb_trig.addItems(["Internal", "External", "Software"])
         self._cmb_trig.setCurrentText(self._s.trigger_mode)
         lay.addRow("Trigger:", self._cmb_trig)
+
+        # Live update: every change (spinbox, drag, mode switch, ...) re-
+        # projects, debounced (adapters/dmd.py), instead of waiting for
+        # Display. Off by default — this actually emits light, unprompted,
+        # so it must be an opt-in the operator turns on deliberately each
+        # session, never something that could linger on from a saved setting.
+        self._chk_live = QCheckBox("Live update (project every change)")
+        self._chk_live.setToolTip(
+            "While on, every change here re-projects onto the DMD a moment "
+            "after you pause (debounced, not on every keystroke/drag tick) "
+            "— no need to press Display. This actually emits light; leave "
+            "it off unless you are actively aligning. Turning it off "
+            "cancels a pending re-project immediately.")
+        self._chk_live.toggled.connect(self.live_toggled.emit)
+        lay.addRow(self._chk_live)
 
         # Display / Stop buttons
         btn_row_w = QWidget()
@@ -362,7 +436,9 @@ class SettingsPanel(QWidget):
     def set_all_on(self) -> None:
         """Switch to All ON — every mirror on, full field. Mirrors
         `set_pattern_path`/`set_roi_pattern`: toggling the radio drives
-        `_on_mode_changed` -> `_emit`, so the next Display projects it."""
+        `_on_mode_changed` -> `_emit`, so the next Display projects it —
+        or, if "Live update" is on, the adapter's debounced re-project
+        does, shortly after (see `adapters/dmd.py`)."""
         if not self._rb[MODE_ALL_ON].isChecked():
             self._rb[MODE_ALL_ON].setChecked(True)   # -> _on_mode_changed -> _emit
         else:
@@ -459,6 +535,7 @@ class SettingsPanel(QWidget):
         fit_active = self._chk_fit.isChecked()
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.setEnabled(pattern and not fit_active)
+        self._preview.set_draggable(pattern and not fit_active)
         self._update_preview()
         self.settings_changed.emit(self.settings)
 
@@ -467,7 +544,39 @@ class SettingsPanel(QWidget):
             return
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.setEnabled(not on)
+        self._preview.set_draggable(not on)
         self._update_preview()
+
+    def _on_preview_dragged(self, dx: float, dy: float) -> None:
+        """A preview-px drag delta -> an offset_x/y nudge (device px) —
+        the mouse-driven twin of `_nudge_spn`'s arrow keys. `_preview_scale`
+        (set by `_update_preview`) is device px per preview px, and both
+        axes carry the same sign: `alp.build_frame` places the pattern by
+        pasting at `(width/2 + offset_x - pw/2, height/2 + offset_y - ph/2)`
+        — ordinary image coordinates, +x right / +y down — which is exactly
+        how Qt reports mouse deltas, so dragging right/down moves the
+        pattern right/down with no sign flip.
+
+        Reads `_preview_scale` ONCE, before either `setValue()` call: the
+        first one's `valueChanged` -> `_emit()` -> `_update_preview()` can
+        itself change `_preview_scale` (a layout reflow from the pattern
+        label's text changing width), which would otherwise scale the two
+        axes by two different factors from a single drag gesture.
+
+        Blocks `_spn_dx`'s signal while setting it, so only `_spn_dy`'s
+        `valueChanged` fires `_emit()` — one full settings-changed pipeline
+        (a disk write, a possible live-update re-project, a preview rebuild)
+        per drag tick, reading both updated values, rather than two. A
+        mouseMoveEvent stream can fire many ticks a second, exactly what the
+        adapter's live-update debounce exists to absorb — doubling the work
+        behind every tick works against that, not with it."""
+        scale = self._preview_scale
+        self._spn_dx.blockSignals(True)
+        try:
+            self._spn_dx.setValue(self._spn_dx.value() + dx * scale)
+        finally:
+            self._spn_dx.blockSignals(False)
+        self._spn_dy.setValue(self._spn_dy.value() + dy * scale)
 
     def _browse(self) -> None:
         """In ROIs mode this opens a saved ROI set instead of a pattern file —
@@ -580,6 +689,9 @@ class SettingsPanel(QWidget):
         avail_h = max(1, ph - 2 * pad)
 
         target_size = QSize(w, h).scaled(avail_w, avail_h, Qt.AspectRatioMode.KeepAspectRatio)
+        # Device px per preview px — a drag of N preview px must move the
+        # pattern by the N DMD px it visually appears to move.
+        self._preview_scale = w / max(1, target_size.width())
         scaled_dmd = dmd_pixmap.scaled(
             target_size,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -611,6 +723,12 @@ class SettingsPanel(QWidget):
         painter.end()
 
         self._preview.setPixmap(canvas)
+
+    @property
+    def live(self) -> bool:
+        """Whether "Live update" is on — never persisted (see the checkbox's
+        construction comment): always starts unchecked each session."""
+        return self._chk_live.isChecked()
 
     @property
     def mode(self) -> str:

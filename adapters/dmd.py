@@ -29,12 +29,23 @@ class DmdModule(ModuleAdapter):
 
     controller: ProjectorController | None   # narrows ModuleAdapter.controller
 
+    # Debounce window for "Live update": display() re-uploads the whole
+    # pattern to the ALP (SeqAlloc/SeqPut/Run — not free), and a drag or a
+    # held nudge key can emit many settings_changed ticks a second, so this
+    # coalesces a burst into one re-project shortly after it stops rather
+    # than flooding the device with a re-upload per tick.
+    _LIVE_DEBOUNCE_MS = 150
+
     def __init__(self, win) -> None:
         super().__init__(win)
         # Whether the ALP really opened — not derived from the class, since a
         # real DmdController that failed and fell back is the case that matters
         # and only build_controller knows.
         self._real = False
+        self._live_timer = QTimer()
+        self._live_timer.setSingleShot(True)
+        self._live_timer.setInterval(self._LIVE_DEBOUNCE_MS)
+        self._live_timer.timeout.connect(self.display)
 
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
@@ -46,7 +57,15 @@ class DmdModule(ModuleAdapter):
         self.panel.settings_changed.connect(self._save)
         self.panel.rois_edit_requested.connect(self.edit_rois)
         self.panel.calibrate_requested.connect(self.calibrate)
+        self.panel.live_toggled.connect(self._on_live_toggled)
         return self.panel
+
+    def _on_live_toggled(self, on: bool) -> None:
+        """Cancel a pending debounced re-project the instant Live update is
+        turned off — otherwise a change made just before unchecking it still
+        projects ~150 ms later, contradicting the operator's own click."""
+        if not on:
+            self._live_timer.stop()
 
     # ── the camera↔DMD registration ──
     def calibrate(self) -> None:
@@ -232,6 +251,11 @@ class DmdModule(ModuleAdapter):
             if shared_key in shared:
                 d[f"_shared_{attr}"] = float(shared[shared_key])
         config.save_settings(self.key, d)
+        # Live update: (re)start the debounce window rather than display()
+        # directly here — restarting on every tick of a drag/held-key nudge
+        # means the actual re-project only fires once the operator pauses.
+        if self.panel is not None and self.panel.live:
+            self._live_timer.start()
 
     def build_controller(self, emulate: bool) -> None:
         s = self.panel.settings if self.panel is not None else DmdSettings()
@@ -310,7 +334,11 @@ class DmdModule(ModuleAdapter):
     def set_all_on(self) -> None:
         """Switch to full-field illumination (every mirror on). Config only,
         like `set_pattern` — Display (or `set_light(True)`) is still what
-        actually projects it. Used by MainWindow.set_mode()'s "Scan" preset."""
+        actually projects it, UNLESS the panel's "Live update" toggle is on,
+        in which case this settings change re-projects on its own shortly
+        after (the debounced `_live_timer`, started from `_save`). Reachable
+        from any modes.json recipe's `dmd_all_on` key via
+        MainWindow.set_mode() — not just a hardcoded "Scan" mode."""
         if self.panel is not None:
             self.panel.set_all_on()
 
