@@ -139,9 +139,10 @@ devices/                one package per instrument
     sweep.py            runs calibration.py against the rig: the fresh-frame
                         grabber and the dialog that asks before emitting light
   mirror/
-    _find_di_line.py    script: watch every DI line on port1/port2, print on
-                        change — finds which one ThorImage's mirror switch
-                        drives before the real Mirror tab (PLAN.md §6) is built
+    _watch_axis7.py     script: poll chip 7 on the MCM6101 stage controller,
+                        print on change — ThorImage's mirror switch, not a
+                        DAQ line; before the real Mirror tab (PLAN.md §6) is
+                        built
   puffer/
     control.py
   pupil_cam/
