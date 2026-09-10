@@ -112,6 +112,7 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
   base.py               ModuleAdapter itself + the two shared widget builders
   closed_loop.py
   dmd.py
+  mirror.py
   puffer.py
   pupil_cam.py
   routines.py           the ONLY routine code that touches a real device
@@ -139,11 +140,17 @@ devices/                one package per instrument
     sweep.py            runs calibration.py against the rig: the fresh-frame
                         grabber and the dialog that asks before emitting light
   mirror/
-    _watch_mirror_axis.py  script: poll chip 7 (axis 6 — chip N = axis N-1
-                        on this rig) on the MCM6101 stage controller, print
-                        on change — ThorImage's mirror switch, not a DAQ
-                        line; before the real Mirror tab (PLAN.md §6) is
-                        built
+    _read_mirror_axis.py  script: one-shot read of chip 7 (axis 6 — chip N =
+                        axis N-1 on this rig) on the MCM6101 stage
+                        controller — ThorImage's mirror switch, but
+                        ThorImage holds the port while open, so this can't
+                        watch it live, only a before/after read across a
+                        ThorImage close/flip/close cycle
+    _scan_chips.py      script: which axes 0-9 on the MCM6101 answer a
+                        status request at all — axis 6 alone didn't
+    panel.py            manual Camera/PMT toggle — the operator asserts what
+                        they set in ThorImage, since acqApp can't read it
+    settings.py         MirrorSettings — no Qt
   puffer/
     control.py
   pupil_cam/

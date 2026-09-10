@@ -30,6 +30,7 @@ from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.adapters.closed_loop import ClosedLoopModule
 from acqApp.adapters.dmd import DmdModule
+from acqApp.adapters.mirror import MirrorModule
 from acqApp.adapters.puffer import PufferModule
 from acqApp.adapters.pupil_cam import PupilCamModule
 from acqApp.adapters.routines import RoutinesModule
@@ -49,6 +50,7 @@ ADAPTERS: dict[str, Callable[[Any], ModuleAdapter]] = {
     "stage":       StageModule,
     "dmd":         DmdModule,
     "vis_stim":    VisStimModule,
+    "mirror":      MirrorModule,
     "routines":    RoutinesModule,
     "closed_loop": ClosedLoopModule,
 }

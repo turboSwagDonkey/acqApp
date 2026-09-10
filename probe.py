@@ -119,6 +119,15 @@ def _vis_stim() -> ProbeResult:
                               "shared session clock — no device of its own")
 
 
+def _mirror() -> ProbeResult:
+    """Manual only (PLAN.md §6): ThorImage drives the real switch over a
+    serial port it holds exclusively, so acqApp has nothing of its own to
+    probe here — see devices/mirror/_read_mirror_axis.py for how the
+    physical chip was identified offline."""
+    return ProbeResult("stub", "operator-asserted state — no device of its "
+                              "own (ThorImage owns the real switch)")
+
+
 def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
           stage_port: str = DEFAULT_STAGE_PORT,
           cam_open: bool = False) -> ProbeResult:
@@ -136,6 +145,8 @@ def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
             return _dmd()
         if module == "vis_stim":
             return _vis_stim()
+        if module == "mirror":
+            return _mirror()
         if module == "closed_loop":
             return _closed_loop()
         return ProbeResult("error", "unknown module")

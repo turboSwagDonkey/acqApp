@@ -18,6 +18,7 @@ HEX = {
     "stage":       "#1aa3b8",   # teal
     "dmd":         "#d6459b",   # magenta
     "vis_stim":    "#22c7d6",   # cyan   (screen-driven visual stimulus)
+    "mirror":      "#ff4fa3",   # pink   (PMT/camera mirror switch)
     "closed_loop": "#9ecf2a",   # chartreuse (rule: signal in, actuation out)
     "routines":    "#6f7bf7",   # indigo — the gap left between blue and purple
     "sync":        "#8844cc",   # purple  (session-wide controls)
