@@ -2,26 +2,31 @@
 Watch chip 7 on the MCM6101 stage controller -- ThorImage's PMT/camera
 mirror switch.
 
-    acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\mirror\\_watch_axis7.py [COM54]
+    acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\mirror\\_watch_mirror_axis.py [COM54]
 
-Operator-confirmed (PLAN.md S6, 2026-09-10): the mirror switch is not a NI
-DAQ line -- it answers as axis (chip) 7 on the same MCM6101 stage controller
-devices/stage/driver.py already talks to. Normal stage startup never sees it:
-devices/stage/driver.py's own detect_axes() only probes axes 0-5 by default,
-and the XY(-Z) stage itself only occupies a couple of those.
+Operator-confirmed (PLAN.md S6, 2026-09-10): on this rig's MCM6101, the
+mirror switch is not a NI DAQ line -- it answers as chip 7 on the same
+MCM6101 stage controller devices/stage/driver.py already talks to. This rig's
+stage motors are chips 1,2,3, which `driver.py`'s own axis-detect finds as
+axes 0,1,2 -- so **chip N is axis N-1** (1-indexed physical label over the
+driver's 0-indexed axis), and chip 7 is AXIS below, not 7. Normal stage
+startup never sees it: `driver.py`'s `detect_axes()` only probes axes 0-5 by
+default, one short of chip 7.
 
 Read-only -- opens a status poll, never a move command, so this is safe to
 run mid-session even if the stage is in use elsewhere (though not the same
-serial port at the same time). Prints only when axis 7's position or status
-bits change; flip the switch in ThorImage to see which one moves and what
-value it settles on, so the real Mirror-tab poll knows what to watch for.
-Ctrl+C to stop.
+serial port at the same time: this rig's ThorImage install holds COM54 for
+as long as it is open, so this script needs ThorImage closed to connect).
+Prints only when the chip's position or status bits change; flip the switch
+in ThorImage to see which one moves and what value it settles on, so the
+real Mirror-tab poll knows what to watch for. Ctrl+C to stop.
 """
 from __future__ import annotations
 import sys
 import time
 
-AXIS = 7
+CHIP = 7
+AXIS = CHIP - 1        # chip N = axis N-1 on this rig -- see module docstring
 POLL_HZ = 10.0
 
 
@@ -33,8 +38,8 @@ def main() -> int:
         info = dev.get_info()
         print(f"Connected: model={info.model} serial={info.serial} "
               f"fw={info.firmware}")
-        print(f"[mirror] watching axis {AXIS} at {POLL_HZ:g} Hz -- flip the "
-              f"ThorImage mirror switch now. Ctrl+C to stop.")
+        print(f"[mirror] watching chip {CHIP} (axis {AXIS}) at {POLL_HZ:g} Hz "
+              f"-- flip the ThorImage mirror switch now. Ctrl+C to stop.")
 
         prev: tuple[int, int] | None = None
         t0 = time.perf_counter()
