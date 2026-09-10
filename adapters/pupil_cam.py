@@ -22,8 +22,8 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
 
 from acqApp import config
 from acqApp.acq.devices import ExposureControl
-from acqApp.adapters.base import (PLOT_HISTORY, DragRectViewBox, ModuleAdapter,
-                                  _image_view, _plot)
+from acqApp.adapters.base import (LEVELS_EVERY, PLOT_HISTORY, DragRectViewBox,
+                                  ModuleAdapter, _image_view, _plot)
 from acqApp.devices.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
 from acqApp.devices.pupil_cam.control import LedController, MockLedController
@@ -41,6 +41,9 @@ class PupilCamModule(ModuleAdapter):
     def __init__(self, win) -> None:
         super().__init__(win)
         self._img = None
+        self._hist = None                # the histogram/LUT bar, for show/hide
+        self._levels: tuple[float, float] | None = None   # only used in "auto"
+        self._level_ctr = 0
         # Empty until build_views: the module can be loaded without ever
         # building its dock, and _on_settings fires from the panel before then.
         self._limit_curve = None        # the box in force
@@ -90,7 +93,13 @@ class PupilCamModule(ModuleAdapter):
     def _on_settings(self, s) -> None:
         config.save_settings(self.key, asdict(s))
         prev_limit = None if self._settings is None else self._settings.search_limit()
+        prev_auto = None if self._settings is None else self._settings.auto_levels
         self._settings = s
+        if self._hist is not None:
+            self._hist.setVisible(s.show_lut)
+        if s.auto_levels and not prev_auto:   # just turned on — not a stale cache
+            self._levels = None
+            self._level_ctr = 0
         self._draw_limit(s)
         self._draw_pins(s)
         self._refresh_limit_bar()
@@ -106,12 +115,16 @@ class PupilCamModule(ModuleAdapter):
 
     def build_views(self) -> None:
         self._img, hist, gv, vb, row = _image_view(DragRectViewBox)
+        self._hist = hist
         # Pupil frames are 8-bit, so pin the histogram to 0–255: the bar then
         # shows an absolute brightness scale instead of rescaling to each frame,
-        # and the handles still drag to adjust contrast.
+        # and the handles still drag to adjust contrast. ("Auto contrast"
+        # overrides this per frame — see update_display.)
         self._img.setLevels((0, 255))
         hist.setHistogramRange(0, 255)
         hist.setLevels(0, 255)
+        if self.panel is not None:
+            hist.setVisible(self.panel.settings.show_lut)
         self.win.register_pg_view(hist)
         self.win.register_pg_view(gv)
 
@@ -382,6 +395,8 @@ class PupilCamModule(ModuleAdapter):
         for reg in self._blink_regions:     # a stale band must not outlive its session
             reg.setVisible(False)
         self._said = None
+        self._levels = None                 # a fresh "auto" recompute, not last session's
+        self._level_ctr = 0
 
     def _build_camera(self, s, emulate: bool):
         if s.video_path:
@@ -445,9 +460,16 @@ class PupilCamModule(ModuleAdapter):
             return
         self._last_frame = tr.frame
         shown, rect = self._display_frame(tr.frame)
-        # No `levels=` here: the LUT bar owns the levels, so forcing them every
-        # frame would undo any contrast the user drags.
-        self._img.setImage(shown, autoLevels=False)
+        if self._settings is not None and self._settings.auto_levels:
+            if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
+                lo, hi = np.percentile(shown, (1, 99))
+                self._levels = (float(lo), float(hi))
+            self._level_ctr += 1
+            self._img.setImage(shown, autoLevels=False, levels=self._levels)
+        else:
+            # No `levels=` here: the LUT bar owns the levels, so forcing them
+            # every frame would undo any contrast the user drags.
+            self._img.setImage(shown, autoLevels=False)
         # Positions the image at its own full-frame pixel coordinates even when
         # cropped, so the fit/pin/region overlays (still in full-frame pixels)
         # stay aligned instead of drawing over a shifted image. Skipped when

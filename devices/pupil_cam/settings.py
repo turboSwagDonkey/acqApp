@@ -78,6 +78,16 @@ class PupilSettings:
     # tuned, and re-ticking it every launch is friction that stops it being used.
     cr_show_mask:     bool = False
 
+    # ── preview ── cosmetic only; persisted for the same reason as
+    # cr_show_mask just above — a display preference nobody wants to redo
+    # every launch.
+    show_lut:     bool = True     # the histogram/contrast bar beside the image
+    # False (today's long-standing behaviour) pins the LUT to the sensor's
+    # full 0-255 range and leaves it exactly where the operator drags it;
+    # True recomputes levels from a 1st/99th percentile of each frame every
+    # LEVELS_EVERY ticks, voltage_cam's pattern.
+    auto_levels:  bool = False
+
     def __post_init__(self) -> None:
         """Normalise `cr_pins`: JSON has no tuples, so a reloaded pin is a list.
 

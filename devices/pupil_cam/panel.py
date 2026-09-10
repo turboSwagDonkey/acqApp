@@ -106,6 +106,27 @@ class SettingsPanel(QWidget):
         cl.addRow("Source:", self._chk_video)
         cl.addRow("", self._lbl_vid)
         self._show_video()
+
+        self._chk_lut = QCheckBox("Show LUT")
+        self._chk_lut.setChecked(self._s.show_lut)
+        self._chk_lut.setToolTip(
+            "Show or hide the histogram/contrast bar beside the preview.")
+        self._chk_lut.toggled.connect(self._emit)
+
+        self._chk_auto = QCheckBox("Auto contrast")
+        self._chk_auto.setChecked(self._s.auto_levels)
+        self._chk_auto.setToolTip(
+            "On: levels are recomputed from each frame's own brightness "
+            "range.\nOff (default): the LUT is pinned to 0-255 and you drag "
+            "its handles yourself — the app leaves them alone.")
+        self._chk_auto.toggled.connect(self._emit)
+
+        disp_row = QWidget()
+        disp_lay = QHBoxLayout(disp_row)
+        disp_lay.setContentsMargins(0, 0, 0, 0)
+        disp_lay.addWidget(self._chk_lut)
+        disp_lay.addWidget(self._chk_auto)
+        cl.addRow("Display:", disp_row)
         root.addWidget(cam)
 
         root.addWidget(self._build_limit())
@@ -549,4 +570,6 @@ class SettingsPanel(QWidget):
             cr_reach=self._spn_cr_reach.value(),
             cr_pins=list(self._pins),
             cr_show_mask=self._chk_cr_mask.isChecked(),
+            show_lut=self._chk_lut.isChecked(),
+            auto_levels=self._chk_auto.isChecked(),
         )
