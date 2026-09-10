@@ -36,6 +36,8 @@ EDITS = [
      lambda p: p._spn_exposure.value(),        7321.0),
     ("voltage_cam", "binning",   lambda p: p._cmb_binning.setCurrentIndex(1),
      lambda p: p.get_config().binning,          2),
+    ("voltage_cam", "preview avg", lambda p: p._spn_preview_avg.setValue(4),
+     lambda p: p.get_config().preview_avg,      4),
     ("pupil_cam",   "exposure",  lambda p: p._spn_exp.setValue(4321.0),
      lambda p: p._spn_exp.value(),              4321.0),
     ("pupil_cam",   "region X1", lambda p: p._spn_lx1.setValue(118.0),
@@ -81,6 +83,8 @@ EDITS = [
      lambda p: p.settings.port,                 "COM9"),
     ("stage",       "poll rate", lambda p: p._spn_rate.setValue(7.0),
      lambda p: p.settings.poll_hz,              7.0),
+    ("stage",       "frame rotation", lambda p: p._spn_rotation.setValue(45.0),
+     lambda p: p.settings.frame_rotation_deg,   45.0),
     ("dmd",         "trigger",   lambda p: p._cmb_trig.setCurrentText("Software"),
      lambda p: p.settings.trigger_mode,         "Software"),
     # The geometry is the registration to the optics — the DMD settings that
@@ -308,9 +312,10 @@ def main() -> int:
 
     # The stage's axis calibration belongs to the shared stage_control config;
     # StageSettings nests two StageAxis objects that would not survive this
-    # flat JSON, so only the panel's own two fields may be written here.
-    r.check(set(saved.get("stage", {})) == {"port", "poll_hz"},
-            f"stage section is port/poll_hz only (got {sorted(saved.get('stage', {}))})")
+    # flat JSON, so only the panel's own fields may be written here.
+    r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg"},
+            f"stage section is port/poll_hz/frame_rotation_deg only "
+            f"(got {sorted(saved.get('stage', {}))})")
     r.check("led" not in json.dumps(saved).lower(),
             "the eye-tracking LED was not persisted as a setting")
 

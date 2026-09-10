@@ -192,6 +192,20 @@ class AcqConfig:
     # get_frame_timings() at start.
     link:         str   = DEFAULT_LINK
 
+    # ── preview ── cosmetic only, no effect on acquisition. Carried here
+    # anyway because AcqConfig is what this panel already persists and
+    # restores — a display preference nobody wants to redo every launch, the
+    # same call made for PupilSettings.cr_show_mask.
+    show_lut:     bool = True     # the histogram/contrast bar beside the image
+    # True (the long-standing behaviour) recomputes levels from a 1st/99th
+    # percentile of each frame every LEVELS_EVERY ticks; False leaves them
+    # exactly where the operator dragged the LUT's handles.
+    auto_levels:  bool = True
+    # How many of the most recent PREVIEW frames to average before display.
+    # 1 = off. Cosmetic only: the recorded file still gets every raw frame,
+    # since this only touches the downsampled copy update_display() draws.
+    preview_avg:  int  = 1
+
     @property
     def preset(self) -> ResolutionPreset:
         return PRESETS[self.preset_key]

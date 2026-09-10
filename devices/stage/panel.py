@@ -270,6 +270,10 @@ class CalibrationDialog(QDialog):
 
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)   # emits StageSettings
+    # The adapter handles this one: it is the only side that can reach the
+    # voltage camera's frame (`ModuleHost.latest_frame`), the same split
+    # `devices/dmd/panel.py`'s `rois_edit_requested` uses.
+    save_fov_requested = pyqtSignal()
 
     def __init__(self, settings: StageSettings | None = None, parent=None):
         super().__init__(parent)
@@ -306,11 +310,25 @@ class SettingsPanel(QWidget):
         self._spn_rate.setValue(self._s.poll_hz)
         lay.addRow("Poll rate:", self._spn_rate)
 
-        # Port and poll rate are the two settings that live in the panel rather
-        # than in the calibration file; without this they were never announced,
-        # so nothing could persist them and the port reverted every launch.
+        self._spn_rotation = QDoubleSpinBox()
+        self._spn_rotation.setRange(-180.0, 180.0)
+        self._spn_rotation.setDecimals(1)
+        self._spn_rotation.setSuffix(" °")
+        self._spn_rotation.setValue(self._s.frame_rotation_deg)
+        self._spn_rotation.setToolTip(
+            "Rotates only the JOG buttons' direction, so 'up' here matches "
+            "'up' on the camera regardless of how the stage is physically "
+            "mounted. Absolute go-to, soft limits and calibration are "
+            "unaffected. 0 = off.")
+        lay.addRow("Frame rotation:", self._spn_rotation)
+
+        # Port, poll rate and frame rotation are settings that live in the
+        # panel rather than in the calibration file; without this they were
+        # never announced, so nothing could persist them and the port
+        # reverted every launch.
         self._cmb_port.currentTextChanged.connect(self._emit_settings)
         self._spn_rate.valueChanged.connect(self._emit_settings)
+        self._spn_rotation.valueChanged.connect(self._emit_settings)
 
         self._lbl_x = QLabel("—")
         self._lbl_y = QLabel("—")
@@ -412,6 +430,20 @@ class SettingsPanel(QWidget):
         nl.addWidget(self._btn_go_zero)
         root.addWidget(self._nav)
 
+        # ── Saved FOVs (named position + snapshot, reused from routines) ────
+        self._fovs = QGroupBox("Saved FOVs")
+        fovl = QHBoxLayout(self._fovs)
+        self._btn_save_fov = QPushButton("Save current as FOV…")
+        self._btn_save_fov.setToolTip(
+            "Name the current position and save it, with a camera snapshot, "
+            "so it can be reached again from here or from a routine step.")
+        self._btn_save_fov.clicked.connect(self.save_fov_requested)
+        fovl.addWidget(self._btn_save_fov)
+        self._btn_goto_fov = QPushButton("Go to FOV…")
+        self._btn_goto_fov.clicked.connect(self._pick_and_goto_fov)
+        fovl.addWidget(self._btn_goto_fov)
+        root.addWidget(self._fovs)
+
         # STOP ALL lives OUTSIDE the motion group on purpose: the group gets
         # disabled during a frame re-establish (so no competing move can be
         # issued), and a Qt child of a disabled parent is unclickable no matter
@@ -461,6 +493,7 @@ class SettingsPanel(QWidget):
     def _set_controls_enabled(self, on: bool) -> None:
         self._motion.setEnabled(on)
         self._nav.setEnabled(on)
+        self._fovs.setEnabled(on)
         self._btn_stop_all.setEnabled(on)
         self._btn_calibrate.setEnabled(on)
 
@@ -481,6 +514,7 @@ class SettingsPanel(QWidget):
         # No competing motion while the stage is driving into a hard limit.
         self._motion.setEnabled(self._ctrl is not None and not busy)
         self._nav.setEnabled(self._ctrl is not None and not busy)
+        self._fovs.setEnabled(self._ctrl is not None and not busy)
         self._refresh_goto_ranges()
         self._update_frame_status()
         self._update_home_label()
@@ -574,6 +608,35 @@ class SettingsPanel(QWidget):
                 return
         self._call("Move failed", lambda c: c.move_to_um(key, target))
 
+    def _pick_and_goto_fov(self) -> None:
+        from acqApp.devices.stage.fov_picker import FovPicker
+        dlg = FovPicker(self)
+        dlg.exec()
+        if dlg.fov is not None:
+            self.goto_fov(dlg.fov)
+
+    def goto_fov(self, fov) -> None:
+        """MOTION: absolute move to a saved FOV's X/Y, through the same
+        confirm-before-a-large-move guard as a manual Go (Z is not wired into
+        this yet — see devices/stage/fov_store.py)."""
+        if self._ctrl is None:
+            return
+        cur_x, cur_y = self._last_xy
+        dist = max(abs(fov.x_um - cur_x), abs(fov.y_um - cur_y))
+        if dist > self._s.confirm_move_um:
+            if QMessageBox.question(
+                self, "Confirm move",
+                f'Move to FOV "{fov.name}" at {fov.x_um:.0f}, {fov.y_um:.0f} µm '
+                f"({dist:.0f} µm)?"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+
+        def _go(c) -> None:
+            c.move_to_um("x", fov.x_um)
+            c.move_to_um("y", fov.y_um)
+
+        self._call("Move failed", _go)
+
     # The panic path (Esc, app-wide), so guarded hardest: a dead link is exactly
     # when it is pressed, and an escaping slot exception aborts the process.
     def _stop(self, key: str) -> None:
@@ -612,5 +675,6 @@ class SettingsPanel(QWidget):
             confirm_move_um=s.confirm_move_um,
             margin_um=s.margin_um,
             invert_y=s.invert_y,
+            frame_rotation_deg=self._spn_rotation.value(),
             x=s.x, y=s.y,
         )

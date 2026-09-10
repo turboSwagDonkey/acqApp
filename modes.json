@@ -3,6 +3,9 @@
     "dmd_all_on": true,
     "camera_presets": {
       "voltage_cam": "full"
+    },
+    "camera_exposure_us": {
+      "voltage_cam": 33333.0
     }
   }
 }

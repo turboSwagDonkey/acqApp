@@ -10,6 +10,8 @@ Nothing moves unless `jog_um` / `move_to_um` is called.
 """
 from __future__ import annotations
 
+import math
+
 from .settings import StageAxis, StageSettings, save_axis_updates
 
 
@@ -19,6 +21,20 @@ class StageControllerError(Exception):
 
 def _pick_axis(s: StageSettings, which: str) -> StageAxis:
     return s.x if which == "x" else s.y
+
+
+def _rotate_jog(which: str, delta_um: float, deg: float) -> tuple[float, float]:
+    """A jog request along the LOGICAL (camera-aligned) `which` axis, resolved
+    into physical (dx, dy) deltas for the stage's own X/Y — see
+    `StageSettings.frame_rotation_deg`. `deg == 0` short-circuits to the exact
+    single-axis delta (no trig, no float drift), matching jog_um's pre-
+    rotation behaviour exactly when the operator hasn't set a rotation."""
+    dx, dy = (delta_um, 0.0) if which == "x" else (0.0, delta_um)
+    if deg == 0.0:
+        return dx, dy
+    rad = math.radians(deg)
+    c, s = math.cos(rad), math.sin(rad)
+    return dx * c - dy * s, dx * s + dy * c
 
 
 def _center_here_updates(s: StageSettings, cx: int, cy: int) -> dict[int, dict]:
@@ -87,10 +103,13 @@ class StageController:
     def jog_um(self, which: str, delta_um: float) -> None:
         if self._dev is None:
             raise StageControllerError("not connected")
-        ax = self._axis(which)
-        cur = self._dev.get_status(ax.index).position
-        target = ax.clamp_counts(int(round(cur + ax.sign * delta_um * ax.counts_per_um)))
-        self._dev.move_to_readout(ax.index, target)
+        dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
+        for ax, d in ((self._s.x, dx), (self._s.y, dy)):
+            if not d:
+                continue
+            cur = self._dev.get_status(ax.index).position
+            target = ax.clamp_counts(int(round(cur + ax.sign * d * ax.counts_per_um)))
+            self._dev.move_to_readout(ax.index, target)
 
     def stop(self, which: str) -> None:
         if self._dev is not None:
@@ -253,7 +272,11 @@ class MockStageController:
         self._target[which] = self._clamp_um(which, target_um)
 
     def jog_um(self, which: str, delta_um: float) -> None:
-        self._target[which] = self._clamp_um(which, self._pos[which] + delta_um)
+        dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
+        for k, d in (("x", dx), ("y", dy)):
+            if not d:
+                continue
+            self._target[k] = self._clamp_um(k, self._pos[k] + d)
 
     def stop(self, which: str) -> None:
         self._target[which] = self._pos[which]

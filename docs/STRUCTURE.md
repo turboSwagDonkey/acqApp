@@ -61,8 +61,8 @@ Three edges surprise people, so they are drawn rather than explained away:
 `devices/dmd/alp.py`), `adapters → closed_loop` (the loop is a module like
 any other, and its adapter is what arms it), and `routines → devices` (a
 step's pattern picker opens `devices/dmd/roi_picker.py` to choose a saved ROI
-set — routines still touches no device directly, `adapters/routines.py` still
-is).
+set, and its FOV picker opens `devices/stage/fov_picker.py` the same way —
+routines still touches no device directly, `adapters/routines.py` still is).
 
 **An instrument appears in two places and they are not duplicates:**
 
@@ -147,6 +147,10 @@ devices/                one package per instrument
     backend.py          which driver is plugged in; probes the port and picks
     control.py          StageController + mock; microns, soft-limit clamped
     driver.py           MCM6101 APT/serial driver; copy of stage_control's
+    fov_picker.py       dialog to choose a saved FOV bookmark: session list +
+                        Browse, thumbnails — devices/dmd/roi_picker.py's shape
+    fov_store.py        save/load named FOV bookmarks (position + snapshot);
+                        session/archive rotation (no Qt)
     map_widget.py
     mcm301_driver.py    MCM301 driver (the current rig); wraps the vendor DLL
     mcm301_sdk/

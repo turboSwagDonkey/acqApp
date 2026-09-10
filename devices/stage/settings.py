@@ -141,6 +141,13 @@ class StageSettings:
     confirm_move_um: float = 3000.0    # ask before moves larger than this
     margin_um: float = 50.0            # soft-limit inset from the travel ends
     invert_y: bool = True              # draw the map with +Y screen-up
+    # Operator-facing display setting, NOT physical calibration: rotates only
+    # the direction a jog button moves, so "up" on the panel can match "up" on
+    # the camera regardless of how the stage is physically mounted. Absolute
+    # go-to, soft limits and the calibration below are unaffected, and this
+    # stays local to acqApp (see `_PANEL_KEYS` in adapters/stage.py) rather
+    # than living in the shared stage_control config.
+    frame_rotation_deg: float = 0.0
     x: StageAxis = None      # type: ignore[assignment]
     y: StageAxis = None      # type: ignore[assignment]
 

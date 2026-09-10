@@ -119,12 +119,12 @@ def load_modes() -> dict:
     empty Mode dropdown (just "None"), the same failure mode as a removed
     preset in load_dataclass. Non-dict entries are dropped rather than
     raising, so one bad hand-edit doesn't take out every mode. Also
-    sanitizes each recipe's `camera_presets`, the one field `set_mode()`
-    iterates (`.items()`) rather than merely truth-tests: a natural hand-edit
-    mistake — `null` for "no camera presets", or a list by typo — would
-    otherwise reach `set_mode()` as `None`/a list and raise there, since
-    `dict.get(key, {})` only substitutes the default when the key is
-    *absent*, not when it's present with a non-dict value.
+    sanitizes each recipe's `camera_presets`/`camera_exposure_us`, the two
+    fields `set_mode()` iterates (`.items()`) rather than merely truth-tests:
+    a natural hand-edit mistake — `null` for "no camera presets", or a list
+    by typo — would otherwise reach `set_mode()` as `None`/a list and raise
+    there, since `dict.get(key, {})` only substitutes the default when the
+    key is *absent*, not when it's present with a non-dict value.
     """
     data = _load_json(_MODES_PATH)
     modes = {}
@@ -141,6 +141,16 @@ def load_modes() -> dict:
                 if isinstance(k, str) and isinstance(v, str)}
         else:
             recipe.pop("camera_presets")   # wrong type entirely -> drop it
+        exposures = recipe.get("camera_exposure_us")
+        if exposures is None:
+            recipe.pop("camera_exposure_us", None)
+        elif isinstance(exposures, dict):
+            recipe["camera_exposure_us"] = {
+                k: v for k, v in exposures.items()
+                if isinstance(k, str) and isinstance(v, (int, float))
+                and not isinstance(v, bool)}
+        else:
+            recipe.pop("camera_exposure_us")   # wrong type entirely -> drop it
         modes[name] = recipe
     return modes
 

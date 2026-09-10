@@ -11,6 +11,9 @@ sessions/
 # Saved photostimulation ROI sets (devices/dmd/roi_store.py) — rig- and
 # calibration-specific, like acqapp_local.json, so not portable across rigs.
 /rois/
+# Saved FOV bookmarks (devices/stage/fov_store.py) — a position + a camera
+# snapshot, rig-specific like rois/ above, plus the PNGs would bloat the repo.
+/fov_library/
 *.tif
 *.tiff
 *.h5

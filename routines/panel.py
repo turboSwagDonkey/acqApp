@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
 from acqApp import style
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
-from acqApp.routines.estimate import clock, estimate
+from acqApp.routines.estimate import estimate
 from acqApp.routines.settings import SAVE_MODES, START_TRIGGERS, Routine, Step
 from acqApp.routines.table import StepTable
 
@@ -179,7 +179,11 @@ class SettingsPanel(QWidget):
             ("No pattern", self._clear_pattern,
              "Leave the DMD showing whatever it already has for this "
              "step. Delete on the cell does the same — as it does on a "
-             "Stage X or Y cell, which sets it back to \"no change\".")))
+             "Stage X or Y cell, which sets it back to \"no change\"."),
+            ("FOV…", self._pick_fov,
+             "Fill the selected step's Stage X/Y from a saved FOV — a "
+             "one-time copy, like Pattern…; renaming or deleting the FOV "
+             "later does not change this step.")))
         pat_btns.addStretch(1)
         lay.addLayout(pat_btns)
 
@@ -344,6 +348,22 @@ class SettingsPanel(QWidget):
         dlg = RoiSetPicker(self)
         if dlg.exec() and dlg.path is not None:
             self._r.steps[row].pattern = str(dlg.path)
+            self._reload_table()
+            self._emit()
+
+    def _pick_fov(self) -> None:
+        self._pick_fov_for(self._selected())
+
+    def _pick_fov_for(self, row: int) -> None:
+        if not (0 <= row < len(self._r.steps)):
+            return
+        from acqApp.devices.stage.fov_picker import FovPicker
+
+        dlg = FovPicker(self)
+        dlg.exec()
+        if dlg.fov is not None:
+            self._r.steps[row].x_um = dlg.fov.x_um
+            self._r.steps[row].y_um = dlg.fov.y_um
             self._reload_table()
             self._emit()
 

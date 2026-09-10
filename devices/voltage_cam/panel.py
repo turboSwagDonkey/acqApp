@@ -14,7 +14,7 @@ from __future__ import annotations
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QWidget,
+    QLabel, QSpinBox, QWidget,
 )
 
 from .presets import (
@@ -33,6 +33,9 @@ class SettingsPanel(QWidget):
     resolution_changed = pyqtSignal(str)    # preset key
     binning_changed   = pyqtSignal(int)
     trigger_changed   = pyqtSignal(str)
+    lut_visible_changed = pyqtSignal(bool)  # show/hide the histogram bar
+    auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
+    preview_avg_changed = pyqtSignal(int)   # frames to average in the preview only
 
     def __init__(self, config: AcqConfig | None = None, parent=None):
         super().__init__(parent)
@@ -119,6 +122,37 @@ class SettingsPanel(QWidget):
         self._lbl_rec = QLabel()
         self._lbl_rec.setWordWrap(True)
         lay.addRow("Recording:", self._lbl_rec)
+
+        self._chk_lut = QCheckBox("Show LUT")
+        self._chk_lut.setChecked(self._cfg.show_lut)
+        self._chk_lut.setToolTip(
+            "Show or hide the histogram/contrast bar beside the preview.")
+        self._chk_lut.toggled.connect(self.lut_visible_changed)
+
+        self._chk_auto = QCheckBox("Auto contrast")
+        self._chk_auto.setChecked(self._cfg.auto_levels)
+        self._chk_auto.setToolTip(
+            "On (default): levels are recomputed from each frame's own "
+            "brightness range.\nOff: drag the LUT's handles yourself — the "
+            "app leaves them exactly where you put them.")
+        self._chk_auto.toggled.connect(self.auto_levels_changed)
+
+        self._spn_preview_avg = QSpinBox()
+        self._spn_preview_avg.setRange(1, 8)
+        self._spn_preview_avg.setValue(self._cfg.preview_avg)
+        self._spn_preview_avg.setPrefix("avg ")
+        self._spn_preview_avg.setToolTip(
+            "Average this many recent preview frames before display.\n"
+            "1 = off. The recorded file still gets every raw frame.")
+        self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
+
+        disp_row = QWidget()
+        disp_lay = QHBoxLayout(disp_row)
+        disp_lay.setContentsMargins(0, 0, 0, 0)
+        disp_lay.addWidget(self._chk_lut)
+        disp_lay.addWidget(self._chk_auto)
+        disp_lay.addWidget(self._spn_preview_avg)
+        lay.addRow("Display:", disp_row)
 
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -228,6 +262,9 @@ class SettingsPanel(QWidget):
             exposure_us  = self._spn_exposure.value(),
             trigger_mode = self._cmb_trigger.currentText(),
             link         = self._cfg.link,
+            show_lut     = self._chk_lut.isChecked(),
+            auto_levels  = self._chk_auto.isChecked(),
+            preview_avg  = self._spn_preview_avg.value(),
         )
 
     def set_running(self, running: bool) -> None:
@@ -241,6 +278,12 @@ class SettingsPanel(QWidget):
         click: it only takes effect at the next Start."""
         if key in PRESET_KEYS:
             self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(key))
+
+    def set_exposure(self, us: float) -> None:
+        """Programmatically set exposure (e.g. from a Mode preset). Hot, like
+        the operator's own spinbox edit — the spinbox's own range clamps it,
+        and Rate/Link move with it exactly as they would from a manual edit."""
+        self._spn_exposure.setValue(us)
 
     @property
     def exposure_us(self) -> float:

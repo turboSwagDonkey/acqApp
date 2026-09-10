@@ -25,7 +25,7 @@ class StageModule(ModuleAdapter):
     # Only what the panel itself owns. Calibration, soft limits and the origin
     # must keep coming from the shared stage_control config: StageSettings nests
     # two StageAxis objects, which do not survive this config's flat JSON.
-    _PANEL_KEYS = ("port", "poll_hz")
+    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg")
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -39,8 +39,13 @@ class StageModule(ModuleAdapter):
         else:
             if hz > 0:
                 s.poll_hz = hz
+        try:
+            s.frame_rotation_deg = float(saved.get("frame_rotation_deg"))
+        except (TypeError, ValueError):
+            pass
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
+        self.panel.save_fov_requested.connect(self.save_fov)
         return self.panel
 
     def _save(self, s) -> None:
@@ -89,6 +94,58 @@ class StageModule(ModuleAdapter):
         xy = self.worker.get_latest() if self.worker is not None else None
         if xy is not None:
             self.panel.set_readout(xy[0], xy[1])
+
+    # ── saved FOVs (position + snapshot; devices/stage/fov_store.py) ──
+    def save_fov(self) -> None:
+        """Handle the Stage panel's "Save current as FOV…" button. Reads
+        only: the live position off the poller, and a camera snapshot via
+        `ModuleHost.latest_frame` — never commands the stage or the camera."""
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+        from acqApp.devices.stage import fov_store
+
+        xy = self.worker.get_latest() if self.worker is not None else None
+        if xy is None:
+            QMessageBox.information(
+                self.panel, "Stage not connected",
+                "Connect the stage (start a session) before saving a FOV.")
+            return
+        name, ok = QInputDialog.getText(self.panel, "Save FOV", "Name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        path = fov_store.save(
+            name, xy[0], xy[1], z_um=None,
+            camera_preset=self.win.camera_preset("voltage_cam"),
+            png_bytes=self._snapshot_png())
+        self.win.status(f'Saved FOV "{name}" at {xy[0]:.0f}, {xy[1]:.0f} µm '
+                        f"({path.name})")
+
+    def _snapshot_png(self) -> bytes | None:
+        """An 8-bit, contrast-stretched PNG of the newest voltage_cam frame —
+        the same downsample/percentile treatment the live preview already
+        applies (adapters/voltage_cam.py), so a saved FOV looks like what the
+        operator was seeing, not a raw linear 16-bit dump. None if no frame
+        has arrived yet; a FOV without a picture is still useful, just not
+        recognizable by eye."""
+        frame = self.win.latest_frame("voltage_cam")
+        if frame is None:
+            return None
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        from acqApp.adapters.base import DISP_DS
+
+        small = frame[::DISP_DS, ::DISP_DS]
+        lo, hi = np.percentile(small, (1, 99))
+        span = max(float(hi) - float(lo), 1.0)
+        img8 = np.clip((small.astype(np.float32) - lo) / span * 255.0,
+                       0, 255).astype(np.uint8)
+        buf = io.BytesIO()
+        Image.fromarray(img8, mode="L").save(buf, format="PNG")
+        return buf.getvalue()
 
     # ── recording ──
     def attach_sink(self, rec) -> None:

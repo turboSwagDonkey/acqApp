@@ -3,6 +3,7 @@ The voltage camera's adapter — the module that owns the window's central view.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict
 from typing import Any
 
@@ -29,12 +30,15 @@ class VoltageCamModule(ModuleAdapter):
     def __init__(self, win) -> None:
         super().__init__(win)
         self._img = None
+        self._hist = None                # the histogram/LUT bar, for show/hide
         self._curve = None
         self._y: list[float] = []
         self._f0: float | None = None
         self._levels: tuple[float, float] | None = None
         self._level_ctr = 0
+        self._auto_levels = True         # AcqConfig's default, until build_panel says otherwise
         self._last_frame = None         # full-res, for the DMD's ROI editor
+        self._preview_buf: deque = deque(maxlen=1)   # recent preview frames, for averaging
 
     def last_frame(self):
         return self._last_frame
@@ -49,13 +53,33 @@ class VoltageCamModule(ModuleAdapter):
         the caller decides whether that means a live-view restart."""
         self.panel.set_preset(key)
 
+    def set_exposure(self, us: float) -> None:
+        """Change exposure (e.g. from a Mode preset). Hot — like the
+        operator's own spinbox edit, it takes effect immediately via the
+        panel's existing exposure_changed -> _on_exposure wiring."""
+        self.panel.set_exposure(us)
+
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = CamSettingsPanel(self._load_config())
         self.panel.exposure_changed.connect(self._on_exposure)
         for sig in (self.panel.exposure_changed, self.panel.resolution_changed,
-                    self.panel.binning_changed, self.panel.trigger_changed):
+                    self.panel.binning_changed, self.panel.trigger_changed,
+                    self.panel.lut_visible_changed,
+                    self.panel.auto_levels_changed,
+                    self.panel.preview_avg_changed):
             sig.connect(self._save)
+        self.panel.lut_visible_changed.connect(self._on_lut_visible)
+        self.panel.auto_levels_changed.connect(self._on_auto_levels)
+        self.panel.preview_avg_changed.connect(self._on_preview_avg)
+        self._auto_levels = self.panel.get_config().auto_levels
+        self._preview_buf = deque(maxlen=max(1, self.panel.get_config().preview_avg))
+        # Startup builds the central widget BEFORE the settings tab (so
+        # central_widget() cannot read the panel yet); a hot-load builds this
+        # panel first instead. Whichever runs second is what makes the saved
+        # preference actually reach a `self._hist` that may already exist.
+        if self._hist is not None:
+            self._hist.setVisible(self.panel.get_config().show_lut)
         # The Save tab's capacity estimate is driven by the data rate, and the
         # data rate is what these three settings decide.
         for sig in (self.panel.exposure_changed, self.panel.resolution_changed,
@@ -64,12 +88,35 @@ class VoltageCamModule(ModuleAdapter):
         self._push_rate()
         return self.panel
 
+    def _on_lut_visible(self, on: bool) -> None:
+        if self._hist is not None:
+            self._hist.setVisible(on)
+
+    def _on_auto_levels(self, on: bool) -> None:
+        self._auto_levels = bool(on)
+        if on:                          # recompute fresh, not a stale cache
+            self._levels = None
+            self._level_ctr = 0
+
+    def _on_preview_avg(self, n: int) -> None:
+        # A new maxlen needs a new deque — changing maxlen on an existing one
+        # isn't supported, and reusing it would blend old-N and new-N frames.
+        self._preview_buf = deque(maxlen=max(1, n))
+
     def build_plot(self) -> QWidget:
         pw, self._curve = _plot("ΔF/F", "ΔF/F", "%", "Frame", self.key)
         return pw
 
     def central_widget(self) -> QWidget:
         self._img, hist, gv, _vb, row = _image_view()
+        self._hist = hist
+        # Guarded: at startup this runs BEFORE build_panel() (main.py builds
+        # the central widget before the settings tab), so there may be no
+        # panel yet — build_panel() then applies the saved preference itself
+        # once it exists. A hot-load has the panel already, so this is the
+        # one that actually matters there.
+        if self.panel is not None:
+            self._hist.setVisible(self.panel.get_config().show_lut)
         self.win.register_pg_view(gv)
         self.win.register_pg_view(hist)
         return row
@@ -128,6 +175,7 @@ class VoltageCamModule(ModuleAdapter):
         self._f0 = None
         self._levels = None
         self._level_ctr = 0
+        self._preview_buf.clear()   # don't average across a session boundary
 
     def stop(self) -> None:
         super().stop()
@@ -144,13 +192,30 @@ class VoltageCamModule(ModuleAdapter):
         # display's ¼-scale copy would put every ROI out by a factor of DISP_DS.
         self._last_frame = f
         small = f[::DISP_DS, ::DISP_DS]              # strided view, no copy
-        # The percentile is the costly part, so refresh contrast a couple of
-        # times a second rather than every frame.
-        if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
-            lo, hi = np.percentile(small, (1, 99))
-            self._levels = (float(lo), float(hi))
-        self._level_ctr += 1
-        self._img.setImage(small, autoLevels=False, levels=self._levels)
+
+        # Preview-only averaging: blends recent DOWNSAMPLED frames for display.
+        # The df/f trace below and every recorded frame still use `small`/`f`
+        # unaveraged — this never touches what's measured or written.
+        if self._preview_buf.maxlen and self._preview_buf.maxlen > 1:
+            self._preview_buf.append(small)
+            disp = (np.mean(self._preview_buf, axis=0, dtype=np.float32)
+                     .astype(small.dtype, copy=False))
+        else:
+            disp = small
+
+        if self._auto_levels:
+            # The percentile is the costly part, so refresh contrast a couple
+            # of times a second rather than every frame.
+            if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
+                lo, hi = np.percentile(disp, (1, 99))
+                self._levels = (float(lo), float(hi))
+            self._level_ctr += 1
+            self._img.setImage(disp, autoLevels=False, levels=self._levels)
+        else:
+            # No `levels=` here: the LUT bar owns them, so forcing a value
+            # every frame would undo any contrast the operator drags
+            # (devices/pupil_cam's long-standing pattern for its own preview).
+            self._img.setImage(disp, autoLevels=False)
 
         mean = float(small.mean())
         if self._f0 is None and mean != 0:

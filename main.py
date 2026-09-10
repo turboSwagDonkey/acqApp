@@ -246,6 +246,12 @@ class MainWindow(QMainWindow):
         # blocks the GUI thread, and the readout doesn't need finer than 1 Hz.
         self._rec_size_t0: float = 0.0
         self._rec_size_txt: str = ""
+        # Repaints `_lbl_rec`'s colour only when the shed/healthy state
+        # actually flips, not on every 100 ms tick — `routines/panel.py`'s
+        # `_set_phase` measured a bare `setStyleSheet` at 26 us/call and a
+        # third of a display tick for exactly this "same string every time"
+        # case.
+        self._rec_warn: bool | None = None
         self._save_panel: SavePanel | None = None
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         # Modules whose panel is a window of its own, by key. Hidden until the
@@ -435,6 +441,12 @@ class MainWindow(QMainWindow):
                                                      with a preset concept
                                                      today) — see
                                                      presets.resolve_preset_key
+          "camera_exposure_us": {module_key: us}  — module.set_exposure(us),
+                                                     one call per entry; skipped
+                                                     for a module with no
+                                                     `set_exposure` (no camera
+                                                     concept today besides
+                                                     voltage_cam)
 
         Same "takes effect at the next Display/Start" contract as
         `set_camera_preset`/`DmdModule.set_all_on` — this does not itself
@@ -455,6 +467,10 @@ class MainWindow(QMainWindow):
                 dmd.set_all_on()
         for key, preset in recipe.get("camera_presets", {}).items():
             self.set_camera_preset(key, resolve_preset_key(preset))
+        for key, us in recipe.get("camera_exposure_us", {}).items():
+            m = self._module(key)
+            if m is not None and hasattr(m, "set_exposure"):
+                m.set_exposure(us)
         self.status(f"Mode: {name}")
 
     def _save_mode_as(self) -> None:
@@ -508,6 +524,10 @@ class MainWindow(QMainWindow):
             key = vcam.preset_key()
             recipe["camera_presets"] = {"voltage_cam": preset_alias(key)}
             captured.append(f"voltage_cam preset {key!r}")
+        if vcam is not None and vcam.panel is not None:
+            us = vcam.panel.exposure_us
+            recipe["camera_exposure_us"] = {"voltage_cam": us}
+            captured.append(f"voltage_cam exposure {us:g} µs")
 
         if not captured:
             QMessageBox.information(
@@ -1322,6 +1342,7 @@ class MainWindow(QMainWindow):
         # Force an immediate (not up-to-1s-stale) size stat on the next tick.
         self._rec_size_t0 = 0.0
         self._rec_size_txt = ""
+        self._rec_warn = None           # force the next tick to paint a colour
 
         # The Recorder stamps each sample on the shared clock, so every stream
         # in the file shares one time origin.
@@ -1407,11 +1428,13 @@ class MainWindow(QMainWindow):
                 pass                       # not created yet, or on a flaky share
         txt += self._rec_size_txt
         dropped = self._recorder.drop_count + self._recorder.late_count
+        warn = bool(dropped)
         if dropped:
             txt += f"   ⚠ {dropped} samples shed"
-            self._lbl_rec.setStyleSheet("color:#c62828; font-weight:bold;")
-        else:
-            self._lbl_rec.setStyleSheet("color:#2e7d32; font-weight:bold;")
+        if warn != self._rec_warn:
+            self._rec_warn = warn
+            self._lbl_rec.setStyleSheet("color:#c62828; font-weight:bold;" if warn
+                                        else "color:#2e7d32; font-weight:bold;")
         self._lbl_rec.setText(txt)
 
     def _on_trigger(self, name: str, duration: float) -> None:
