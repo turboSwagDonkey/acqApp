@@ -90,14 +90,15 @@ class ClosedLoopWorker(PullWorker):
 
             if self._armed:
                 hit = self._rule.update(value, at)
+                ok = self._rule.last_satisfied   # update() already worked this out
             else:
                 self._rule.idle()
                 hit = False
+                ok = self._rule.satisfied(value)
 
             # Readout for the display tick, fired or not. Not via _publish():
             # the sink carries fires only, not a 200 Hz copy of the wheel.
-            self._set_latest((value, self._rule.satisfied(value),
-                              self._rule.n_fires, self._armed))
+            self._set_latest((value, ok, self._rule.n_fires, self._armed))
 
             if hit:
                 s = self._rule.settings

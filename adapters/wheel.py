@@ -32,13 +32,20 @@ class WheelModule(ModuleAdapter):
         self._y: list[float] = []
         self._units: str | None = None       # current Y-axis unit label
         self._title_text: str | None = None   # current plot title
+        self._readout_text: str | None = None # current live-readout text
+        # Cached copy of the panel's settings, refreshed by `_on_settings` —
+        # so the per-tick display path (`_show`) reads two plain attributes
+        # instead of rebuilding a whole EncoderSettings from its widgets every
+        # frame (pupil_cam.py's pattern for the same reason).
+        self._cfg = EncoderSettings()
 
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = WheelSettingsPanel(
             config.load_dataclass(EncoderSettings, self.key))
         self.panel.settings_changed.connect(self._on_settings)
-        return self.panel
+        self._cfg = self.panel.settings     # seed the cache; _on_settings
+        return self.panel                   # keeps it fresh from here on
 
     def build_plot(self) -> QWidget:
         self._plot_w, self._curve = _plot(
@@ -53,6 +60,7 @@ class WheelModule(ModuleAdapter):
         carries rev/s rather than mm/s.
         """
         config.save_settings(self.key, asdict(st))
+        self._cfg = st
         if self.worker is not None:
             self.worker.set_scaling(st.volts_per_rev, st.wheel_dia_mm)
 
@@ -80,22 +88,30 @@ class WheelModule(ModuleAdapter):
         """Pick units/labels for the current scaling, update the live readout,
         and return the value to plot. With no V/rev set there is nothing to
         derive, so it plots the raw voltage instead."""
-        s = self.panel.settings
-        if not s.volts_per_rev:
+        cfg = self._cfg
+        if not cfg.volts_per_rev:
             self._axis("Voltage", "V")
             self._title(None, "")
-            self.panel.set_readout(f"{v:.4f} V   (set V/rev to get speed)")
+            self._readout(f"{v:.4f} V   (set V/rev to get speed)")
             return v
-        if s.wheel_dia_mm:
+        if cfg.wheel_dia_mm:
             self._axis("Distance", "m")
             self._title(speed, "mm/s")
-            self.panel.set_readout(
+            self._readout(
                 f"speed {speed:+.1f} mm/s      net {dist / 1000:+.2f} m")
             return dist / 1000.0                 # plot net distance in metres
         self._axis("Distance", "rev")
         self._title(speed, "rev/s")
-        self.panel.set_readout(f"speed {speed:+.2f} rev/s      net {dist:+.1f} rev")
+        self._readout(f"speed {speed:+.2f} rev/s      net {dist:+.1f} rev")
         return dist                              # plot net distance in revolutions
+
+    def _readout(self, text: str) -> None:
+        """Update the live-readout label only when the text actually
+        changed — same reasoning as `_title`: a stationary wheel formats
+        identically tick after tick."""
+        if text != self._readout_text:
+            self._readout_text = text
+            self.panel.set_readout(text)
 
     def _axis(self, name: str, units: str) -> None:
         """Relabel the Y axis only when the unit actually changes."""

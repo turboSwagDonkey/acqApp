@@ -37,6 +37,11 @@ class PupilTracking:
         self.last_fit = None
         self.last_mask: np.ndarray | None = None
         self.last_box: tuple[int, int, int, int] | None = None
+        # The EyeLoop import, done once and cached — track() runs once per
+        # tracked frame (~20-40 Hz), and re-importing an already-succeeded
+        # module on every one of those calls is pure overhead. A failed
+        # import is NOT cached, so it keeps retrying every call, unchanged.
+        self._eyeloop_cls: tuple | None = None
 
     @property
     def available(self) -> bool:
@@ -46,14 +51,6 @@ class PupilTracking:
     @property
     def error(self) -> str | None:
         return self._error
-
-    def reset(self) -> None:
-        """Drop the tracker; the next frame re-arms it and re-seeds from centre."""
-        self._tracker = None
-        self._box = None
-        self._model = None
-        self.last_fit = None
-        self.last_mask = None
 
     def track(self, frame: np.ndarray, st: PupilSettings):
         """Track one full frame. Returns a `PupilFit` in FULL-FRAME pixels, or None.
@@ -75,12 +72,18 @@ class PupilTracking:
         if crop.size == 0:
             return None
 
-        try:
-            from acqApp.devices.pupil_cam.eyeloop_tracker import (
-                EyeLoopTracker, EyeLoopUnavailable, GlintRemoval, Pin, PupilFit)
-        except ImportError as e:        # pragma: no cover - import guard
-            self._error = str(e)
-            return None
+        if self._eyeloop_cls is None:
+            try:
+                from acqApp.devices.pupil_cam.eyeloop_tracker import (
+                    EyeLoopTracker, EyeLoopUnavailable, GlintRemoval, Pin,
+                    PupilFit)
+            except ImportError as e:    # pragma: no cover - import guard
+                self._error = str(e)
+                return None
+            self._eyeloop_cls = (EyeLoopTracker, EyeLoopUnavailable,
+                                 GlintRemoval, Pin, PupilFit)
+        EyeLoopTracker, EyeLoopUnavailable, GlintRemoval, Pin, PupilFit = \
+            self._eyeloop_cls
 
         glint = GlintRemoval(
             enabled=st.cr_remove,

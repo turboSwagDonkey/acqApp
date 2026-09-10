@@ -120,9 +120,9 @@ class HDF5Writer(Writer):
         with self._lock:
             if self._file is None:
                 return
-            is_image = isinstance(data, np.ndarray) and data.ndim >= 2
             st = self._streams.get(stream)
             if st is None:
+                is_image = isinstance(data, np.ndarray) and data.ndim >= 2
                 st = self._create_stream(stream, data, is_image)
 
             i = st["idx"]
@@ -140,7 +140,7 @@ class HDF5Writer(Writer):
                 # buffer: no cache copy, no conversion. The slice assignment
                 # below is why bin 1 dropped half its frames.
                 st["data"].id.write_direct_chunk(
-                    (i,) + (0,) * len(st["shape"]), memoryview(data).cast("B"))
+                    (i,) + st["zero_offset"], memoryview(data).cast("B"))
             else:
                 st["data"][i] = data
             st["idx"] = i + 1
@@ -186,7 +186,12 @@ class HDF5Writer(Writer):
                   # write_direct_chunk writes one chunk of raw bytes: only
                   # valid where a frame is exactly a chunk and no filter is
                   # meant to run on it.
-                  "direct": chunk_frames == 1 and self._compression is None}
+                  "direct": chunk_frames == 1 and self._compression is None,
+                  # The chunk-index offset's trailing zeros, precomputed once
+                  # rather than rebuilt into a fresh tuple on every write() —
+                  # the direct path exists specifically to avoid per-frame
+                  # overhead.
+                  "zero_offset": (0,) * len(shape)}
         else:
             dset = g.create_dataset(
                 "values", shape=(0,), maxshape=(None,),

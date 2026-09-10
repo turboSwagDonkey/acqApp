@@ -80,6 +80,11 @@ class LoopRule:
         self._last_fire: float | None = None
         self._cleared = True                  # false since the last fire?
         self.n_fires = 0
+        # What `update()`'s own `satisfied(value)` call just found, so a
+        # caller building a readout right after `update()` (the 200 Hz loop
+        # in closed_loop/worker.py) can read it back instead of re-running
+        # the same comparison a second time.
+        self.last_satisfied = False
 
     def configure(self, settings: LoopSettings) -> None:
         """Adopt new settings mid-session, keeping the fire history: nudging a
@@ -109,7 +114,8 @@ class LoopRule:
 
     def update(self, value: float | None, t: float) -> bool:
         s = self._s
-        if not self.satisfied(value):
+        self.last_satisfied = self.satisfied(value)
+        if not self.last_satisfied:
             self._since = None
             self._cleared = True
             return False
