@@ -36,6 +36,7 @@ flowchart TD
     main --> config
     main --> style
     main --> console
+    main --> devices
     adapters --> devices
     adapters --> closed_loop
     adapters --> routines
@@ -56,13 +57,20 @@ flowchart TD
     probe --> devices
 ```
 
-Three edges surprise people, so they are drawn rather than explained away:
+Four edges surprise people, so they are drawn rather than explained away:
 `probe.py → devices` (the DMD probe resolves the ALP path through
 `devices/dmd/alp.py`), `adapters → closed_loop` (the loop is a module like
 any other, and its adapter is what arms it), and `routines → devices` (a
 step's pattern picker opens `devices/dmd/roi_picker.py` to choose a saved ROI
 set, and its FOV picker opens `devices/stage/fov_picker.py` the same way —
 routines still touches no device directly, `adapters/routines.py` still is).
+**`main → devices`** is the odd one out — not a deliberate exception like the
+other three, but drift: `main.py` reaches into
+`devices/voltage_cam/presets.py` and `devices/dmd/control.py` directly for
+preset/mode-recipe lookups (PLAN.md §7 (bm), the Scan-mode work), bypassing
+`adapters/` the way PLAN.md §5b calls out as the thing *not* to do. Drawn so
+the diagram stays true, not endorsed — flagged in PLAN.md §6/§5b for the
+operator to decide whether it gets routed back through an adapter.
 
 **An instrument appears in two places and they are not duplicates:**
 
@@ -130,6 +138,10 @@ devices/                one package per instrument
     roi_store.py         save/load named ROI sets; session/archive rotation (no Qt)
     sweep.py            runs calibration.py against the rig: the fresh-frame
                         grabber and the dialog that asks before emitting light
+  mirror/
+    _find_di_line.py    script: watch every DI line on port1/port2, print on
+                        change — finds which one ThorImage's mirror switch
+                        drives before the real Mirror tab (PLAN.md §6) is built
   puffer/
     control.py
   pupil_cam/
@@ -261,6 +273,8 @@ config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
 dialogs.py              module picker (startup + sidebar), device monitor,
                         settings dialog
+modes.json              named mode recipes (camera preset/exposure, DMD
+                        all-on) main.py applies on selection
 probe.py                presence checks; enumeration only, never opens a device
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
