@@ -363,6 +363,13 @@ class RoutinesModule(ModuleAdapter):
             "routine_start_trigger": r.start_trigger,
             "routine_n_steps":       len(r.steps),
             "routine_steps":      _steps_json(r),
+            # The same protocol, structured rather than a JSON string —
+            # `_steps_json` above is right for HDF5's flat-attribute model,
+            # but SplitWriter's settings JSON (acq/writer.py's _json_value)
+            # keeps this nested so it reads back as a real object, not a
+            # stringified blob, for "easily read and copied" split-mode
+            # sessions.
+            "routine_protocol":   r.to_dict(),
             # A routine that was configured and never started, and one that ran,
             # leave the same step list. This is what tells them apart.
             "routine_started":    False,

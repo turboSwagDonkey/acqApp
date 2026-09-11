@@ -45,6 +45,27 @@ def _attrs(metadata: dict[str, Any]) -> dict[str, Any]:
     return {k: attr_value(v) for k, v in metadata.items()}
 
 
+def _json_value(v: Any) -> Any:
+    """Coerce one metadata value into something `json.dump` serializes
+    natively. Unlike `attr_value` (HDF5's flat-attribute model, where a
+    dict has nowhere to go but `str()`), this preserves dict/list
+    structure — the routine protocol (`Routine.to_dict()`) is a nested
+    dict and should read back as one in the settings JSON, not a
+    stringified blob nobody can `json.load()` back into anything useful.
+    """
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    if isinstance(v, dict):
+        return {k: _json_value(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_value(x) for x in v]
+    return str(v)           # Path, enum, dataclass, anything else
+
+
 class Writer(ABC):
     @abstractmethod
     def open(self, path: Path, metadata: dict[str, Any]) -> None: ...
@@ -214,3 +235,134 @@ class HDF5Writer(Writer):
                 self._file.flush()
                 self._file.close()
                 self._file = None
+
+
+class TiffFileWriter:
+    """One image stream's frames as a multi-page TIFF, kept open for the
+    whole session. Not a `Writer` itself — `SplitWriter` owns one of these
+    per image stream, the way `HDF5Writer` owns one group per stream.
+
+    TIFF has no per-frame timestamp slot worth trusting across readers, so
+    timestamps go in a small sidecar CSV (frame index -> timestamp)
+    instead of a custom TIFF tag scheme nothing else would understand.
+    """
+
+    def __init__(self, path: Path) -> None:
+        import tifffile
+        self._tif = tifffile.TiffWriter(path, bigtiff=True)
+        ts_path = path.with_name(path.stem + "_timestamps.csv")
+        self._ts_file = open(ts_path, "w", newline="", encoding="utf-8")
+        self._ts_file.write("frame,timestamp\n")
+        self._n = 0
+
+    def write(self, timestamp: float, data: np.ndarray) -> None:
+        self._tif.write(data, contiguous=True)
+        self._ts_file.write(f"{self._n},{timestamp!r}\n")
+        self._n += 1
+
+    def close(self) -> None:
+        self._tif.close()
+        self._ts_file.close()
+
+
+class LongCsvWriter:
+    """One CSV for every scalar/event stream in a session:
+    `timestamp,stream,value,routine_step`. Long format — one row per
+    sample, not one column per stream — so streams sampled at very
+    different rates (wheel ~120 Hz, puffer sparse events, pupil fit
+    ~7-20 Hz) never need resampling or alignment to share a file.
+
+    `routine_step` is carried on every row, not just the `routine` stream's
+    own: `adapters/routines.py`'s `_put()` already encodes step boundaries
+    as +/-(index+1) on that one stream (positive = entering, negative =
+    leaving) — this decodes that and stamps whichever step is currently
+    open onto every other row too, so filtering the CSV by routine_step
+    needs no join against a separate boundaries table.
+    """
+
+    _HEADER = "timestamp,stream,value,routine_step\n"
+
+    def __init__(self, path: Path) -> None:
+        self._file = open(path, "w", newline="", encoding="utf-8")
+        self._file.write(self._HEADER)
+        self._step = ""
+
+    def write(self, stream: str, timestamp: float, data: Any) -> None:
+        if stream == "routine":
+            n = int(data)
+            idx = str(abs(n) - 1)
+            row_step = idx                     # this row names step idx either way
+            self._step = idx if n > 0 else ""   # what applies to rows AFTER this one
+        else:
+            row_step = self._step
+        self._file.write(f"{timestamp!r},{stream},{float(data)!r},{row_step}\n")
+
+    def close(self) -> None:
+        self._file.close()
+
+
+class SplitWriter(Writer):
+    """Each stream in its own file instead of one composite .h5: a TIFF
+    stack per image stream, one shared `LongCsvWriter` for every scalar
+    stream, one JSON for settings (including the full routine protocol,
+    not just its boundary markers — see `RoutinesModule.metadata()`).
+
+    `path` passed to `open()` is a DIRECTORY (the session folder), not a
+    file — `SaveConfig.resolve_dir()` is what `main.py` resolves it from.
+    """
+
+    def __init__(self) -> None:
+        self._dir: Path | None = None
+        self._stem = ""
+        self._tiffs: dict[str, TiffFileWriter] = {}
+        self._csv: LongCsvWriter | None = None
+        self._metadata: dict[str, Any] = {}
+        self._lock = threading.Lock()
+
+    def open(self, path: Path, metadata: dict[str, Any]) -> None:
+        # Mirrors HDF5Writer's mode "x": an existing session folder is
+        # hours of animal time with no undo.
+        path.mkdir(parents=True, exist_ok=False)
+        self._dir = path
+        self._stem = path.name
+        self._metadata = dict(metadata)
+        self._write_json()
+
+    def _write_json(self) -> None:
+        import json
+        p = self._dir / f"{self._stem}_settings.json"
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({k: _json_value(v) for k, v in self._metadata.items()},
+                      f, indent=2, sort_keys=True)
+
+    def update_metadata(self, metadata: dict[str, Any]) -> None:
+        with self._lock:
+            if self._dir is None:
+                return
+            self._metadata.update(metadata)
+            self._write_json()
+
+    def write(self, stream: str, timestamp: float, data: Any) -> None:
+        with self._lock:
+            if self._dir is None:
+                return
+            if isinstance(data, np.ndarray) and data.ndim >= 2:
+                w = self._tiffs.get(stream)
+                if w is None:
+                    w = TiffFileWriter(self._dir / f"{self._stem}_{stream}.tiff")
+                    self._tiffs[stream] = w
+                w.write(timestamp, data)
+            else:
+                if self._csv is None:
+                    self._csv = LongCsvWriter(self._dir / f"{self._stem}_data.csv")
+                self._csv.write(stream, timestamp, data)
+
+    def close(self) -> None:
+        with self._lock:
+            for w in self._tiffs.values():
+                w.close()
+            self._tiffs = {}
+            if self._csv is not None:
+                self._csv.close()
+                self._csv = None
+            self._dir = None

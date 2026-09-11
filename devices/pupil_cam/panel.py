@@ -25,6 +25,7 @@ _VIDEO_FILTER = "Uncompressed AVI (*.avi);;All files (*)"
 class SettingsPanel(QWidget):
     exposure_changed = pyqtSignal(float)   # hot-applied to the worker while running
     led_toggled      = pyqtSignal(bool)    # eye-tracking illumination on/off
+    led_intensity_changed = pyqtSignal(float)  # 0..1, hot-applied like exposure_changed
     # Any parameter edit. The LED is deliberately NOT one of these: it is
     # runtime state, and restoring it at launch would turn the illumination on
     # in an empty rig.
@@ -139,7 +140,33 @@ class SettingsPanel(QWidget):
         ll = QVBoxLayout(led)
         self._chk_led = QCheckBox("Eye-tracking LED")
         self._chk_led.toggled.connect(self.led_toggled)
+        self._chk_led_follow = QCheckBox("Follow Live view")
+        self._chk_led_follow.setChecked(self._s.led_follow_live)
+        self._chk_led_follow.setToolTip(
+            "Turn the LED on when Live view/Record starts and off when it "
+            "stops. The checkbox above still overrides it at any time.")
+        self._chk_led_follow.toggled.connect(self._emit)
         ll.addWidget(self._chk_led)
+        ll.addWidget(self._chk_led_follow)
+
+        intensity_row = QWidget()
+        il = QHBoxLayout(intensity_row)
+        il.setContentsMargins(0, 0, 0, 0)
+        il.addWidget(QLabel("Intensity:"))
+        self._spn_intensity = QDoubleSpinBox()
+        self._spn_intensity.setRange(0.0, 100.0)
+        self._spn_intensity.setDecimals(0)
+        self._spn_intensity.setSuffix(" %")
+        self._spn_intensity.setValue(self._s.led_intensity * 100.0)
+        self._spn_intensity.setToolTip(
+            "0-100% of the LEDD1B's MOD full-scale. Applied live while the "
+            "LED is on; otherwise just the level the next on() will use.")
+        self._spn_intensity.valueChanged.connect(
+            lambda pct: self.led_intensity_changed.emit(pct / 100.0))
+        self._spn_intensity.valueChanged.connect(self._emit)
+        il.addWidget(self._spn_intensity)
+        ll.addWidget(intensity_row)
+
         root.addWidget(led)
         root.addStretch()
 
@@ -572,4 +599,14 @@ class SettingsPanel(QWidget):
             cr_show_mask=self._chk_cr_mask.isChecked(),
             show_lut=self._chk_lut.isChecked(),
             auto_levels=self._chk_auto.isChecked(),
+            led_follow_live=self._chk_led_follow.isChecked(),
+            led_intensity=self._spn_intensity.value() / 100.0,
         )
+
+    def set_led(self, on: bool) -> None:
+        """Sync the checkbox to actual state without re-emitting led_toggled
+        — the adapter calls this when Follow Live view fires the LED itself,
+        so the checkbox still shows the truth without a feedback loop."""
+        self._chk_led.blockSignals(True)
+        self._chk_led.setChecked(on)
+        self._chk_led.blockSignals(False)

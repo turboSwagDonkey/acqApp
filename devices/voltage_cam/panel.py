@@ -36,6 +36,14 @@ class SettingsPanel(QWidget):
     lut_visible_changed = pyqtSignal(bool)  # show/hide the histogram bar
     auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
     preview_avg_changed = pyqtSignal(int)   # frames to average in the preview only
+    led_toggled       = pyqtSignal(bool)    # primary illumination on/off
+    led_follow_changed = pyqtSignal(bool)   # the Follow Live view MODE, not the LED state
+    # Any parameter edit. The LED's own ON/OFF is deliberately NOT one of
+    # these: it is runtime state, and restoring it at launch would turn the
+    # illumination on in an empty rig (devices/pupil_cam/panel.py's same
+    # rule). `led_follow_live` is a MODE, not that state, so it persists
+    # like show_lut/auto_levels — it only ever fires the LED from an
+    # explicit Live/Record start, never at launch.
 
     def __init__(self, config: AcqConfig | None = None, parent=None):
         super().__init__(parent)
@@ -154,9 +162,23 @@ class SettingsPanel(QWidget):
         disp_lay.addWidget(self._spn_preview_avg)
         lay.addRow("Display:", disp_row)
 
+        led = QGroupBox("Illumination")
+        ll = QHBoxLayout(led)
+        self._chk_led = QCheckBox("Primary LED")
+        self._chk_led.toggled.connect(self.led_toggled)
+        self._chk_led_follow = QCheckBox("Follow Live view")
+        self._chk_led_follow.setChecked(self._cfg.led_follow_live)
+        self._chk_led_follow.setToolTip(
+            "Turn the LED on when Live view/Record starts and off when it "
+            "stops. The checkbox above still overrides it at any time.")
+        self._chk_led_follow.toggled.connect(self.led_follow_changed)
+        ll.addWidget(self._chk_led)
+        ll.addWidget(self._chk_led_follow)
+
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
+        root.addRow(led)
 
         self._locked = [self._cmb_preset, self._cmb_binning, self._cmb_trigger]
 
@@ -265,7 +287,16 @@ class SettingsPanel(QWidget):
             show_lut     = self._chk_lut.isChecked(),
             auto_levels  = self._chk_auto.isChecked(),
             preview_avg  = self._spn_preview_avg.value(),
+            led_follow_live = self._chk_led_follow.isChecked(),
         )
+
+    def set_led(self, on: bool) -> None:
+        """Sync the checkbox to actual state without re-emitting led_toggled
+        — the adapter calls this when Follow Live view fires the LED itself,
+        so the checkbox still shows the truth without a feedback loop."""
+        self._chk_led.blockSignals(True)
+        self._chk_led.setChecked(on)
+        self._chk_led.blockSignals(False)
 
     def set_running(self, running: bool) -> None:
         """Lock structural settings (resolution/binning/trigger) while running."""

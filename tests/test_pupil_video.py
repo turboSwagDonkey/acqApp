@@ -211,6 +211,7 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
         m.panel = type("P", (), {
             "settings": PupilSettings(video_path=video, fps=30.0),
             "set_measured_rate": lambda self, *a, **kw: None,
+            "set_led": lambda self, *a, **kw: None,
         })()
         m.build_session(emulate)
         return m, win

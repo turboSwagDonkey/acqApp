@@ -75,8 +75,8 @@ EDITS = [
      lambda p: p.settings.wheel_dia_mm,         123.0),
     ("wheel",       "rate",      lambda p: p._spn_rate.setValue(200.0),
      lambda p: p.settings.rate,                 200.0),
-    ("puffer",      "channel",   lambda p: p._cmb_chan.setCurrentText("Dev3/port0/line2"),
-     lambda p: p.settings.channel,              "Dev3/port0/line2"),
+    ("puffer",      "channel",   lambda p: p._cmb_chan.setCurrentText("Dev3/port0/line1"),
+     lambda p: p.settings.channel,              "Dev3/port0/line1"),
     ("puffer",      "duration",  lambda p: p._spn_dur.setValue(0.321),
      lambda p: p.settings.duration_s,           0.321),
     ("stage",       "port",      lambda p: p._cmb_port.setCurrentText("COM9"),
@@ -316,8 +316,15 @@ def main() -> int:
     r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg"},
             f"stage section is port/poll_hz/frame_rotation_deg only "
             f"(got {sorted(saved.get('stage', {}))})")
-    r.check("led" not in json.dumps(saved).lower(),
-            "the eye-tracking LED was not persisted as a setting")
+    # led_follow_live (a MODE: fire the LED from Live/Record start/stop) and
+    # led_intensity (a dial, like puffer_duration_s) are deliberate
+    # exceptions — the LED's own on/off runtime state must still never
+    # persist (would turn illumination on in an empty rig).
+    scrubbed = (json.dumps(saved).lower()
+               .replace("led_follow_live", "").replace("led_intensity", ""))
+    r.check("led" not in scrubbed,
+            "no LED on/off runtime state was persisted as a setting "
+            "(led_follow_live/led_intensity, a mode and a dial, are allowed)")
 
     # ── surviving a write that dies partway ──────────────────────────────────
     # This file is the operator's whole working setup and is rewritten on every

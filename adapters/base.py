@@ -10,7 +10,7 @@ from typing import Any
 
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QVBoxLayout, QWidget
 
 from acqApp import style
 from acqApp.closed_loop import SignalSource
@@ -70,11 +70,17 @@ class DragRectViewBox(pg.ViewBox):
 
 
 def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
-    """Image + LUT bar in a row -> (image, hist, graphics_view, viewbox, row).
+    """Image + LUT bar in a row ->
+    (image, hist, chk_auto, graphics_view, viewbox, row).
 
     The LUT bar makes contrast draggable; both cameras want exactly this
     layout. `vb_cls` swaps in a ViewBox subclass (e.g. `DragRectViewBox`) for
     a caller that needs more than pan/zoom from it.
+
+    `chk_auto` sits right above the LUT bar it controls, not off in the
+    settings tab — the operator is already looking at it. The caller wires
+    it to the same auto-contrast path as the settings panel's own checkbox
+    and keeps the two in sync (see voltage_cam/pupil_cam's central_widget).
     """
     img = pg.ImageItem()
     hist = pg.HistogramLUTWidget()
@@ -85,12 +91,22 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     gv.setCentralItem(vb)
     vb.addItem(img)
 
+    chk_auto = QCheckBox("Auto")
+    chk_auto.setToolTip("Auto contrast — same control as the settings tab's.")
+
+    lut_col = QWidget()
+    lut_lay = QVBoxLayout(lut_col)
+    lut_lay.setContentsMargins(0, 0, 0, 0)
+    lut_lay.setSpacing(2)
+    lut_lay.addWidget(chk_auto, alignment=Qt.AlignmentFlag.AlignHCenter)
+    lut_lay.addWidget(hist)
+
     row = QWidget()
     lay = QHBoxLayout(row)
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.addWidget(hist)
+    lay.addWidget(lut_col)
     lay.addWidget(gv)
-    return img, hist, gv, vb, row
+    return img, hist, chk_auto, gv, vb, row
 
 
 # ── base ──────────────────────────────────────────────────────────────────────
@@ -111,6 +127,10 @@ class ModuleAdapter:
         # through a getattr default that invents a value.
         self.worker: DeviceWorker | None = None
         self.controller: OutputController | None = None
+        # The "Auto" checkbox _image_view() builds into the LUT bar, for a
+        # module with a preview — set by whoever calls central_widget()/
+        # build_views(). See _sync_auto_to_lut/_sync_auto_from_lut.
+        self._chk_auto_lut: QCheckBox | None = None
 
     # ── construction (once, at startup) ───────────────────────────────────────
     # A panel that belongs in a window of its own rather than as a page of the
@@ -146,6 +166,31 @@ class ModuleAdapter:
             except Exception:
                 pass
             self.controller = None
+
+    # ── illumination / preview (shared by every camera-shaped module) ─────────
+    def _apply_led_follow(self, on: bool) -> None:
+        """Fire the controller and sync the panel's own LED checkbox —
+        called from start()/stop() by any module offering Follow Live
+        view, so the checkbox still shows the truth without the caller
+        toggling it manually (LedController.set() covers on/off either
+        way — no need to pick between .on()/.off())."""
+        if self.controller is not None:
+            self.controller.set(on)
+        if self.panel is not None:
+            self.panel.set_led(on)
+
+    def _sync_auto_from_lut(self, on: bool) -> None:
+        """The LUT bar's own "Auto" checkbox changed -> push it to the
+        settings tab's, which is the one actually wired to persist +
+        apply (a no-op, not a loop, once the two already agree)."""
+        if self.panel is not None:
+            self.panel._chk_auto.setChecked(on)
+
+    def _sync_auto_to_lut(self, on: bool) -> None:
+        """The settings tab's "Auto contrast" changed -> push it to the
+        LUT bar's own checkbox (a no-op, not a loop, once agreed)."""
+        if self._chk_auto_lut is not None:
+            self._chk_auto_lut.setChecked(on)
 
     # ── session ───────────────────────────────────────────────────────────────
     def build_session(self, emulate: bool) -> None:

@@ -205,6 +205,8 @@ devices/                one package per instrument
   voltage_cam/
     _check_link.py      script: CoaXPress or USB3? run after any cabling change
     acquisition.py      ORCA worker + mock twin
+    led.py              primary illumination LED on Dev3/port0/line2 + mock —
+                        same shape as pupil_cam/control.py's LED controller
     panel.py
     presets.py          AcqConfig + the datasheet-derived resolution presets
   wheel/
@@ -276,6 +278,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
   test_writer_chunks.py       the direct-chunk write, and the guard on it
+  test_split_writer.py       TiffFileWriter/LongCsvWriter/SplitWriter —
+                              split-mode save (PLAN.md S6)
 main.py                 the shell: window chrome, docks, theme, session start/stop,
                         the venv bootstrap. Holds no per-instrument logic.
 config.py               settings persistence + the MODULES table

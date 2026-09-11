@@ -82,11 +82,24 @@ class PupilSettings:
     # cr_show_mask just above — a display preference nobody wants to redo
     # every launch.
     show_lut:     bool = True     # the histogram/contrast bar beside the image
-    # False (today's long-standing behaviour) pins the LUT to the sensor's
-    # full 0-255 range and leaves it exactly where the operator drags it;
+    # On by default (2026-09-10, matching voltage_cam — off used to mean
+    # "stuck on stale contrast until the operator drags the LUT", a display
+    # bug fixed alongside this default, not a mode worth defaulting to).
     # True recomputes levels from a 1st/99th percentile of each frame every
-    # LEVELS_EVERY ticks, voltage_cam's pattern.
-    auto_levels:  bool = False
+    # LEVELS_EVERY ticks; off reads back whatever the LUT bar itself shows,
+    # which the operator can still drag to override at any time.
+    auto_levels:  bool = True
+
+    # On by default (operator's call, 2026-09-10 — the original spec had
+    # this default off to avoid changing anything already in use, but the
+    # operator wants both LEDs to behave the same way out of the box). A
+    # MODE, not the LED's own on/off runtime state — see led_toggled's
+    # docstring just above in panel.py for why that stays unpersisted.
+    led_follow_live: bool = True
+    # 0..1 of the LEDD1B's MOD full-scale (devices/pupil_cam/control.py).
+    # A dial setting like puffer_duration_s, not the LED's own on/off — safe
+    # to persist for the same reason.
+    led_intensity:   float = 1.0
 
     def __post_init__(self) -> None:
         """Normalise `cr_pins`: JSON has no tuples, so a reloaded pin is a list.

@@ -22,9 +22,12 @@ from acqApp import style
 
 @dataclass
 class PufferSettings:
-    # NI DAQ digital line. NOTE: keep distinct from the pupil-cam LED line
-    # (Dev3/port0/line1) — two tasks may not own the same physical line.
-    channel:     str   = "Dev3/port0/line0"
+    # NI DAQ digital line — line7 on this rig (operator-confirmed). NOTE:
+    # keep distinct from the pupil-cam LED (line0, devices/pupil_cam/
+    # control.py) and the primary LED (line2, devices/voltage_cam/led.py) —
+    # two tasks may not own the same physical line. Picking line0 or line2
+    # here is a real hardware conflict, not just an unused default.
+    channel:     str   = "Dev3/port0/line7"
     duration_s:  float = 0.100                 # default puff duration
 
 
@@ -180,6 +183,7 @@ class SettingsPanel(QWidget):
         self._cmb_chan = QComboBox()
         self._cmb_chan.setEditable(True)
         self._cmb_chan.addItems([
+            "Dev3/port0/line7",
             "Dev3/port0/line0",
             "Dev3/port0/line1",
             "Dev3/port0/line2",

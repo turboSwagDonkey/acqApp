@@ -186,7 +186,7 @@ from acqApp.acq.sync import DEFAULT_TICK_MS, SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
-from acqApp.acq.writer import HDF5Writer
+from acqApp.acq.writer import HDF5Writer, SplitWriter
 
 pg.setConfigOptions(imageAxisOrder="row-major")
 
@@ -1307,11 +1307,14 @@ class MainWindow(QMainWindow):
             return
 
         now = datetime.now()
+        sc = self._save_panel.settings
         # unique=True: the writer refuses to truncate an existing session
         # (mode "x"), but failing to record is also a lost session — so take
-        # the next free name rather than raise.
-        path = self._save_panel.resolve(now, unique=True)
-        sc = self._save_panel.settings
+        # the next free name rather than raise. Split mode resolves a
+        # session FOLDER (SplitWriter.open() treats `path` as a directory);
+        # composite mode resolves the one .h5 file, unchanged.
+        path = (self._save_panel.resolve_dir(now, unique=True) if sc.split
+                else self._save_panel.resolve(now, unique=True))
         metadata = {
             "created":  now.strftime("%Y%m%d_%H%M%S"),
             "emulated": self._emulate,
@@ -1322,8 +1325,9 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             metadata.update(m.metadata())
 
+        writer = SplitWriter() if sc.split else HDF5Writer()
         rec = Recorder(
-            self._clock, HDF5Writer(),
+            self._clock, writer,
             RingBuffer(RING_FRAMES, maxbytes=RING_BYTES, sizeof=_sample_nbytes))
         try:
             rec.start(path, metadata)

@@ -38,6 +38,7 @@ sessions/
 Thumbs.db
 .vscode/
 .idea/
+.vs/
 
 # --- Private planning/AI-instruction docs ---
 # Tracked instead by a private repo (turboSwagDonkey/acqApp-notes) sharing

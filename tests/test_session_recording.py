@@ -50,7 +50,9 @@ FINAL_ATTRS = ["cam_timestamp_source", "cam_dropped_frames",
                # by how much.
                "pupil_frames_tracked", "pupil_fits"]
 
-TEST_CHANNEL = "Dev3/port0/line2"       # not the default, so a stuck default shows
+TEST_CHANNEL = "Dev3/port0/line3"       # not the default, and not one of the
+                                         # three lines already claimed by the
+                                         # puffer/pupil-cam LED/primary LED
 TEST_DURATION = 0.250                   # likewise
 
 
@@ -82,6 +84,13 @@ def main() -> int:
     r.check(tmp_cfg.is_file() and "smoke" in tmp_cfg.read_text(encoding="utf-8"),
             "panel edits persisted to the isolated config, not the user's")
 
+    # Both LEDs' Follow Live view default on; explicitly override pupil_cam's
+    # off BEFORE Live view starts — the control that proves the checkbox
+    # isn't vacuously ignored, using the override path an operator would.
+    r.check(mod["pupil_cam"].panel.settings.led_follow_live,
+            "pupil_cam's Follow Live view defaults on")
+    mod["pupil_cam"].panel._chk_led_follow.setChecked(False)
+
     # ── Live view ────────────────────────────────────────────────────────────
     win._btn_run.setChecked(True)
     r.check(win._sync.running, "session clock running after Live view")
@@ -89,6 +98,14 @@ def main() -> int:
     for _ in range(5):
         win._display_tick()
         pump(app, 0.05)
+    # ── LEDs: Follow Live view ────────────────────────────────────────────
+    r.check(mod["voltage_cam"].panel.get_config().led_follow_live,
+            "voltage_cam's Follow Live view defaults on")
+    r.check(mod["voltage_cam"].controller.is_on,
+            "primary LED followed Live view on")
+    r.check(not mod["pupil_cam"].controller.is_on,
+            "eye-tracking LED did NOT follow Live view (explicitly overridden off)")
+
     # Tracking on, with the eye region the mock frame needs (240x320): the
     # crop is what EyeLoop needs to fit anything at all, and without a region
     # nothing is tracked. Set before Record so the trace covers the file.
@@ -142,6 +159,8 @@ def main() -> int:
     win._btn_run.setChecked(False)
     r.check(not win._sync.running, "session clock stopped")
     r.check(all(m.worker is None for m in win._modules), "workers released")
+    r.check(not mod["voltage_cam"].controller.is_on,
+            "primary LED followed Live view off again")
 
     win.close()
     pump(app, 0.2)

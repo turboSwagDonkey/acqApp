@@ -108,6 +108,27 @@ class SavePanel(QWidget):
         self._chk_subfolder.toggled.connect(self._on_edited)
         lay.addRow("", self._chk_subfolder)
 
+        self._chk_split = QCheckBox(
+            "Split into per-device files (instead of one composite .h5)")
+        self._chk_split.setChecked(self._cfg.split)
+        self._chk_split.setToolTip(
+            "Each device in its own file — TIFF image stacks for the "
+            "cameras, one combined CSV for wheel/puffer/pupil-fit/routine "
+            "step, one JSON for settings — instead of everything bundled "
+            "into one .h5. Always gets its own session folder.")
+        self._chk_split.toggled.connect(self._on_split_toggled)
+        lay.addRow("", self._chk_split)
+
+        self._cmb_orca_format = QComboBox()
+        self._cmb_orca_format.addItem("TIFF (live preview stays on)", "tiff")
+        self._cmb_orca_format.addItem(
+            "DCIMG — native, no live preview while recording", "dcimg")
+        idx = self._cmb_orca_format.findData(self._cfg.orca_format)
+        self._cmb_orca_format.setCurrentIndex(max(0, idx))
+        self._cmb_orca_format.currentIndexChanged.connect(self._on_edited)
+        self._cmb_orca_format.setEnabled(self._cfg.split)
+        lay.addRow("ORCA format:", self._cmb_orca_format)
+
         self._lbl_preview = QLabel()
         self._lbl_preview.setWordWrap(True)
         self._lbl_preview.setStyleSheet("color:#8a8a8a;")
@@ -209,12 +230,18 @@ class SavePanel(QWidget):
         finally:
             self._btn_scan.setEnabled(True)
 
+    def _on_split_toggled(self, on: bool) -> None:
+        self._cmb_orca_format.setEnabled(on)
+        self._on_edited()
+
     def _on_edited(self, *_a) -> None:
         self._cfg.folder    = self._ed_folder.text().strip()
         self._cfg.subject   = self._ed_subject.text().strip()
         self._cfg.session   = self._ed_session.text().strip()
         self._cfg.template  = self._ed_template.text().strip() or "{subject}_{date}_{time}"
         self._cfg.subfolder = self._chk_subfolder.isChecked()
+        self._cfg.split       = self._chk_split.isChecked()
+        self._cfg.orca_format = self._cmb_orca_format.currentData()
         self._sync_drive_combo()
         self._refresh()
         self.settings_changed.emit()
@@ -231,6 +258,10 @@ class SavePanel(QWidget):
     def resolve(self, when: datetime | None = None, *,
                 unique: bool = False) -> Path:
         return self._cfg.resolve(when, unique=unique)
+
+    def resolve_dir(self, when: datetime | None = None, *,
+                    unique: bool = False) -> Path:
+        return self._cfg.resolve_dir(when, unique=unique)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """Data rate of the current acquisition config, for the capacity estimate.
@@ -261,8 +292,9 @@ class SavePanel(QWidget):
         # Preview the path a recording started now would actually get, so a
         # template that collides shows its `_001` here rather than surprising
         # the operator in the status line after the fact.
-        plain = self.resolve()
-        unique = self.resolve(unique=True)
+        resolve = self.resolve_dir if self._cfg.split else self.resolve
+        plain = resolve()
+        unique = resolve(unique=True)
         self._lbl_preview.setText(str(unique))
         self._lbl_preview.setToolTip(
             f"{plain.name} exists — the next recording is auto-numbered."

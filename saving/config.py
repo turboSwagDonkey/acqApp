@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 
 # Windows-invalid filename characters, plus control chars.
@@ -116,6 +117,12 @@ class SaveConfig:
     session:   str  = ""
     template:  str  = "{subject}_{date}_{time}"
     subfolder: bool = True     # give each recording its own directory
+    # Split mode: each device in its own native-ish file (TIFF/DCIMG image
+    # stacks, one combined CSV for scalar streams, one JSON for settings)
+    # instead of one composite .h5 — see resolve_dir(). "dcimg" is Phase 2
+    # (DCAM's own hardware recorder); inert until that ships.
+    split:       bool = False
+    orca_format: str  = "tiff"   # "tiff" or "dcimg", meaningful only if split
 
     def resolved_folder(self) -> Path:
         return Path(self.folder).expanduser() if self.folder.strip() \
@@ -139,29 +146,51 @@ class SaveConfig:
         return (base / stem / f"{stem}.h5") if self.subfolder \
             else (base / f"{stem}.h5")
 
-    def resolve(self, when: datetime | None = None, *,
-                unique: bool = False) -> Path:
-        """Full path of the .h5 file for a recording starting now.
+    def _dir_for(self, base: Path, stem: str) -> Path:
+        return base / stem
 
-        With `unique=True` the returned path does not exist: `_001`, `_002`, …
-        until the name is free. A template without `{time}` resolves every
-        recording of the day to one path; the writer would refuse that (mode
-        "x"), so this is not about truncation — auto-numbering keeps the Record
-        button working with an animal on the rig.
+    def _resolve(self, build: Callable[[Path, str], Path],
+                 when: datetime | None, *, unique: bool) -> Path:
+        """Shared auto-numbering for resolve()/resolve_dir(), which differ
+        only in `build` (a `.h5` file vs a session folder): `_001`, `_002`,
+        … until `build(base, stem)` doesn't exist. A template without
+        `{time}` resolves every recording of the day to one path; the
+        writer would refuse that (mode "x"), so this is not about
+        truncation — auto-numbering keeps the Record button working with
+        an animal on the rig.
         """
         stem = self.stem(when)
         base = self.resolved_folder()
-        path = self._path_for(base, stem)
+        path = build(base, stem)
         if not unique:
             return path
         for n in range(1, 1000):
             if not path.exists():
                 return path
-            path = self._path_for(base, f"{stem}_{n:03d}")
+            path = build(base, f"{stem}_{n:03d}")
         # 999 collisions means the template is degenerate. Fall back to a stem
         # that cannot collide rather than handing back an occupied path.
         when = when or datetime.now()
-        return self._path_for(base, f"{stem}_{when.strftime('%H%M%S_%f')}")
+        return build(base, f"{stem}_{when.strftime('%H%M%S_%f')}")
+
+    def resolve(self, when: datetime | None = None, *,
+                unique: bool = False) -> Path:
+        """Full path of the .h5 file for a recording starting now.
+
+        With `unique=True` the returned path does not exist — see
+        `_resolve()`.
+        """
+        return self._resolve(self._path_for, when, unique=unique)
+
+    def resolve_dir(self, when: datetime | None = None, *,
+                    unique: bool = False) -> Path:
+        """Session folder for `split` mode: `<folder>/<stem>/`, holding one
+        file per device instead of one composite .h5. Split mode always
+        gets its own folder regardless of `subfolder` — several files with
+        nowhere to live together is a mess. Same auto-numbering as
+        `resolve()` — see `_resolve()`.
+        """
+        return self._resolve(self._dir_for, when, unique=unique)
 
 
 def default_folder() -> Path:

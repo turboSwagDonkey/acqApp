@@ -15,6 +15,7 @@ from acqApp.acq.devices import CameraWorker
 from acqApp.adapters.base import (DISP_DS, LEVELS_EVERY, PLOT_HISTORY,
                                  ModuleAdapter, _image_view, _plot)
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
+from acqApp.devices.voltage_cam.led import LedController, MockLedController
 from acqApp.devices.voltage_cam.presets import AcqConfig, DEFAULT_PRESET, PRESET_KEYS, WRITER_MBPS
 from acqApp.devices.voltage_cam.panel import SettingsPanel as CamSettingsPanel
 
@@ -67,19 +68,24 @@ class VoltageCamModule(ModuleAdapter):
                     self.panel.binning_changed, self.panel.trigger_changed,
                     self.panel.lut_visible_changed,
                     self.panel.auto_levels_changed,
-                    self.panel.preview_avg_changed):
+                    self.panel.preview_avg_changed,
+                    self.panel.led_follow_changed):
             sig.connect(self._save)
         self.panel.lut_visible_changed.connect(self._on_lut_visible)
         self.panel.auto_levels_changed.connect(self._on_auto_levels)
         self.panel.preview_avg_changed.connect(self._on_preview_avg)
-        self._auto_levels = self.panel.get_config().auto_levels
-        self._preview_buf = deque(maxlen=max(1, self.panel.get_config().preview_avg))
+        self.panel.led_toggled.connect(self._on_led)
+        cfg = self.panel.get_config()
+        self._auto_levels = cfg.auto_levels
+        self._preview_buf = deque(maxlen=max(1, cfg.preview_avg))
         # Startup builds the central widget BEFORE the settings tab (so
         # central_widget() cannot read the panel yet); a hot-load builds this
         # panel first instead. Whichever runs second is what makes the saved
         # preference actually reach a `self._hist` that may already exist.
         if self._hist is not None:
-            self._hist.setVisible(self.panel.get_config().show_lut)
+            self._hist.setVisible(cfg.show_lut)
+        if self._chk_auto_lut is not None:
+            self._chk_auto_lut.setChecked(cfg.auto_levels)
         # The Save tab's capacity estimate is driven by the data rate, and the
         # data rate is what these three settings decide.
         for sig in (self.panel.exposure_changed, self.panel.resolution_changed,
@@ -87,6 +93,21 @@ class VoltageCamModule(ModuleAdapter):
             sig.connect(self._push_rate)
         self._push_rate()
         return self.panel
+
+    # ── illumination ──
+    def build_controller(self, emulate: bool) -> None:
+        if emulate:
+            self.controller = MockLedController()
+            return
+        try:
+            self.controller = LedController()
+        except Exception as e:
+            print(f"[main] primary LED unavailable ({e}) — using mock")
+            self.controller = MockLedController()
+
+    def _on_led(self, on: bool) -> None:
+        if self.controller is not None:
+            self.controller.set(on)
 
     def _on_lut_visible(self, on: bool) -> None:
         if self._hist is not None:
@@ -97,6 +118,7 @@ class VoltageCamModule(ModuleAdapter):
         if on:                          # recompute fresh, not a stale cache
             self._levels = None
             self._level_ctr = 0
+        self._sync_auto_to_lut(on)
 
     def _on_preview_avg(self, n: int) -> None:
         # A new maxlen needs a new deque — changing maxlen on an existing one
@@ -108,15 +130,19 @@ class VoltageCamModule(ModuleAdapter):
         return pw
 
     def central_widget(self) -> QWidget:
-        self._img, hist, gv, _vb, row = _image_view()
+        self._img, hist, chk_auto, gv, _vb, row = _image_view()
         self._hist = hist
+        self._chk_auto_lut = chk_auto
+        self._chk_auto_lut.toggled.connect(self._sync_auto_from_lut)
         # Guarded: at startup this runs BEFORE build_panel() (main.py builds
         # the central widget before the settings tab), so there may be no
         # panel yet — build_panel() then applies the saved preference itself
         # once it exists. A hot-load has the panel already, so this is the
         # one that actually matters there.
         if self.panel is not None:
-            self._hist.setVisible(self.panel.get_config().show_lut)
+            cfg = self.panel.get_config()
+            self._hist.setVisible(cfg.show_lut)
+            self._chk_auto_lut.setChecked(cfg.auto_levels)
         self.win.register_pg_view(gv)
         self.win.register_pg_view(hist)
         return row
@@ -177,10 +203,17 @@ class VoltageCamModule(ModuleAdapter):
         self._level_ctr = 0
         self._preview_buf.clear()   # don't average across a session boundary
 
+    def start(self) -> None:
+        super().start()
+        if self.panel.get_config().led_follow_live:
+            self._apply_led_follow(True)
+
     def stop(self) -> None:
         super().stop()
         self.panel.set_running(False)
         self.panel.set_measured_rate(None)          # back to the estimate
+        if self.panel.get_config().led_follow_live:
+            self._apply_led_follow(False)
 
     # ── display ──
     def update_display(self) -> None:
@@ -212,10 +245,14 @@ class VoltageCamModule(ModuleAdapter):
             self._level_ctr += 1
             self._img.setImage(disp, autoLevels=False, levels=self._levels)
         else:
-            # No `levels=` here: the LUT bar owns them, so forcing a value
-            # every frame would undo any contrast the operator drags
-            # (devices/pupil_cam's long-standing pattern for its own preview).
-            self._img.setImage(disp, autoLevels=False)
+            # Read the LUT bar's own current levels back and pass them
+            # explicitly — pyqtgraph only reliably re-renders the mapping
+            # onto NEW frame data when setLevels() is actually called;
+            # omitting `levels=` here (as if "leave it alone" were enough)
+            # left the display stuck on stale contrast until the operator
+            # dragged the LUT themselves, which is what really called it.
+            levels = self._hist.item.getLevels() if self._hist is not None else None
+            self._img.setImage(disp, autoLevels=False, levels=levels)
 
         mean = float(small.mean())
         if self._f0 is None and mean != 0:

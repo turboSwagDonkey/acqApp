@@ -81,6 +81,7 @@ class PupilCamModule(ModuleAdapter):
             config.load_dataclass(PupilSettings, self.key))
         self.panel.exposure_changed.connect(self._on_exposure)
         self.panel.led_toggled.connect(self._on_led)
+        self.panel.led_intensity_changed.connect(self._on_led_intensity)
         self.panel.settings_changed.connect(self._on_settings)
         self._settings = self.panel.settings    # seed the cache; _on_settings
         return self.panel                       # keeps it fresh from here on
@@ -100,6 +101,7 @@ class PupilCamModule(ModuleAdapter):
         if s.auto_levels and not prev_auto:   # just turned on — not a stale cache
             self._levels = None
             self._level_ctr = 0
+        self._sync_auto_to_lut(s.auto_levels)
         self._draw_limit(s)
         self._draw_pins(s)
         self._refresh_limit_bar()
@@ -114,8 +116,10 @@ class PupilCamModule(ModuleAdapter):
             self._track.configure(s)
 
     def build_views(self) -> None:
-        self._img, hist, gv, vb, row = _image_view(DragRectViewBox)
+        self._img, hist, chk_auto, gv, vb, row = _image_view(DragRectViewBox)
         self._hist = hist
+        self._chk_auto_lut = chk_auto
+        self._chk_auto_lut.toggled.connect(self._sync_auto_from_lut)
         # Pupil frames are 8-bit, so pin the histogram to 0–255: the bar then
         # shows an absolute brightness scale instead of rescaling to each frame,
         # and the handles still drag to adjust contrast. ("Auto contrast"
@@ -124,7 +128,9 @@ class PupilCamModule(ModuleAdapter):
         hist.setHistogramRange(0, 255)
         hist.setLevels(0, 255)
         if self.panel is not None:
-            hist.setVisible(self.panel.settings.show_lut)
+            s = self.panel.settings
+            hist.setVisible(s.show_lut)
+            self._chk_auto_lut.setChecked(s.auto_levels)
         self.win.register_pg_view(hist)
         self.win.register_pg_view(gv)
 
@@ -360,12 +366,19 @@ class PupilCamModule(ModuleAdapter):
     def build_controller(self, emulate: bool) -> None:
         if emulate:
             self.controller = MockLedController()
-            return
-        try:
-            self.controller = LedController()
-        except Exception as e:
-            print(f"[main] eye-tracking LED unavailable ({e}) — using mock")
-            self.controller = MockLedController()
+        else:
+            try:
+                self.controller = LedController()
+            except Exception as e:
+                print(f"[main] eye-tracking LED unavailable ({e}) — using mock")
+                self.controller = MockLedController()
+        # A freshly built controller starts at its own default (full scale) —
+        # apply what was persisted before anything can turn it on at that.
+        self.controller.set_intensity(self.panel.settings.led_intensity)
+
+    def _on_led_intensity(self, fraction: float) -> None:
+        if self.controller is not None:
+            self.controller.set_intensity(fraction)
 
     def _on_led(self, on: bool) -> None:
         if self.controller is not None:
@@ -423,6 +436,8 @@ class PupilCamModule(ModuleAdapter):
         super().start()                 # the camera first; the tracker idles
         if self._track is not None:     # until there is something to track
             self._track.start()
+        if self.panel.settings.led_follow_live:
+            self._apply_led_follow(True)
 
     def stop(self) -> None:
         if self._track is not None:     # the consumer before the producer
@@ -430,6 +445,8 @@ class PupilCamModule(ModuleAdapter):
             self._track = None
         super().stop()
         self.panel.set_measured_rate(None)          # back to the requested rate
+        if self.panel.settings.led_follow_live:
+            self._apply_led_follow(False)
         # Last session's fit/mask must not linger on screen as if it were
         # still live — the next session starts with nothing tracked yet.
         if self._fit_curve is not None:
@@ -467,9 +484,14 @@ class PupilCamModule(ModuleAdapter):
             self._level_ctr += 1
             self._img.setImage(shown, autoLevels=False, levels=self._levels)
         else:
-            # No `levels=` here: the LUT bar owns the levels, so forcing them
-            # every frame would undo any contrast the user drags.
-            self._img.setImage(shown, autoLevels=False)
+            # Read the LUT bar's own current levels back and pass them
+            # explicitly — pyqtgraph only reliably re-renders the mapping
+            # onto NEW frame data when setLevels() is actually called;
+            # omitting `levels=` here (as if "leave it alone" were enough)
+            # left the display stuck on stale contrast until the operator
+            # dragged the LUT themselves, which is what really called it.
+            levels = self._hist.item.getLevels() if self._hist is not None else None
+            self._img.setImage(shown, autoLevels=False, levels=levels)
         # Positions the image at its own full-frame pixel coordinates even when
         # cropped, so the fit/pin/region overlays (still in full-frame pixels)
         # stay aligned instead of drawing over a shifted image. Skipped when

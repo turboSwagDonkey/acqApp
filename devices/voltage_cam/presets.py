@@ -205,6 +205,11 @@ class AcqConfig:
     # 1 = off. Cosmetic only: the recorded file still gets every raw frame,
     # since this only touches the downsampled copy update_display() draws.
     preview_avg:  int  = 1
+    # On by default (new device — nothing already in use changes for the
+    # pupil-cam LED, whose own flag defaults off): fire the primary LED from
+    # the same start()/stop() Live/Record already call, rather than the
+    # operator remembering a separate switch every time.
+    led_follow_live: bool = True
 
     @property
     def preset(self) -> ResolutionPreset:
