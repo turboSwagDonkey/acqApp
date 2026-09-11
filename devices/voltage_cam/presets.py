@@ -102,11 +102,13 @@ def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
     return f"{tag} · {fps_usb:g} USB / {fps_cxp:g} CXP fps"
 
 
-# Smallest band the UI offers: below 512 rows the sensor outruns the writer so
-# far that the preset can only make an unrecordable session. The table keeps its
-# smaller entries on purpose — readout_fps() interpolates them for BINNED ROIs
-# (512 rows at bin 4 reads out like 128).
-MIN_PRESET_ROWS: int = 512
+# Smallest band the UI offers as a real preset; 8/4 rows stay table-only
+# (too thin an FOV to pick, kept for readout_fps()'s binned-ROI interpolation).
+# 2026-09-11 rig measurement: binning does NOT speed up THIS camera's own
+# readout (512 rows @ bin 2x2 still reads out at the 512-row rate) — only
+# row count does. So 256/128 are real presets, not just a smaller-frame
+# knob; a genuinely faster capture needs fewer physical rows, not binning.
+MIN_PRESET_ROWS: int = 128
 
 PRESETS: Dict[str, ResolutionPreset] = {}
 for _rows, _u, _c in _ROWS_FPS_BOTH:
