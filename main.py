@@ -1515,6 +1515,14 @@ def main() -> None:
     win = MainWindow(cam_info=_cam_info, mock=_mock, enabled=set(enabled),
                      cam_handle=_cam_handle)
     win.show()
+
+    from acqApp.devices.mirror.startup import ensure_camera_default
+    mirror_result = ensure_camera_default()
+    if not mirror_result.ok:
+        win.status(f"Mirror check skipped: {mirror_result.error}")
+    elif mirror_result.corrected:
+        win.status("Mirror was not on CAMERA/epi — corrected at launch.")
+
     sys.exit(app.exec())
 
 

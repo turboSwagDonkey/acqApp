@@ -148,9 +148,16 @@ devices/                one package per instrument
                         across a ThorImage close/flip/close cycle
     _scan_chips.py      script: which axes 0-9 on the MCM6101 answer a
                         status request at all — axis 6 alone didn't
+    _toggle_mirror_state.py  script: manual flip-and-restore of chip 7 —
+                        confirms SET_MIRROR_STATE physically moves the
+                        hardware (audible), always ends on the CAMERA/epi
+                        default
     panel.py            manual Camera/PMT toggle — the operator asserts what
                         they set in ThorImage, since acqApp can't read it
     settings.py         MirrorSettings — no Qt
+    startup.py          launch-time check: confirm chip 7's GR/CAMERA
+                        channels are the CAMERA/epi default, silently
+                        correct if not (no Qt, driver injectable)
   puffer/
     control.py
   pupil_cam/
@@ -273,6 +280,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_save_paths.py
   test_session_recording.py
   test_settings_persistence.py
+  test_mirror_startup.py      chip 7's launch-time CAMERA/epi default check
   test_stage_panel.py
   test_stage_state.py
   test_structure.py     this file vs the code
