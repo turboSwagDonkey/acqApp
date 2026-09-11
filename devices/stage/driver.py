@@ -45,6 +45,24 @@ MGMSG_MOT_GET_POSCOUNTER   = 0x0412
 MGMSG_MOT_REQ_STATUSUPDATE = 0x0480
 MGMSG_MOT_GET_STATUSUPDATE = 0x0481
 
+# Mirror/light-path (Slider_IO_type cards, e.g. chip 7's PMT/camera switch on
+# this rig -- NOT a stepper axis, so MOT_REQ_STATUSUPDATE never answers it.
+# From ThorImageLS's own ThorMCM6000 driver source (APT.h/APT.cpp).
+MGMSG_MCM_SET_MIRROR_STATE = 0x4087
+MGMSG_MCM_REQ_MIRROR_STATE = 0x4088
+MGMSG_MCM_GET_MIRROR_STATE = 0x4089
+
+MIRROR_OUT = 0
+MIRROR_IN = 1
+MIRROR_UNKNOWN = 2
+
+# Channel indices within a mirror/LightPath card (Mcm6kParams.h). This rig's
+# scan head is galvo-resonant only (operator-confirmed 2026-09-11), so GG
+# never applies here -- only GR and CAMERA are meaningful.
+MIRROR_CHAN_GG = 4
+MIRROR_CHAN_GR = 5
+MIRROR_CHAN_CAMERA = 6
+
 # status-bits (subset, from APT spec)
 STATUS_FWD_HWLIMIT = 0x00000001
 STATUS_REV_HWLIMIT = 0x00000002
@@ -247,6 +265,20 @@ class MCM6101:
         bits = struct.unpack_from("<I", msg, 16)[0]
         return AxisStatus(chan, pos, enc, bits)
 
+    def get_mirror_state(self, axis: int, channel: int, wait: float = 0.4) -> int:
+        """Read-only. Query one channel on a mirror/LightPath card (e.g. chip 7
+        = axis 6 on this rig) -- MIRROR_OUT, MIRROR_IN or MIRROR_UNKNOWN. This
+        is a different message family than get_status(): mirror cards don't
+        answer MOT_REQ_STATUSUPDATE at all."""
+        dest = BAY0 + axis
+        with self._lock:
+            self._ser.reset_input_buffer()
+            self._write(self._header(MGMSG_MCM_REQ_MIRROR_STATE, p1=channel, dest=dest))
+            msg = self._read_message(MGMSG_MCM_GET_MIRROR_STATE, wait=wait)
+        if not msg or len(msg) < 4:
+            raise MCM6101Error(f"No mirror-state reply from axis {axis} channel {channel}.")
+        return msg[3]
+
     def detect_axes(self, max_axes: int = 6, stop_after_misses: int = 2) -> list[int]:
         """Return the indices of axes that answer a status request. Stops early
         after `stop_after_misses` consecutive silent axes so it doesn't wait out
@@ -326,6 +358,11 @@ class MCM6101:
     def home(self, axis: int):
         """MOTION: home the axis to its reference/limit."""
         self._send(MGMSG_MOT_MOVE_HOME, axis, p1=axis)
+
+    def set_mirror_state(self, axis: int, channel: int, state: int):
+        """MOTION: physically flip a mirror/light-path channel (e.g. chip 7's
+        GR or CAMERA channel on this rig) to MIRROR_OUT or MIRROR_IN."""
+        self._send(MGMSG_MCM_SET_MIRROR_STATE, axis, p1=channel, p2=state)
 
     # ---- frame establishment (for absolute positioning) -------------------
     def _settle(self, axis: int, t: float = 2.0) -> int:

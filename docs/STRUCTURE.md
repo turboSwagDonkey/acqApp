@@ -140,12 +140,12 @@ devices/                one package per instrument
     sweep.py            runs calibration.py against the rig: the fresh-frame
                         grabber and the dialog that asks before emitting light
   mirror/
-    _read_mirror_axis.py  script: one-shot read of chip 7 (axis 6 — chip N =
-                        axis N-1 on this rig) on the MCM6101 stage
-                        controller — ThorImage's mirror switch, but
-                        ThorImage holds the port while open, so this can't
-                        watch it live, only a before/after read across a
-                        ThorImage close/flip/close cycle
+    _probe_mirror_state.py  script: one-shot read of chip 7's GR/CAMERA
+                        channels (axis 6 — chip N = axis N-1 on this rig)
+                        via the real mirror-state protocol (REQ/GET_MIRROR_
+                        STATE) — ThorImage holds the port while open, so
+                        this can't watch it live, only a before/after read
+                        across a ThorImage close/flip/close cycle
     _scan_chips.py      script: which axes 0-9 on the MCM6101 answer a
                         status request at all — axis 6 alone didn't
     panel.py            manual Camera/PMT toggle — the operator asserts what
