@@ -334,6 +334,13 @@ class SettingsPanel(QWidget):
         self._lbl_y = QLabel("—")
         lay.addRow(f"{self._s.x.name} (µm):", self._lbl_x)
         lay.addRow(f"{self._s.y.name} (µm):", self._lbl_y)
+        # Z has no calibration yet (see settings.py), so its readout is raw
+        # encoder counts, not microns — labelled as such rather than implying
+        # a precision that doesn't exist. Only shown once enabled.
+        self._lbl_z: QLabel | None = None
+        if self._s.z is not None:
+            self._lbl_z = QLabel("—")
+            lay.addRow(f"{self._s.z.name} (counts):", self._lbl_z)
         root.addWidget(grp)
 
         # ── Travel map ──────────────────────────────────────────────────────
@@ -367,12 +374,17 @@ class SettingsPanel(QWidget):
             grid.addWidget(b, row, col)
             return b
 
-        for r, (key, ax) in enumerate((("x", self._s.x), ("y", self._s.y)), start=1):
+        axes = [("x", self._s.x), ("y", self._s.y)]
+        if self._s.z is not None:
+            axes.append(("z", self._s.z))
+        for r, (key, ax) in enumerate(axes, start=1):
             grid.addWidget(QLabel(ax.name), r, 0)
             btn_minus = _btn("−", 28, r, 1, lambda _, k=key: self._jog(k, -1))
 
             spn_step = QDoubleSpinBox()
-            spn_step.setRange(0.1, 5000.0)
+            # Z has no calibration (settings.py) — its step is raw counts,
+            # so it gets a much wider range than a µm step ever needs.
+            spn_step.setRange(0.1, 5000.0 if key != "z" else 200000.0)
             spn_step.setDecimals(1)
             spn_step.setValue(ax.step_um)
             spn_step.setMaximumWidth(70)
@@ -380,19 +392,25 @@ class SettingsPanel(QWidget):
 
             btn_plus = _btn("+", 28, r, 3, lambda _, k=key: self._jog(k, +1))
 
-            spn_goto = QDoubleSpinBox()
-            spn_goto.setRange(*ax.soft_limits_um())
-            spn_goto.setDecimals(1)
-            spn_goto.setSuffix(" µm")
-            spn_goto.setMaximumWidth(90)
-            grid.addWidget(spn_goto, r, 4)
+            # No "Go to"/absolute move for Z: with no measured calibration an
+            # absolute target would be raw counts dressed up as if calibrated
+            # — jog is honest about what this axis actually offers today.
+            spn_goto = btn_go = None
+            if key != "z":
+                spn_goto = QDoubleSpinBox()
+                spn_goto.setRange(*ax.soft_limits_um())
+                spn_goto.setDecimals(1)
+                spn_goto.setSuffix(" µm")
+                spn_goto.setMaximumWidth(90)
+                grid.addWidget(spn_goto, r, 4)
+                btn_go = _btn("Go", 34, r, 5, lambda _, k=key: self._goto(k))
 
-            btn_go = _btn("Go", 34, r, 5, lambda _, k=key: self._goto(k))
             btn_stop = _btn("Stop", 44, r, 6, lambda _, k=key: self._stop(k))
 
             self._axis_widgets[key] = {
                 "step": spn_step, "goto": spn_goto,
-                "buttons": [btn_minus, btn_plus, btn_go, btn_stop],
+                "buttons": [b for b in (btn_minus, btn_plus, btn_go, btn_stop)
+                           if b is not None],
             }
         root.addWidget(self._motion)
 
@@ -536,17 +554,22 @@ class SettingsPanel(QWidget):
             self._lbl_frame.setStyleSheet(f"color: {_BAD}; font-size: 10px;")
         self._btn_go_zero.setEnabled(ok)
         for w in self._axis_widgets.values():
+            if w["goto"] is None:               # Z has no "Go to" — see _build
+                continue
             w["goto"].setEnabled(ok)
             w["buttons"][2].setEnabled(ok)      # the "Go" button
         self._update_home_label()
 
     def _axis(self, key: str):
+        if key == "z":
+            return self._s.z
         return self._s.x if key == "x" else self._s.y
 
     def _refresh_goto_ranges(self) -> None:
         """Re-range the go-to spin boxes after the soft limits move."""
         for key, w in self._axis_widgets.items():
-            w["goto"].setRange(*self._axis(key).soft_limits_um())
+            if w["goto"] is not None:
+                w["goto"].setRange(*self._axis(key).soft_limits_um())
 
     # ── session home ────────────────────────────────────────────────────────
     def _update_home_label(self) -> None:
@@ -652,10 +675,12 @@ class SettingsPanel(QWidget):
     # analogous reason: a stationary stage otherwise repaints every poll tick.
     _MAP_EPS_UM = 0.5
 
-    def set_readout(self, x_um: float, y_um: float) -> None:
+    def set_readout(self, x_um: float, y_um: float, z_counts: int | None = None) -> None:
         self._last_xy = (x_um, y_um)
         self._lbl_x.setText(f"{x_um:8.1f}")
         self._lbl_y.setText(f"{y_um:8.1f}")
+        if self._lbl_z is not None and z_counts is not None:
+            self._lbl_z.setText(f"{z_counts:d}")
         last = self._last_map_xy
         if (last is None or abs(x_um - last[0]) >= self._MAP_EPS_UM
                 or abs(y_um - last[1]) >= self._MAP_EPS_UM):
@@ -677,4 +702,5 @@ class SettingsPanel(QWidget):
             invert_y=s.invert_y,
             frame_rotation_deg=self._spn_rotation.value(),
             x=s.x, y=s.y,
+            z_enabled=s.z_enabled, z_axis_index=s.z_axis_index, z=s.z,
         )

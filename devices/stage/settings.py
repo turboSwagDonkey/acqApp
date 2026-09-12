@@ -150,12 +150,25 @@ class StageSettings:
     frame_rotation_deg: float = 0.0
     x: StageAxis = None      # type: ignore[assignment]
     y: StageAxis = None      # type: ignore[assignment]
+    # Z is present on this rig's controller (MCM301 slot 6, a PLS-283529) but
+    # has never been driven by this app and has no measured calibration — so
+    # unlike X/Y it defaults OFF and, when on, is raw ENCODER COUNTS, not
+    # microns (counts_per_um=1.0 is a placeholder, not physics). Local-only:
+    # deliberately NOT added to the shared stage_control config (PLAN §6 item
+    # 3's open question) — until a real Z calibration exists there is nothing
+    # meaningful to share, and this way a standalone-app schema this repo
+    # cannot verify is never at risk of seeing an axis it doesn't expect.
+    z_enabled:    bool = False
+    z_axis_index: int = 6      # MCM301 SLOT_Z; 2 for the MCM6101 (axes 0,1,2)
+    z: StageAxis | None = None
 
     def __post_init__(self):
         if self.x is None:
             self.x = StageAxis(0, "X", 61.9864)
         if self.y is None:
             self.y = StageAxis(1, "Y", 61.8735, invert=True)
+        if self.z_enabled and self.z is None:
+            self.z = StageAxis(self.z_axis_index, "Z", 1.0)
 
     @property
     def has_frame(self) -> bool:

@@ -7,10 +7,13 @@ does — so the same connection is shared with the GUI motion controls. The work
 never issues motion; it only reads.
 
 Exposes (via acq.worker.PullWorker):
-    worker.get_latest()  -> (x_um, y_um) | None
+    worker.get_latest()  -> (x_um, y_um, z_counts) | None
     worker.set_sink(fn)  -> record every sample
     worker.rate_update   -> pyqtSignal(float)   # samples / second
     worker.error         -> pyqtSignal(str)
+
+`z_counts` is None unless StageSettings.z_enabled — raw encoder counts, not
+microns, since Z has no measured calibration (see devices/stage/settings.py).
 """
 from __future__ import annotations
 import time
@@ -42,11 +45,12 @@ class StagePollWorker(PullWorker):
             if self._stop:
                 break
             try:
-                xy = self._ctrl.read_xy_um()
+                x, y = self._ctrl.read_xy_um()
+                z = self._ctrl.read_z_counts()
             except Exception as e:
                 self.error.emit(f"stage: read failed ({e})")
                 break
-            self._publish(xy)
+            self._publish((x, y, z))
             elapsed = time.perf_counter() - t0
             if n % max(1, int(self._hz)) == 0 and elapsed > 0:
                 self.rate_update.emit(n / elapsed)

@@ -20,6 +20,10 @@ class StageControllerError(Exception):
 
 
 def _pick_axis(s: StageSettings, which: str) -> StageAxis:
+    if which == "z":
+        if s.z is None:
+            raise StageControllerError("Z axis is not enabled")
+        return s.z
     return s.x if which == "x" else s.y
 
 
@@ -92,6 +96,13 @@ class StageController:
         sy = self._dev.get_status(self._s.y.index)
         return (self._s.x.to_um(sx.position), self._s.y.to_um(sy.position))
 
+    def read_z_counts(self) -> int | None:
+        """Raw encoder counts — None if Z is not enabled. Not microns: Z has
+        no measured counts_per_um, unlike X/Y (see StageSettings.z_enabled)."""
+        if self._dev is None or self._s.z is None:
+            return None
+        return self._dev.get_status(self._s.z.index).position
+
     # ── motion (physically moves the stage) ─────────────────────────────────
     def move_to_um(self, which: str, target_um: float) -> None:
         if self._dev is None:
@@ -101,8 +112,17 @@ class StageController:
         self._dev.move_to_readout(ax.index, counts)
 
     def jog_um(self, which: str, delta_um: float) -> None:
+        """MOTION. `which="z"` moves in raw counts (delta_um is read as counts
+        — see StageSettings.z_enabled) with no frame_rotation_deg: rotation
+        is a camera-alignment concept for the XY plane, meaningless for Z."""
         if self._dev is None:
             raise StageControllerError("not connected")
+        if which == "z":
+            ax = self._axis("z")
+            cur = self._dev.get_status(ax.index).position
+            target = ax.clamp_counts(int(round(cur + ax.sign * delta_um)))
+            self._dev.move_to_readout(ax.index, target)
+            return
         dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
         for ax, d in ((self._s.x, dx), (self._s.y, dy)):
             if not d:
@@ -117,7 +137,10 @@ class StageController:
 
     def stop_all(self) -> None:
         if self._dev is not None:
-            self._dev.stop_all([self._s.x.index, self._s.y.index])
+            axes = [self._s.x.index, self._s.y.index]
+            if self._s.z is not None:
+                axes.append(self._s.z.index)
+            self._dev.stop_all(axes)
 
     # ── frame / origin calibration ──────────────────────────────────────────
     # A HARD LIMIT hit re-references the controller's command origin, which
@@ -243,6 +266,8 @@ class MockStageController:
         self._s = settings
         self._pos = {"x": 0.0, "y": 0.0}
         self._target = {"x": 0.0, "y": 0.0}
+        if self._s.z is not None:
+            self._pos["z"] = self._target["z"] = 0.0
         self._open = False
 
     def connect(self) -> None:
@@ -258,20 +283,35 @@ class MockStageController:
         lo, hi = self._axis(which).soft_limits_um()
         return max(lo, min(hi, um))
 
-    def read_xy_um(self) -> tuple[float, float]:
-        # advance current toward target by up to _STEP_UM per read
-        for k in ("x", "y"):
+    def _ease(self) -> None:
+        """Advance every tracked axis toward its target by up to _STEP_UM per
+        read — whatever keys `_pos` holds, so Z eases the same way once
+        enabled without a second copy of this loop."""
+        for k in self._pos:
             d = self._target[k] - self._pos[k]
             if abs(d) <= self._STEP_UM:
                 self._pos[k] = self._target[k]
             else:
                 self._pos[k] += self._STEP_UM * (1 if d > 0 else -1)
+
+    def read_xy_um(self) -> tuple[float, float]:
+        self._ease()
         return (self._pos["x"], self._pos["y"])
+
+    def read_z_counts(self) -> int | None:
+        if self._s.z is None:
+            return None
+        self._ease()
+        return int(round(self._pos["z"]))
 
     def move_to_um(self, which: str, target_um: float) -> None:
         self._target[which] = self._clamp_um(which, target_um)
 
     def jog_um(self, which: str, delta_um: float) -> None:
+        if which == "z":
+            self._axis("z")     # raises StageControllerError if Z is disabled
+            self._target["z"] = self._clamp_um("z", self._pos["z"] + delta_um)
+            return
         dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
         for k, d in (("x", dx), ("y", dy)):
             if not d:
@@ -295,7 +335,8 @@ class MockStageController:
     def set_center_here(self) -> dict[int, dict]:
         cx, cy = self.read_xy_counts()
         updates = _center_here_updates(self._s, cx, cy)
-        self._pos = {"x": 0.0, "y": 0.0}        # "here" is now the origin
+        # "here" is now the origin — Z (no origin concept yet) is left as is.
+        self._pos["x"] = self._pos["y"] = 0.0
         self._target = dict(self._pos)
         return updates
 
@@ -316,7 +357,7 @@ class MockStageController:
         return updates
 
     def go_to_center(self) -> None:
-        self._target = {"x": 0.0, "y": 0.0}
+        self._target["x"] = self._target["y"] = 0.0
 
     def set_home_here(self) -> tuple[float, float]:
         self._s.x.home_counts, self._s.y.home_counts = self.read_xy_counts()

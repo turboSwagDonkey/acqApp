@@ -25,7 +25,8 @@ class StageModule(ModuleAdapter):
     # Only what the panel itself owns. Calibration, soft limits and the origin
     # must keep coming from the shared stage_control config: StageSettings nests
     # two StageAxis objects, which do not survive this config's flat JSON.
-    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg")
+    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg",
+                  "z_enabled", "z_axis_index")
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -43,6 +44,13 @@ class StageModule(ModuleAdapter):
             s.frame_rotation_deg = float(saved.get("frame_rotation_deg"))
         except (TypeError, ValueError):
             pass
+        if saved.get("z_enabled"):
+            try:
+                s.z_axis_index = int(saved.get("z_axis_index", s.z_axis_index))
+            except (TypeError, ValueError):
+                pass
+            s.z_enabled = True
+            s.__post_init__()          # z was None at construction; build it now
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)
@@ -91,9 +99,9 @@ class StageModule(ModuleAdapter):
         pass        # the stage link is session-scoped, not an always-on output
 
     def update_display(self) -> None:
-        xy = self.worker.get_latest() if self.worker is not None else None
-        if xy is not None:
-            self.panel.set_readout(xy[0], xy[1])
+        pos = self.worker.get_latest() if self.worker is not None else None
+        if pos is not None:
+            self.panel.set_readout(pos[0], pos[1], pos[2])
 
     # ── saved FOVs (position + snapshot; devices/stage/fov_store.py) ──
     def save_fov(self) -> None:
@@ -152,16 +160,20 @@ class StageModule(ModuleAdapter):
         if self.worker is None:
             return
 
-        def sink(xy: tuple[float, float]) -> None:
-            """Position is a 2-vector → two scalar streams sharing the timebase."""
-            rec.put("stage_x_um", xy[0])
-            rec.put("stage_y_um", xy[1])
+        def sink(pos: tuple[float, float, int | None]) -> None:
+            """Position -> scalar streams sharing the timebase. stage_z_counts
+            is only ever put when Z is enabled — raw counts, not microns."""
+            rec.put("stage_x_um", pos[0])
+            rec.put("stage_y_um", pos[1])
+            if pos[2] is not None:
+                rec.put("stage_z_counts", float(pos[2]))
 
         self.worker.set_sink(sink)
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
-        return {"stage_port": s.port, "stage_poll_hz": s.poll_hz}
+        return {"stage_port": s.port, "stage_poll_hz": s.poll_hz,
+                "stage_z_enabled": s.z_enabled}
 
     # ── what an experiment routine may drive (acq.devices.StageTarget) ──
     def stage_target(self):
