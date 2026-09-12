@@ -27,11 +27,10 @@ _STALE       = QColor(_BAD)
 class StageMap(QWidget):
     """Travel map. Feed it `set_axes()` once and `set_position()` per poll."""
 
-    # Minimal margins to maximize map square size (edge labels removed)
-    _MARGIN_LEFT   = 10     # Tight inset
-    _MARGIN_RIGHT  = 85     # Room for vertical legend on the right
-    _MARGIN_TOP    = 10     # Tight inset above box
-    _MARGIN_BOTTOM = 10     # Tight inset below box
+    _MARGIN_LEFT   = 10
+    _MARGIN_RIGHT  = 85     # room for the vertical legend
+    _MARGIN_TOP    = 10
+    _MARGIN_BOTTOM = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,13 +103,11 @@ class StageMap(QWidget):
             return (lim[0] - span * 0.04, lim[1] + span * 0.04)
         xr, yr = pad(xt), pad(yt)
 
-        # Hard travel
         travel = self._rect_for(xr, yr, xt, yt)
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
         p.setBrush(QBrush(_TRAVEL_FILL))
         p.drawRect(travel)
 
-        # Soft limits (dashed)
         xs, ys = self._x.soft_limits_um(), self._y.soft_limits_um()
         soft = self._rect_for(xr, yr, xs, ys)
         pen = QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine)
@@ -118,7 +115,6 @@ class StageMap(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(soft)
 
-        # Current position & guide lines
         if self._pos is not None:
             c = self._to_px(self._pos[0], self._pos[1], xr, yr)
             p.setPen(QPen(_CURRENT.lighter(130), 0.8, Qt.PenStyle.DotLine))
@@ -128,12 +124,10 @@ class StageMap(QWidget):
             p.setBrush(QBrush(_CURRENT))
             p.drawEllipse(c, 5, 5)
 
-        # Session home
         hx, hy = self._x.home_um(), self._y.home_um()
         if hx is not None and hy is not None:
             self._diamond(p, self._to_px(hx, hy, xr, yr), _HOME, 7)
 
-        # Origin (0,0)
         if self._x.origin_set and self._y.origin_set:
             self._cross(p, self._to_px(0.0, 0.0, xr, yr), _ORIGIN, 9)
         else:
@@ -175,7 +169,6 @@ class StageMap(QWidget):
         total_h = 4 * spacing
         ly = travel.top() + max(0.0, (travel.height() - total_h) / 2.0) + 6
 
-        # 1. Position dot
         p.setPen(QPen(_CURRENT.darker(130), 1.2))
         p.setBrush(QBrush(_CURRENT))
         p.drawEllipse(QPointF(lx + 4, ly), 4, 4)
@@ -184,7 +177,6 @@ class StageMap(QWidget):
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                    "Position")
 
-        # 2. Origin cross
         ly += spacing
         self._cross(p, QPointF(lx + 4, ly), _ORIGIN, 4)
         p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
@@ -192,7 +184,6 @@ class StageMap(QWidget):
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                    "0,0 (Origin)")
 
-        # 3. Session Home diamond
         ly += spacing
         self._diamond(p, QPointF(lx + 4, ly), _HOME, 4)
         p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
@@ -200,7 +191,6 @@ class StageMap(QWidget):
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                    "Home")
 
-        # 4. Soft limits dashed rect
         ly += spacing
         pen = QPen(_SOFT_EDGE, 1.2, Qt.PenStyle.DashLine)
         p.setPen(pen)

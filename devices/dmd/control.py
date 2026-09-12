@@ -325,7 +325,6 @@ class MockDmdController(QObject):
             except Exception as e:
                 print(f"[DMD mock] could not render {p.name}: {e}")
 
-        # Fallback checkerboard
         tile = np.kron([[0, 255] * 8, [255, 0] * 8] * 8,
                        np.ones((4, 4), dtype=np.uint8)).astype(np.uint8)
         reps = (DEFAULT_H // tile.shape[0] + 1, DEFAULT_W // tile.shape[1] + 1)

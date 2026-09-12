@@ -208,13 +208,11 @@ class SettingsPanel(QWidget):
         geom_lay.setColumnStretch(1, 1)
         geom_lay.setColumnStretch(3, 1)
 
-        # Fit Checkbox
         self._chk_fit = QCheckBox("Fit to panel (ignore scale/rotation/offset)")
         self._chk_fit.setChecked(self._s.fit)
         self._chk_fit.toggled.connect(self._on_fit_toggled)
         geom_lay.addWidget(self._chk_fit, 0, 0, 1, 4)
 
-        # Row 1: Scale % | Rotation °
         geom_lay.addWidget(QLabel("Scale:"), 1, 0)
         self._spn_scale = QDoubleSpinBox()
         self._spn_scale.setRange(1.0, 1000.0)
@@ -234,7 +232,6 @@ class SettingsPanel(QWidget):
         self._spn_rot.setToolTip("Clockwise-positive rotation.")
         geom_lay.addWidget(self._spn_rot, 1, 3)
 
-        # Row 2: Offset X | Offset Y
         geom_lay.addWidget(QLabel("Offset X:"), 2, 0)
         self._spn_dx = QDoubleSpinBox()
         self._spn_dx.setRange(-4000.0, 4000.0)
@@ -254,7 +251,6 @@ class SettingsPanel(QWidget):
         self._spn_dy.setToolTip("Offset from center in device pixels.")
         geom_lay.addWidget(self._spn_dy, 2, 3)
 
-        # Row 3: Invert Checkbox | Reset Button
         self._chk_invert = QCheckBox("Invert mirrors")
         self._chk_invert.setChecked(self._s.invert)
         geom_lay.addWidget(self._chk_invert, 3, 0, 1, 2)
@@ -264,7 +260,6 @@ class SettingsPanel(QWidget):
         btn_reset_geom.clicked.connect(self._reset_geometry)
         geom_lay.addWidget(btn_reset_geom, 3, 2, 1, 2)
 
-        # Row 4: Enable Keyboard Nudging Toggle
         self._chk_nudge = QCheckBox("Enable keyboard nudging")
         self._chk_nudge.setToolTip(
             "Nudge alignment with keys:\n"
@@ -278,7 +273,6 @@ class SettingsPanel(QWidget):
 
         lay.addRow(geom_grp)
 
-        # Trigger settings
         self._cmb_trig = QComboBox()
         self._cmb_trig.addItems(["Internal", "External", "Software"])
         self._cmb_trig.setCurrentText(self._s.trigger_mode)
@@ -299,7 +293,6 @@ class SettingsPanel(QWidget):
         self._chk_live.toggled.connect(self.live_toggled.emit)
         lay.addRow(self._chk_live)
 
-        # Display / Stop buttons
         btn_row_w = QWidget()
         btn_row = QHBoxLayout(btn_row_w)
         btn_row.setContentsMargins(0, 0, 0, 0)
@@ -312,7 +305,6 @@ class SettingsPanel(QWidget):
         btn_row.addWidget(btn_stop)
         lay.addRow(btn_row_w)
 
-        # Root layout uses QVBoxLayout with stretch at bottom to prevent empty gaps
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(grp)
@@ -464,7 +456,6 @@ class SettingsPanel(QWidget):
             sc.setEnabled(False)
             self._shortcuts.append(sc)
 
-        # Offsets
         add_sc("Left", lambda: self._nudge_spn(self._spn_dx, -1))
         add_sc("Right", lambda: self._nudge_spn(self._spn_dx, 1))
         add_sc("Up", lambda: self._nudge_spn(self._spn_dy, -1))
@@ -475,7 +466,6 @@ class SettingsPanel(QWidget):
         add_sc("Shift+Up", lambda: self._nudge_spn(self._spn_dy, -10))
         add_sc("Shift+Down", lambda: self._nudge_spn(self._spn_dy, 10))
 
-        # Scale
         add_sc("+", lambda: self._nudge_spn(self._spn_scale, 1))
         add_sc("=", lambda: self._nudge_spn(self._spn_scale, 1))
         add_sc("-", lambda: self._nudge_spn(self._spn_scale, -1))
@@ -484,7 +474,6 @@ class SettingsPanel(QWidget):
         add_sc("Shift+-", lambda: self._nudge_spn(self._spn_scale, -10))
         add_sc("Shift+_", lambda: self._nudge_spn(self._spn_scale, -10))
 
-        # Rotation
         add_sc("[", lambda: self._nudge_spn(self._spn_rot, -0.5))
         add_sc("]", lambda: self._nudge_spn(self._spn_rot, 0.5))
         add_sc("Shift+[", lambda: self._nudge_spn(self._spn_rot, -5.0))
@@ -623,7 +612,6 @@ class SettingsPanel(QWidget):
         w, h = self._res
         p = self._pattern_path
 
-        # Determine frame buffer
         mode = self.mode
         if mode == MODE_ALL_ON:
             self._lbl_pattern.setText("All mirrors ON (Full Illumination)")
@@ -704,15 +692,12 @@ class SettingsPanel(QWidget):
 
         painter = QPainter(canvas)
 
-        # Center target rect within preview area
         x = (pw - target_size.width()) // 2
         y = (ph - target_size.height()) // 2
         dmd_rect = QRect(x, y, target_size.width(), target_size.height())
 
-        # 1. Draw DMD pattern frame (only this active region is opaque/black/white)
         painter.drawPixmap(dmd_rect, scaled_dmd)
 
-        # 2. Draw thatched (dashed) magenta outline around active DMD area
         magenta_color = QColor(style.HEX.get("dmd", "#e040fb"))
         pen = QPen(magenta_color, 1.5, Qt.PenStyle.DashLine)
         pen.setDashPattern([4, 4])  # 4px dash, 4px space

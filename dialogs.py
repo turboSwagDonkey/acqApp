@@ -65,7 +65,6 @@ class ModuleSelectDialog(QDialog):
         self._update_ok()
 
     def _update_ok(self) -> None:
-        # Require at least one module to enable OK.
         ok = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok.setEnabled(any(cb.isChecked() for cb in self._boxes.values()))
 

@@ -741,7 +741,6 @@ class MainWindow(QMainWindow):
             self.register_pg_view(pw)
 
     def _build_status_bar(self) -> None:
-        # Emulate: simulated signals for testing (off = real hardware).
         self._btn_emulate = QPushButton("Emulate")
         self._btn_emulate.setCheckable(True)
         self._btn_emulate.setChecked(self._emulate)
@@ -749,16 +748,15 @@ class MainWindow(QMainWindow):
         self._btn_emulate.setToolTip("Use simulated signals instead of hardware")
         self._btn_emulate.toggled.connect(self._on_emulate_toggled)
 
-        # Live view: run all hardware + preview WITHOUT saving.
         self._btn_run = QPushButton("Live view")
         self._btn_run.setCheckable(True)
         self._btn_run.setStyleSheet(style.toggle_btn("sync"))
         self._btn_run.setToolTip("Show live signals from all devices (not saved)")
         self._btn_run.toggled.connect(self._on_run_toggled)
 
-        # Record: live view + save to HDF5 (auto-starts live view if needed).
-        # Deliberately the largest control here — it is the only one whose wrong
-        # state costs an experiment, and it used to be the same size as Emulate.
+        # Auto-starts live view if needed. Deliberately the largest control
+        # here — it is the only one whose wrong state costs an experiment,
+        # and it used to be the same size as Emulate.
         self._btn_rec = QPushButton("● Record")
         self._btn_rec.setCheckable(True)
         self._btn_rec.setStyleSheet(style.record_btn("puffer"))

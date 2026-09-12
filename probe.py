@@ -157,5 +157,16 @@ def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
 def probe_all(modules, *, ni_device: str = DEFAULT_NI_DEVICE,
               stage_port: str = DEFAULT_STAGE_PORT,
               cam_open: bool = False) -> dict[str, ProbeResult]:
-    return {m: probe(m, ni_device=ni_device, stage_port=stage_port,
-                     cam_open=cam_open) for m in modules}
+    # wheel and puffer share one NI device — probe it once, not twice, when
+    # both are requested together (each enumeration is a real driver call).
+    ni_result: ProbeResult | None = None
+    out: dict[str, ProbeResult] = {}
+    for m in modules:
+        if m in ("wheel", "puffer"):
+            if ni_result is None:
+                ni_result = _ni_device(ni_device)
+            out[m] = ni_result
+        else:
+            out[m] = probe(m, ni_device=ni_device, stage_port=stage_port,
+                           cam_open=cam_open)
+    return out
