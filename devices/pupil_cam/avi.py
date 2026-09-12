@@ -50,7 +50,7 @@ class AviReader:
 
         o = head.find(b"avih")
         us = struct.unpack_from("<I", head, o + 8)[0] if o >= 0 else 0
-        self.fps = 1e6 / us if us else 0.0
+        self.hz = 1e6 / us if us else 0.0
 
         self._ybytes = self.width * self.height
         if self.fourcc in _PLANAR_Y:
@@ -136,4 +136,4 @@ class AviReader:
     def describe(self) -> str:
         return (f"{self.path.name}: {self.width}x{self.height} "
                 f"{self.fourcc.decode(errors='replace').strip()} "
-                f"{len(self)} frames @ {self.fps:.2f} fps")
+                f"{len(self)} frames @ {self.hz:.2f} Hz")

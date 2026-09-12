@@ -7,7 +7,7 @@ pattern up, capture this much, move on. `Step` and `Routine` are what persists;
 Two things here were the operator's calls (PLAN §6) and are load-bearing:
 
 - **A step's length is frames OR seconds, its author's choice**, never
-  interconverted — at 106 fps a rounded conversion sheds frames at every step
+  interconverted — at 106 Hz a rounded conversion sheds frames at every step
   boundary, so `unit` travels with `length` into the engine.
 - **Validation is up front.** A stage target outside the soft limits is a
   refusal at the Start button, not a fault at step 7 of 12 with an animal on
@@ -69,18 +69,67 @@ class Step:
     y_um:     float | None = None
     pattern:  str = ""                # "" = leave the DMD's loaded pattern
     project:  bool = False            # emit light for the length of the step
+    led:      bool = False            # primary illumination LED on for the step
     length:   float = 100.0           # in `unit` — never converted
     unit:     str = "frames"
     settle_s: float = 0.25            # after the move/pattern, before capture
+    # Seconds between air puffs during CAPTURE, on the session clock (never
+    # frame-converted, unlike `length`/`unit`) — a puff is a timed physical
+    # event regardless of what the step's own length is measured in. 0 = none.
+    puff_interval_s: float = 0.0
 
     def describe(self) -> str:
         """One line for the panel and the log."""
         where = ", ".join(f"{a}={v:.0f}um" for a, v in
                           (("x", self.x_um), ("y", self.y_um)) if v is not None)
         what = pattern_label(self.pattern) if self.pattern else ""
-        bits = [b for b in (where, what, "light" if self.project else "") if b]
+        bits = [b for b in (where, what,
+                            "light" if self.project else "",
+                            "LED" if self.led else "",
+                            f"puff/{self.puff_interval_s:g}s"
+                            if self.puff_interval_s > 0 else "") if b]
         head = self.label or f"{self.length:g} {self.unit}"
         return f"{head}" + (f" ({'; '.join(bits)})" if bits else "")
+
+
+@dataclass
+class Group:
+    """A contiguous run of steps that repeats as a unit, nested inside `cycles`.
+
+    `start`/`end` are 0-based indices into `Routine.steps`, inclusive — a
+    range, not a list of steps of its own, so reordering/inserting steps
+    elsewhere in the table does not have to rewrite a membership list.
+    """
+    start:   int = 0
+    end:     int = 0
+    repeats: int = 2          # 1 would be a no-op; the UI starts useful
+
+
+def play_order(routine: "Routine") -> list[int]:
+    """One pass through `routine.steps`, each group's range repeated in
+    place — indices into `routine.steps`. `cycles` repeats this whole list
+    again, outside; groups nest inside one pass, not across cycles.
+
+    Invalid or overlapping groups (validate() refuses those before a run)
+    are skipped here rather than raising, so a stale/hand-edited routine
+    still degrades to something playable instead of crashing the estimate.
+    """
+    n = len(routine.steps)
+    order: list[int] = []
+    groups = sorted((g for g in routine.groups if 0 <= g.start <= g.end < n),
+                    key=lambda g: g.start)
+    i = gi = 0
+    while i < n:
+        if gi < len(groups) and groups[gi].start == i:
+            g = groups[gi]
+            for _ in range(max(1, g.repeats)):
+                order.extend(range(g.start, g.end + 1))
+            i = g.end + 1
+            gi += 1
+        else:
+            order.append(i)
+            i += 1
+    return order
 
 
 @dataclass
@@ -88,12 +137,13 @@ class Routine:
     """The whole protocol. `cycles` repeats the step list end to end."""
     name:          str = "routine"
     steps:         list[Step] = field(default_factory=list)
+    groups:        list[Group] = field(default_factory=list)
     cycles:        int = 1
     save_mode:     str = "single"
     start_trigger: str = "manual"
 
     def total_steps(self) -> int:
-        return len(self.steps) * max(1, self.cycles)
+        return len(play_order(self)) * max(1, self.cycles)
 
     # ── persistence ───────────────────────────────────────────────────────────
     # Explicit rather than asdict(): this nests, and config.py's JSON is flat
@@ -102,7 +152,8 @@ class Routine:
         return {"name": self.name, "cycles": self.cycles,
                 "save_mode": self.save_mode,
                 "start_trigger": self.start_trigger,
-                "steps": [vars(s).copy() for s in self.steps]}
+                "steps": [vars(s).copy() for s in self.steps],
+                "groups": [vars(g).copy() for g in self.groups]}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Routine":
@@ -122,6 +173,15 @@ class Routine:
                 steps.append(Step(**kw))
             except TypeError:
                 continue
+        groups = []
+        for raw in d.get("groups") or ():
+            if not isinstance(raw, dict):
+                continue
+            kw = {k: v for k, v in raw.items() if k in Group.__dataclass_fields__}
+            try:
+                groups.append(Group(**kw))
+            except TypeError:
+                continue
         try:
             cycles = max(1, int(d.get("cycles", 1)))
         except (TypeError, ValueError):
@@ -129,7 +189,7 @@ class Routine:
         mode = d.get("save_mode")
         trigger = d.get("start_trigger")
         return cls(name=str(d.get("name") or "routine"), steps=steps,
-                   cycles=cycles,
+                   groups=groups, cycles=cycles,
                    save_mode=mode if mode in SAVE_MODES else "single",
                    start_trigger=trigger if trigger in START_TRIGGERS
                                  else "manual")
@@ -146,6 +206,8 @@ class RigLimits:
     y_um:            tuple[float, float] | None = None
     has_stage:       bool = False
     has_dmd:         bool = False
+    has_led:         bool = False
+    has_puffer:      bool = False
     has_frames:      bool = False   # a camera is loaded, so frames() ticks
     cam_trigger_mode: str = ""      # the loaded camera's OWN trigger setting
 
@@ -216,6 +278,30 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
             out.append(f"{at}: uses the DMD, which is not loaded")
         if s.pattern and not Path(s.pattern).is_file():
             out.append(f"{at}: pattern {Path(s.pattern).name!r} is not a file")
+        if s.led and not rig.has_led:
+            out.append(f"{at}: turns the LED on, which is not loaded")
+        if s.puff_interval_s < 0:
+            out.append(f"{at}: puff interval = {s.puff_interval_s:g} s; "
+                       f"must not be negative")
+        elif s.puff_interval_s > 0 and not rig.has_puffer:
+            out.append(f"{at}: schedules air puffs, but the puffer is not loaded")
+
+    n = len(routine.steps)
+    spans: list[tuple[int, int]] = []
+    for i, g in enumerate(routine.groups, start=1):
+        at = f"repeat group {i}"
+        if not (0 <= g.start <= g.end < n):
+            out.append(f"{at}: steps {g.start + 1}-{g.end + 1} is outside "
+                       f"the routine's {n} step(s)")
+            continue
+        if g.repeats < 1:
+            out.append(f"{at}: repeats = {g.repeats}; must be at least 1")
+        for lo, hi in spans:
+            if g.start <= hi and lo <= g.end:
+                out.append(f"{at}: steps {g.start + 1}-{g.end + 1} overlaps "
+                           f"another repeat group")
+                break
+        spans.append((g.start, g.end))
 
     return out
 

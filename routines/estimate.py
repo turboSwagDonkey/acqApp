@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from acqApp.routines.settings import Routine, Step
+from acqApp.routines.settings import Routine, Step, play_order
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class Estimate:
     frames:  float = 0.0        # frames left unconverted (no frame rate)
     moves:   int = 0            # steps that move the stage — travel is untimed
     lit:     int = 0            # steps that emit light
-    fps:     float | None = None
+    hz:      float | None = None
 
     @property
     def complete(self) -> bool:
@@ -40,61 +40,69 @@ class Estimate:
         return out
 
 
-def step_seconds(step: Step, fps: float | None) -> tuple[float, float]:
+def step_seconds(step: Step, hz: float | None) -> tuple[float, float]:
     """One step as (seconds, unconverted frames). Settle is always seconds."""
     secs = max(0.0, step.settle_s)
     if step.unit == "seconds":
         return secs + max(0.0, step.length), 0.0
-    if fps and fps > 0:
-        return secs + max(0.0, step.length) / fps, 0.0
+    if hz and hz > 0:
+        return secs + max(0.0, step.length) / hz, 0.0
     return secs, max(0.0, step.length)
 
 
-def estimate(routine: Routine, fps: float | None = None) -> Estimate:
-    """The whole routine, cycles included."""
+def estimate(routine: Routine, hz: float | None = None) -> Estimate:
+    """The whole routine, cycles included — a repeat group's range is counted
+    once per repeat, via `play_order`."""
+    order = play_order(routine)
     cycles = max(1, routine.cycles)
     secs = frames = 0.0
-    for s in routine.steps:
-        a, b = step_seconds(s, fps)
+    for i in order:
+        a, b = step_seconds(routine.steps[i], hz)
         secs += a
         frames += b
     return Estimate(
         seconds=secs * cycles,
         frames=frames * cycles,
-        moves=sum(1 for s in routine.steps
-                  if s.x_um is not None or s.y_um is not None),
-        lit=sum(1 for s in routine.steps if s.project),
-        fps=fps if fps and fps > 0 else None,
+        moves=sum(1 for i in order
+                  if routine.steps[i].x_um is not None
+                  or routine.steps[i].y_um is not None),
+        lit=sum(1 for i in order if routine.steps[i].project),
+        hz=hz if hz and hz > 0 else None,
     )
 
 
-def remaining(routine: Routine, fps: float | None, index: int, cycle: int,
+def remaining(routine: Routine, hz: float | None, order_pos: int, cycle: int,
               progress: float = 0.0) -> Estimate:
-    """What is left from part-way through step `index` of `cycle`.
+    """What is left from part-way through `play_order(routine)[order_pos]` of
+    `cycle`.
 
+    `order_pos` indexes the EXPANDED play order (a repeated group's range
+    appears once per repeat), not `routine.steps` directly — so time still
+    left in a repeat is counted, not just steps still left on the page.
     `progress` is 0..1 through the current step's capture (`RoutineEngine`),
     so the readout does not jump a whole step at a time.
     """
-    steps = routine.steps
-    if not steps:
-        return Estimate(fps=fps)
+    order = play_order(routine)
+    if not order:
+        return Estimate(hz=hz)
     cycles = max(1, routine.cycles)
-    index = max(0, min(index, len(steps) - 1))
+    order_pos = max(0, min(order_pos, len(order) - 1))
     cycle = max(0, min(cycle, cycles - 1))
 
     secs = frames = 0.0
     # The rest of this cycle, the current step counted by what is left of it.
-    for i in range(index, len(steps)):
-        a, b = step_seconds(steps[i], fps)
-        share = 1.0 - max(0.0, min(1.0, progress)) if i == index else 1.0
+    for pos in range(order_pos, len(order)):
+        a, b = step_seconds(routine.steps[order[pos]], hz)
+        share = 1.0 - max(0.0, min(1.0, progress)) if pos == order_pos else 1.0
         secs += a * share
         frames += b * share
     # Then every whole cycle after this one.
-    whole = estimate(Routine(steps=steps, cycles=1), fps)
+    whole = estimate(Routine(steps=routine.steps, groups=routine.groups,
+                             cycles=1), hz)
     left = cycles - cycle - 1
     return Estimate(seconds=secs + whole.seconds * left,
                     frames=frames + whole.frames * left,
-                    moves=whole.moves, lit=whole.lit, fps=whole.fps)
+                    moves=whole.moves, lit=whole.lit, hz=whole.hz)
 
 
 def clock(seconds: float) -> str:

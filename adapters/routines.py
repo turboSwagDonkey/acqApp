@@ -39,7 +39,7 @@ from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import RigLimits, Routine, validate
 
 # How often the engine is asked to advance. A step boundary lands within one
-# tick of its true instant; at 106 fps that is under three frames, and the
+# tick of its true instant; at 106 Hz that is under three frames, and the
 # boundary itself is recorded from the clock, not from the tick.
 TICK_MS = 25
 
@@ -50,7 +50,7 @@ FRAME_STREAM = "voltage_cam"
 # Display ticks between two asks for the camera's frame rate. The estimate has
 # to follow an exposure changed in another tab, but not at 30 Hz — the number
 # is rebuilt from that panel's widgets each time.
-FPS_EVERY = 30
+RATE_EVERY = 30
 
 
 class RoutinesModule(ModuleAdapter):
@@ -75,7 +75,7 @@ class RoutinesModule(ModuleAdapter):
         self._filed = 0                 # step boundaries handed to the file
         self._n_steps = 0               # steps in the routine that is running
         self._routine: Routine | None = None    # the one that is running
-        self._fps_tick = 0
+        self._rate_tick = 0
         # True only when Start opened the recording. What makes "stop what you
         # started" different from "stop the operator's recording".
         self._own_rec = False
@@ -117,12 +117,16 @@ class RoutinesModule(ModuleAdapter):
         # measured in frames.
         return RigLimits(x_um=x, y_um=y, has_stage=stage is not None,
                          has_dmd=self.win.pattern_target() is not None,
+                         has_led=self.win.led_target() is not None,
+                         has_puffer=self.win.puffer_target() is not None,
                          has_frames=FRAME_STREAM in self.win.module_keys(),
                          cam_trigger_mode=self.win.cam_trigger_mode() or "")
 
     def _hooks(self) -> RoutineHooks:
         stage = self.win.stage_target()
         dmd = self.win.pattern_target()
+        led = self.win.led_target()
+        puffer = self.win.puffer_target()
         clock = self.win.sync.clock
         rec = self._rec
 
@@ -141,6 +145,8 @@ class RoutinesModule(ModuleAdapter):
             stop_motion=stage.stop_motion if stage is not None else (lambda: None),
             set_pattern=dmd.set_pattern if dmd is not None else (lambda _p: None),
             light=dmd.set_light if dmd is not None else (lambda _on: None),
+            led=led.set_led if led is not None else (lambda _on: None),
+            puff=puffer.fire if puffer is not None else (lambda: None),
             begin_step=self._on_step_begin,
             end_step=self._on_step_end,
             log=self.win.status,
@@ -302,9 +308,9 @@ class RoutinesModule(ModuleAdapter):
             return
         # The estimate follows a frame rate the operator may be changing in
         # another tab. Throttled: it costs that panel a config rebuild.
-        self._fps_tick += 1
-        if self._fps_tick >= FPS_EVERY:
-            self._fps_tick = 0
+        self._rate_tick += 1
+        if self._rate_tick >= RATE_EVERY:
+            self._rate_tick = 0
             self.panel.set_frame_rate(self.win.frame_rate_hz())
 
         eng = self._engine
@@ -346,9 +352,9 @@ class RoutinesModule(ModuleAdapter):
         done = f"{clock(eng.elapsed())} elapsed"
         if self._routine is None:
             return done
-        i, cycle, _a = eng.position
+        _i, cycle, _a = eng.position
         est = remaining(self._routine, self.panel.frame_rate,
-                        i, cycle, eng.progress())
+                        eng.order_position, cycle, eng.progress())
         return f"{done} · {est.text()} left"
 
     # ── metadata ──

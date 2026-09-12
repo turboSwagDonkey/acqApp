@@ -34,7 +34,7 @@ TESTS = [
     ("console",   "test_console_safety.py"),
     ("undefined", "test_undefined_names.py"),
     ("structure", "test_structure.py"),
-    ("readout",   "test_readout_fps.py"),
+    ("readout",   "test_readout_hz.py"),
     ("encoder",   "test_encoder_derive.py"),
     ("enc-timing", "test_encoder_timing.py"),
     ("contracts", "test_device_contracts.py"),

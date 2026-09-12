@@ -8,7 +8,7 @@ all of it against a fake rig on a fake clock: no window, no device, ~1 s.
 What it defends, in the order the decisions were made (PLAN §6):
 
   * **A step's length is frames OR seconds and the two are never converted.**
-    At 106 fps a rounded conversion sheds frames at every step boundary. The
+    At 106 Hz a rounded conversion sheds frames at every step boundary. The
     control is a camera running off its nominal rate: a converting engine ends
     the seconds step at a visibly different frame count.
   * **Validation is up front.** A stage target outside the soft limits is a
@@ -56,9 +56,9 @@ class FakeRig:
     (light off before a move, light on only during capture) are made at all.
     """
 
-    def __init__(self, fps: float = 106.0, travel_s: float = 0.0) -> None:
+    def __init__(self, hz: float = 106.0, travel_s: float = 0.0) -> None:
         self.t = 0.0
-        self.fps = fps
+        self.hz = hz
         self.travel_s = travel_s
         self.log: list[tuple] = []
         self.lit = False
@@ -74,7 +74,7 @@ class FakeRig:
         return self.t
 
     def frames(self) -> int | None:
-        return int(self.t * self.fps) if self.frames_running else None
+        return int(self.t * self.hz) if self.frames_running else None
 
     def advance(self, dt: float = DT) -> None:
         self.t += dt
@@ -220,7 +220,7 @@ def check_units(r: Report) -> None:
     at a frame count this one demonstrably does not produce.
     """
     nominal, actual = 106.0, 97.0
-    rig = FakeRig(fps=actual)
+    rig = FakeRig(hz=actual)
     routine = Routine(steps=[Step(label="A", length=100, unit="frames",
                                   settle_s=0.0),
                              Step(label="B", length=1.5, unit="seconds",
@@ -235,7 +235,7 @@ def check_units(r: Report) -> None:
     r.check(a.frames is not None and 100 <= a.frames <= 102,
             f"the frames step ended on its FRAME count ({a.frames})")
     r.check(abs((a.t_end - a.t0) - 100 / actual) < 3 * DT,
-            f"…and took the time that implies at {actual:g} fps "
+            f"…and took the time that implies at {actual:g} Hz "
             f"({a.t_end - a.t0:.3f} s)")
 
     held = b.t_end - b.t0
@@ -464,6 +464,67 @@ def check_cycles_and_attrs(r: Report) -> None:
             "a clean run marks nothing interrupted")
 
 
+def check_groups(r: Report) -> None:
+    """A repeat group re-runs a contiguous range of steps, nested inside
+    `cycles` — steps [A, B, C] with B..C x3 plays A, B, C, B, C, B, C."""
+    from acqApp.routines.settings import Group, play_order
+
+    routine = Routine(steps=[Step(label="A"), Step(label="B"), Step(label="C")],
+                      groups=[Group(start=1, end=2, repeats=3)])
+    order = play_order(routine)
+    r.check(order == [0, 1, 2, 1, 2, 1, 2],
+            f"A once, B-C three times, in place ({order})")
+    r.check(routine.total_steps() == 7,
+            f"total_steps() counts the expanded order ({routine.total_steps()})")
+
+    # ── validate() ──
+    r.check(validate(routine, FULL_RIG) == [],
+            "control: a valid group on a full rig is accepted")
+    bad_range = Routine(steps=[Step()], groups=[Group(start=0, end=5, repeats=2)])
+    r.check(any("outside" in p for p in validate(bad_range, FULL_RIG)),
+            "a group referencing steps past the end of the routine is refused")
+    overlap = Routine(steps=[Step(), Step(), Step()],
+                      groups=[Group(start=0, end=1, repeats=2),
+                              Group(start=1, end=2, repeats=2)])
+    r.check(any("overlaps" in p for p in validate(overlap, FULL_RIG)),
+            "two groups sharing a step are refused")
+    zero_repeat = Routine(steps=[Step(), Step()],
+                          groups=[Group(start=0, end=1, repeats=0)])
+    r.check(any("repeats" in p for p in validate(zero_repeat, FULL_RIG)),
+            "a group that repeats zero times is refused, not silently a no-op")
+
+    # ── the engine actually plays that order ──
+    rig = FakeRig()
+    routine2 = Routine(steps=[Step(label="A", length=0.05, unit="seconds",
+                                   settle_s=0.0),
+                              Step(label="B", length=0.05, unit="seconds",
+                                   settle_s=0.0),
+                              Step(label="C", length=0.05, unit="seconds",
+                                   settle_s=0.0)],
+                       groups=[Group(start=1, end=2, repeats=3)])
+    eng = RoutineEngine(routine2, rig.hooks())
+    eng.start()
+    drive(eng, rig)
+    played = [x.index for x in eng.runs]
+    r.check(played == [0, 1, 2, 1, 2, 1, 2],
+            f"the engine executes the group's expanded order ({played})")
+    r.check(eng.total_runs() == 7,
+            f"total_runs() matches what actually ran ({eng.total_runs()})")
+
+    # ── progress accounts for the repeats, not just the table row ──
+    rig2 = FakeRig()
+    eng2 = RoutineEngine(routine2, rig2.hooks())
+    eng2.start()
+    # Drive to partway through the SECOND execution of step B (order pos 3).
+    drive(eng2, rig2, until=lambda e: e.order_position == 3
+                                      and e.phase == Phase.CAPTURE)
+    r.check(eng2.order_position == 3,
+            f"order_position tracks the expanded order, not the table row "
+            f"(step index {eng2.position[0]}, order pos {eng2.order_position})")
+    r.check(0.0 < eng2.overall_progress() < 1.0,
+            "overall_progress reflects the repeat, not just 3 table rows")
+
+
 def check_transitions(r: Report) -> None:
     """The control surface refuses what it cannot do, rather than misbehaving."""
     rig = FakeRig()
@@ -499,10 +560,10 @@ def check_transitions(r: Report) -> None:
 def check_ttl_start_trigger(r: Report) -> None:
     """`start(trigger="ttl")` arms instead of moving right away, and only lets
     step 1 begin once the camera reports a frame it did not have at arm time
-    — the fake's `fps` stands in for a real TTL pulse making an
+    — the fake's `hz` stands in for a real TTL pulse making an
     externally-triggered camera emit its first frame.
     """
-    rig = FakeRig(fps=0.0)          # frozen: the camera has not been pulsed
+    rig = FakeRig(hz=0.0)          # frozen: the camera has not been pulsed
     routine = Routine(steps=[Step(label="A", length=0.2, unit="seconds",
                                   settle_s=0.0)])
     eng = RoutineEngine(routine, rig.hooks())
@@ -520,7 +581,7 @@ def check_ttl_start_trigger(r: Report) -> None:
             "stays armed rather than timing out")
 
     # The pulse: the camera, in External edge mode, produces its first frame.
-    rig.fps = 100.0
+    rig.hz = 100.0
     drive(eng, rig, until=lambda e: e.phase != Phase.ARMED)
     r.check(eng.phase == Phase.SETTLE,
             f"the first frame past the baseline starts step 1 ({eng.phase})")
@@ -528,7 +589,7 @@ def check_ttl_start_trigger(r: Report) -> None:
             "…the same way a manual start begins a step")
 
     # Abort while armed ends cleanly — nothing was ever opened to unwind.
-    rig2 = FakeRig(fps=0.0)
+    rig2 = FakeRig(hz=0.0)
     eng2 = RoutineEngine(routine, rig2.hooks())
     eng2.start(trigger="ttl")
     eng2.abort()
@@ -537,7 +598,7 @@ def check_ttl_start_trigger(r: Report) -> None:
 
     # The frame count going away while armed is a fault, the same shape as
     # `check_frames_vanish` mid-capture.
-    rig3 = FakeRig(fps=0.0)
+    rig3 = FakeRig(hz=0.0)
     eng3 = RoutineEngine(routine, rig3.hooks())
     eng3.start(trigger="ttl")
     rig3.frames_running = False
@@ -780,6 +841,45 @@ def check_step_table(r: Report, app) -> None:
     app.processEvents()
 
 
+def check_group_panel(r: Report, app) -> None:
+    """Adding/removing a repeat group through the panel's own controls."""
+    from acqApp.routines.panel import SettingsPanel
+
+    routine = Routine(steps=[Step(label="A"), Step(label="B"), Step(label="C")])
+    panel = SettingsPanel(routine)
+
+    panel._spn_g_start.setValue(2)     # 1-based in the UI, "steps 2 to 3"
+    panel._spn_g_end.setValue(3)
+    panel._spn_g_repeats.setValue(4)
+    panel._add_group()
+    r.check(len(routine.groups) == 1 and routine.groups[0].start == 1
+            and routine.groups[0].end == 2 and routine.groups[0].repeats == 4,
+            f"Add turns the 1-based Steps/to/× fields into a 0-based Group "
+            f"({routine.groups})")
+    r.check(panel._lst_groups.count() == 1
+            and "2-3" in panel._lst_groups.item(0).text()
+            and "4" in panel._lst_groups.item(0).text(),
+            f"…and the list shows it ({panel._lst_groups.item(0).text()!r})")
+
+    # Round-trips through to_dict/from_dict, the same as steps.
+    reloaded = Routine.from_dict(routine.to_dict())
+    r.check(len(reloaded.groups) == 1 and reloaded.groups[0].start == 1
+            and reloaded.groups[0].end == 2 and reloaded.groups[0].repeats == 4,
+            "a saved template keeps its repeat group")
+
+    panel._lst_groups.setCurrentRow(0)
+    panel._del_group()
+    r.check(routine.groups == [] and panel._lst_groups.count() == 0,
+            "Remove selected clears it from both the routine and the list")
+
+    # set_routine (template load) replaces groups, not just steps.
+    panel._add_group()
+    other = Routine(steps=[Step(), Step()])
+    panel.set_routine(other)
+    r.check(panel.settings.groups == [],
+            "loading a template with no groups clears the panel's own")
+
+
 def check_move_row_repaint(r: Report) -> None:
     """A reorder repaints only the rows between src and dest, not the whole
     table (2026-08-27) — `move_row` used to call `reload()`, which repainted
@@ -843,7 +943,7 @@ def check_estimate(r: Report) -> None:
 
     known = estimate(rt, 100.0)
     r.check(known.complete and abs(known.seconds - 3.5) < 1e-9,
-            f"at 100 fps the 100-frame step is 1 s ({known.seconds} s)")
+            f"at 100 Hz the 100-frame step is 1 s ({known.seconds} s)")
     r.check(known.text().startswith("about") and "frames" not in known.text(),
             f"…and the whole routine is one duration ({known.text()!r})")
     # CONTROL: the rate is the operator's camera, not a constant in here.
@@ -881,7 +981,7 @@ def check_estimate(r: Report) -> None:
 
 def check_progress(r: Report) -> None:
     """The whole-routine progress the tracker draws: monotone, and 1.0 at DONE."""
-    rig = FakeRig(fps=100.0)
+    rig = FakeRig(hz=100.0)
     rt = Routine(steps=[Step(length=0.2, unit="seconds", settle_s=0.05),
                         Step(length=0.2, unit="seconds", settle_s=0.05)],
                  cycles=2)
@@ -906,7 +1006,7 @@ def check_progress(r: Report) -> None:
 
     # CONTROL: a repeated attempt is not backwards progress. Resume repeats the
     # step, and a bar that went back would read as a fault.
-    rig2 = FakeRig(fps=100.0)
+    rig2 = FakeRig(hz=100.0)
     eng2 = RoutineEngine(Routine(steps=[Step(length=0.2, unit="seconds"),
                                         Step(length=0.2, unit="seconds")]),
                          rig2.hooks())
@@ -1067,7 +1167,7 @@ def check_panel_tracker(r: Report, app) -> None:
             f"({panel._lbl_summary.text()!r})")
     panel.set_frame_rate(100.0)
     text = panel._lbl_summary.text()
-    r.check("about" in text and "100 fps" in text and "frames" not in text,
+    r.check("about" in text and "100 Hz" in text and "frames" not in text,
             f"…and a loaded camera turns the whole protocol into a duration, "
             f"naming the rate it used ({text!r})")
     r.check(panel.frame_rate == 100.0,
@@ -1347,6 +1447,7 @@ def main() -> int:
         check_setup_failure(r)
         check_frames_vanish(r)
         check_cycles_and_attrs(r)
+        check_groups(r)
         check_transitions(r)
         check_ttl_start_trigger(r)
         check_estimate(r)
@@ -1361,6 +1462,7 @@ def main() -> int:
             check_templates(r)
             check_panel_repaint(r, app)
             check_step_table(r, app)
+            check_group_panel(r, app)
             check_move_row_repaint(r)
             check_panel_tracker(r, app)
             check_app(r, app, state)

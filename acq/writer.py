@@ -100,7 +100,7 @@ class HDF5Writer(Writer):
 
         `dset[i] = frame`              1304 MB/s
         direct chunk write             2696 MB/s
-        + Recorder/ring, 106 fps       2225 MB/s   100 % kept (was 59)
+        + Recorder/ring, 106 Hz        2225 MB/s   100 % kept (was 59)
         + Recorder/ring, saturated     2464 MB/s
 
     Chunk cache size, growth block, preallocation, 1/4 MB alignment, the Windows

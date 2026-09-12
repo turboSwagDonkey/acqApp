@@ -34,7 +34,7 @@ class SettingsPanel(QWidget):
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or PupilSettings()
-        # (fps, exposure_limited) reported by the running camera, or None when
+        # (hz, exposure_limited) reported by the running camera, or None when
         # we only have the requested rate (before Start) — voltage_cam's
         # pattern (devices/voltage_cam/panel.py).
         self._measured: tuple[float, bool] | None = None
@@ -68,20 +68,20 @@ class SettingsPanel(QWidget):
         # always caps Exposure's maximum to 1/rate — independent of Link, which
         # only decides whether moving one *also* moves the other. Matches
         # devices/voltage_cam/panel.py's Rate/Exposure pair.
-        self._spn_fps = QDoubleSpinBox()
-        self._spn_fps.setRange(1.0, 200.0)
-        self._spn_fps.setSuffix(" fps")
-        self._spn_fps.setValue(self._s.fps)
-        self._chk_fps_link = QCheckBox("Link")
-        self._chk_fps_link.setToolTip(
+        self._spn_hz = QDoubleSpinBox()
+        self._spn_hz.setRange(1.0, 200.0)
+        self._spn_hz.setSuffix(" Hz")
+        self._spn_hz.setValue(self._s.rate_hz)
+        self._chk_hz_link = QCheckBox("Link")
+        self._chk_hz_link.setToolTip(
             "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
-        self._chk_fps_link.toggled.connect(self._on_fps_link_toggled)
-        fps_row = QWidget()
-        fps_lay = QHBoxLayout(fps_row)
-        fps_lay.setContentsMargins(0, 0, 0, 0)
-        fps_lay.addWidget(self._spn_fps)
-        fps_lay.addWidget(self._chk_fps_link)
-        cl.addRow("Rate:", fps_row)
+        self._chk_hz_link.toggled.connect(self._on_hz_link_toggled)
+        hz_row = QWidget()
+        hz_lay = QHBoxLayout(hz_row)
+        hz_lay.setContentsMargins(0, 0, 0, 0)
+        hz_lay.addWidget(self._spn_hz)
+        hz_lay.addWidget(self._chk_hz_link)
+        cl.addRow("Rate:", hz_row)
 
         # What the rate actually is: the requested value until Start, then the
         # camera's own measured one (set_measured_rate). Built before the
@@ -89,10 +89,10 @@ class SettingsPanel(QWidget):
         self._lbl_rate = QLabel()
         cl.addRow("Frame rate:", self._lbl_rate)
 
-        self._fps_syncing = False
-        self._spn_fps.valueChanged.connect(self._on_fps_changed)
-        self._spn_exp.valueChanged.connect(self._on_exposure_changed_for_fps)
-        self._on_fps_changed(self._spn_fps.value())    # apply the initial cap
+        self._hz_syncing = False
+        self._spn_hz.valueChanged.connect(self._on_hz_changed)
+        self._spn_exp.valueChanged.connect(self._on_exposure_changed_for_hz)
+        self._on_hz_changed(self._spn_hz.value())    # apply the initial cap
 
         # ── Frame source ────────────────────────────────────────────────────
         self._lbl_vid = QLabel()
@@ -170,62 +170,62 @@ class SettingsPanel(QWidget):
         root.addWidget(led)
         root.addStretch()
 
-        for w in (self._spn_exp, self._spn_fps):
+        for w in (self._spn_exp, self._spn_hz):
             w.valueChanged.connect(self._emit)
 
     # ── rate / exposure link (devices/voltage_cam/panel.py's pattern) ─────────
-    def _on_fps_changed(self, fps: float) -> None:
+    def _on_hz_changed(self, hz: float) -> None:
         """Rate always caps Exposure's ceiling; Link also drives it to the cap."""
-        if self._fps_syncing:
+        if self._hz_syncing:
             return
-        self._fps_syncing = True
+        self._hz_syncing = True
         try:
-            max_us = 1e6 / fps if fps > 0 else self._spn_exp.maximum()
+            max_us = 1e6 / hz if hz > 0 else self._spn_exp.maximum()
             self._spn_exp.setMaximum(max_us)   # Qt clamps the value too
-            if self._chk_fps_link.isChecked():
+            if self._chk_hz_link.isChecked():
                 self._spn_exp.setValue(max_us)
         finally:
-            self._fps_syncing = False
+            self._hz_syncing = False
         self._refresh_rate()
 
-    def _on_exposure_changed_for_fps(self, us: float) -> None:
+    def _on_exposure_changed_for_hz(self, us: float) -> None:
         """Only Link pulls Rate along; otherwise Rate stays the operator's cap."""
-        if not self._fps_syncing and self._chk_fps_link.isChecked():
-            self._fps_syncing = True
+        if not self._hz_syncing and self._chk_hz_link.isChecked():
+            self._hz_syncing = True
             try:
-                self._spn_fps.setValue(1e6 / us if us > 0 else self._spn_fps.maximum())
+                self._spn_hz.setValue(1e6 / us if us > 0 else self._spn_hz.maximum())
             finally:
-                self._fps_syncing = False
+                self._hz_syncing = False
         self._refresh_rate()
 
-    def _on_fps_link_toggled(self, linked: bool) -> None:
+    def _on_hz_link_toggled(self, linked: bool) -> None:
         if linked:
-            self._on_fps_changed(self._spn_fps.value())
+            self._on_hz_changed(self._spn_hz.value())
 
     def _refresh_rate(self) -> None:
         if self._measured is not None:
-            fps, limited = self._measured
+            hz, limited = self._measured
             note = " (exposure-limited)" if limited else ""
-            self._lbl_rate.setText(f"{fps:.1f} fps — measured by camera{note}")
+            self._lbl_rate.setText(f"{hz:.1f} Hz — measured by camera{note}")
             self._lbl_rate.setStyleSheet("color:#2e7d32; font-weight:bold;")
             return
-        rate = self._spn_fps.value()
+        rate = self._spn_hz.value()
         exp_us = self._spn_exp.value()
-        exp_fps = 1e6 / exp_us if exp_us > 0 else rate
-        if exp_fps < rate - 1e-6:
+        exp_hz = 1e6 / exp_us if exp_us > 0 else rate
+        if exp_hz < rate - 1e-6:
             self._lbl_rate.setText(
-                f"{exp_fps:.1f} fps — limited by exposure "
-                f"(use ≤{1e6 / rate:.0f} µs for {rate:g} fps)")
+                f"{exp_hz:.1f} Hz — limited by exposure "
+                f"(use ≤{1e6 / rate:.0f} µs for {rate:g} Hz)")
             self._lbl_rate.setStyleSheet("color:#c47f00; font-weight:bold;")
         else:
-            self._lbl_rate.setText(f"{rate:.1f} fps — the requested rate")
+            self._lbl_rate.setText(f"{rate:.1f} Hz — the requested rate")
             self._lbl_rate.setStyleSheet("color:#2e7d32;")
 
-    def set_measured_rate(self, fps: float | None,
+    def set_measured_rate(self, hz: float | None,
                           exposure_limited: bool = False) -> None:
         """Show the camera's own measured frame rate. Pass None to revert to the
         requested-rate estimate (e.g. when the session stops)."""
-        self._measured = None if fps is None else (float(fps), bool(exposure_limited))
+        self._measured = None if hz is None else (float(hz), bool(exposure_limited))
         self._refresh_rate()
 
     # ── eye region ───────────────────────────────────────────────────────────
@@ -575,7 +575,7 @@ class SettingsPanel(QWidget):
         """Everything the panel holds. The adapter persists exactly this."""
         return PupilSettings(
             exposure_us=self._spn_exp.value(),
-            fps=self._spn_fps.value(),
+            rate_hz=self._spn_hz.value(),
             limit_x0=self._spn_lx0.value(),
             limit_y0=self._spn_ly0.value(),
             limit_x1=self._spn_lx1.value(),

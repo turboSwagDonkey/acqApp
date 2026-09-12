@@ -46,11 +46,16 @@ COLS = (
                                "the DMD keeps whatever it already has."),
     ("Light",      "project",  "Whether the DMD emits light for the length of "
                                "this step."),
+    ("LED",        "led",      "Whether the primary illumination LED is on for "
+                               "the length of this step."),
     ("Capture",    "length",   "How much to capture, once the step has settled."),
     ("Unit",       "unit",     "Frames or seconds — never converted between "
                                "them, so a step means what it says."),
     ("Settle",     "settle_s", "Wait this long after the move and the pattern, "
                                "before capture starts."),
+    ("Puff every", "puff_interval_s", "Fire an air puff at this interval during "
+                               "capture, on the puffer's own configured "
+                               "duration. 0 = no puffs."),
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
@@ -182,6 +187,9 @@ class StepTable(QTableWidget):
             FIELDS.index("project"),
             _ChoiceDelegate((("no", False), ("yes", True)), parent=self))
         self.setItemDelegateForColumn(
+            FIELDS.index("led"),
+            _ChoiceDelegate((("no", False), ("yes", True)), parent=self))
+        self.setItemDelegateForColumn(
             FIELDS.index("length"),
             _NumberDelegate(0.01, 1e6, 2, "", 10.0, parent=self))
         self.setItemDelegateForColumn(
@@ -190,6 +198,9 @@ class StepTable(QTableWidget):
         self.setItemDelegateForColumn(
             FIELDS.index("settle_s"),
             _NumberDelegate(0.0, 120.0, 2, " s", 0.05, parent=self))
+        self.setItemDelegateForColumn(
+            FIELDS.index("puff_interval_s"),
+            _NumberDelegate(0.0, 3600.0, 2, " s", 0.5, parent=self))
 
         self.itemChanged.connect(self._on_item_changed)
         self.cellDoubleClicked.connect(self._on_double_click)
@@ -225,9 +236,9 @@ class StepTable(QTableWidget):
                 self.setItem(row, col, item)
             item.setData(VALUE, value)
             item.setText(_render(field, value))
-            if field == "project":
-                # The one column that decides whether light is emitted. It is
-                # coloured rather than shouted about, and only when it is on.
+            if field in ("project", "led"):
+                # The columns that decide whether light is emitted. Coloured
+                # rather than shouted about, and only when it is on.
                 item.setForeground(QColor("#d08770") if value
                                    else self.palette().text())
             if field == "pattern":
@@ -268,6 +279,8 @@ class StepTable(QTableWidget):
                 setattr(s, field, value)    # None is legal here: "leave"
             elif field == "project":
                 s.project = bool(value)
+            elif field == "led":
+                s.led = bool(value)
             elif field == "unit":
                 s.unit = value if value in UNITS else s.unit
             elif field == "length":
@@ -278,6 +291,8 @@ class StepTable(QTableWidget):
                             else float(value))
             elif field == "settle_s":
                 s.settle_s = float(value)
+            elif field == "puff_interval_s":
+                s.puff_interval_s = float(value)
         self._repaint_row(row)
         self.changed.emit()
 
@@ -392,10 +407,12 @@ def _render(field: str, value) -> str:
         return NO_CHANGE if value is None else f"{value:g} um"
     if field == "pattern":
         return pattern_label(value) if value else "—"
-    if field == "project":
+    if field in ("project", "led"):
         return "yes" if value else "no"
     if field == "length":
         return f"{value:g}"
     if field == "settle_s":
         return f"{value:g} s"
+    if field == "puff_interval_s":
+        return "off" if not value else f"{value:g} s"
     return str(value)

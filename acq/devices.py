@@ -166,6 +166,21 @@ class PatternTarget(Protocol):
         """The one call that emits light. Everything else here is reversible."""
 
 
+@runtime_checkable
+class LedTarget(Protocol):
+    """A module a routine can switch illumination on and off on."""
+
+    def set_led(self, on: bool) -> None: ...
+
+
+@runtime_checkable
+class PufferTarget(Protocol):
+    """A module a routine can fire an air puff through."""
+
+    def fire(self, duration_s: float | None = None) -> None:
+        """Fire once; None uses the puffer's own configured default duration."""
+
+
 # ── the host ──────────────────────────────────────────────────────────────────
 
 @runtime_checkable
@@ -280,6 +295,14 @@ class ModuleHost(Protocol):
 
     def pattern_target(self) -> Any:
         """The loaded module a routine may project through, or None."""
+        ...
+
+    def led_target(self) -> Any:
+        """The loaded module a routine may switch illumination on, or None."""
+        ...
+
+    def puffer_target(self) -> Any:
+        """The loaded module a routine may fire an air puff through, or None."""
         ...
 
     def frame_rate_hz(self) -> float | None:

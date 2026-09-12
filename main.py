@@ -193,7 +193,7 @@ pg.setConfigOptions(imageAxisOrder="row-major")
 RING_FRAMES  = 512          # recording ring-buffer item cap (scalar streams)
 # …and a payload cap so full frames can't OOM. 2 GB is 102 full-frame bin-1
 # frames, ~0.97 s of slack. 512 MB (25 frames, 0.24 s) was too tight to ride out
-# a transient writer stall: measured 2026-08-25 over 30 s at 106 fps, it shed
+# a transient writer stall: measured 2026-08-25 over 30 s at 106 Hz, it shed
 # 14-54 frames a run where 2 GB shed none, twice. 4 GB buys nothing more.
 RING_BYTES   = 2048 << 20
 
@@ -326,6 +326,14 @@ class MainWindow(QMainWindow):
     def pattern_target(self):
         """The loaded module a routine may project through, or None."""
         return self._first(lambda m: m.pattern_target())
+
+    def led_target(self):
+        """The loaded module a routine may switch illumination on, or None."""
+        return self._first(lambda m: m.led_target())
+
+    def puffer_target(self):
+        """The loaded module a routine may fire an air puff through, or None."""
+        return self._first(lambda m: m.puffer_target())
 
     def frame_rate_hz(self) -> float | None:
         """The loaded camera's configured frame rate, or None — for estimates.

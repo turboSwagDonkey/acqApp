@@ -101,7 +101,7 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
     r.check(len(rd) == 2, f"IYUV: both frames indexed (got {len(rd)})")
     r.check(np.array_equal(rd.luma(0), y0) and np.array_equal(rd.luma(1), y1),
             "IYUV: the Y plane comes back exactly, chroma ignored")
-    r.check(abs(rd.fps - 20.0) < 1e-6, f"IYUV: fps from avih ({rd.fps:.2f})")
+    r.check(abs(rd.hz - 20.0) < 1e-6, f"IYUV: hz from avih ({rd.hz:.2f})")
     # CONTROL: the frames genuinely differ, so "comes back exactly" is not
     # satisfied by returning the same buffer twice.
     r.check(not np.array_equal(y0, y1),
@@ -162,7 +162,7 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
 
     clip = write_avi(tmp / "clip.avi", [i420(eye_frame(H, W, 30 + 4 * i, 30, 12))
                                         for i in range(5)], W, H, b"IYUV", 24)
-    wk = VideoFileCameraWorker(clip, fps=60.0)
+    wk = VideoFileCameraWorker(clip, rate_hz=60.0)
     r.check(wk.frame_shape == (H, W), f"worker: frame_shape {wk.frame_shape}")
     r.check(wk.n_frames == 5, f"worker: n_frames {wk.n_frames}")
     seen: list[np.ndarray] = []
@@ -180,7 +180,7 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
     r.check(not np.shares_memory(seen[0], seen[1]),
             "worker: frames are copies, so the sink can keep them")
 
-    wk2 = VideoFileCameraWorker(clip, fps=20.0, loop=False)
+    wk2 = VideoFileCameraWorker(clip, rate_hz=20.0, loop=False)
     wk2.start()
     pump(app, 0.8)
     r.check(wk2.isFinished() or not wk2.isRunning(),
@@ -209,7 +209,7 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
         win = FakeWin()
         m = PupilCamModule(win)
         m.panel = type("P", (), {
-            "settings": PupilSettings(video_path=video, fps=30.0),
+            "settings": PupilSettings(video_path=video, rate_hz=30.0),
             "set_measured_rate": lambda self, *a, **kw: None,
             "set_led": lambda self, *a, **kw: None,
         })()
@@ -237,7 +237,7 @@ def main() -> int:  # noqa: PLR0915 — one linear scenario, split only by secti
     md = m.metadata()
     r.check(md.get("pupil_video") == str(clip),
             "metadata: the clip is recorded, so replayed data cannot pass as rig data")
-    r.check(md.get("pupil_fps") == 30.0 and "pupil_edge_select" not in md,
+    r.check(md.get("pupil_rate_hz") == 30.0 and "pupil_edge_select" not in md,
             f"metadata: camera settings are filed and the archived tracking "
             f"parameters are not ({sorted(md)})")
     m.stop()

@@ -6,7 +6,7 @@ pylablib's DCAM wrapper; `MockCameraWorker` synthesises them. Both share
 
     worker.get_latest()  -> np.ndarray | None   (newest frame, for preview)
     worker.set_sink(fn)  -> record every frame
-    worker.fps_update    -> pyqtSignal(int, float)
+    worker.hz_update      -> pyqtSignal(int, float)
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ class OrcaFireWorker(PullWorker):
     """Opened and closed inside run() so the worker is restartable. AcqConfig
     is read once at start; exposure can change hot via set_exposure().
     """
-    fps_update = pyqtSignal(int, float)   # (total_frames, fps over recent window)
+    hz_update = pyqtSignal(int, float)   # (total_frames, Hz over recent window)
     # The camera's OWN answer for the configured ROI/binning/exposure.
-    timing_update = pyqtSignal(float, bool)   # (achievable_fps, exposure_limited)
+    timing_update = pyqtSignal(float, bool)   # (achievable_hz, exposure_limited)
     # Frames the camera dropped because we didn't drain its buffer fast enough.
     # Nonzero means real data loss.
     drops_update = pyqtSignal(int, int)       # (skipped_frames, buffer_size)
@@ -50,7 +50,7 @@ class OrcaFireWorker(PullWorker):
     # rig has 64 GiB RAM, ~51 GiB free (2026-08-27), and 768 MB was shedding
     # ~6% of frames on real hardware even after the writer stopped being the
     # bottleneck (PLAN.md sec 6 item 1). 6 GiB covers the full 2.0 s at full
-    # frame (115 fps) with margin, and is still <12% of free RAM.
+    # frame (115 Hz) with margin, and is still <12% of free RAM.
     _BUFFER_SECONDS = 2.0
     _BUFFER_BYTES   = 6 << 30
     _BUFFER_MIN     = 16
@@ -68,7 +68,7 @@ class OrcaFireWorker(PullWorker):
         self._ext_cam      = cam
         self._exp_lock     = threading.Lock()
         self._pending_exp: float | None = None
-        self._achievable_fps: float = 0.0
+        self._achievable_hz: float = 0.0
         self._skipped: int = 0
         self._last_exp_error: str | None = None
         # Camera-clock → perf_counter offset, anchored on the session's first
@@ -92,10 +92,10 @@ class OrcaFireWorker(PullWorker):
             self._pending_exp = us
 
     @property
-    def achievable_fps(self) -> float:
+    def achievable_hz(self) -> float:
         """Frame rate the camera reported for the running configuration
         (0.0 until acquisition has been set up)."""
-        return self._achievable_fps
+        return self._achievable_hz
 
     @property
     def skipped_frames(self) -> int:
@@ -148,40 +148,40 @@ class OrcaFireWorker(PullWorker):
         calls this every tick, and printing would put console I/O in the capture
         path.
         """
-        fps = cfg.expected_fps
+        hz = cfg.expected_hz
         try:
             timings = cam.get_frame_timings()      # (exposure, frame_period)
             period = float(getattr(timings, "frame_period", 0.0) or 0.0)
             if period > 0:
-                fps = 1.0 / period
+                hz = 1.0 / period
         except Exception as e:
             if verbose:
                 print(f"[voltage_cam] get_frame_timings unavailable ({e}); "
                       f"using datasheet estimate")
         limited = cfg.exposure_limited
         if verbose:
-            print(f"[voltage_cam] achievable: {fps:.1f} fps "
-                  f"(readout ceiling {cfg.readout_fps:.1f}, "
-                  f"exposure ceiling {cfg.exposure_fps:.1f}"
+            print(f"[voltage_cam] achievable: {hz:.1f} Hz "
+                  f"(readout ceiling {cfg.readout_hz:.1f}, "
+                  f"exposure ceiling {cfg.exposure_hz:.1f}"
                   f"{' — EXPOSURE LIMITED' if limited else ''})")
             if limited:
                 print(f"[voltage_cam] shorten exposure to "
                       f"≤{cfg.max_exposure_us:.0f} µs to reach the readout ceiling")
-        self._achievable_fps = fps
-        self.timing_update.emit(fps, limited)
-        return fps
+        self._achievable_hz = hz
+        self.timing_update.emit(hz, limited)
+        return hz
 
-    def _buffer_frames(self, cfg, fps: float) -> int:
+    def _buffer_frames(self, cfg, hz: float) -> int:
         """DCAM ring depth: _BUFFER_SECONDS of frames, capped by memory.
 
         Prints which bound won. At full frame the byte cap wins hard — 38
         frames, 0.33 s, not 2 s — and that shortfall is the difference between
         absorbing a GC pause and dropping through it.
         """
-        by_time  = int(max(fps, 1.0) * self._BUFFER_SECONDS)
+        by_time  = int(max(hz, 1.0) * self._BUFFER_SECONDS)
         by_bytes = self._BUFFER_BYTES // cfg.frame_bytes
         n = int(np.clip(min(by_time, by_bytes), self._BUFFER_MIN, self._BUFFER_MAX))
-        slack = n / max(fps, 1.0)
+        slack = n / max(hz, 1.0)
         print(f"[voltage_cam] buffer: {n} frames "
               f"({n * cfg.frame_bytes / (1 << 20):.0f} MB, "
               f"{slack:.2f} s of slack)")
@@ -274,24 +274,24 @@ class OrcaFireWorker(PullWorker):
                 f"size, or a sink that blocks. A slow WRITER is a separate "
                 f"count (recorder drops), not this one.")
 
-    def _warn_data_rate(self, cfg, fps: float) -> None:
+    def _warn_data_rate(self, cfg, hz: float) -> None:
         """Say before the run, not after, that this rate sheds frames however
         the buffers are tuned. Preview is unaffected.
 
         Not the disk: D: writes 2700 MB/s, the writer 2464 (2026-08-25). The
         wall is `WRITER_MBPS`, and it has moved once.
         """
-        mbps = cfg.frame_bytes * fps / (1 << 20)
+        mbps = cfg.frame_bytes * hz / (1 << 20)
         print(f"[voltage_cam] data rate: {mbps:.0f} MB/s "
-              f"({cfg.frame_bytes / (1 << 20):.2f} MB/frame × {fps:.0f} fps)")
+              f"({cfg.frame_bytes / (1 << 20):.2f} MB/frame × {hz:.0f} Hz)")
         if mbps > self._WRITER_MBPS:
             keep = self._WRITER_MBPS / mbps
-            cap_fps = self._WRITER_MBPS / (cfg.frame_bytes / (1 << 20))
+            cap_hz = self._WRITER_MBPS / (cfg.frame_bytes / (1 << 20))
             print(f"[voltage_cam] ⚠ RECORDING CANNOT KEEP UP: the writer sustains"
                   f" ~{self._WRITER_MBPS:.0f} MB/s, so ~{(1 - keep) * 100:.0f}% of"
                   f" frames would be dropped.")
             print(f"[voltage_cam]   To record gap-free, cap the rate near "
-                  f"{cap_fps:.0f} fps (exposure ≥ {1e6 / cap_fps:.0f} µs), "
+                  f"{cap_hz:.0f} Hz (exposure ≥ {1e6 / cap_hz:.0f} µs), "
                   f"or use a smaller ROI/binning. Live preview is unaffected.")
 
     def _run(self) -> None:
@@ -347,10 +347,10 @@ class OrcaFireWorker(PullWorker):
             # --- capture loop ---
             # pylablib's default 100 frames is at once too big at full frame
             # (~2 GB) and far too small at the fast presets (42 ms of slack at
-            # 2360 fps — a GC pause loses data).
-            fps = self._query_timings(cam, cfg)
-            nframes = self._buffer_frames(cfg, fps)
-            self._warn_data_rate(cfg, fps)
+            # 2360 Hz — a GC pause loses data).
+            hz = self._query_timings(cam, cfg)
+            nframes = self._buffer_frames(cfg, hz)
+            self._warn_data_rate(cfg, hz)
             self._skipped = 0        # camera clears its own counter on start
             cam.start_acquisition(nframes=nframes)
             mark = _t(f"start_acquisition (nframes={nframes})", mark)
@@ -444,7 +444,7 @@ class OrcaFireWorker(PullWorker):
                             st = cam.get_frames_status()
                             # From the camera's own counter, so it is the true
                             # acquisition rate whether or not we read every frame.
-                            self.fps_update.emit(
+                            self.hz_update.emit(
                                 st.acquired, (st.acquired - n_acquired) / dt)
                             n_acquired = st.acquired
                             # Only a shortfall while RECORDING is data loss —
@@ -454,7 +454,7 @@ class OrcaFireWorker(PullWorker):
                                 print(self._skip_report(st))
                                 self.drops_update.emit(st.skipped, st.buffer_size)
                         except Exception:      # no status support — count our own
-                            self.fps_update.emit(win_n, win_n / dt)
+                            self.hz_update.emit(win_n, win_n / dt)
                         win_n = 0
             finally:
                 try:
@@ -470,7 +470,7 @@ class OrcaFireWorker(PullWorker):
 class MockCameraWorker(PullWorker):
     """Synthetic camera: shot-noise background with a circular blob whose mean
     fluorescence oscillates at 0.5 Hz. Frame size follows the preset."""
-    fps_update = pyqtSignal(int, float)
+    hz_update = pyqtSignal(int, float)
     _FPS = 30.0
     _STOP_WAIT_MS = 2000
 
@@ -522,4 +522,4 @@ class MockCameraWorker(PullWorker):
             # real worker sends.
             self._publish(frame, record=(frame, acquired, n - 1))
             if n % int(self._FPS) == 0:
-                self.fps_update.emit(n, n / max(time.perf_counter() - t0, 1e-9))
+                self.hz_update.emit(n, n / max(time.perf_counter() - t0, 1e-9))

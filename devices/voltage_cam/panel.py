@@ -48,7 +48,7 @@ class SettingsPanel(QWidget):
     def __init__(self, config: AcqConfig | None = None, parent=None):
         super().__init__(parent)
         self._cfg = config or AcqConfig()
-        # (fps, exposure_limited) reported by the running camera, or None when we
+        # (hz, exposure_limited) reported by the running camera, or None when we
         # only have the datasheet estimate (before Start).
         self._measured: tuple[float, bool] | None = None
         self._build()
@@ -60,7 +60,7 @@ class SettingsPanel(QWidget):
 
         self._cmb_preset = QComboBox()
         for key in PRESET_KEYS:
-            # Show the descriptive label (dims + fps); store the stable key.
+            # Show the descriptive label (dims + Hz); store the stable key.
             self._cmb_preset.addItem(PRESETS[key].label, key)
         start = self._cfg.preset_key if self._cfg.preset_key in PRESET_KEYS else DEFAULT_PRESET
         self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(start))
@@ -118,7 +118,7 @@ class SettingsPanel(QWidget):
 
         # Effective frame rate = min(readout ceiling, 1/exposure). Without this
         # readout the default 10 ms exposure silently caps every preset above
-        # ~4432×256 at 100 fps, and the preset label looks like a lie.
+        # ~4432×256 at 100 Hz, and the preset label looks like a lie.
         self._lbl_rate = QLabel()
         lay.addRow("Frame rate:", self._lbl_rate)
 
@@ -221,21 +221,21 @@ class SettingsPanel(QWidget):
         # Prefer the camera's own measured rate once a capture is running — it
         # can't disagree with the real link the way the datasheet estimate can.
         if self._measured is not None:
-            fps, limited = self._measured
+            hz, limited = self._measured
             note = " (exposure-limited)" if limited else ""
-            self._lbl_rate.setText(f"{fps:.1f} fps — measured by camera{note}")
+            self._lbl_rate.setText(f"{hz:.1f} Hz — measured by camera{note}")
             self._lbl_rate.setStyleSheet("color:#2e7d32; font-weight:bold;")
             return
         link = LINK_LABEL.get(cfg.link, cfg.link)
         if cfg.exposure_limited:
             self._lbl_rate.setText(
-                f"{cfg.expected_fps:.1f} fps — limited by exposure "
-                f"({link} readout allows {cfg.readout_fps:.1f}; "
+                f"{cfg.expected_hz:.1f} Hz — limited by exposure "
+                f"({link} readout allows {cfg.readout_hz:.1f}; "
                 f"use ≤{cfg.max_exposure_us:.0f} µs)")
             self._lbl_rate.setStyleSheet("color:#c47f00; font-weight:bold;")
         else:
             self._lbl_rate.setText(
-                f"{cfg.expected_fps:.1f} fps — at {link} readout limit")
+                f"{cfg.expected_hz:.1f} Hz — at {link} readout limit")
             self._lbl_rate.setStyleSheet("color:#2e7d32;")
 
     def _refresh_recordability(self, cfg: AcqConfig | None = None) -> None:
@@ -248,8 +248,8 @@ class SettingsPanel(QWidget):
         quarter of the data.
         """
         cfg = cfg if cfg is not None else self.get_config()
-        fps = self._measured[0] if self._measured is not None else cfg.expected_fps
-        mbps = cfg.frame_bytes * fps / (1 << 20)
+        hz = self._measured[0] if self._measured is not None else cfg.expected_hz
+        mbps = cfg.frame_bytes * hz / (1 << 20)
         if mbps <= WRITER_MBPS:
             self._lbl_rec.setText(
                 f"{mbps:.0f} MB/s — fits the writer (~{WRITER_MBPS:.0f} MB/s)")
@@ -261,23 +261,23 @@ class SettingsPanel(QWidget):
             f"⚠ {mbps:.0f} MB/s — only ~{100 * keep:.0f}% of frames can be "
             f"written (~{WRITER_MBPS:.0f} MB/s). Live view is unaffected. "
             f"Use 2×2 binning, a smaller ROI, or cap the rate near "
-            f"{cap:.0f} fps (exposure ≥ {1e6 / cap:.0f} µs).")
+            f"{cap:.0f} Hz (exposure ≥ {1e6 / cap:.0f} µs).")
         self._lbl_rec.setStyleSheet("color:#c62828; font-weight:bold;")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def set_measured_rate(self, fps: float | None,
+    def set_measured_rate(self, hz: float | None,
                           exposure_limited: bool = False) -> None:
         """Show the camera's own measured frame rate. Pass None to revert to the
         datasheet estimate (e.g. when the session stops)."""
-        self._measured = None if fps is None else (float(fps), bool(exposure_limited))
+        self._measured = None if hz is None else (float(hz), bool(exposure_limited))
         self._refresh_rate()
 
     def get_config(self) -> AcqConfig:
         # `link` has no widget — it comes from the config the panel was built
         # with (and, on the rig, from _check_link.py). Carry it through rather
         # than rebuilding a default: dropping it silently reverts a USB3 rig to
-        # the CoaXPress readout table, and every fps estimate reads ~7× high.
+        # the CoaXPress readout table, and every Hz estimate reads ~7× high.
         return AcqConfig(
             preset_key   = self._cmb_preset.currentData(),
             binning      = self._cmb_binning.currentData(),

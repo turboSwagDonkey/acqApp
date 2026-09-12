@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import QWidget
 from . import grating as grating_mod
 from .settings import StimParams
 
-DEFAULT_FPS = 60.0
+DEFAULT_HZ = 60.0
 
 
 class StimDisplay(QWidget):
@@ -61,11 +61,11 @@ class StimDisplay(QWidget):
         self._timer.timeout.connect(self.update)
 
     # ── driven by the controller ──────────────────────────────────────────
-    def open_on(self, screen, fps: float = DEFAULT_FPS) -> None:
+    def open_on(self, screen, hz: float = DEFAULT_HZ) -> None:
         self.setGeometry(screen.geometry())
         self.showFullScreen()
         self.setFocus(Qt.FocusReason.OtherFocusReason)
-        self._timer.start(max(1, int(round(1000.0 / max(fps, 1.0)))))
+        self._timer.start(max(1, int(round(1000.0 / max(hz, 1.0)))))
 
     def close_display(self) -> None:
         self._timer.stop()

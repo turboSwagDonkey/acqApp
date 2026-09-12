@@ -110,19 +110,19 @@ class PupilCameraWorker(PullWorker):
     before Qt imports; it then never opens or closes that handle. `cam=None`
     makes the worker own one, simpler where import order doesn't bite.
     """
-    fps_update = pyqtSignal(int, float)   # (total_frames, fps over recent window)
+    hz_update = pyqtSignal(int, float)   # (total_frames, Hz over recent window)
 
     _STOP_WAIT_MS = 5000
     _FPS_WINDOW_S = 1.0
     _GRAB_TIMEOUT_MS = 500      # short, so stop() stays responsive
 
-    def __init__(self, cam=None, exposure_us: float = 8000.0, fps: float = 20.0,
+    def __init__(self, cam=None, exposure_us: float = 8000.0, rate_hz: float = 20.0,
                  device_index: int = 0):
         super().__init__()
         self._cam          = cam
         self._device_index = device_index
         self._exposure_us  = exposure_us
-        self._fps          = fps
+        self._hz           = rate_hz
         self._exp_lock     = threading.Lock()
         self._pending_exp: float | None = None
         self._frame_shape: tuple[int, int] | None = None
@@ -141,7 +141,7 @@ class PupilCameraWorker(PullWorker):
         return self._frame_shape
 
     def _configure(self, cam) -> None:
-        """Put the camera into free-running Mono8 at the requested exposure/fps."""
+        """Put the camera into free-running Mono8 at the requested exposure/rate."""
         # Mono8 explicitly: a persisted Mono12 from a previous session would
         # hand us uint16 and silently break the tracker's threshold units and
         # the (0, 255) display levels.
@@ -173,7 +173,7 @@ class PupilCameraWorker(PullWorker):
                 rate_on.SetValue(True)
             except Exception:
                 pass
-        rate = _set_clamped(cam, self._fps, "AcquisitionFrameRate",
+        rate = _set_clamped(cam, self._hz, "AcquisitionFrameRate",
                             "AcquisitionFrameRateAbs", label="frame rate")
 
         res = _node(cam, "ResultingFrameRate", "ResultingFrameRateAbs")
@@ -183,11 +183,11 @@ class PupilCameraWorker(PullWorker):
         except Exception:
             pass
         print(f"[pupil_cam] exposure={exp if exp is None else f'{exp:.0f}'} us, "
-              f"requested {self._fps:g} fps"
+              f"requested {self._hz:g} Hz"
               + (f", set {rate:.2f}" if rate is not None else "")
               + (f", camera reports {actual:.2f} achievable" if actual else ""))
         if actual is not None and rate is not None and actual < rate - 0.5:
-            print(f"[pupil_cam] frame rate limited to {actual:.2f} fps — "
+            print(f"[pupil_cam] frame rate limited to {actual:.2f} Hz — "
                   f"exposure or USB bandwidth is the ceiling")
 
     def _run(self) -> None:
@@ -242,7 +242,7 @@ class PupilCameraWorker(PullWorker):
                         now = time.perf_counter()
                         dt = now - win_t0
                         if dt >= self._FPS_WINDOW_S:
-                            self.fps_update.emit(n, win_n / dt)
+                            self.hz_update.emit(n, win_n / dt)
                             win_n, win_t0 = 0, now
                     finally:
                         grab.Release()
@@ -263,19 +263,19 @@ class MockPupilCameraWorker(PullWorker):
     """
     Synthetic pupil camera: grey frame with a dark disc whose radius varies
     sinusoidally (simulated pupil dilation). Frame rate is configurable so the
-    settings-panel fps actually takes effect on the mock.
+    settings-panel rate actually takes effect on the mock.
 
     Includes a bright specular dot standing in for the IR corneal glint, since
     that is the artefact the tracker's outlier rejection exists to handle —
     a perfectly clean disc would not exercise it.
     """
-    fps_update = pyqtSignal(int, float)
+    hz_update = pyqtSignal(int, float)
     H, W = 240, 320
     _STOP_WAIT_MS = 2000
 
-    def __init__(self, fps: float = 30.0):
+    def __init__(self, rate_hz: float = 30.0):
         super().__init__()
-        self._fps = max(1.0, fps)
+        self._hz = max(1.0, rate_hz)
 
     def set_exposure(self, us: float) -> None:
         """No-op (kept for API parity with PupilCameraWorker)."""
@@ -287,7 +287,7 @@ class MockPupilCameraWorker(PullWorker):
     def _run(self) -> None:
         self._stop = False
         t0 = time.perf_counter()
-        period = 1.0 / self._fps
+        period = 1.0 / self._hz
         cy, cx = self.H // 2, self.W // 2
         Y, X = np.ogrid[:self.H, :self.W]
 
@@ -302,5 +302,5 @@ class MockPupilCameraWorker(PullWorker):
             frame[((X - (cx + 0.35 * r)) ** 2
                    + (Y - (cy - 0.3 * r)) ** 2) < gr ** 2] = 245
             self._publish(frame)
-            if n % max(1, int(self._fps)) == 0:
-                self.fps_update.emit(n, n / (time.perf_counter() - t0))
+            if n % max(1, int(self._hz)) == 0:
+                self.hz_update.emit(n, n / (time.perf_counter() - t0))

@@ -275,7 +275,7 @@ first feature in the app whose whole purpose is to **actuate**, which is why it
 is shaped the way it is.
 
 A step's length is set in **frames or seconds, the operator's choice per step**,
-and the two are never interconverted: at 106 fps a rounded conversion sheds
+and the two are never interconverted: at 106 Hz a rounded conversion sheds
 frames at every step boundary. A frames step is measured by what reached the
 **file**, not by what the camera produced — the two differ exactly when the
 write path is the thing falling behind. `settle_s` is separate from both: a

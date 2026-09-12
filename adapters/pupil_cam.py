@@ -397,9 +397,9 @@ class PupilCamModule(ModuleAdapter):
         # Binds `panel`, not `self`, so the connection (which outlives this
         # call, living on `cam`) only keeps the panel alive, not the whole
         # adapter — worker, tracker and plot curves included.
-        if hasattr(cam, "fps_update"):
+        if hasattr(cam, "hz_update"):
             panel = self.panel
-            cam.fps_update.connect(lambda _n, fps: panel.set_measured_rate(fps))
+            cam.hz_update.connect(lambda _n, hz: panel.set_measured_rate(hz))
         # A fresh tracker per session: EyeLoop walks out from the previous
         # frame's centre, and last session's centre describes a different eye.
         self._track = PupilTrackWorker(cam.get_latest, s, history=PLOT_HISTORY)
@@ -416,7 +416,7 @@ class PupilCamModule(ModuleAdapter):
             # A third source beside real and mock — the reason §5b A3 is worth
             # revisiting. Checked before emulate so a clip replays either way.
             try:
-                return self._adopt(VideoFileCameraWorker(s.video_path, fps=s.fps))
+                return self._adopt(VideoFileCameraWorker(s.video_path, rate_hz=s.rate_hz))
             except Exception as e:
                 # A missing or compressed file must not kill the session: say so
                 # and fall back, rather than leaving a dead tab.
@@ -424,13 +424,13 @@ class PupilCamModule(ModuleAdapter):
                       f"— falling back to the camera")
                 self.win.status(f"pupil video unusable: {e}")
                 return self._adopt(
-                    MockPupilCameraWorker(fps=s.fps) if emulate
-                    else PupilCameraWorker(exposure_us=s.exposure_us, fps=s.fps))
+                    MockPupilCameraWorker(rate_hz=s.rate_hz) if emulate
+                    else PupilCameraWorker(exposure_us=s.exposure_us, rate_hz=s.rate_hz))
         if emulate:
-            return self._adopt(MockPupilCameraWorker(fps=s.fps))
+            return self._adopt(MockPupilCameraWorker(rate_hz=s.rate_hz))
         # cam=None → the worker opens/closes its own Basler on its thread.
         return self._adopt(PupilCameraWorker(exposure_us=s.exposure_us,
-                                             fps=s.fps))
+                                             rate_hz=s.rate_hz))
 
     def start(self) -> None:
         super().start()                 # the camera first; the tracker idles
@@ -651,7 +651,7 @@ class PupilCamModule(ModuleAdapter):
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
         return {"pupil_exposure_us": s.exposure_us,
-                "pupil_fps":         s.fps,
+                "pupil_rate_hz":     s.rate_hz,
                 # All 0 = no region. Recorded because it is operator-set
                 # geometry that nothing else in the file would show.
                 "pupil_limit_x0":    s.limit_x0,

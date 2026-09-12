@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from acqApp.routines.settings import Routine, Step
+from acqApp.routines.settings import Routine, Step, play_order
 
 # A move that never reports arrival must fault, not hang the routine forever.
 MOVE_TIMEOUT_S = 30.0
@@ -66,6 +66,8 @@ class RoutineHooks:
     stop_motion: Callable[[], None] = _noop
     set_pattern: Callable[[str], None] = _noop
     light:       Callable[[bool], None] = _noop
+    led:         Callable[[bool], None] = _noop
+    puff:        Callable[[], None] = _noop        # fires one puff, its own duration
     begin_step:  Callable[["StepRun"], None] = _noop
     end_step:    Callable[["StepRun"], None] = _noop
     log:         Callable[[str], None] = _noop
@@ -124,13 +126,18 @@ class RoutineEngine:
         self.runs: list[StepRun] = []
         self.fault = ""
         self._phase = Phase.IDLE
-        self._i = 0
+        self._order: list[int] = []     # play_order(routine): a repeat
+                                         # group's range appears once per repeat
+        self._pos = 0                   # position within self._order
+        self._i = 0                     # self._order[self._pos] — the real
+                                         # step index, what indexes routine.steps
         self._cycle = 0
         self._attempt = 1
         self._run: StepRun | None = None
         self._open = False              # begin_step delivered, end_step owed
         self._issued_at = 0.0           # when this step's move went out
         self._arrived_at: float | None = None
+        self._puff_next: float | None = None    # next puff's session-clock time
         self._started_at: float | None = None   # session clock at start()
         self._arm_frame0: int | None = None      # frame count when armed
 
@@ -155,8 +162,17 @@ class RoutineEngine:
 
     @property
     def position(self) -> tuple[int, int, int]:
-        """(step index, cycle, attempt) — the first two 0-based."""
+        """(step index, cycle, attempt) — the first two 0-based. The step
+        index is into `routine.steps` (the table row), not the expanded
+        play order — see `order_position` for that."""
         return self._i, self._cycle, self._attempt
+
+    @property
+    def order_position(self) -> int:
+        """0-based position within `play_order(routine)` for this cycle —
+        what `progress`/`remaining` need to account for a repeat group,
+        since a table row number alone cannot say which repeat this is."""
+        return self._pos
 
     def steps_done(self) -> int:
         """Completed step executions; a repeated attempt is not counted twice."""
@@ -177,7 +193,8 @@ class RoutineEngine:
         return max(0.0, min(1.0, got / step.length)) if step.length > 0 else 1.0
 
     def total_runs(self) -> int:
-        """Step executions a clean run performs — steps x cycles."""
+        """Step executions a clean run performs — the expanded play order
+        (repeat groups included) x cycles."""
         return self._r.total_steps()
 
     def overall_progress(self) -> float:
@@ -191,7 +208,7 @@ class RoutineEngine:
             return 0.0
         if self._phase == Phase.DONE:
             return 1.0
-        done = self._cycle * len(self._r.steps) + self._i + self.progress()
+        done = self._cycle * len(self._order) + self._pos + self.progress()
         return max(0.0, min(1.0, done / total))
 
     def elapsed(self) -> float:
@@ -216,7 +233,9 @@ class RoutineEngine:
             raise RoutineError("the routine has no steps")
         self.runs = []
         self.fault = ""
-        self._i = self._cycle = 0
+        self._order = play_order(self._r)
+        self._pos = self._cycle = 0
+        self._i = self._order[0]
         self._attempt = 1
         self._started_at = self._safe_value(self._h.now, 0.0)
         if trigger == "ttl":
@@ -300,6 +319,11 @@ class RoutineEngine:
         if run is None:                  # cannot happen; not worth crashing over
             self._halt("internal: capturing with no step run")
             return
+        if step.puff_interval_s > 0 and self._puff_next is not None:
+            now = self._h.now()
+            while now >= self._puff_next:      # catch up rather than pile up
+                self._safe(self._h.puff)
+                self._puff_next += step.puff_interval_s
         if step.unit == "frames":
             n = self._frames()
             if n is None or run.frame0 is None:
@@ -331,15 +355,21 @@ class RoutineEngine:
             return
         self._issued_at = self._safe_value(self._h.now, 0.0)
         self._phase = Phase.SETTLE
-        self._h.log(f"step {self._i + 1}/{len(self._r.steps)} "
-                    f"(cycle {self._cycle + 1}/{max(1, self._r.cycles)}): "
-                    f"{step.describe()}")
+        # Position in the EXPANDED order, not the table row alone — inside a
+        # repeat group "step 3" on its own does not say which repeat this is.
+        self._h.log(f"step {self._i + 1} ({self._pos + 1}/{len(self._order)} "
+                    f"this cycle, cycle {self._cycle + 1}/"
+                    f"{max(1, self._r.cycles)}): {step.describe()}")
 
     def _begin_capture(self) -> None:
         step = self._r.steps[self._i]
         try:
             if step.project:
                 self._h.light(True)
+            if step.led:
+                self._h.led(True)
+            self._puff_next = (self._h.now() + step.puff_interval_s
+                               if step.puff_interval_s > 0 else None)
             frame0 = self._frames()
             if step.unit == "frames" and frame0 is None:
                 raise RuntimeError("no frame count to measure a frames step by")
@@ -367,6 +397,8 @@ class RoutineEngine:
         run.interrupted = interrupted
         run.fault = fault
         self._safe(self._h.light, False)
+        self._safe(self._h.led, False)
+        self._puff_next = None
         if self._open:
             self._safe(self._h.end_step, run)
         self.runs.append(run)
@@ -374,15 +406,16 @@ class RoutineEngine:
 
     def _advance(self) -> None:
         self._attempt = 1
-        self._i += 1
-        if self._i >= len(self._r.steps):
-            self._i = 0
+        self._pos += 1
+        if self._pos >= len(self._order):
+            self._pos = 0
             self._cycle += 1
         if self._cycle >= max(1, self._r.cycles):
             self._phase = Phase.DONE
             self._safe(self._h.light, False)
             self._h.log(f"routine finished — {self.steps_done()} step(s)")
             return
+        self._i = self._order[self._pos]
         self._enter_step()
 
     def _halt(self, reason: str) -> None:

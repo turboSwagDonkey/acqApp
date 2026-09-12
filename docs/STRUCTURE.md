@@ -274,7 +274,7 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_pupil_track.py         tracking through the app: thread, trace, overlay, file
   test_pupil_limit.py         the eye region: panel, preview, persistence
   test_pupil_video.py
-  test_readout_fps.py
+  test_readout_hz.py
   test_routines.py            the routine engine, on a fake rig and a fake clock
   test_recording_losses.py
   test_save_paths.py

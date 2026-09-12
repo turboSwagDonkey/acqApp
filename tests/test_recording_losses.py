@@ -352,10 +352,10 @@ def check_memory_capped_buffer_is_announced(r: Report) -> None:
     from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
     from acqApp.devices.voltage_cam.presets import AcqConfig
 
-    def sizing(worker, cfg, fps):
+    def sizing(worker, cfg, hz):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            n = worker._buffer_frames(cfg, fps)
+            n = worker._buffer_frames(cfg, hz)
         return n, buf.getvalue()
 
     full = AcqConfig()                                  # full frame, ~21 MB

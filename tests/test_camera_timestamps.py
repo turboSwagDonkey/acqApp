@@ -2,7 +2,7 @@
 Test for the camera frame-timestamp path.
 
 The bug this guards: OrcaFireWorker reads frames in BATCHES, and every frame in
-a batch used to be stamped when the batch arrived. At 115 fps that made the
+a batch used to be stamped when the batch arrived. At 115 Hz that made the
 recorded timebase a staircase — several frames sharing one timestamp, then a
 jump — instead of an even train at the frame rate.
 

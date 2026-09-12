@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QVBoxLayout, QWidget
 
 from acqApp import style
 from acqApp.closed_loop import SignalSource
-from acqApp.acq.devices import (DeviceWorker, ModuleHost, OutputController,
-                            PatternTarget, RecordingOutput, StageTarget)
+from acqApp.acq.devices import (DeviceWorker, LedTarget, ModuleHost, OutputController,
+                            PatternTarget, PufferTarget, RecordingOutput, StageTarget)
 
 
 PLOT_HISTORY = 600          # samples kept in each rolling plot
@@ -272,6 +272,14 @@ class ModuleAdapter:
 
     def pattern_target(self) -> PatternTarget | None:
         """If this module can put a pattern up and take it down, itself."""
+        return None
+
+    def led_target(self) -> LedTarget | None:
+        """If this module can switch illumination on and off, itself."""
+        return None
+
+    def puffer_target(self) -> PufferTarget | None:
+        """If this module can fire an air puff, itself."""
         return None
 
     def frame_rate_hz(self) -> float | None:

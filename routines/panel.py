@@ -36,14 +36,16 @@ from pathlib import Path
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QListWidget, QProgressBar, QPushButton, QSpinBox,
+    QVBoxLayout, QWidget,
 )
 
 from acqApp import style
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
-from acqApp.routines.settings import SAVE_MODES, START_TRIGGERS, Routine, Step
+from acqApp.routines.settings import (SAVE_MODES, START_TRIGGERS, Group,
+                                      Routine, Step)
 from acqApp.routines.table import StepTable
 
 
@@ -65,7 +67,7 @@ class SettingsPanel(QWidget):
         self._painted: str | None = None      # last phase actually painted
         self._painted_text: str | None = None
         self._marked: int | None = None       # step row shown as running
-        self._fps: float | None = None        # frame rate the estimate uses
+        self._hz: float | None = None         # frame rate the estimate uses
         self._painted_pct: int | None = None
         self._painted_note: str | None = None
         self._build()
@@ -187,6 +189,47 @@ class SettingsPanel(QWidget):
         pat_btns.addStretch(1)
         lay.addLayout(pat_btns)
 
+        # ── repeat groups ────────────────────────────────────────────────────
+        # A contiguous range of steps, repeated as a unit, nested inside
+        # `cycles` (which repeats the WHOLE list). Spinboxes rather than a
+        # table-row selection, the puffer panel's "Scheduled puffs" shape —
+        # the table stays single-selection, so this needs no change there.
+        ggrp = QGroupBox("Repeat groups")
+        gl = QVBoxLayout(ggrp)
+        gl.setSpacing(4)
+
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel("Steps"))
+        self._spn_g_start = QSpinBox()
+        self._spn_g_start.setRange(1, 9999)
+        grow.addWidget(self._spn_g_start)
+        grow.addWidget(QLabel("to"))
+        self._spn_g_end = QSpinBox()
+        self._spn_g_end.setRange(1, 9999)
+        grow.addWidget(self._spn_g_end)
+        grow.addWidget(QLabel("×"))
+        self._spn_g_repeats = QSpinBox()
+        self._spn_g_repeats.setRange(2, 999)
+        self._spn_g_repeats.setValue(2)
+        self._spn_g_repeats.setToolTip("How many times this range of steps "
+                                       "repeats before the routine moves on.")
+        grow.addWidget(self._spn_g_repeats)
+        btn_g_add = QPushButton("Add")
+        btn_g_add.setToolTip("Group steps [Steps..to] to repeat × times, "
+                             "nested inside \"Repeat the list\" above.")
+        btn_g_add.clicked.connect(self._add_group)
+        grow.addWidget(btn_g_add)
+        gl.addLayout(grow)
+
+        self._lst_groups = QListWidget()
+        self._lst_groups.setMaximumHeight(70)
+        gl.addWidget(self._lst_groups)
+
+        btn_g_del = QPushButton("Remove selected")
+        btn_g_del.clicked.connect(self._del_group)
+        gl.addWidget(btn_g_del)
+        lay.addWidget(ggrp)
+
         # What is about to happen, in one line — a step list is not something
         # you can total up by eye once it is longer than a screen.
         self._lbl_summary = QLabel()
@@ -279,7 +322,32 @@ class SettingsPanel(QWidget):
     # list itself, which a table cell cannot express.
     def _reload_table(self) -> None:
         self._tbl.reload()
+        self._reload_groups()
         self._refresh_summary()
+
+    # ── repeat groups ────────────────────────────────────────────────────────
+    def _reload_groups(self) -> None:
+        self._lst_groups.clear()
+        for g in self._r.groups:
+            self._lst_groups.addItem(
+                f"steps {g.start + 1}-{g.end + 1} × {g.repeats}")
+
+    def _add_group(self) -> None:
+        start = self._spn_g_start.value() - 1
+        end = self._spn_g_end.value() - 1
+        if end < start:
+            start, end = end, start
+        self._r.groups.append(Group(start=start, end=end,
+                                    repeats=self._spn_g_repeats.value()))
+        self._reload_groups()
+        self._emit()
+
+    def _del_group(self) -> None:
+        row = self._lst_groups.currentRow()
+        if 0 <= row < len(self._r.groups):
+            del self._r.groups[row]
+            self._reload_groups()
+            self._emit()
 
     def _selected(self) -> int:
         return self._tbl.selected_row()
@@ -381,13 +449,14 @@ class SettingsPanel(QWidget):
         if not r.steps:
             self._lbl_summary.setText("No steps yet — add one.")
             return
-        est = estimate(r, self._fps)
+        est = estimate(r, self._hz)
         bits = [f"{r.total_steps()} run(s): {len(r.steps)} step(s)"
-                + (f" x {r.cycles} cycles" if r.cycles > 1 else "")]
+                + (f" x {r.cycles} cycles" if r.cycles > 1 else "")
+                + (f", {len(r.groups)} repeat group(s)" if r.groups else "")]
         # "about", not a promise: nothing times a stage move, so every total
         # here is a floor. Frames become seconds only when a camera has told us
         # its rate — otherwise they are reported as frames rather than guessed.
-        bits.append(est.text() + (f" (at {est.fps:g} fps)" if est.fps and
+        bits.append(est.text() + (f" (at {est.hz:g} Hz)" if est.hz and
                                   any(x.unit == "frames" for x in r.steps)
                                   else ""))
         if est.moves:
@@ -402,14 +471,14 @@ class SettingsPanel(QWidget):
     @property
     def frame_rate(self) -> float | None:
         """The rate the estimate is using, or None if no camera has said."""
-        return self._fps
+        return self._hz
 
-    def set_frame_rate(self, fps: float | None) -> None:
+    def set_frame_rate(self, hz: float | None) -> None:
         """The camera's rate, for the estimate only — a step measured in frames
         is still never converted where it is *recorded* (settings.py)."""
-        fps = float(fps) if fps and fps > 0 else None
-        if fps != self._fps:
-            self._fps = fps
+        hz = float(hz) if hz and hz > 0 else None
+        if hz != self._hz:
+            self._hz = hz
             self._refresh_summary()
 
     # ── run state ────────────────────────────────────────────────────────────
@@ -557,6 +626,7 @@ class SettingsPanel(QWidget):
             self._r.save_mode = r.save_mode
             self._r.start_trigger = r.start_trigger
             self._r.steps[:] = r.steps
+            self._r.groups[:] = r.groups
             self._txt_name.setText(self._r.name)
             self._spn_cycles.setValue(self._r.cycles)
             self._cmb_save.setCurrentIndex(

@@ -2,7 +2,7 @@
 
 Presets follow the datasheet (Standard scan, Area Readout). Readout is
 row-by-row at full width, so frame rate follows the number of ROWS almost
-alone. Datasheet maxima (fps):
+alone. Datasheet maxima (Hz):
 
     Y (rows)   CoaXPress   USB3.1 Gen1 16-bit   USB3.1 Gen1 8-bit
       2368        115            15.7                 31.5
@@ -15,7 +15,7 @@ alone. Datasheet maxima (fps):
          8      15200          2360                5260
          4      19500          3960                7200
 
-Actual fps = min(readout max, 1/exposure); vertical binning multiplies it
+Actual Hz = min(readout max, 1/exposure); vertical binning multiplies it
 further. ROI sizes and positions are multiples of 4, as DCAM-API requires.
 
 The table is the sensor's physics and stays complete; only rows ≥
@@ -58,17 +58,17 @@ def _band(label: str, rows: int) -> ResolutionPreset:
     return ResolutionPreset(label, SENSOR_W, rows, 0, vpos)
 
 
-# (rows, USB3.1 Gen1 16-bit fps, CoaXPress fps), datasheet, slowest → fastest.
+# (rows, USB3.1 Gen1 16-bit Hz, CoaXPress Hz), datasheet, slowest → fastest.
 #
 # WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both, and this rig is cabled
 # over **CoaXPress** (Active Silicon FireBird 4xCXP6-2PE8) — full frame ~8.7 ms,
-# 115 fps. The 2026-07-29 figure of 15.8 fps was USB3 and does not apply.
+# 115 Hz. The 2026-07-29 figure of 15.8 Hz was USB3 and does not apply.
 # Software cannot pick the link; DCAM enumerates it, and DEFAULT_LINK only
 # chooses the column the label shows.
 #
 # ESTIMATES, for UI and buffer sizing. get_frame_timings() is authoritative at
 # run time, and the panel shows that measured rate once capture starts.
-_ROWS_FPS_BOTH: List[tuple[int, float, float]] = [
+_ROWS_HZ_BOTH: List[tuple[int, float, float]] = [
     (2368, 15.7,  115.0),
     (2304, 16.2,  118.0),
     (2048, 18.2,  132.0),
@@ -88,22 +88,22 @@ LINK_LABEL = {USB: "USB3", CXP: "CoaXPress"}
 # rig is CoaXPress-cabled, so default to CXP.
 DEFAULT_LINK: str = CXP
 
-_ROWS_FPS: List[tuple[int, float]] = [(r, u) for r, u, _c in _ROWS_FPS_BOTH]
-_ROWS_FPS_CXP: List[tuple[int, float]] = [(r, c) for r, _u, c in _ROWS_FPS_BOTH]
+_ROWS_HZ_USB: List[tuple[int, float]] = [(r, u) for r, u, _c in _ROWS_HZ_BOTH]
+_ROWS_HZ_CXP: List[tuple[int, float]] = [(r, c) for r, _u, c in _ROWS_HZ_BOTH]
 
-# Sorted once: readout_fps() is called on every panel update.
-_SORTED = {USB: sorted(_ROWS_FPS), CXP: sorted(_ROWS_FPS_CXP)}
+# Sorted once: readout_hz() is called on every panel update.
+_SORTED = {USB: sorted(_ROWS_HZ_USB), CXP: sorted(_ROWS_HZ_CXP)}
 
 
-def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
+def _label(rows: int, hz_usb: float, hz_cxp: float) -> str:
     dims = f"{SENSOR_W}×{rows}"
     tag = "Full Frame " + f"({dims})" if rows == SENSOR_H else dims
     # Show both, so the label never silently lies about which link is live.
-    return f"{tag} · {fps_usb:g} USB / {fps_cxp:g} CXP fps"
+    return f"{tag} · {hz_usb:g} USB / {hz_cxp:g} CXP Hz"
 
 
 # Smallest band the UI offers as a real preset; 8/4 rows stay table-only
-# (too thin an FOV to pick, kept for readout_fps()'s binned-ROI interpolation).
+# (too thin an FOV to pick, kept for readout_hz()'s binned-ROI interpolation).
 # 2026-09-11 rig measurement: binning does NOT speed up THIS camera's own
 # readout (512 rows @ bin 2x2 still reads out at the 512-row rate) — only
 # row count does. So 256/128 are real presets, not just a smaller-frame
@@ -111,7 +111,7 @@ def _label(rows: int, fps_usb: float, fps_cxp: float) -> str:
 MIN_PRESET_ROWS: int = 128
 
 PRESETS: Dict[str, ResolutionPreset] = {}
-for _rows, _u, _c in _ROWS_FPS_BOTH:
+for _rows, _u, _c in _ROWS_HZ_BOTH:
     if _rows < MIN_PRESET_ROWS:
         continue
     _key = f"{SENSOR_W}x{_rows}"
@@ -143,10 +143,10 @@ def preset_alias(key: str) -> str:
     return PRESET_ALIAS_FULL if key == DEFAULT_PRESET else key
 
 
-def readout_fps(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
+def readout_hz(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
     """Datasheet 16-bit readout ceiling for an ROI of `rows` rows on `link`.
 
-    fps ≈ const / rows over most of the range (2368·15.7 ≈ 1024·36.4 ≈ 37 000),
+    Hz ≈ const / rows over most of the range (2368·15.7 ≈ 1024·36.4 ≈ 37 000),
     but below ~128 rows fixed per-frame overhead dominates and the datasheet
     falls off that line — hence interpolating the table, not extrapolating 1/rows.
     Vertical binning reads out `rows/binning` lines, so it scales the same way.
@@ -230,29 +230,29 @@ class AcqConfig:
         return max(int(h) * int(w) * 2, 1)
 
     # ── Frame-rate budget ────────────────────────────────────────────────────
-    # fps = min(readout ceiling, 1/exposure). Both are surfaced so the UI can
+    # Hz = min(readout ceiling, 1/exposure). Both are surfaced so the UI can
     # say *which* binds: an over-long exposure silently throws away the preset.
 
     @property
-    def readout_fps(self) -> float:
+    def readout_hz(self) -> float:
         """Sensor/link ceiling for this ROI + binning (datasheet estimate)."""
-        return readout_fps(self.preset.vsize, self.binning, self.link)
+        return readout_hz(self.preset.vsize, self.binning, self.link)
 
     @property
-    def exposure_fps(self) -> float:
+    def exposure_hz(self) -> float:
         """Ceiling imposed by the exposure time alone."""
         return 1e6 / max(self.exposure_us, 1e-6)
 
     @property
-    def expected_fps(self) -> float:
-        return min(self.readout_fps, self.exposure_fps)
+    def expected_hz(self) -> float:
+        return min(self.readout_hz, self.exposure_hz)
 
     @property
     def exposure_limited(self) -> bool:
         """True when exposure — not readout — is what caps the frame rate."""
-        return self.exposure_fps < self.readout_fps
+        return self.exposure_hz < self.readout_hz
 
     @property
     def max_exposure_us(self) -> float:
         """Longest exposure that still reaches the readout ceiling."""
-        return 1e6 / max(self.readout_fps, 1e-9)
+        return 1e6 / max(self.readout_hz, 1e-9)

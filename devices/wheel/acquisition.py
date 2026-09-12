@@ -33,7 +33,7 @@ class _EncoderBase(PullWorker):
     is coasted through, which is what stops distance sawtoothing back once per
     revolution. Reported `_LAG_S` in the past, buffered, so the trace is smooth.
     """
-    fps_update = pyqtSignal(float)      # samples / second
+    hz_update = pyqtSignal(float)      # samples / second
 
     _MAX_REV_S = 10.0       # steps implying more than this are reset artifacts
     _TAU_S = 0.15           # EMA time constant (s) for the coasting velocity
@@ -278,7 +278,7 @@ class EncoderWorker(_EncoderBase):
 
                 n_win += len(data)
                 if now - t_win >= 1.0:
-                    self.fps_update.emit(n_win / (now - t_win))
+                    self.hz_update.emit(n_win / (now - t_win))
                     n_win, t_win = 0, now
         return True
 
@@ -307,7 +307,7 @@ class EncoderWorker(_EncoderBase):
                 # Arrival is the best estimate here — no device timebase.
                 self._emit_sample(float(voltage), now - t0, now)
                 if n % max(1, int(self._rate)) == 0 and now > t0:
-                    self.fps_update.emit(n / (now - t0))
+                    self.hz_update.emit(n / (now - t0))
 
 
 class MockEncoderWorker(_EncoderBase):
@@ -338,4 +338,4 @@ class MockEncoderWorker(_EncoderBase):
             voltage = min(max(voltage, 0.0), vfs)
             self._emit_sample(voltage, t, t0 + t)
             if n % int(self.RATE) == 0 and t > 0:
-                self.fps_update.emit(n / t)
+                self.hz_update.emit(n / t)

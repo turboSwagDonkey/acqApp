@@ -319,8 +319,13 @@ def main() -> int:
     # led_follow_live (a MODE: fire the LED from Live/Record start/stop) and
     # led_intensity (a dial, like puffer_duration_s) are deliberate
     # exceptions — the LED's own on/off runtime state must still never
-    # persist (would turn illumination on in an empty rig).
-    scrubbed = (json.dumps(saved).lower()
+    # persist (would turn illumination on in an empty rig). Scoped to the two
+    # device sections that actually own an LED: `routines` legitimately
+    # persists a step's `led` field (a protocol instruction — "turn the LED
+    # on for this step" — the same kind of fact as `project`, not runtime
+    # state) and must not be caught by this.
+    led_sections = {k: saved.get(k, {}) for k in ("voltage_cam", "pupil_cam")}
+    scrubbed = (json.dumps(led_sections).lower()
                .replace("led_follow_live", "").replace("led_intensity", ""))
     r.check("led" not in scrubbed,
             "no LED on/off runtime state was persisted as a setting "

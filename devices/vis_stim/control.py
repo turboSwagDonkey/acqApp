@@ -195,9 +195,9 @@ class VisStimController(QObject):
         self._window.painted.connect(self._on_frame)
         self._window.escape_pressed.connect(self._on_escape)
         self._window.skip_pressed.connect(self._on_skip)
-        fps = screen.refreshRate() or 60.0
-        self._window.open_on(screen, fps)
-        self._fps = fps
+        hz = screen.refreshRate() or 60.0
+        self._window.open_on(screen, hz)
+        self._hz = hz
 
         self._phase = PRIMING
         self._prime_count = 0
@@ -283,7 +283,7 @@ class VisStimController(QObject):
     def _begin_grating_trial(self, p: StimParams) -> None:
         w, h = self._window.width(), self._window.height()
         self._rebuild_texture_if_changed(p, w, h)
-        ifi = 1.0 / self._fps
+        ifi = 1.0 / self._hz
         self._total_frames = max(
             1, round(1.0 / (ifi * max(p.WaveTempPeriodInHz, 1e-9)))
               * int(p.PeriodsToShow))
@@ -612,7 +612,7 @@ class VisStimController(QObject):
             self._blank_frames += 1
         p = self._trials[self._trial_idx]
         speed = self._read_wheel_speed()
-        ifi = 1.0 / self._fps
+        ifi = 1.0 / self._hz
         self._xoffset = (self._xoffset + speed * p.VisuomotorGain * ifi) % max(
             p.WaveSpPeriod, 1e-9)
         self._window.set_offset(self._xoffset)

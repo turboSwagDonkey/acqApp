@@ -23,21 +23,21 @@ from acqApp.devices.pupil_cam.avi import AviReader
 class VideoFileCameraWorker(PullWorker):
     """Replays `path` as if it were the pupil camera, looping by default."""
 
-    fps_update = pyqtSignal(int, float)   # (total frames, fps over the run)
+    hz_update = pyqtSignal(int, float)   # (total frames, Hz over the run)
 
     _STOP_WAIT_MS = 2000
 
-    def __init__(self, path: str | Path, fps: float = 20.0,
+    def __init__(self, path: str | Path, rate_hz: float = 20.0,
                  loop: bool = True) -> None:
         super().__init__()
         self._reader = AviReader(path)
-        # 0 fps = "the file's own rate"; a still-image AVI reports 0 too, hence
+        # 0 Hz = "the file's own rate"; a still-image AVI reports 0 too, hence
         # the floor.
-        self._fps = max(1.0, fps or self._reader.fps or 20.0)
+        self._hz = max(1.0, rate_hz or self._reader.hz or 20.0)
         self._loop = loop
         self._n = 0
         print(f"[pupil_cam] video source {self._reader.describe()} "
-              f"— replaying at {self._fps:g} fps{', looping' if loop else ''}")
+              f"— replaying at {self._hz:g} Hz{', looping' if loop else ''}")
 
     # ── the PupilCameraWorker surface ────────────────────────────────────────
     def set_exposure(self, us: float) -> None:
@@ -59,7 +59,7 @@ class VideoFileCameraWorker(PullWorker):
     def _run(self) -> None:
         self._stop = False
         t0 = time.perf_counter()
-        period = 1.0 / self._fps
+        period = 1.0 / self._hz
         total = len(self._reader)
         # `paced()` yields the 1-based count of this attempt; the file index
         # for that attempt is one less (0-based), matching the old pre-
@@ -74,6 +74,6 @@ class VideoFileCameraWorker(PullWorker):
             # outlive this tick and a view would alias the next frame.
             self._publish(np.ascontiguousarray(self._reader.luma(i)))
             self._n = n
-            if n % max(1, int(self._fps)) == 0:
-                self.fps_update.emit(n, n / (time.perf_counter() - t0))
+            if n % max(1, int(self._hz)) == 0:
+                self.hz_update.emit(n, n / (time.perf_counter() - t0))
         print(f"[pupil_cam] video source stopped after {self._n} frames")

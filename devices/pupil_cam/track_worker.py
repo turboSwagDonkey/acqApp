@@ -136,7 +136,7 @@ class PupilTrackWorker(PullWorker):
     """
 
     _STOP_WAIT_MS = 3000
-    _IDLE_SLEEP_S = 0.004        # shorter than a frame period at any usable fps
+    _IDLE_SLEEP_S = 0.004        # shorter than a frame period at any usable Hz
 
     def __init__(self, source: Callable[[], Any], settings: PupilSettings,
                  history: int = 600) -> None:

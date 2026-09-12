@@ -33,7 +33,7 @@ PUPIL_FIT_STREAMS = ["pupil_x", "pupil_y", "pupil_major", "pupil_minor",
 PUPIL_THRESHOLD = 57                    # not the default, so a stuck one shows
 
 CONFIG_ATTRS = ["created", "emulated", "modules", "subject", "cam_exposure_us",
-                "wheel_rate_hz", "pupil_fps", "stage_port", "dmd_on_time_ms",
+                "wheel_rate_hz", "pupil_rate_hz", "stage_port", "dmd_on_time_ms",
                 "puffer_channel", "puffer_duration_s",
                 # A pupil trace without the threshold that produced it is not
                 # reproducible: threshold SETS the radius.

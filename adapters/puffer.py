@@ -46,6 +46,10 @@ class PufferModule(ModuleAdapter):
         if self.controller is not None:
             self.controller.fire(duration)
 
+    # ── what an experiment routine may drive (acq.devices.PufferTarget) ──
+    def puffer_target(self):
+        return self if self.controller is not None else None
+
     def on_trigger(self, name: str, duration: float) -> None:
         if name == self.key:
             self.fire(duration)

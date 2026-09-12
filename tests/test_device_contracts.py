@@ -143,7 +143,7 @@ def main() -> int:
     PAIRS = [
         (OrcaFireWorker, MockCameraWorker, PullWorker,
          # Qt signals and a query that only means something against a device.
-         {"drops_update", "timing_update", "achievable_fps"}, set()),
+         {"drops_update", "timing_update", "achievable_hz"}, set()),
         (EncoderWorker, MockEncoderWorker, PullWorker,
          set(), {"RATE"}),                      # mock's synthetic sample rate
         (PupilCameraWorker, MockPupilCameraWorker, PullWorker,
@@ -170,7 +170,7 @@ def main() -> int:
             AttributeError("skipped_frames")))
     drifted = public(OrcaFireWorker, PullWorker) - (
         public(MockCameraWorker, PullWorker) | {"drops_update", "timing_update",
-                                                "achievable_fps"})
+                                                "achievable_hz"})
     r.check(not drifted, f"control target: skipped_frames is now on both "
                          f"(residual drift {sorted(drifted)})")
     r.check("skipped_frames" in public(MockCameraWorker, PullWorker),
@@ -278,6 +278,8 @@ def main() -> int:
         def set_modules(self, keys): return [], []
         def stage_target(self): return None
         def pattern_target(self): return None
+        def led_target(self): return None
+        def puffer_target(self): return None
         def frame_rate_hz(self): return None
         def cam_trigger_mode(self): return None
         # signal_sources deliberately absent

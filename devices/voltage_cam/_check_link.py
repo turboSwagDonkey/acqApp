@@ -11,8 +11,8 @@ on 2026-07-29 that was USB3, costing a factor of ~7.3 in frame rate.
 The frame period at full frame is decided by the link, so it is a reliable
 fingerprint:
 
-    USB3.1 Gen1 16-bit   ~63.3 ms   (15.8 fps,   316 MB/s)
-    CoaXPress             ~8.7 ms   ( 115 fps,  2300 MB/s)
+    USB3.1 Gen1 16-bit   ~63.3 ms   (15.8 Hz,   316 MB/s)
+    CoaXPress             ~8.7 ms   ( 115 Hz,  2300 MB/s)
 
 Run this after any cabling change, with the camera free — DCAM will not hand
 out the device twice, so close the app first.
@@ -39,14 +39,14 @@ def main() -> int:
         cam.set_roi(hbin=1, vbin=1)
         cam.set_exposure(0.001)          # short enough not to be the limit
         _exp, period = cam.get_frame_timings()
-        fps = 1.0 / period
-        print(f"\nfull frame: {period * 1e3:.2f} ms  ->  {fps:.1f} fps  "
-              f"({W * H * 2 * fps / (1 << 20):.0f} MB/s)")
-        if fps > 40:
+        hz = 1.0 / period
+        print(f"\nfull frame: {period * 1e3:.2f} ms  ->  {hz:.1f} Hz  "
+              f"({W * H * 2 * hz / (1 << 20):.0f} MB/s)")
+        if hz > 40:
             print("LINK: CoaXPress")
             print(f"NOTE: recording full frame needs ~2300 MB/s; the write "
                   f"path is budgeted at ~{WRITER_MBPS:.0f} MB/s, so recording "
-                  f"caps near {WRITER_MBPS / (W * H * 2 / (1 << 20)):.0f} fps. "
+                  f"caps near {WRITER_MBPS / (W * H * 2 / (1 << 20)):.0f} Hz. "
                   f"2x2 binning records all of it either way.")
         else:
             print("LINK: USB3  — CoaXPress is NOT in use")

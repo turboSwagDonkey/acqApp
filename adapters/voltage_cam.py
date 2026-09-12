@@ -109,6 +109,13 @@ class VoltageCamModule(ModuleAdapter):
         if self.controller is not None:
             self.controller.set(on)
 
+    # ── what an experiment routine may drive (acq.devices.LedTarget) ──
+    def led_target(self):
+        return self if self.controller is not None else None
+
+    def set_led(self, on: bool) -> None:
+        self._on_led(on)
+
     def _on_lut_visible(self, on: bool) -> None:
         if self._hist is not None:
             self._hist.setVisible(on)
@@ -162,12 +169,12 @@ class VoltageCamModule(ModuleAdapter):
         The camera is the only module that knows both."""
         cfg = self.panel.get_config()
         self.win.set_expected_rate(
-            cfg.frame_bytes * cfg.expected_fps / (1 << 20), WRITER_MBPS)
+            cfg.frame_bytes * cfg.expected_hz / (1 << 20), WRITER_MBPS)
 
     def frame_rate_hz(self) -> float | None:
         """What this preset and exposure are expected to sustain. The routine
         panel turns "100 frames" into seconds with it; nothing records it."""
-        return self.panel.get_config().expected_fps
+        return self.panel.get_config().expected_hz
 
     def cam_trigger_mode(self) -> str | None:
         """This camera's own trigger setting — a routine's TTL start trigger

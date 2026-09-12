@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 @dataclass
 class PupilSettings:
     exposure_us: float = 8000.0
-    fps:         float = 20.0
+    rate_hz:     float = 20.0
     # ── eye region ──
     # The animal is head-fixed, so the eye occupies one fixed part of the frame.
     # Kept through the tracker's removal: it is drawn by hand on the preview and
