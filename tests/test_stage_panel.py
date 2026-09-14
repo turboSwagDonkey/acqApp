@@ -220,40 +220,6 @@ def check_real_config_untouched(r: Report) -> None:
             "the panel wrote no calibration at all — it only reads")
 
 
-def check_z_axis(r: Report) -> None:
-    """Z is opt-in (StageSettings.z_enabled) and, unlike X/Y, jog-only — no
-    "Go to", since it has no measured calibration (settings.py)."""
-    from acqApp.devices.stage.settings import StageSettings
-
-    off = _panel(FakeCtrl())
-    r.check(off._lbl_z is None and "z" not in off._axis_widgets,
-            "control: Z is absent from the panel when not enabled")
-
-    c = FakeCtrl()
-    p = SettingsPanel(StageSettings(z_enabled=True))
-    p.bind_controller(c)
-    r.check(p._lbl_z is not None and "z" in p._axis_widgets,
-            "enabling Z adds its readout label and motion row")
-    r.check(p._axis_widgets["z"]["goto"] is None,
-            "…but no absolute go-to widget — an uncalibrated axis has "
-            "nothing honest to go to")
-    r.check(len(p._axis_widgets["z"]["buttons"]) == 3,
-            "…so only jog−/jog+/stop, not the 4 X/Y has")
-
-    p._axis_widgets["z"]["step"].setValue(500.0)
-    p._jog("z", -1)
-    p._stop("z")
-    names = [n for n, _ in c.calls]
-    r.check(("jog_um", ("z", -500.0)) in c.calls,
-            f"Z jog reaches the controller with its own step ({c.calls})")
-    r.check("stop" in names and ("stop", ("z",)) in c.calls,
-            "Z stop reaches the controller with its own axis key")
-
-    p.set_readout(0.0, 0.0, 12345)
-    r.check(p._lbl_z.text() == "12345",
-            f"Z's readout shows raw counts, not microns ({p._lbl_z.text()!r})")
-
-
 def check_map_repaint_guard(r: Report) -> None:
     """A stationary stage must not repaint the travel map every poll tick
     (2026-08-27) — `StageMap.set_position` always calls `update()`, so
@@ -290,7 +256,6 @@ def main() -> int:
     check_dead_link(r)
     check_unbound(r)
     check_frame_gating(r)
-    check_z_axis(r)
     check_map_repaint_guard(r)
     check_current_position_not_consumed(r)
     check_real_config_untouched(r)

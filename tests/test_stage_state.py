@@ -51,6 +51,9 @@ def check_guards(r: Report) -> None:
         ("move_to_um", lambda: ctl.move_to_um("x", 100.0)),
         ("jog_um",     lambda: ctl.jog_um("x", 10.0)),
         ("read_xy_um", lambda: ctl.read_xy_um()),
+        # "not connected" is checked before "no Z stage" (see read_z_um), so
+        # this rig-with-no-Z case still raises the same way as X/Y here.
+        ("read_z_um",  lambda: ctl.read_z_um()),
     ):
         try:
             call()
@@ -61,12 +64,6 @@ def check_guards(r: Report) -> None:
         else:
             r.check(False, f"{label}() while disconnected did not raise")
 
-    # Unlike read_xy_um, read_z_counts() has no calibrated meaning to promise
-    # in the first place — disconnected (or Z disabled) is just None, not a
-    # raise; a caller doing live display work shouldn't need to catch it.
-    r.check(ctl.read_z_counts() is None,
-            "read_z_counts() while disconnected is None, not a raise")
-
     # stop/stop_all are called on teardown paths and must stay silent no-ops.
     try:
         ctl.stop("x")
@@ -74,32 +71,6 @@ def check_guards(r: Report) -> None:
         r.check(True, "stop()/stop_all() while disconnected are no-ops")
     except Exception as e:                            # noqa: BLE001
         r.check(False, f"stop() while disconnected raised {type(e).__name__}: {e}")
-
-
-def check_z_axis(r: Report) -> None:
-    """Z is opt-in, off by default, and never touches the shared config."""
-    from acqApp.devices.stage.control import MockStageController
-
-    disabled = MockStageController(S.StageSettings())    # z_enabled defaults False
-    disabled.connect()
-    try:
-        disabled.jog_um("z", 10.0)
-        r.check(False, "control: jog_um('z') with Z disabled did not raise")
-    except StageControllerError as e:
-        r.check("Z axis" in str(e), f"jog_um('z') refuses when Z is not "
-                                     f"enabled ({e})")
-
-    mock = MockStageController(S.StageSettings(z_enabled=True, z_axis_index=6))
-    mock.connect()
-    r.check(mock.read_z_counts() == 0, "Z starts at 0 counts once enabled")
-    mock.jog_um("z", 1000.0)
-    for _ in range(5):
-        mock.read_xy_um()          # advances the mock's easing each read
-    r.check(mock.read_z_counts() == 1000,
-            f"Z jog reaches its target (mock easing) ({mock.read_z_counts()})")
-    mock.stop_all()
-    r.check(mock.read_z_counts() == 1000,
-            "stop_all() also stops Z, not just X/Y")
 
 
 def check_persist_missing(r: Report, tmp: Path) -> None:
@@ -164,7 +135,6 @@ def main() -> int:
     before = real.stat().st_mtime_ns if real.is_file() else None
     try:
         check_guards(r)
-        check_z_axis(r)
         check_persist_missing(r, tmp)
         check_persist_merges(r, tmp)
         check_persist_corrupt(r, tmp)

@@ -313,10 +313,10 @@ def main() -> int:
     # The stage's axis calibration belongs to the shared stage_control config;
     # StageSettings nests two StageAxis objects that would not survive this
     # flat JSON, so only the panel's own fields may be written here.
-    r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg",
-                                            "z_enabled", "z_axis_index"},
-            f"stage section is port/poll_hz/frame_rotation_deg/z_enabled/"
-            f"z_axis_index only (got {sorted(saved.get('stage', {}))})")
+    r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg"},
+            f"stage section is port/poll_hz/frame_rotation_deg only — Z's "
+            f"calibration lives in the shared stage_control config, not here "
+            f"(got {sorted(saved.get('stage', {}))})")
     # led_follow_live (a MODE: fire the LED from Live/Record start/stop) and
     # led_intensity (a dial, like puffer_duration_s) are deliberate
     # exceptions — the LED's own on/off runtime state must still never
