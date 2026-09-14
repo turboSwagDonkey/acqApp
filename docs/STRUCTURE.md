@@ -234,16 +234,22 @@ devices/                one package per instrument
     capture_raw.py      script: hardware-clocked 1 kHz raw capture
     panel.py
     settings.py
-routines/               experiment routines: a protocol executed in order
+routines/               experiment routines: atomic steps (move/display/wait/
+                        puff) executed in order, with a draggable Recording
+                        bracket over the steps the camera captures for
   panel.py              the protocol, the run controls, and one Start button
   table.py              the step list: every cell edits through a widget that
-                        can only produce a legal value
+                        can only produce a legal value; Kind picks what a row
+                        does, unused columns render "—"
   engine.py             the executor — every actuation arrives as a callable,
                         so the whole of it is testable before light is emitted
   estimate.py           how long a routine takes — the one place frames become
                         seconds, and it says so; no Qt
-  settings.py           Step / Routine / validate() — no Qt
+  settings.py           Step / Group / Recording / Routine / validate() — no Qt
   templates.py          the saved-protocol library, one JSON file each — no Qt
+  timeline.py           one cycle drawn to scale: a Group bracket, step
+                        blocks by kind/duration, and recordings as SEPARATE
+                        bars (one per repeat, never merged) — view-only
 saving/                 where the session file goes
   config.py             SaveConfig + path building — no Qt
   panel.py
@@ -290,6 +296,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_rigs.py                rigs.json profiles, and that one beats a
                               channel saved on another rig
   test_routines.py            the routine engine, on a fake rig and a fake clock
+  test_timeline.py            the routine timeline's layout math — repeats
+                              draw as separate bars, never merged
   test_recording_losses.py
   test_save_paths.py
   test_session_recording.py

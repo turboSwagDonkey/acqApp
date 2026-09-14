@@ -18,10 +18,13 @@ the DMD calibration's `set_live`): a routine cannot run a step without a file
 open. A recording this adapter started, it stops at the end; one the operator
 started, it leaves alone.
 
-**Save mode `per_step` is accepted and validated but not yet rolled**: step
-boundaries go into the one session file as `/routine`. Rolling one means
-re-entering `MainWindow._start_recording` mid-session, and main.py is the
-operator's file. Until then both modes produce one relatable file.
+**Save mode `per_step` is accepted and validated but not yet rolled**:
+recording boundaries go into the one session file as `/routine`. Rolling
+one means re-entering `MainWindow._start_recording` mid-session, and
+main.py is the operator's file. Until then both modes produce one
+relatable file. (A further split — one file per `Recording` bracket, in
+its own subfolder — is a separate, later change, scoped once this can be
+looked at deliberately.)
 """
 from __future__ import annotations
 
@@ -38,18 +41,17 @@ from acqApp.routines.estimate import clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import RigLimits, Routine, validate
 
-# How often the engine is asked to advance. A step boundary lands within one
-# tick of its true instant; at 106 Hz that is under three frames, and the
-# boundary itself is recorded from the clock, not from the tick.
+# A step boundary lands within one tick of its true instant; at 106 Hz that is
+# under three frames, and the boundary itself is recorded from the clock, not
+# from the tick.
 TICK_MS = 25
 
-# The stream a "frames" step counts. The voltage camera is the imaging path an
-# experiment is about; the pupil camera watches the animal.
+# The voltage camera is the imaging path an experiment is about; the pupil
+# camera watches the animal.
 FRAME_STREAM = "voltage_cam"
 
-# Display ticks between two asks for the camera's frame rate. The estimate has
-# to follow an exposure changed in another tab, but not at 30 Hz — the number
-# is rebuilt from that panel's widgets each time.
+# The estimate has to follow an exposure changed in another tab, but not at
+# 30 Hz — the number is rebuilt from that panel's widgets each time.
 RATE_EVERY = 30
 
 
@@ -146,8 +148,8 @@ class RoutinesModule(ModuleAdapter):
             light=dmd.set_light if dmd is not None else (lambda _on: None),
             led=led.set_led if led is not None else (lambda _on: None),
             puff=puffer.fire if puffer is not None else (lambda: None),
-            begin_step=self._on_step_begin,
-            end_step=self._on_step_end,
+            begin_recording=self._on_recording_begin,
+            end_recording=self._on_recording_end,
             log=self.win.status,
         )
 
@@ -244,23 +246,30 @@ class RoutinesModule(ModuleAdapter):
             self._close_own_recording()
 
     # ── the file ──
-    def _on_step_begin(self, run) -> None:
-        """A step started. One `/routine` entry per boundary, on the shared
-        clock — which is what makes the steps locatable in the file."""
+    def _on_recording_begin(self, run) -> None:
+        """A recording bracket opened. One `/routine` entry per boundary, on
+        the shared clock — which is what makes recordings locatable in the
+        file."""
         self._put(run, opening=True)
 
-    def _on_step_end(self, run) -> None:
+    def _on_recording_end(self, run) -> None:
         self._put(run, opening=False)
 
     def _put(self, run, *, opening: bool) -> None:
         rec = self._rec
         if rec is None:
             return
-        # +index on the way in, -(index+1) on the way out: one scalar stream
+        # +region on the way in, -(region+1) on the way out: one scalar stream
         # carries both edges, and the sign says which without a second stream.
-        # `+1` because step 0's opening edge would otherwise be its own closing.
-        rec.put("routine", float(run.index + 1) if opening
-                else -float(run.index + 1))
+        # `+1` because region 0's opening edge would otherwise be its own
+        # closing. Two repeats of the SAME bracket sign identically — exactly
+        # the ambiguity a repeated step already had before this redesign,
+        # resolved the same way: `routine_runs` (below) carries cycle/attempt/
+        # t0 for every execution, so the boundaries and the JSON reassemble
+        # onto one story even though the raw stream alone can't tell repeats
+        # apart.
+        edge = float(run.region + 1)
+        rec.put("routine", edge if opening else -edge)
         self._filed += 1
 
     # ── session / recording ──
@@ -336,11 +345,18 @@ class RoutinesModule(ModuleAdapter):
         where = f"step {i + 1}/{self._n_steps}  cycle {cycle + 1}"
         if attempt > 1:
             where += f"  (attempt {attempt})"
-        if eng.phase == Phase.SETTLE:
-            where += " — settling"
-        elif step is not None:
-            where += (f" — capturing {eng.progress() * 100:.0f} % of "
-                      f"{step.length:g} {step.unit}")
+        # What "step i is running" means depends on its kind — a Move doesn't
+        # have a length to report a fraction of, a Wait does.
+        if step is not None:
+            if step.kind == "move":
+                where += " — moving/settling"
+            elif step.kind == "wait":
+                where += (f" — waiting {eng.progress() * 100:.0f} % of "
+                          f"{step.length:g} {step.unit}")
+            elif step.kind == "display":
+                where += " — displaying" if step.pattern else " — stopping display"
+            else:
+                where += " — puffing"
         # The row is bolded in the table, so "which step is this" is answered
         # by looking at the protocol rather than by counting the label's index.
         self.panel.set_state(eng.phase, where, i)
@@ -384,18 +400,23 @@ class RoutinesModule(ModuleAdapter):
         eng = self._engine
         if eng is None:
             return {"routine_started": False, "routine_steps_done": 0,
-                    "routine_steps_interrupted": 0, "routine_fault": "",
+                    "routine_recordings_interrupted": 0, "routine_fault": "",
                     "routine_runs": "[]"}
         return {
             "routine_started":           True,
+            # Atomic steps completed normally — see `RoutineEngine.steps_done`.
             "routine_steps_done":        eng.steps_done(),
-            "routine_steps_interrupted": sum(1 for x in eng.runs if x.interrupted),
+            # Recording brackets a pause/fault cut short, not atomic steps —
+            # a routine with no Recordings at all can still fault mid-step and
+            # report 0 here correctly, since nothing was ever open to interrupt.
+            "routine_recordings_interrupted": sum(1 for x in eng.runs
+                                                  if x.interrupted),
             # Every execution, not just the counts. `/routine` carries the
-            # boundaries but only a signed index, so without this a step that
-            # was interrupted and repeated is indistinguishable from one that
-            # ran twice — and WHICH one faulted is recoverable from nothing
-            # else in the file. Session origin 0.0: in `single` mode the file
-            # IS the session, so its clock already starts there.
+            # boundaries but only a signed region index, so without this a
+            # recording that was interrupted and repeated is indistinguishable
+            # from one that ran twice — and WHICH one faulted is recoverable
+            # from nothing else in the file. Session origin 0.0: in `single`
+            # mode the file IS the session, so its clock already starts there.
             "routine_runs": json.dumps([x.attrs() for x in eng.runs]),
             # Empty unless it ended paused — a routine that finished clean and
             # one that was left paused at step 7 look alike without this.

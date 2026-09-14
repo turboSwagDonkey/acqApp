@@ -41,13 +41,22 @@ class Estimate:
 
 
 def step_seconds(step: Step, hz: float | None) -> tuple[float, float]:
-    """One step as (seconds, unconverted frames). Settle is always seconds."""
-    secs = max(0.0, step.settle_s)
+    """One step as (seconds, unconverted frames), by its kind:
+
+    - `move`: `settle_s` only — travel itself is untimed (see module docstring).
+    - `wait`: `length`/`unit`, converted to seconds at `hz` if given.
+    - `display`/`puff`: instant — nothing to time, the same way a puffer's
+      own fire duration was never timed either.
+    """
+    if step.kind == "move":
+        return max(0.0, step.settle_s), 0.0
+    if step.kind != "wait":
+        return 0.0, 0.0
     if step.unit == "seconds":
-        return secs + max(0.0, step.length), 0.0
+        return max(0.0, step.length), 0.0
     if hz and hz > 0:
-        return secs + max(0.0, step.length) / hz, 0.0
-    return secs, max(0.0, step.length)
+        return max(0.0, step.length) / hz, 0.0
+    return 0.0, max(0.0, step.length)
 
 
 def estimate(routine: Routine, hz: float | None = None) -> Estimate:
@@ -63,10 +72,11 @@ def estimate(routine: Routine, hz: float | None = None) -> Estimate:
     return Estimate(
         seconds=secs * cycles,
         frames=frames * cycles,
-        moves=sum(1 for i in order
-                  if routine.steps[i].x_um is not None
-                  or routine.steps[i].y_um is not None),
-        lit=sum(1 for i in order if routine.steps[i].pattern),
+        moves=sum(1 for i in order if routine.steps[i].kind == "move"
+                  and (routine.steps[i].x_um is not None
+                       or routine.steps[i].y_um is not None)),
+        lit=sum(1 for i in order if routine.steps[i].kind == "display"
+               and routine.steps[i].pattern),
         hz=hz if hz and hz > 0 else None,
     )
 

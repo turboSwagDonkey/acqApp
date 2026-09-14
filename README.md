@@ -271,18 +271,26 @@ camera it is driving, and a tab cannot be in two places. Any adapter can ask
 for the same by setting `own_window` (`adapters/base.py`); the shell never
 learns which module did.
 
-A **routine** is a list of
-steps executed in order — *put the stage here, put this pattern up, capture this
-much, move on* — repeated for as many cycles as the operator asks. It is the
-first feature in the app whose whole purpose is to **actuate**, which is why it
-is shaped the way it is.
+A **routine** is a list of **atomic steps** executed in order — Move the
+stage, start Displaying a pattern, Wait, Puff — repeated for as many cycles
+as the operator asks. It is the first feature in the app whose whole purpose
+is to **actuate**, which is why it is shaped the way it is.
 
-A step's length is set in **frames or seconds, the operator's choice per step**,
-and the two are never interconverted: at 106 Hz a rounded conversion sheds
-frames at every step boundary. A frames step is measured by what reached the
-**file**, not by what the camera produced — the two differ exactly when the
-write path is the thing falling behind. `settle_s` is separate from both: a
-stage move and an ALP upload are software-timed and neither is instant.
+A **Recording** is a separate, draggable bracket over a contiguous range of
+steps — select the range in the table, right-click "Mark as recording…" —
+meaning "the camera is capturing for these steps," independent of what those
+steps individually do and independent of repeat groups (the two ranges may
+nest or overlap freely). This is the one thing that decides when a `/routine`
+file boundary opens and when the illumination LED comes on; a routine can
+move and display things outside any Recording with neither happening.
+
+A Wait step's length is set in **frames or seconds, the operator's choice
+per step**, and the two are never interconverted: at 106 Hz a rounded
+conversion sheds frames at every step boundary. A frames step is measured by
+what reached the **file**, not by what the camera produced — the two differ
+exactly when the write path is the thing falling behind. A Move step's
+`settle_s` is separate: a stage move is software-timed and not instant, so
+the step doesn't end at arrival, it ends `settle_s` after it.
 
 The panel shows **where the routine is** (a bar over the whole protocol, plus
 a marker on the running step) and **what it will cost before it starts**.
@@ -292,15 +300,18 @@ frames rather than guessing. Steps are reordered by dragging the row, by
 Ctrl+Up/Down or by the arrow buttons, and a protocol worth running twice is
 saved to `routine_templates/` as a file (`routines/templates.py`).
 
-Everything that decides lives in `routines/settings.py` (the protocol and its
-validation), `routines/engine.py` (the executor) and `routines/estimate.py`,
-all Qt-free; the panel is `routines/panel.py` and the step table
-`routines/table.py`. **Every
-actuation reaches the engine as a callable**, the way the DMD calibration takes
-`project`/`grab`, so a whole routine — move, settle, light, capture, fault,
-resume — is driven against fakes on a fake clock in `tests/test_routines.py`
-before anything on the rig moves. `adapters/routines.py` is the only part that
-touches a real stage or projector, and it reaches them through
+Everything that decides lives in `routines/settings.py` (the protocol,
+`Step`/`Group`/`Recording`, and validation), `routines/engine.py` (the
+executor) and `routines/estimate.py`, all Qt-free; the panel is
+`routines/panel.py`, the step table `routines/table.py`, and a
+"Timeline…" button draws one cycle to scale in `routines/timeline.py` —
+a repeat group as one bracket, recordings as separate bars, one per
+repeat, never merged. **Every actuation reaches the engine as a callable**, the way the DMD calibration
+takes `project`/`grab`, so a whole routine — move, display, wait, puff,
+fault, resume, and when a Recording bracket opens and closes — is driven
+against fakes on a fake clock in `tests/test_routines.py` before anything on
+the rig moves. `adapters/routines.py` is the only part that touches a real
+stage or projector, and it reaches them through
 `ModuleHost.stage_target`/`pattern_target`: an instrument becomes
 routine-drivable by declaring one, and the routine never imports it.
 
@@ -326,14 +337,16 @@ didn't already have. The panel shows **ARMED — waiting for the camera's TTL
 trigger** while it waits; Abort cancels the arm cleanly, since nothing has
 moved or lit up yet.
 
-**The step list is edited through widgets, not words.** Light is a no/yes
-drop-down, Unit a frames/seconds one, and X, Y, Capture and Settle are spin
-boxes; an axis a step should not move reads **no change** rather than being
-blank, which used to mean both "leave it alone" and "not typed yet" — one step
-under the lowest position, or Delete on the cell. Steps reorder with the
-arrows, and the row being executed is shown in bold while the routine runs. A
-summary line under the table says how many runs, how long at least, whether the
-stage moves and how many steps emit light.
+**The step list is edited through widgets, not words.** Kind is a drop-down
+(Move/Display/Wait/Puff); Length/Unit are only editable on a Wait row and
+Settle only on a Move row — every other row renders them as **"—"** rather
+than a number that means nothing for that kind. A Move step's target reads
+**no change** on an axis it should not move, rather than being blank, which
+used to mean both "leave it alone" and "not typed yet" — Delete on the cell
+clears it, or a small dialog to type numbers. Steps reorder with the arrows
+or by dragging the row, and the row being executed is shown in bold while
+the routine runs. A summary line under the table says how many runs, how
+long at least, whether the stage moves and how many steps emit light.
 
 **Validation is up front.** A stage target outside the soft limits, a frames
 step with no camera to count them, a step that projects with no DMD loaded, a
@@ -341,29 +354,35 @@ missing pattern file — each is a refusal at the Start button with every reason
 listed, not a fault at step 7 of 12 with an animal on the rig.
 
 **A device failure pauses; it does not abort.** Stage motion is stopped and the
-light blanked, capture is left alone, and the operator decides. The interrupted
-step's data is **kept and marked** (`interrupted`, plus the fault text) rather
-than discarded, and **Resume repeats that step from its start** as a new
-attempt — a step means "this much capture under these conditions", and half of
-one does not. Both attempts stay in the file. Skip is the other way out.
+light blanked, capture is left alone, and the operator decides. An interrupted
+recording's data is **kept and marked** (`interrupted`, plus the fault text)
+rather than discarded, and **Resume repeats the interrupted step from its
+start** as a new attempt — a step means "do this," and half of a Wait does
+not. If that step is still inside a Recording bracket, Resume opens a
+**fresh** recording run rather than reattaching to the one the pause just
+closed, so the file always shows exactly where the pause happened. Skip is
+the other way out.
 
-Step boundaries are recorded to `/routine` on the shared clock: `+n` when step
-*n* opens, `−n` when it closes. The file also carries the protocol itself
-(`routine_steps`, as JSON), because "which stage position was step 4" cannot be
-recovered from anything else in it, and `routine_started` — a routine that was
-configured and never run leaves the same step list as one that ran.
+Recording boundaries are recorded to `/routine` on the shared clock: `+n` when
+bracket *n* opens, `−n` when it closes. The file also carries the protocol
+itself (`routine_steps`, as JSON), because "which stage position was step 4"
+cannot be recovered from anything else in it, and `routine_started` — a
+routine that was configured and never run leaves the same step list as one
+that ran.
 
-Two more rules that go with it: the light is blanked *before* a move, since a
-lit panel travelling across the sample is a stimulus nobody asked for; and the
-module set cannot change while a routine runs, since the routine holds an index
-into it.
+Two more rules that go with it: a Move step blanks the light before travelling
+and restores whatever a Display step last left lit once it has arrived and
+settled, since a lit panel travelling across the sample is a stimulus nobody
+asked for; and the module set cannot change while a routine runs, since the
+routine holds an index into it.
 
-> `save_mode = per_step` (a folder of one file per step, instead of one file for
-> the routine) is modelled, validated and carried into `StepRun.attrs()` — every
-> step file names the session origin and its own t0 on the same clock, so a
-> folder can be reassembled onto one timebase. **The rolling itself is not
-> built yet**; both modes currently produce one session file with `/routine`
-> boundaries in it.
+> `save_mode = per_step` (a folder of one file per recording, instead of one
+> file for the routine) is modelled, validated and carried into
+> `RecordingRun.attrs()` — every recording names the session origin and its
+> own t0 on the same clock, so a folder can be reassembled onto one timebase.
+> **The rolling itself is not built yet**; both modes currently produce one
+> session file with `/routine` boundaries in it. A further split — one file
+> per Recording bracket, in its own subfolder — is a separate, later change.
 
 ### Closed loop
 

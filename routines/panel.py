@@ -25,15 +25,20 @@ questions: the **progress bar** is the whole routine, current step included,
 and the **summary line** is what the protocol costs before it starts
 (`routines/estimate.py`). Both are floors — nothing times a stage move.
 
-The step *table* is `routines/table.py` — every cell edits through a widget
-that can only produce a legal value, which is why nothing here parses "yes".
-Per-step actions (Duplicate, Remove, Pattern/ROI/Clear pattern, Set position,
-Fill from FOV) live on the table's own right-click menu rather than as
-buttons here — this
-panel keeps only +Step and reordering visible, since those are the two used on
-every single step. Repeat groups (`routines/settings.py`'s `Group`) come from
-selecting the range in the table, not typing row numbers: `_on_selection_
-changed` mirrors the table's selection into the "Group selected" control.
+The step *table* is `routines/table.py` — a step is one atomic action (Move /
+Display / Wait / Puff) now, and every cell edits through a widget that can
+only produce a legal value, which is why nothing here parses "yes". Per-step
+actions (Duplicate, Remove, Pattern/ROI/Clear pattern, Set position, Fill
+from FOV) live on the table's own right-click menu, gated by the row's kind,
+rather than as buttons here — this panel keeps only +Step (with a kind
+picker) and reordering visible, since those are used on every single step.
+
+Two things come from selecting a range in the table, not typing row numbers
+— `_on_selection_changed` mirrors the table's selection into both controls:
+**Repeat groups** (`routines/settings.py`'s `Group`) nest a range of steps
+inside `cycles`; **Recordings** (`Recording`) mark a range as "the camera is
+capturing for these" — independent of what those steps do, and independent
+of Groups (the two ranges may nest or overlap freely).
 """
 from __future__ import annotations
 
@@ -51,9 +56,9 @@ from acqApp import style
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
-from acqApp.routines.settings import (SAVE_MODES, START_TRIGGERS, Group,
-                                      Routine, Step)
-from acqApp.routines.table import NO_CHANGE, StepTable
+from acqApp.routines.settings import (KINDS, SAVE_MODES, START_TRIGGERS,
+                                      Group, Recording, Routine, Step)
+from acqApp.routines.table import KIND_LABELS, NO_CHANGE, StepTable
 
 
 class SettingsPanel(QWidget):
@@ -162,39 +167,50 @@ class SettingsPanel(QWidget):
         self._tbl.remove_requested.connect(self._del_step)
         self._tbl.clear_pattern_requested.connect(self._clear_pattern)
         self._tbl.group_requested.connect(self._group_selected)
+        self._tbl.record_requested.connect(self._record_selected)
         self._tbl.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._tbl, 1)
 
         # Everything but adding a step and reordering — used constantly, so
         # kept as buttons — moved to a right-click menu on the table itself
-        # (Duplicate/Remove/Pattern/ROI/Clear pattern/FOV/Group selected):
-        # three crowded rows of buttons was the single biggest complaint about
-        # this panel, and every one of those actions already had a row-level
-        # meaning the menu can just name.
+        # (Duplicate/Remove/Pattern/ROI/Clear pattern/FOV/Group selected/Mark
+        # as recording): three crowded rows of buttons was the single biggest
+        # complaint about this panel, and every one of those actions already
+        # had a row-level meaning the menu can just name.
         btns = QHBoxLayout()
+        btns.addWidget(QLabel("+ Step:"))
+        self._cmb_new_kind = QComboBox()
+        for kind in KINDS:
+            self._cmb_new_kind.addItem(KIND_LABELS[kind], kind)
+        self._cmb_new_kind.setCurrentIndex(KINDS.index("wait"))
+        self._cmb_new_kind.setToolTip("What kind of step + Step appends.")
+        btns.addWidget(self._cmb_new_kind)
         self._add_buttons(btns, (
-            ("+ Step", self._add_step, "Append a step to the list."),
+            ("+ Step", self._add_step, "Append a step of the chosen kind."),
             ("↑", self._move_up,
              "Move the selected step earlier. Dragging the row and "
              "Ctrl+Up do the same."),
             ("↓", self._move_down,
              "Move the selected step later. Dragging the row and "
-             "Ctrl+Down do the same.")))
+             "Ctrl+Down do the same."),
+            ("Timeline…", self._show_timeline,
+             "See one cycle drawn to scale — repeat groups as a bracket, "
+             "recordings as separate bars (one per repeat, never merged).")))
         btns.addStretch(1)
         hint = QLabel("Right-click a step for Duplicate, Remove, Pattern, "
-                      "ROI set, Position, and Group selected.")
+                      "ROI set, Position, Group selected, and Mark as "
+                      "recording.")
         hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
         btns.addWidget(hint)
         lay.addLayout(btns)
 
         # ── repeat groups ────────────────────────────────────────────────────
         # A contiguous range of steps, repeated as a unit, nested inside
-        # `cycles` (which repeats the WHOLE list). Select the range IN the
-        # table (or right-click it -> "Group selected steps…") rather than
-        # typing row numbers here — the repeat count is the only thing left
-        # to ask for once the selection already says which steps. That count
-        # stays editable after the fact too (double-click the group below) —
-        # changing "how many times" should not mean deleting and regrouping.
+        # `cycles` (which repeats the WHOLE list). Select the range in the
+        # table rather than typing row numbers — the repeat count is the only
+        # thing left to ask for. It stays editable after the fact too
+        # (double-click the group below), so changing "how many times" isn't
+        # delete-and-regroup.
         ggrp = QGroupBox("Repeat groups")
         gl = QVBoxLayout(ggrp)
         gl.setSpacing(4)
@@ -230,6 +246,39 @@ class SettingsPanel(QWidget):
         btn_g_del.clicked.connect(self._del_group)
         gl.addWidget(btn_g_del)
         lay.addWidget(ggrp)
+
+        # ── recordings ───────────────────────────────────────────────────────
+        # A contiguous range of steps the camera is capturing for — independent
+        # of what those steps do, and independent of repeat groups (the two
+        # may nest or overlap freely). Same selection-driven shape as Repeat
+        # groups above, minus a repeat count: there is nothing else to ask for
+        # once the selection says which steps.
+        rgrp2 = QGroupBox("Recordings")
+        rl = QVBoxLayout(rgrp2)
+        rl.setSpacing(4)
+
+        rrow = QHBoxLayout()
+        self._lbl_r_selection = QLabel("Select 2+ steps in the table to mark "
+                                       "them as recording")
+        self._lbl_r_selection.setStyleSheet("color:#9aa0a6;")
+        rrow.addWidget(self._lbl_r_selection, 1)
+        self._btn_r_add = QPushButton("Mark as recording")
+        self._btn_r_add.setEnabled(False)
+        self._btn_r_add.setToolTip("Mark the steps selected in the table "
+                                   "above as one recording bracket — the "
+                                   "camera captures for exactly these steps.")
+        self._btn_r_add.clicked.connect(self._record_selected)
+        rrow.addWidget(self._btn_r_add)
+        rl.addLayout(rrow)
+
+        self._lst_recordings = QListWidget()
+        self._lst_recordings.setMaximumHeight(70)
+        rl.addWidget(self._lst_recordings)
+
+        btn_r_del = QPushButton("Remove selected")
+        btn_r_del.clicked.connect(self._del_recording)
+        rl.addWidget(btn_r_del)
+        lay.addWidget(rgrp2)
 
         # What is about to happen, in one line — a step list is not something
         # you can total up by eye once it is longer than a screen.
@@ -324,6 +373,7 @@ class SettingsPanel(QWidget):
     def _reload_table(self) -> None:
         self._tbl.reload()
         self._reload_groups()
+        self._reload_recordings()
         self._refresh_summary()
 
     # ── repeat groups ────────────────────────────────────────────────────────
@@ -335,14 +385,18 @@ class SettingsPanel(QWidget):
         self._tbl.set_groups(self._r.groups)
 
     def _on_selection_changed(self) -> None:
-        """The Repeat-groups control tracks the table's own selection rather
-        than asking for row numbers a second time — 2+ contiguous rows is a
-        candidate group, anything else is not one yet."""
+        """The Repeat-groups and Recordings controls track the table's own
+        selection rather than asking for row numbers a second time — 2+
+        contiguous rows is a candidate for either, anything else is not one
+        yet."""
         span = self._tbl.selected_range()
+        selected = f"Steps {span[0] + 1}-{span[1] + 1} selected" if span else None
         self._btn_g_add.setEnabled(span is not None)
         self._lbl_g_selection.setText(
-            f"Steps {span[0] + 1}-{span[1] + 1} selected" if span is not None
-            else "Select 2+ steps in the table to group them")
+            selected or "Select 2+ steps in the table to group them")
+        self._btn_r_add.setEnabled(span is not None)
+        self._lbl_r_selection.setText(
+            selected or "Select 2+ steps in the table to mark them as recording")
 
     def _group_selected(self) -> None:
         span = self._tbl.selected_range()
@@ -359,6 +413,29 @@ class SettingsPanel(QWidget):
         if 0 <= row < len(self._r.groups):
             del self._r.groups[row]
             self._reload_groups()
+            self._emit()
+
+    # ── recordings ───────────────────────────────────────────────────────────
+    def _reload_recordings(self) -> None:
+        self._lst_recordings.clear()
+        for r in self._r.recordings:
+            self._lst_recordings.addItem(f"steps {r.start + 1}-{r.end + 1}")
+        self._tbl.set_recordings(self._r.recordings)
+
+    def _record_selected(self) -> None:
+        span = self._tbl.selected_range()
+        if span is None:
+            return
+        start, end = span
+        self._r.recordings.append(Recording(start=start, end=end))
+        self._reload_recordings()
+        self._emit()
+
+    def _del_recording(self) -> None:
+        row = self._lst_recordings.currentRow()
+        if 0 <= row < len(self._r.recordings):
+            del self._r.recordings[row]
+            self._reload_recordings()
             self._emit()
 
     def _edit_group_repeats(self, item) -> None:
@@ -381,7 +458,8 @@ class SettingsPanel(QWidget):
         return self._tbl.selected_row()
 
     def _add_step(self) -> None:
-        self._r.steps.append(Step(label=f"step {len(self._r.steps) + 1}"))
+        kind = self._cmb_new_kind.currentData() or "wait"
+        self._r.steps.append(Step(kind=kind))
         self._reload_table()
         self._tbl.select_row(len(self._r.steps) - 1)
         self._emit()
@@ -416,6 +494,14 @@ class SettingsPanel(QWidget):
         row = self._selected()
         if row >= 0:
             self._tbl.move_row(row, row + delta)
+
+    def _show_timeline(self) -> None:
+        """One cycle of the routine being edited, drawn to scale — see
+        `routines/timeline.py`. Reads the live step/group/recording lists
+        directly; nothing here is editable, so there's nothing to sync back."""
+        from acqApp.routines.timeline import TimelineDialog
+
+        TimelineDialog(self._r, self._hz, self).exec()
 
     def _pick_pattern(self) -> None:
         self._pick_pattern_for(self._selected())
@@ -467,9 +553,10 @@ class SettingsPanel(QWidget):
         self._set_position_for(self._selected())
 
     def _set_position_for(self, row: int) -> None:
-        """Stage is one combined cell now (`table.py`'s "xy"), not two —
-        typing a number takes a small dialog instead of an inline spin box,
-        the same way Pattern always has (a file dialog, not a typed cell)."""
+        """A Move step's Details is X and Y together (`table.py`'s
+        "details"), not two cells — typing a number takes a small dialog
+        instead of an inline spin box, the same way Display's pattern always
+        has (a file dialog, not a typed cell)."""
         if not (0 <= row < len(self._r.steps)):
             return
         step = self._r.steps[row]
@@ -515,12 +602,12 @@ class SettingsPanel(QWidget):
             self._emit()
 
     def _clear_pattern(self) -> None:
-        """Back to "whatever the DMD has". The file dialog cannot express this
-        — cancelling it means "changed my mind", not "no pattern". The Delete
+        """Back to "stop displaying". The file dialog cannot express this —
+        cancelling it means "changed my mind", not "no pattern". The Delete
         key on the cell does the same, through the same call."""
         row = self._selected()
         if row >= 0 and self._r.steps[row].pattern:
-            self._tbl.clear_cell(row, "pattern")
+            self._tbl.clear_cell(row, "details")
 
     def _refresh_summary(self) -> None:
         """One line: how long this is, and whether any of it emits light."""
@@ -602,7 +689,7 @@ class SettingsPanel(QWidget):
         a 33 ms budget); this half of it was simply free to remove.
         """
         if phase != self._painted:
-            running = phase in (Phase.SETTLE, Phase.CAPTURE)
+            running = phase == Phase.RUNNING
             armed = phase == Phase.ARMED
             paused = phase == Phase.PAUSED
             held = running or armed or paused
@@ -706,6 +793,7 @@ class SettingsPanel(QWidget):
             self._r.start_trigger = r.start_trigger
             self._r.steps[:] = r.steps
             self._r.groups[:] = r.groups
+            self._r.recordings[:] = r.recordings
             self._txt_name.setText(self._r.name)
             self._spn_cycles.setValue(self._r.cycles)
             self._cmb_save.setCurrentIndex(

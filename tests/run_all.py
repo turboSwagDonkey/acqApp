@@ -45,6 +45,7 @@ TESTS = [
     ("vis-stim",  "test_vis_stim.py"),
     ("closed-loop", "test_closed_loop.py"),
     ("routines",  "test_routines.py"),
+    ("timeline",  "test_timeline.py"),
     ("save-paths", "test_save_paths.py"),
     ("writer-chunks", "test_writer_chunks.py"),
     ("split-writer", "test_split_writer.py"),

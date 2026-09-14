@@ -1,9 +1,10 @@
 """Experiment routines — run a protocol step by step, unattended.
 
-"100 frames at this stage position with this DMD pattern, move, another 100
-with a different pattern, repeat." `settings.py` is the protocol and its
-validation (Qt-free), `engine.py` the executor over callables (Qt-free),
-`worker.py` the thread that ticks it, `panel.py` the widgets.
+"Move here, start displaying this pattern, wait 100 frames while a Recording
+bracket captures them, puff, repeat." `settings.py` is the protocol
+(`Step`/`Group`/`Recording`/`Routine`) and its validation (Qt-free),
+`engine.py` the executor over callables (Qt-free), `panel.py` and `table.py`
+the widgets — `adapters/routines.py` owns the QTimer that ticks it.
 
 **It is the first feature whose whole purpose is to actuate**, so the split is
 the point: everything that decides is in the two Qt-free halves and is driven
@@ -23,16 +24,19 @@ _LAZY = {
     "MAX_SETTLE_S":   "settings",
     "SAVE_MODES":     "settings",
     "UNITS":          "settings",
+    "KINDS":          "settings",
     "RigLimits":      "settings",
     "Routine":        "settings",
     "Step":           "settings",
+    "Group":          "settings",
+    "Recording":      "settings",
     "validate":       "settings",
     "MOVE_TIMEOUT_S": "engine",
     "Phase":          "engine",
     "RoutineEngine":  "engine",
     "RoutineError":   "engine",
     "RoutineHooks":   "engine",
-    "StepRun":        "engine",
+    "RecordingRun":   "engine",
 }
 
 __all__ = sorted(_LAZY)

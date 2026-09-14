@@ -1,58 +1,52 @@
 """The step list as a table of typed editors.
 
-Every field used to be free text in a cell — "yes"/"no", "frames"/"seconds", a
-blank cell for an axis to leave alone. That parses, and a typo reads back as
-the old value with nothing said. Now each cell edits through a widget that can
-only produce a legal value: the value lives in `UserRole` while the text is a
-rendering of it (`250 um`, `no change`, `1.5 s`) — usually. Two cells render as
-something OTHER than their raw value when a friendlier fact is available:
+A step is one atomic action now (Move / Display / Wait / Puff), not a
+composite row bundling all of them — the **Kind** column picks which, and
+the **Details**/**Length**/**Unit**/**Settle** columns render "—" and refuse
+editing on a row whose kind doesn't use them (Length/Unit are Wait-only,
+Settle is Move-only, Details is Move/Display-only) — the same "sentinel, not
+blank" rule the old Stage/Pattern cells already used for "no change." Every
+editable cell still edits through a widget that can only produce a legal
+value: the value lives in `UserRole` while the text is a rendering of it,
+usually — **Details** renders as something OTHER than its raw value the same
+two ways Stage/Pattern always have:
 
-- **Stage** is X and Y together, `(x, y)` — one place, not two cells that
-  happen to sit next to each other. Filled from a saved FOV (double-click, or
-  right-click -> Fill from FOV…) it shows the FOV's name in front of the
-  numbers instead — `window1 (100 um, 200 um)` — since a step over a
-  recognised spot is more useful read by name. Typing a new number (double-
-  click -> Set position…) detaches the name; it may no longer be that spot.
-- **Pattern** shows a thumbnail once one is set, a picture being the whole
-  point of an image path. An ROI set is not an image — its shapes are
-  rasterised over their own bounding box instead (`_roi_icon`; camera px, the
-  space they are drawn in, so no DMD calibration is needed for *this* — it
-  answers "what shapes", not "where on the DMD").
+- **Move**'s Details is X and Y together, `(x, y)` — one place, not two
+  cells. Filled from a saved FOV (double-click, or right-click -> Fill from
+  FOV…) it shows the FOV's name in front of the numbers instead. Typing a
+  new number (double-click -> Set position…) detaches the name.
+- **Display**'s Details shows a thumbnail once a pattern is set, a picture
+  being the whole point of an image path; an ROI set rasterises its shapes
+  over their own bounding box instead (`_roi_icon`).
 
-Both are non-editable cells (no delegate, like Pattern always was) rather than
-something typed into directly — Stage takes a small dialog for the same reason
-Pattern takes a file dialog: the value is not free text, so nothing here
-parses it back out of a string.
+Both are non-editable cells (no delegate) rather than something typed
+directly into — Move takes a small dialog for the same reason Display takes
+a file dialog: the value is not free text.
 
-There is no Light/LED column: both used to be per-step checkboxes, but they
-duplicated information the step already carries. Light now follows whether a
-step has a pattern (`engine.py`) — a step either shows something or it
-doesn't — and the illumination LED simply tracks capture, on whenever the
-camera is recording, on nobody's per-step say-so. One less pair of boxes to
-tick, and no state that could disagree with the pattern cell right next to it.
+Rows are **dragged to reorder**, Ctrl+Up/Down do the same, both through
+`move_row` — one implementation of "what reordering means." Reordering does
+NOT rewrite `Group`/`Recording` ranges (index-based, like before this
+redesign) — a step dragged out of a group or recording bracket leaves the
+bracket pointing at whatever is now at those positions; this is a
+pre-existing limitation carried over unchanged, not something this table
+tries to fix.
 
-Rows are **dragged to reorder** — a protocol is an ordered thing, and the
-arrow buttons alone made moving step 9 to the top nine deliberate presses.
-Ctrl+Up/Ctrl+Down does the same from the keyboard, and both go through
-`move_row`, so there is one implementation of "what reordering means".
+Selection is **contiguous, not single**: both a repeat group (`Group`) and a
+recording bracket (`Recording`) are a start/end RANGE, so shift-click/
+shift-arrow extending a block is the one extra thing selection needs to
+express — `selected_range()` reads it back for the panel's "Group selected"
+and "Mark as recording" controls. `set_groups()`/`set_recordings()` tell the
+table which rows are in one, so it can tint them (blended where a row is in
+both) and badge the group's first row with its repeat count / every row of
+a recording with a marker, rather than that only being visible in a
+separate list below the table.
 
-Selection is **contiguous, not single**: a repeat group (`routines/settings.
-py`'s `Group`) is a start/end RANGE, so shift-click/shift-arrow extending a
-block is the one extra thing selection needs to express beyond "which row is
-current" — `selected_range()` reads it back for the panel's "Group selected"
-control. `set_groups()` then tells the table which rows are currently grouped,
-so it can tint them and badge the group's first row with its repeat count,
-rather than that only being visible in a separate list below the table.
+Most non-reordering actions live on a right-click menu (`contextMenuEvent`),
+gated by the row's kind — Set pattern/ROI/Clear only for Display rows, Set
+position/Fill from FOV only for Move rows — the table still owns none of
+their dialogs, it only emits a signal per action and the panel does the rest.
 
-Most non-reordering actions that used to be buttons under the table (Duplicate,
-Remove, Pattern/ROI/Clear pattern, Fill from FOV, Group selected) are a
-right-click menu on the table now (`contextMenuEvent`) — the table still owns
-none of their dialogs, it only emits a signal per action and the panel does
-the rest, the same split `pattern_requested` already had.
-
-Split from `panel.py`: seven columns of four kinds (free text, dialog-set
-display, numeric spin box, dropdown) is a job on its own. What it edits,
-`routines/settings.py` owns.
+Split from `panel.py`: what it edits, `routines/settings.py` owns.
 """
 from __future__ import annotations
 
@@ -66,46 +60,54 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QTableWidget, QTableWidgetItem,
 )
 
-from acqApp.routines.settings import UNITS, Group, Step, pattern_label
+from acqApp.routines.settings import (KINDS, UNITS, Group, Recording, Step,
+                                      pattern_label)
 
 # The Pattern cell's thumbnail — big enough to recognise a stripe set or a
 # grating by eye, small enough that a dozen rows still fit on screen.
 _THUMB = QSize(28, 28)
 
 # A grouped row's tint — faint enough to read as "part of something" without
-# fighting the running-step bold/selection highlight painted over it.
-_GROUP_TINT = QColor(208, 135, 112, 40)   # style.HEX["routines"] at low alpha
+# fighting the running-step bold/selection highlight painted over it. A warm
+# accent (matches the "N step(s) emit light" summary text), not one of
+# style.HEX's per-subsystem colors — public so `routines/timeline.py` can
+# paint the same bracket in the same color there.
+GROUP_TINT = QColor(208, 135, 112, 40)
+# A recording bracket's tint — a different hue (red, "on air") so a row that
+# is both grouped and recording reads as neither tint alone; see `_tint_for`.
+REC_TINT = QColor(196, 60, 60, 55)
 
 VALUE = Qt.ItemDataRole.UserRole
 
-# Columns, in order: (title, field, tooltip).
+KIND_LABELS: dict[str, str] = {
+    "move": "Move", "display": "Display", "wait": "Wait", "puff": "Puff",
+}
+
+# Columns, in order: (title, field, tooltip). "details" is a synthetic field
+# — what it shows and edits depends on the row's kind, painted in
+# `_paint_details` rather than through the generic `_render`.
 COLS = (
-    ("Step",       "label",    "Your name for this step. It goes into the file."),
-    ("Stage",      "xy",       "Where to send the stage for this step, as "
-                               "(X, Y).\nDouble-click, or right-click -> Set "
-                               "position…, to type numbers; Delete clears "
-                               "both back to \"no change\".\nFilled from a "
-                               "saved FOV (right-click -> Fill from FOV…), "
-                               "the cell names it in front of the numbers "
-                               "instead — typing a new number detaches it."),
-    ("Pattern",    "pattern",  "The DMD pattern for this step, shown as a "
-                               "thumbnail once one is set. Double-click to "
-                               "choose one, Delete to clear it; with none, "
-                               "the DMD keeps whatever it already has. Light "
-                               "follows a pattern being set — no separate "
-                               "on/off to forget."),
-    ("Capture",    "length",   "How much to capture, once the step has settled."),
-    ("Unit",       "unit",     "Frames or seconds — never converted between "
-                               "them, so a step means what it says."),
-    ("Settle",     "settle_s", "Wait this long after the move and the pattern, "
-                               "before capture starts."),
-    ("Puff every", "puff_interval_s", "Fire an air puff at this interval during "
-                               "capture, on the puffer's own configured "
-                               "duration. 0 = no puffs."),
+    ("Step",    "label", "Your name for this step. It goes into the file."),
+    ("Kind",    "kind",  "What this step does: Move the stage, start "
+                         "Displaying a pattern, Wait, or Puff."),
+    ("Details", "details", "Move: where to send the stage, as (X, Y). "
+                         "Double-click, or right-click -> Set position…, to "
+                         "type numbers; Delete clears both back to \"no "
+                         "change\". Filled from a saved FOV, the cell names "
+                         "it in front of the numbers instead.\nDisplay: the "
+                         "DMD pattern, shown as a thumbnail once one is set. "
+                         "Double-click to choose one, Delete to stop "
+                         "displaying."),
+    ("Length",  "length", "How long to wait (Wait steps only)."),
+    ("Unit",    "unit",   "Frames or seconds — never converted between "
+                         "them, so a step means what it says (Wait steps "
+                         "only)."),
+    ("Settle",  "settle_s", "Wait this long after the stage arrives, before "
+                         "the step ends (Move steps only)."),
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
-# What an axis this step does not move reads as. A word, not a blank cell:
+# What an axis a Move step does not send reads as. A word, not a blank cell:
 # blank used to mean both "leave this axis alone" and "I have not typed it
 # yet", and "leave" on its own did not say leave WHAT.
 NO_CHANGE = "no change"
@@ -113,6 +115,9 @@ NO_CHANGE = "no change"
 # The row header of the step the engine is on. The row is bold as well; the
 # marker is what survives a table the operator has scrolled.
 RUNNING = "▶"
+
+# Fields only meaningful for one kind — "—" and non-editable on any other row.
+_KIND_OF_FIELD = {"length": "wait", "unit": "wait", "settle_s": "move"}
 
 
 class _ChoiceDelegate(QStyledItemDelegate):
@@ -140,9 +145,7 @@ class _ChoiceDelegate(QStyledItemDelegate):
 
 
 class _NumberDelegate(QStyledItemDelegate):
-    """A numeric cell, range-clamped. (Stage used to be two of these with a
-    "no change" state under the range — `_position_spin` in `panel.py` now
-    owns that sentinel shape, for its dialog's spin boxes instead.)"""
+    """A numeric cell, range-clamped."""
 
     def __init__(self, lo: float, hi: float, decimals: int, suffix: str,
                  step: float = 1.0, parent=None) -> None:
@@ -183,6 +186,7 @@ class StepTable(QTableWidget):
     remove_requested = pyqtSignal()
     clear_pattern_requested = pyqtSignal()
     group_requested = pyqtSignal()          # the panel reads selected_range()
+    record_requested = pyqtSignal()         # ditto, for a Recording bracket
     reordered = pyqtSignal(int)             # the moved step's new row
 
     def __init__(self, steps: list[Step], parent=None) -> None:
@@ -191,6 +195,7 @@ class StepTable(QTableWidget):
         self._loading = False
         self._running: int | None = None     # row the engine is on
         self._groups: list[Group] = []
+        self._recordings: list[Recording] = []
 
         self.setHorizontalHeaderLabels([t for t, _f, _tip in COLS])
         for col, (_t, _f, tip) in enumerate(COLS):
@@ -198,11 +203,8 @@ class StepTable(QTableWidget):
         self.verticalHeader().setDefaultSectionSize(_THUMB.height() + 4)
         self.setIconSize(_THUMB)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        # Contiguous, not Extended: a repeat group is a RANGE (Group.start/end),
-        # so the one extra thing multi-select needs to express is a contiguous
-        # block — shift-click/shift-arrow extend it, ctrl-click (disjoint rows)
-        # stays unavailable, and every single-row action still has one obvious
-        # target (the anchor row) when more than one row is selected.
+        # Contiguous, not Extended: a Group/Recording is a RANGE — see module
+        # docstring. ctrl-click (disjoint rows) stays unavailable.
         self.setSelectionMode(QAbstractItemView.SelectionMode.ContiguousSelection)
         # Drag a row to where it belongs. InternalMove alone would have Qt move
         # the *cells*; `dropEvent` below moves the Step instead, because the
@@ -223,8 +225,13 @@ class StepTable(QTableWidget):
             | QAbstractItemView.EditTrigger.EditKeyPressed
             | QAbstractItemView.EditTrigger.AnyKeyPressed)
 
-        # Stage has no delegate — like Pattern, it is set through a dialog
-        # (Set position…/Fill from FOV…), not typed into a cell.
+        # Details has no delegate — like before this redesign, it is set
+        # through a dialog (Set position…/Fill from FOV…, or a pattern/ROI
+        # file dialog), not typed into a cell.
+        self.setItemDelegateForColumn(
+            FIELDS.index("kind"),
+            _ChoiceDelegate(tuple((KIND_LABELS[k], k) for k in KINDS),
+                            parent=self))
         self.setItemDelegateForColumn(
             FIELDS.index("length"),
             _NumberDelegate(0.01, 1e6, 2, "", 10.0, parent=self))
@@ -234,9 +241,6 @@ class StepTable(QTableWidget):
         self.setItemDelegateForColumn(
             FIELDS.index("settle_s"),
             _NumberDelegate(0.0, 120.0, 2, " s", 0.05, parent=self))
-        self.setItemDelegateForColumn(
-            FIELDS.index("puff_interval_s"),
-            _NumberDelegate(0.0, 3600.0, 2, " s", 0.5, parent=self))
 
         self.itemChanged.connect(self._on_item_changed)
         self.cellDoubleClicked.connect(self._on_double_click)
@@ -258,14 +262,19 @@ class StepTable(QTableWidget):
     def set_groups(self, groups: list[Group]) -> None:
         """The routine's repeat groups, so the table can show which rows are
         in one — a separate list below the table is not "at a glance" once
-        you're scrolled past it. Repaints; call after any group edit.
-
-        Signals off, like reload()/_repaint_row(): this only re-renders
-        existing step data, and an itemChanged here would read it straight
-        back into the routine as a spurious edit — see move_row's comment
-        for why every repaint path follows this same rule.
-        """
+        you're scrolled past it. Repaints; call after any group edit."""
         self._groups = list(groups)
+        self._repaint_all()
+
+    def set_recordings(self, recordings: list[Recording]) -> None:
+        """The routine's recording brackets — same idea as `set_groups`."""
+        self._recordings = list(recordings)
+        self._repaint_all()
+
+    def _repaint_all(self) -> None:
+        # Signals off, as in reload(): this only re-renders existing step
+        # data, and an itemChanged here would read it straight back into the
+        # routine as a spurious edit.
         self._loading = True
         try:
             self._paint_numbers()
@@ -280,49 +289,102 @@ class StepTable(QTableWidget):
                 return g
         return None
 
+    def _recording_at(self, row: int) -> Recording | None:
+        for r in self._recordings:
+            if r.start <= row <= r.end:
+                return r
+        return None
+
+    def _tint_for(self, row: int) -> QColor | None:
+        """The row's background: blended if it is both grouped AND inside a
+        recording, so neither reads as the other's plain tint."""
+        g, r = self._group_at(row) is not None, self._recording_at(row) is not None
+        if g and r:
+            return QColor((GROUP_TINT.red() + REC_TINT.red()) // 2,
+                         (GROUP_TINT.green() + REC_TINT.green()) // 2,
+                         (GROUP_TINT.blue() + REC_TINT.blue()) // 2,
+                         max(GROUP_TINT.alpha(), REC_TINT.alpha()))
+        if g:
+            return GROUP_TINT
+        if r:
+            return REC_TINT
+        return None
+
     def _paint_numbers(self) -> None:
         """The row header is the step's place in the order, and carries the
-        running marker and — on a group's FIRST row — its repeat count, so
-        "which step is this, and is it repeated" is answered in one glance
-        without cross-referencing the Repeat groups list."""
+        running marker, a group's repeat count on its FIRST row, and a
+        recording marker on EVERY row it covers (no count to show like a
+        group's ×N) — "which step is this, is it repeated, is it being
+        recorded" answered in one glance."""
         labels = []
         for r in range(self.rowCount()):
             n = RUNNING if r == self._running else str(r + 1)
             g = self._group_at(r)
             if g is not None and g.start == r:
                 n = f"{n} ×{g.repeats}"
+            if self._recording_at(r) is not None:
+                n = f"{n} ⏺"
             labels.append(n)
         self.setVerticalHeaderLabels(labels)
 
     def _paint_row(self, row: int, s: Step) -> None:
-        tint = self._group_at(row) is not None
+        tint = self._tint_for(row) or self.palette().base()
         for col, field in enumerate(FIELDS):
-            value = (s.x_um, s.y_um) if field == "xy" else getattr(s, field)
             item = self.item(row, col)
             if item is None:
                 item = QTableWidgetItem()
                 self.setItem(row, col, item)
-            item.setData(VALUE, value)
-            if field == "xy":
-                # Not typed into — see Stage's entry in COLS. The pair is
-                # still the value of record (VALUE, above) and still what the
-                # engine drives to; only the rendering changes for a named spot.
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setText(_xy_text(s.x_um, s.y_um, s.fov))
-                item.setToolTip(
-                    f"{s.x_um:g} um, {s.y_um:g} um — from the saved FOV "
-                    f"{s.fov!r}. Double-click to type new numbers, which "
-                    f"detaches the name." if s.fov else "")
-            elif field == "pattern":
-                # Chosen with a file dialog, so the cell is not typed into.
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setToolTip(s.pattern or "no pattern — the DMD keeps what "
-                                             "it has. Double-click to choose one.")
-                item.setIcon(_pattern_icon(s.pattern))
-                item.setText(_render(field, value))
+            if field == "label":
+                item.setData(VALUE, s.label)
+                item.setText(s.label)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            elif field == "kind":
+                item.setData(VALUE, s.kind)
+                item.setText(KIND_LABELS.get(s.kind, s.kind))
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            elif field == "details":
+                self._paint_details(item, s)
             else:
-                item.setText(_render(field, value))
-            item.setBackground(_GROUP_TINT if tint else self.palette().base())
+                active = s.kind == _KIND_OF_FIELD[field]
+                value = getattr(s, field)
+                item.setData(VALUE, value)
+                item.setText(_render(field, value) if active else "—")
+                self._set_editable(item, active)
+            item.setBackground(tint)
+
+    def _paint_details(self, item: QTableWidgetItem, s: Step) -> None:
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if s.kind == "move":
+            # Not typed into — see Details' entry in COLS. The pair is still
+            # the value of record (VALUE, above) and still what the engine
+            # drives to; only the rendering changes for a named spot.
+            item.setData(VALUE, (s.x_um, s.y_um))
+            item.setIcon(QIcon())
+            item.setText(_xy_text(s.x_um, s.y_um, s.fov))
+            item.setToolTip(
+                f"{s.x_um:g} um, {s.y_um:g} um — from the saved FOV "
+                f"{s.fov!r}. Double-click to type new numbers, which "
+                f"detaches the name." if s.fov else
+                "Double-click to set a position, or right-click -> Fill "
+                "from FOV…")
+        elif s.kind == "display":
+            item.setData(VALUE, s.pattern)
+            item.setToolTip(s.pattern or "no pattern set — double-click to "
+                                        "choose one.")
+            item.setIcon(_pattern_icon(s.pattern))
+            item.setText(pattern_label(s.pattern) if s.pattern
+                        else "stop displaying")
+        else:
+            item.setData(VALUE, None)
+            item.setIcon(QIcon())
+            item.setText("—")
+            item.setToolTip("")
+
+    @staticmethod
+    def _set_editable(item: QTableWidgetItem, active: bool) -> None:
+        flags = item.flags()
+        item.setFlags(flags | Qt.ItemFlag.ItemIsEditable if active
+                     else flags & ~Qt.ItemFlag.ItemIsEditable)
 
     def mark_running(self, row: int | None) -> None:
         """Show which step the engine is on. -1/None clears it.
@@ -358,9 +420,15 @@ class StepTable(QTableWidget):
         field = FIELDS[col]
         if field == "label":
             s.label = item.text().strip()
-        elif field in ("pattern", "xy"):
-            return                          # only a dialog sets these
-        else:
+        elif field == "kind":
+            value = item.data(VALUE)
+            if value in KINDS:
+                s.kind = value
+        elif field == "details":
+            return                          # only a dialog sets this
+        elif field in _KIND_OF_FIELD:
+            if s.kind != _KIND_OF_FIELD[field]:
+                return                      # cell wasn't editable; ignore
             value = item.data(VALUE)
             if field == "unit":
                 s.unit = value if value in UNITS else s.unit
@@ -372,8 +440,6 @@ class StepTable(QTableWidget):
                             else float(value))
             elif field == "settle_s":
                 s.settle_s = float(value)
-            elif field == "puff_interval_s":
-                s.puff_interval_s = float(value)
         self._repaint_row(row)
         self.changed.emit()
 
@@ -386,18 +452,21 @@ class StepTable(QTableWidget):
             self._loading = False
 
     def _on_double_click(self, row: int, col: int) -> None:
-        field = FIELDS[col]
-        if field == "pattern":
-            self.select_row(row)
-            self.pattern_requested.emit()
-        elif field == "xy":
-            self.select_row(row)
+        if FIELDS[col] != "details":
+            return
+        kind = self._steps[row].kind
+        if kind not in ("move", "display"):
+            return
+        self.select_row(row)
+        if kind == "move":
             self.position_requested.emit()
+        else:
+            self.pattern_requested.emit()
 
-    # The two cells with no delegate at all — set through a dialog, so Delete
-    # is the only way to empty them: Stage back to "no change" on both axes,
-    # Pattern back to none.
-    _CLEARABLE = ("xy", "pattern")
+    # The one cell with no delegate at all — set through a dialog, so Delete
+    # is the only way to empty it: Move back to "no change" on both axes,
+    # Display back to "stop displaying".
+    _CLEARABLE = ("details",)
 
     def keyPressEvent(self, ev) -> None:
         if (ev.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -413,16 +482,17 @@ class StepTable(QTableWidget):
         super().keyPressEvent(ev)
 
     def clear_cell(self, row: int, field: str) -> None:
-        """Empty one cell: Stage back to "no change" on both axes, a pattern
-        to none."""
+        """Empty the Details cell: Move back to "no change", Display back to
+        "stop displaying"."""
         if not (0 <= row < len(self._steps)):
             return
         s = self._steps[row]
-        if field == "xy":
-            s.x_um = s.y_um = None
-            s.fov = ""       # no longer a full pair, so no longer that spot
-        else:
-            s.pattern = ""
+        if field == "details":
+            if s.kind == "move":
+                s.x_um = s.y_um = None
+                s.fov = ""       # no longer a full pair, so no longer that spot
+            elif s.kind == "display":
+                s.pattern = ""
         self._repaint_row(row)
         self.changed.emit()
 
@@ -441,8 +511,8 @@ class StepTable(QTableWidget):
             return False
         self._steps.insert(dest, self._steps.pop(src))
         # Only src..dest actually shifted — a full reload() repainted every
-        # row (7 columns x N) for what is always a contiguous shift of the
-        # rows between them; drag-drop and Ctrl+Up/Down both land here.
+        # row for what is always a contiguous shift of the rows between them;
+        # drag-drop and Ctrl+Up/Down both land here.
         lo, hi = min(src, dest), max(src, dest)
         self._loading = True
         try:
@@ -484,8 +554,11 @@ class StepTable(QTableWidget):
         return idx.row() + (1 if pos.y() > rect.center().y() else 0)
 
     # ── selection ────────────────────────────────────────────────────────────
+    def _selected_rows(self) -> set[int]:
+        return {i.row() for i in self.selectedIndexes()}
+
     def selected_row(self) -> int:
-        rows = {i.row() for i in self.selectedIndexes()}
+        rows = self._selected_rows()
         return min(rows) if rows else -1
 
     def select_row(self, row: int) -> None:
@@ -494,10 +567,11 @@ class StepTable(QTableWidget):
 
     def selected_range(self) -> tuple[int, int] | None:
         """(first, last) rows of the current selection, inclusive — or None
-        with fewer than 2 rows selected, since a "group" of one step is not
-        what the Repeat groups control is for. ContiguousSelection guarantees
-        no gaps, so min/max is the whole selection, not just its ends."""
-        rows = {i.row() for i in self.selectedIndexes()}
+        with fewer than 2 rows selected, since a "group"/"recording" of one
+        step is not what those controls are for. ContiguousSelection
+        guarantees no gaps, so min/max is the whole selection, not just its
+        ends."""
+        rows = self._selected_rows()
         if len(rows) < 2:
             return None
         return min(rows), max(rows)
@@ -505,50 +579,57 @@ class StepTable(QTableWidget):
     # ── context menu ─────────────────────────────────────────────────────────
     def contextMenuEvent(self, event) -> None:
         """One place for the actions that used to be a row of buttons under
-        the table — Duplicate/Remove/Pattern/ROI/FOV/Group — so the panel
-        stays legible with the table doing most of the vertical space.
-        Right-click on a row already part of a multi-row selection keeps that
-        selection (so "Group selected" is on offer); right-click elsewhere
-        collapses to just that row, like any other list."""
+        the table, gated by the row's kind — Set pattern/ROI/Clear only make
+        sense on a Display row, Set position/Fill from FOV only on a Move
+        row. Right-click on a row already part of a multi-row selection keeps
+        that selection (so "Group selected"/"Mark as recording" are on
+        offer); right-click elsewhere collapses to just that row, like any
+        other list."""
         idx = self.indexAt(event.pos())
-        if idx.isValid() and idx.row() not in {i.row() for i in self.selectedIndexes()}:
+        if idx.isValid() and idx.row() not in self._selected_rows():
             self.select_row(idx.row())
         row = self.selected_row()
         span = self.selected_range()
 
         menu = QMenu(self)
         if row >= 0:
+            kind = self._steps[row].kind
             act = menu.addAction("Duplicate step")
             act.triggered.connect(self.duplicate_requested.emit)
             act = menu.addAction("Remove step")
             act.triggered.connect(self.remove_requested.emit)
-            menu.addSeparator()
-            act = menu.addAction("Set pattern…")
-            act.triggered.connect(self.pattern_requested.emit)
-            act = menu.addAction("Set ROI set…")
-            act.triggered.connect(self.roi_requested.emit)
-            act = menu.addAction("Clear pattern")
-            act.setEnabled(bool(self._steps[row].pattern))
-            act.triggered.connect(self.clear_pattern_requested.emit)
-            menu.addSeparator()
-            act = menu.addAction("Set position…")
-            act.triggered.connect(self.position_requested.emit)
-            act = menu.addAction("Fill Stage X/Y from FOV…")
-            act.triggered.connect(self.fov_requested.emit)
+            if kind == "display":
+                menu.addSeparator()
+                act = menu.addAction("Set pattern…")
+                act.triggered.connect(self.pattern_requested.emit)
+                act = menu.addAction("Set ROI set…")
+                act.triggered.connect(self.roi_requested.emit)
+                act = menu.addAction("Clear pattern")
+                act.setEnabled(bool(self._steps[row].pattern))
+                act.triggered.connect(self.clear_pattern_requested.emit)
+            elif kind == "move":
+                menu.addSeparator()
+                act = menu.addAction("Set position…")
+                act.triggered.connect(self.position_requested.emit)
+                act = menu.addAction("Fill Stage X/Y from FOV…")
+                act.triggered.connect(self.fov_requested.emit)
         if span is not None:
             if row >= 0:
                 menu.addSeparator()
             act = menu.addAction(
                 f"Group selected steps {span[0] + 1}-{span[1] + 1}…")
             act.triggered.connect(self.group_requested.emit)
+            act = menu.addAction(
+                f"Mark steps {span[0] + 1}-{span[1] + 1} as recording…")
+            act.triggered.connect(self.record_requested.emit)
         if not menu.isEmpty():
             menu.exec(event.globalPos())
 
 
 def _xy_text(x: float | None, y: float | None, fov: str) -> str:
-    """Stage as one fact: "(x, y)", or the saved FOV's name in front of it
-    once one is filled — a recognised spot is read by name, not by the two
-    numbers that happen to describe it."""
+    """Move's Details as one fact: "(x, y)", or the saved FOV's name in front
+    of it once one is filled — a recognised spot is read by name, not by the
+    two numbers that happen to describe it."""
     def part(v: float | None) -> str:
         return NO_CHANGE if v is None else f"{v:g} um"
     coords = f"({part(x)}, {part(y)})"
@@ -602,12 +683,8 @@ def _roi_icon(path: str) -> QIcon:
 
 def _render(field: str, value) -> str:
     """One value as the operator reads it. The parse is the delegate's job."""
-    if field == "pattern":
-        return pattern_label(value) if value else "—"
     if field == "length":
         return f"{value:g}"
     if field == "settle_s":
         return f"{value:g} s"
-    if field == "puff_interval_s":
-        return "off" if not value else f"{value:g} s"
     return str(value)
