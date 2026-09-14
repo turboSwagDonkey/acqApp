@@ -139,6 +139,10 @@ class StageSettings:
     controller: str = "auto"
     poll_hz: float = 4.0
     confirm_move_um: float = 3000.0    # ask before moves larger than this
+    # A Z move happens directly under the objective — a much smaller "large
+    # move" than X/Y's open-table travel is worth pausing for, so this is its
+    # own, deliberately tighter threshold rather than reusing confirm_move_um.
+    confirm_move_z_um: float = 500.0
     margin_um: float = 50.0            # soft-limit inset from the travel ends
     invert_y: bool = True              # draw the map with +Y screen-up
     # Operator-facing display setting, NOT physical calibration: rotates only
@@ -150,16 +154,11 @@ class StageSettings:
     frame_rotation_deg: float = 0.0
     x: StageAxis = None      # type: ignore[assignment]
     y: StageAxis = None      # type: ignore[assignment]
-    # Z is present on this rig's controller (MCM301 slot 6, a PLS-283529) but
-    # has never been driven by this app and has no measured calibration — so
-    # unlike X/Y it defaults OFF and, when on, is raw ENCODER COUNTS, not
-    # microns (counts_per_um=1.0 is a placeholder, not physics). Local-only:
-    # deliberately NOT added to the shared stage_control config (PLAN §6 item
-    # 3's open question) — until a real Z calibration exists there is nothing
-    # meaningful to share, and this way a standalone-app schema this repo
-    # cannot verify is never at risk of seeing an axis it doesn't expect.
-    z_enabled:    bool = False
-    z_axis_index: int = 6      # MCM301 SLOT_Z; 2 for the MCM6101 (axes 0,1,2)
+    # Focus. None on a rig with no Z stage, which is the common case — every
+    # Z path checks for it rather than assuming three axes, and the panel
+    # hides its Z controls entirely. Built only from a config axis that is
+    # both named by `xy_pad.z_axis` and marked `"active": true`; see
+    # `load_settings`.
     z: StageAxis | None = None
 
     def __post_init__(self):
@@ -167,12 +166,18 @@ class StageSettings:
             self.x = StageAxis(0, "X", 61.9864)
         if self.y is None:
             self.y = StageAxis(1, "Y", 61.8735, invert=True)
-        if self.z_enabled and self.z is None:
-            self.z = StageAxis(self.z_axis_index, "Z", 1.0)
 
     @property
     def has_frame(self) -> bool:
+        """Absolute go-to trustworthy for the IMAGING plane. Deliberately X/Y
+        only: Z carries its own `has_frame` and is never calibrated by
+        `establish_frame`, so folding it in here would disable the XY go-to on
+        every rig that has an uncalibrated focus axis."""
         return self.x.has_frame and self.y.has_frame
+
+    @property
+    def has_z(self) -> bool:
+        return self.z is not None
 
 
 def load_settings() -> StageSettings:
@@ -207,16 +212,30 @@ def load_settings() -> StageSettings:
         )
 
     x = _axis(xi, "X")
+    # Z is opt-in twice over: the config must name its index AND mark that axis
+    # active. `active` is honoured for Z alone — applying it to X/Y would let
+    # one hand-edit leave the app with no stage at all, and those two are what
+    # every other code path assumes exists. A rig without a focus axis (or
+    # whose shared stage_control config predates this key) simply gets None.
+    zi = pad.get("z_axis")
+    z = (_axis(zi, "Z") if zi is not None
+         and bool(axes.get(zi, {}).get("active", False)) else None)
     confirm_counts = cfg.get("max_unconfirmed_move_counts", 200000)
     return StageSettings(
-        port            = cfg.get("port", "COM54"),
-        controller      = cfg.get("controller", "auto"),
-        poll_hz         = 1000.0 / cfg.get("poll_interval_ms", 250),
-        confirm_move_um = confirm_counts / (x.counts_per_um or 1.0),
-        margin_um       = float(cfg.get("margin_um", 50)),
-        invert_y        = bool(pad.get("invert_y", True)),
-        x               = x,
-        y               = _axis(yi, "Y"),
+        port              = cfg.get("port", "COM54"),
+        controller        = cfg.get("controller", "auto"),
+        poll_hz           = 1000.0 / cfg.get("poll_interval_ms", 250),
+        confirm_move_um   = confirm_counts / (x.counts_per_um or 1.0),
+        # In µm directly, unlike the X-derived counts threshold above: Z's own
+        # counts_per_um differs from X's, and a straight µm value here can't be
+        # silently thrown off by which axis's calibration it was converted
+        # through.
+        confirm_move_z_um = float(cfg.get("max_unconfirmed_move_z_um", 500.0)),
+        margin_um         = float(cfg.get("margin_um", 50)),
+        invert_y          = bool(pad.get("invert_y", True)),
+        x                 = x,
+        y                 = _axis(yi, "Y"),
+        z                 = z,
     )
 
 

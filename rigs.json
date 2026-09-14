@@ -1,0 +1,31 @@
+{
+  "rig-dev3": {
+    "ni_device": "Dev3",
+    "hardware": {
+      "puffer": true,
+      "primary_led": true,
+      "pupil_led": true
+    },
+    "channels": {
+      "puffer": "port0/line7",
+      "primary_led": "port0/line2",
+      "pupil_led": "ao0",
+      "wheel": "ai2"
+    }
+  },
+  "rig-dev2": {
+    "ni_device": "Dev2",
+    "hardware": {
+      "puffer": false,
+      "primary_led": false,
+      "pupil_led": false
+    },
+    "channels": {
+      "wheel": "ai2"
+    },
+    "dmd_calibration": {
+      "model": "homography",
+      "cross_frac": 0.06
+    }
+  }
+}

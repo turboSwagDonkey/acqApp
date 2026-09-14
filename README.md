@@ -64,8 +64,10 @@ The **Puffer** tab can **schedule puffs** to fire at fixed session times
 fire (on the next 100 ms tick past their time) and are logged on the session
 clock alongside every other stream — the basis for timed-stimulus experiments.
 
-The **XY stage** tab both logs and moves. It polls the MCM6101 for X/Y position
-(µm) and records it to `/stage_x_um`, `/stage_y_um`, and it drives the stage:
+The **XY stage** tab both logs and moves. It polls the stage controller for
+X/Y position (µm) and records it to `/stage_x_um`, `/stage_y_um` — plus
+`/stage_z_um` on a rig whose config names and enables a Z (focus) axis — and
+it drives the stage:
 jog, absolute go-to, stop, a session-scoped "home" bookmark, and a calibration
 that **drives both axes into their reverse hard limits** to re-measure the
 command→encoder map. Soft limits clamp every target, and absolute go-to is
@@ -193,6 +195,7 @@ current data rate. It also shows the exact path the next recording will get:
 /wheel_voltage /wheel_speed /wheel_distance    (M,) float64  + timestamps
 /puffer/values             (K,) float64 (dur) /puffer/timestamps       (K,) float64
 /stage_x_um  /stage_y_um   (P,) float64       …/timestamps             (P,) float64
+/stage_z_um  (only on a rig with a Z stage)   …/timestamps             (P,) float64
 /dmd/values                (Q,) float64 (idx) /dmd/timestamps          (Q,) float64
 /routine/values            (S,) float64 (±step) /routine/timestamps   (S,) float64
 ```

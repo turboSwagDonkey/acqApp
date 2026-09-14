@@ -50,6 +50,8 @@ TESTS = [
     ("split-writer", "test_split_writer.py"),
     ("stage-state", "test_stage_state.py"),
     ("stage-panel", "test_stage_panel.py"),
+    ("stage-z",     "test_stage_z.py"),
+    ("stage-focus-ui", "test_stage_focus_ui.py"),
     ("pupil-eyeloop", "test_pupil_eyeloop.py"),
     ("pupil-track", "test_pupil_track.py"),
     ("pupil-limit", "test_pupil_limit.py"),
@@ -58,6 +60,7 @@ TESTS = [
     ("camera-ts", "test_camera_timestamps.py"),
     ("subsets",   "test_module_subsets.py"),
     ("hotload",   "test_module_hotload.py"),
+    ("rigs",      "test_rigs.py"),
     ("settings",  "test_settings_persistence.py"),
     ("session",   "test_session_recording.py"),
 ]

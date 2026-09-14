@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Fallback only: the real device name comes from the active rig's profile
+# (config.rig_device()), resolved lazily at each call rather than baked into
+# a default argument here — the test harness re-points config's file *after*
+# importing this module, and an import-time read would miss that.
 DEFAULT_NI_DEVICE = "Dev3"
 DEFAULT_STAGE_PORT = "COM54"
 
@@ -57,7 +61,10 @@ def _pupil_cam() -> ProbeResult:
         return ProbeResult("error", f"pypylon unavailable ({e})")
 
 
-def _ni_device(name: str = DEFAULT_NI_DEVICE) -> ProbeResult:
+def _ni_device(name: str | None = None) -> ProbeResult:
+    if name is None:
+        from acqApp import config
+        name = config.rig_device()
     try:
         import nidaqmx
         present = [d.name for d in nidaqmx.system.System.local().devices]
@@ -128,7 +135,7 @@ def _mirror() -> ProbeResult:
                               "own (ThorImage owns the real switch)")
 
 
-def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
+def probe(module: str, *, ni_device: str | None = None,
           stage_port: str = DEFAULT_STAGE_PORT,
           cam_open: bool = False) -> ProbeResult:
     """Probe one module by key. Never raises."""
@@ -154,7 +161,7 @@ def probe(module: str, *, ni_device: str = DEFAULT_NI_DEVICE,
         return ProbeResult("error", str(e))
 
 
-def probe_all(modules, *, ni_device: str = DEFAULT_NI_DEVICE,
+def probe_all(modules, *, ni_device: str | None = None,
               stage_port: str = DEFAULT_STAGE_PORT,
               cam_open: bool = False) -> dict[str, ProbeResult]:
     # wheel and puffer share one NI device — probe it once, not twice, when

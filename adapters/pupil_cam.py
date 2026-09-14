@@ -366,9 +366,17 @@ class PupilCamModule(ModuleAdapter):
     def build_controller(self, emulate: bool) -> None:
         if emulate:
             self.controller = MockLedController()
+        elif not config.rig_has("pupil_led"):
+            # See the primary LED's build_controller: a rig that says it has
+            # no eye LED gets the mock without a DAQ attempt.
+            print(f"[main] eye-tracking LED not fitted on rig "
+                  f"{config.active_rig() or '(none set)'} — using mock")
+            self.controller = MockLedController()
         else:
+            chan = config.rig_channel("pupil_led")
             try:
-                self.controller = LedController()
+                self.controller = (LedController(chan) if chan
+                                   else LedController())
             except Exception as e:
                 print(f"[main] eye-tracking LED unavailable ({e}) — using mock")
                 self.controller = MockLedController()

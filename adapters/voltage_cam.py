@@ -99,8 +99,18 @@ class VoltageCamModule(ModuleAdapter):
         if emulate:
             self.controller = MockLedController()
             return
+        # Not fitted is the operator's claim in rigs.json, so don't touch the
+        # DAQ at all: opening a line on a rig that has no primary LED only
+        # ever produced a multi-line nidaqmx traceback at every startup.
+        if not config.rig_has("primary_led"):
+            print(f"[main] primary LED not fitted on rig "
+                  f"{config.active_rig() or '(none set)'} — using mock")
+            self.controller = MockLedController()
+            return
+        chan = config.rig_channel("primary_led")
         try:
-            self.controller = LedController()
+            self.controller = (LedController(chan) if chan
+                               else LedController())
         except Exception as e:
             print(f"[main] primary LED unavailable ({e}) — using mock")
             self.controller = MockLedController()

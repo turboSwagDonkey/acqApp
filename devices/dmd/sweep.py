@@ -21,14 +21,16 @@ from typing import Callable
 
 import numpy as np
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
+    QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QGroupBox, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar, QPushButton,
+    QVBoxLayout,
 )
 
-from acqApp import style
+from acqApp import config, style
 
-from acqApp.devices.dmd.calibration import (STRIPE_OFFSETS, CalibrationError,
-                                            DmdCalibration, calibrate)
+from acqApp.devices.dmd.calibration import (STRIPE_CROSS, STRIPE_OFFSETS,
+                                            CalibrationError, DmdCalibration,
+                                            calibrate)
 
 
 class SweepCancelled(CalibrationError):
@@ -150,6 +152,38 @@ class CalibrationDialog(QDialog):
             warn.setStyleSheet(f"color:{style.WARN};")
             root.addWidget(warn)
 
+        # Seeded from this rig's profile (a stable fact — how the camera is
+        # mounted — not something to re-pick every run), but left editable:
+        # the right cross-length for a given tilt is found by looking at THIS
+        # rig's own sweep log, not guessed once and frozen.
+        geom = QGroupBox("Geometry")
+        gform = QFormLayout(geom)
+        seed = config.rig_dmd_calibration()
+        self._cmb_model = QComboBox()
+        self._cmb_model.addItem("Affine (rotation + scale) — most rigs", "affine")
+        self._cmb_model.addItem("Homography (full perspective) — steeply tilted camera",
+                                "homography")
+        self._cmb_model.setCurrentIndex(
+            1 if seed["model"] == "homography" else 0)
+        self._cmb_model.setToolTip(
+            "Homography is the correct model for a camera that views the DMD "
+            "at a steep angle: an affine fit cannot represent the resulting "
+            "perspective (keystone) at all, however it's rotated or sheared.")
+        gform.addRow("Model:", self._cmb_model)
+
+        self._spn_cross = QDoubleSpinBox()
+        self._spn_cross.setRange(1.0, 50.0)
+        self._spn_cross.setSuffix(" %")
+        self._spn_cross.setDecimals(1)
+        self._spn_cross.setValue(100.0 * (seed["cross_frac"] or STRIPE_CROSS))
+        self._spn_cross.setToolTip(
+            "The stripe's length across the OTHER axis, as a fraction of the "
+            "panel. A steep tilt magnifies one end of that length far more "
+            "than the other; if the sweep log below shows most stripes "
+            "'dropped: off the frame edge', shrink this until they fit.")
+        gform.addRow("Stripe cross-length:", self._spn_cross)
+        root.addWidget(geom)
+
         log_box = QGroupBox("Sweep log")
         log_lay = QVBoxLayout(log_box)
         self._log = QPlainTextEdit()
@@ -215,9 +249,13 @@ class CalibrationDialog(QDialog):
         for b in (self._btn_run, self._btn_save, self._btn_close):
             b.setEnabled(False)
         self._btn_stop.setEnabled(True)
+        self._cmb_model.setEnabled(False)
+        self._spn_cross.setEnabled(False)
         self._log.clear()
         self._bar.setValue(0)
         w, h = self._proj.resolution
+        model = self._cmb_model.currentData()
+        cross_frac = self._spn_cross.value() / 100.0
 
         # Start the camera if it is not already running; remember whether we
         # did, so the finally block can put it back.
@@ -239,9 +277,12 @@ class CalibrationDialog(QDialog):
             self._bar.setValue(grabber.n_grabs)
             return f
 
+        self.log(f"[sweep] model={model}, stripe cross-length="
+                 f"{100 * cross_frac:.1f}% of the panel")
         t0 = time.monotonic()
         try:
-            self._calib = calibrate(project, grab, (w, h), log=self.log)
+            self._calib = calibrate(project, grab, (w, h), model=model,
+                                    cross_frac=cross_frac, log=self.log)
             self._btn_save.setEnabled(True)
         except SweepCancelled as e:
             self.log(f"[sweep] {e}")
@@ -265,6 +306,8 @@ class CalibrationDialog(QDialog):
                      f"ms per frame waited)")
             self._running = False
             self._btn_stop.setEnabled(False)
+            self._cmb_model.setEnabled(True)
+            self._spn_cross.setEnabled(True)
             for b in (self._btn_run, self._btn_close):
                 b.setEnabled(True)
 

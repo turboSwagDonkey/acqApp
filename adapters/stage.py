@@ -19,14 +19,14 @@ from acqApp.devices.stage.settings import load_settings as load_stage_settings
 class StageModule(ModuleAdapter):
     key = "stage"
     tab_label = "Stage"
-    # No plot: live position is the X/Y readout in the Stage tab, and it is
-    # recorded as stage_x_um / stage_y_um.
+    # No plot: live position is the X/Y(/Z) readout in the Stage tab, and it
+    # is recorded as stage_x_um / stage_y_um (+ stage_z_um on a rig with a Z
+    # stage — see StagePollWorker's docstring).
 
     # Only what the panel itself owns. Calibration, soft limits and the origin
     # must keep coming from the shared stage_control config: StageSettings nests
     # two StageAxis objects, which do not survive this config's flat JSON.
-    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg",
-                  "z_enabled", "z_axis_index")
+    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg")
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -44,13 +44,6 @@ class StageModule(ModuleAdapter):
             s.frame_rotation_deg = float(saved.get("frame_rotation_deg"))
         except (TypeError, ValueError):
             pass
-        if saved.get("z_enabled"):
-            try:
-                s.z_axis_index = int(saved.get("z_axis_index", s.z_axis_index))
-            except (TypeError, ValueError):
-                pass
-            s.z_enabled = True
-            s.__post_init__()          # z was None at construction; build it now
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)
@@ -101,32 +94,39 @@ class StageModule(ModuleAdapter):
     def update_display(self) -> None:
         pos = self.worker.get_latest() if self.worker is not None else None
         if pos is not None:
-            self.panel.set_readout(pos[0], pos[1], pos[2])
+            # A 3rd element is Z (see StagePollWorker's docstring); absent on
+            # a rig with no Z stage.
+            self.panel.set_readout(pos[0], pos[1],
+                                   pos[2] if len(pos) > 2 else None)
 
     # ── saved FOVs (position + snapshot; devices/stage/fov_store.py) ──
     def save_fov(self) -> None:
         """Handle the Stage panel's "Save current as FOV…" button. Reads
-        only: the live position off the poller, and a camera snapshot via
-        `ModuleHost.latest_frame` — never commands the stage or the camera."""
+        only: the panel's own last-displayed position (NOT the poller's
+        `get_latest()` — see SettingsPanel.current_position for why that one
+        is a single-use value the ~30 Hz display tick already drains, so a
+        second reader here would lose the race almost every time) and a
+        camera snapshot via `ModuleHost.latest_frame` — never commands the
+        stage or the camera."""
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
         from acqApp.devices.stage import fov_store
 
-        xy = self.worker.get_latest() if self.worker is not None else None
-        if xy is None:
+        if not self.panel.connected:
             QMessageBox.information(
                 self.panel, "Stage not connected",
                 "Connect the stage (start a session) before saving a FOV.")
             return
+        x_um, y_um, z_um = self.panel.current_position
         name, ok = QInputDialog.getText(self.panel, "Save FOV", "Name:")
         name = name.strip()
         if not ok or not name:
             return
         path = fov_store.save(
-            name, xy[0], xy[1], z_um=None,
+            name, x_um, y_um, z_um=z_um,
             camera_preset=self.win.camera_preset("voltage_cam"),
             png_bytes=self._snapshot_png())
-        self.win.status(f'Saved FOV "{name}" at {xy[0]:.0f}, {xy[1]:.0f} µm '
+        self.win.status(f'Saved FOV "{name}" at {x_um:.0f}, {y_um:.0f} µm '
                         f"({path.name})")
 
     def _snapshot_png(self) -> bytes | None:
@@ -160,20 +160,21 @@ class StageModule(ModuleAdapter):
         if self.worker is None:
             return
 
-        def sink(pos: tuple[float, float, int | None]) -> None:
-            """Position -> scalar streams sharing the timebase. stage_z_counts
-            is only ever put when Z is enabled — raw counts, not microns."""
+        def sink(pos: tuple[float, ...]) -> None:
+            """Position is a 2- or 3-vector -> that many scalar streams
+            sharing the timebase. stage_z_um only appears in the recording at
+            all on a rig with a Z stage — no empty/NaN column on the rest."""
             rec.put("stage_x_um", pos[0])
             rec.put("stage_y_um", pos[1])
-            if pos[2] is not None:
-                rec.put("stage_z_counts", float(pos[2]))
+            if len(pos) > 2:
+                rec.put("stage_z_um", pos[2])
 
         self.worker.set_sink(sink)
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
         return {"stage_port": s.port, "stage_poll_hz": s.poll_hz,
-                "stage_z_enabled": s.z_enabled}
+                "stage_z_enabled": s.has_z}
 
     # ── what an experiment routine may drive (acq.devices.StageTarget) ──
     def stage_target(self):

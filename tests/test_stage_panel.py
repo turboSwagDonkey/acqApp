@@ -188,6 +188,31 @@ def check_frame_gating(r: Report) -> None:
             "no frame -> jog stays available (the control)")
 
 
+def check_current_position_not_consumed(r: Report) -> None:
+    """Save FOV (adapters/stage.py) reads `connected`/`current_position`
+    rather than the poll worker's `get_latest()` — a real regression: the
+    ~30 Hz display tick already drains that one-shot value every ~33 ms, so
+    a second, occasional reader competing for the SAME value lost the race
+    almost every time, and a fully-connected stage acted as if it were not
+    connected whenever "Save current as FOV..." was clicked."""
+    p = _panel(None)
+    r.check(p.connected is False, "an unbound panel reports not connected")
+
+    c = FakeCtrl()
+    p.bind_controller(c)
+    r.check(p.connected is True, "…and a bound one reports connected")
+
+    p.set_readout(123.0, -45.0)
+    pos = p.current_position
+    r.check(pos == (123.0, -45.0, None),
+            f"current_position reflects the last readout, Z absent on a "
+            f"no-Z rig (got {pos})")
+    # The regression itself: a SECOND read must return the SAME thing, unlike
+    # PullWorker.get_latest() (which hands back a value exactly once).
+    r.check(p.current_position == pos,
+            "reading current_position twice does not consume/clear it")
+
+
 def check_real_config_untouched(r: Report) -> None:
     r.check(stage_settings.config_path() != _REAL_CONFIG,
             "the calibration path was redirected away from the operator's")
@@ -267,6 +292,7 @@ def main() -> int:
     check_frame_gating(r)
     check_z_axis(r)
     check_map_repaint_guard(r)
+    check_current_position_not_consumed(r)
     check_real_config_untouched(r)
 
     after = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None

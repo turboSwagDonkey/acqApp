@@ -67,6 +67,14 @@ class PufferController(QObject):
         return self._s
 
     def _open(self) -> None:
+        # config.load_dataclass blanks the channel when the active rig's
+        # profile says no puffer is fitted. Skip the DAQ entirely rather than
+        # open a line that isn't there — fire() already no-ops on a None task.
+        if not self._s.channel:
+            print("[puffer] not fitted on this rig — fire() will be a no-op")
+            with self._task_lock:
+                self._task = None
+            return
         try:
             import nidaqmx
             task = nidaqmx.Task()
@@ -96,9 +104,12 @@ class PufferController(QObject):
         with self._task_lock:
             task = self._task
         if task is None:
-            # DAQ never opened (busy line, wrong device name) — nothing fires,
-            # so don't emit/log a puff that never happened (see _open()'s print).
-            print(f"[puffer] fire() ignored — no open DAQ task on {self._s.channel}")
+            # DAQ never opened (busy line, wrong device name) or no puffer is
+            # fitted on this rig — nothing fires, so don't emit/log a puff that
+            # never happened (see _open()'s print).
+            where = (f" on {self._s.channel}" if self._s.channel
+                     else " — not fitted on this rig")
+            print(f"[puffer] fire() ignored — no open DAQ task{where}")
             return
         d = duration_s if duration_s is not None else self._s.duration_s
         t = time.perf_counter()

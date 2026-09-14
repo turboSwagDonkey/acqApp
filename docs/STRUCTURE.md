@@ -46,6 +46,7 @@ flowchart TD
     devices --> acq
     devices --> console
     devices --> style
+    devices --> config
     closed_loop --> acq
     closed_loop --> style
     routines --> style
@@ -55,12 +56,20 @@ flowchart TD
     dialogs --> style
     dialogs --> widgets
     probe --> devices
+    probe --> config
 ```
 
-Four edges surprise people, so they are drawn rather than explained away:
+Six edges surprise people, so they are drawn rather than explained away:
 `probe.py → devices` (the DMD probe resolves the ALP path through
-`devices/dmd/alp.py`), `adapters → closed_loop` (the loop is a module like
-any other, and its adapter is what arms it), and `routines → devices` (a
+`devices/dmd/alp.py`), `probe.py → config` (which NI device to look for is
+the active rig's, from `rigs.json` — imported inside the function, not at
+module scope, so `probe.py` stays runnable as a plain script and the test
+harness can re-point config's file first), `devices → config`
+(`devices/dmd/sweep.py`'s Calibration dialog seeds its Model/cross-length
+controls from the active rig's `dmd_calibration` profile — a steeply tilted
+camera needs the same fit every run, not a re-pick), `adapters → closed_loop`
+(the loop is a module like any other, and its adapter is what arms it), and
+`routines → devices` (a
 step's pattern picker opens `devices/dmd/roi_picker.py` to choose a saved ROI
 set, and its FOV picker opens `devices/stage/fov_picker.py` the same way —
 routines still touches no device directly, `adapters/routines.py` still is).
@@ -129,7 +138,10 @@ devices/                one package per instrument
     _roi_editor.py      script: open roi_panel's editor alone, no rig, no light
     alp.py              all Vialux ALP knowledge, Qt-free; build_frame is the
                         one a mispositioned stimulus would come from
-    calibration.py      DMD↔camera registration: stripes in, affine out. Pure,
+    calibration.py      DMD↔camera registration: stripes in, transform out —
+                        affine by default, or a full projective homography
+                        (model="homography") for a rig whose camera is tilted
+                        enough that affine measurably mis-registers it. Pure,
                         so it is testable before any light is emitted
     control.py          panel-facing controller + mock twin
     panel.py
@@ -275,6 +287,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_pupil_limit.py         the eye region: panel, preview, persistence
   test_pupil_video.py
   test_readout_hz.py
+  test_rigs.py                rigs.json profiles, and that one beats a
+                              channel saved on another rig
   test_routines.py            the routine engine, on a fake rig and a fake clock
   test_recording_losses.py
   test_save_paths.py
@@ -282,6 +296,10 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_settings_persistence.py
   test_mirror_startup.py      chip 7's launch-time CAMERA/epi default check
   test_stage_panel.py
+  test_stage_z.py            the Z (focus) axis: opt-in gating,
+                              frame-rotation isolation, no-Z refusal
+  test_stage_focus_ui.py      the Focus slider/jog widgets and the
+                              calibration dialog's two-warning Z gate
   test_stage_state.py
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
@@ -296,6 +314,9 @@ dialogs.py              module picker (startup + sidebar), device monitor,
                         settings dialog
 modes.json              named mode recipes (camera preset/exposure, DMD
                         all-on) main.py applies on selection
+rigs.json               per-rig hardware profiles (NI device, DAQ channels,
+                        what is fitted) — tracked; acqapp_local.json's "rig"
+                        key names which one THIS machine is
 probe.py                presence checks; enumeration only, never opens a device
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box

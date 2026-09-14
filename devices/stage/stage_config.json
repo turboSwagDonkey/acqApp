@@ -4,7 +4,7 @@
   "poll_interval_ms": 250,
   "max_unconfirmed_move_counts": 6400,
   "margin_um": 50,
-  "_comment": "FALLBACK ONLY — acqApp reads and writes ../../stage_control/config.json when that file exists (single source of truth, shared with the standalone app). This copy is used only if stage_control/ is missing, and is NOT kept up to date. 2026-09: the hardware moved from a Thorlabs MCM6101 (COM54, axes 0/1/2) to a Thorlabs MCM301, which addresses its axes by fixed slot — so 'index' below is now 4/5/6 for X/Y/Z. 'controller':'auto' lets StageController.connect() (devices/stage/backend.py) probe the port and pick whichever driver answers; pin 'mcm301'/'mcm6101' only to force one. The port is advisory: the driver connects to a single enumerated MCM301 whatever COM number it landed on. It sits on COM10 because Windows had given COM3 to BOTH it and a Bpod interface while the stage was unplugged, and a shared number wedges it — the SDK still lists the controller and the port still opens, then every query blocks forever. counts_per_um and span_counts for X/Y are real values read live from the controller (GetStageParams: nm_per_count=500 -> 2 counts/um, travel ±50800 counts), not measured or guessed. slope/offset are 1.0/0.0 because this controller's move target IS the encoder count — there is no coarse/fine scale as on the MCM6101, so it needs no 'Re-establish frame' step. true_center/travel_*/soft_* are still null: nobody has run 'Set 0,0 = center' on this hardware yet — centre the stage and click it once before trusting absolute go-to. Z disabled via active:false (not wired up yet).",
+  "_comment": "FALLBACK ONLY \u2014 acqApp reads and writes ../../stage_control/config.json when that file exists (single source of truth, shared with the standalone app). This copy is used only if stage_control/ is missing, and is NOT kept up to date. 2026-09: the hardware moved from a Thorlabs MCM6101 (COM54, axes 0/1/2) to a Thorlabs MCM301, which addresses its axes by fixed slot \u2014 so 'index' below is now 4/5/6 for X/Y/Z. 'controller':'auto' lets StageController.connect() (devices/stage/backend.py) probe the port and pick whichever driver answers; pin 'mcm301'/'mcm6101' only to force one. The port is advisory: the driver connects to a single enumerated MCM301 whatever COM number it landed on. It sits on COM10 because Windows had given COM3 to BOTH it and a Bpod interface while the stage was unplugged, and a shared number wedges it \u2014 the SDK still lists the controller and the port still opens, then every query blocks forever. counts_per_um and span_counts for X/Y are real values read live from the controller (GetStageParams: nm_per_count=500 -> 2 counts/um, travel \u00b150800 counts), not measured or guessed. slope/offset are 1.0/0.0 because this controller's move target IS the encoder count \u2014 there is no coarse/fine scale as on the MCM6101, so it needs no 'Re-establish frame' step. true_center/travel_*/soft_* are still null: nobody has run 'Set 0,0 = center' on this hardware yet \u2014 centre the stage and click it once before trusting absolute go-to. 2026-09-13: Z ENABLED (active:true + xy_pad.z_axis:6 below) \u2014 this rig has a physical focus axis, confirmed by the operator. counts_per_um/span_counts are the same real GetStageParams values as X/Y (this is one MCM301, all three axes share its firmware); slope/offset are 1.0/0.0 for the same reason as X/Y's (no coarse/fine scale on this controller, at any axis). true_center is still null \u2014 nobody has run a 'set zero' on Z yet \u2014 so StageAxis.has_frame reads False and Go-to stays disabled (jog still works) until that happens; see devices/stage/panel.py's per-axis frame gating. There is currently no GUI 'set zero' for Z (set_center_here()/establish_frame() are X/Y-only \u2014 Z was never meant to share the XY frame's calibration flow), so true_center only moves if this file is hand-edited or that gets built.",
   "axes": [
     {
       "index": 4,
@@ -15,11 +15,11 @@
       "step_um": 50,
       "slope": 1.0,
       "offset": 0.0,
-      "true_center": null,
-      "travel_min": null,
-      "travel_max": null,
-      "soft_min": null,
-      "soft_max": null,
+      "true_center": 7861,
+      "travel_min": -17539,
+      "travel_max": 33261,
+      "soft_min": -17439,
+      "soft_max": 33161,
       "home_offset": null
     },
     {
@@ -32,33 +32,34 @@
       "step_um": 50,
       "slope": 1.0,
       "offset": 0.0,
-      "true_center": null,
-      "travel_min": null,
-      "travel_max": null,
-      "soft_min": null,
-      "soft_max": null,
+      "true_center": 3633,
+      "travel_min": -21767,
+      "travel_max": 29033,
+      "soft_min": -21667,
+      "soft_max": 28933,
       "home_offset": null
     },
     {
       "index": 6,
       "name": "Z / Focus",
-      "active": false,
+      "active": true,
       "counts_per_um": 4.7254,
       "span_counts": 149022,
       "step_um": 20,
-      "slope": null,
-      "offset": null,
-      "true_center": null,
-      "travel_min": null,
-      "travel_max": null,
-      "soft_min": null,
-      "soft_max": null,
+      "slope": 1.0,
+      "offset": 0.0,
+      "true_center": -53223,
+      "travel_min": -113236,
+      "travel_max": 6790,
+      "soft_min": -112999,
+      "soft_max": 6553,
       "home_offset": null
     }
   ],
   "xy_pad": {
     "x_axis": 4,
     "y_axis": 5,
+    "z_axis": 6,
     "invert_y": true
   }
 }

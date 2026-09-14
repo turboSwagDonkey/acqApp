@@ -1,19 +1,19 @@
 """
-XY stage — position-polling worker.
+XY(Z) stage — position-polling worker.
 
-StagePollWorker polls a StageController (real or mock) for the X/Y position in
+StagePollWorker polls a StageController (real or mock) for its position in
 microns and reports it. It does NOT own the serial connection — the controller
 does — so the same connection is shared with the GUI motion controls. The worker
 never issues motion; it only reads.
 
 Exposes (via acq.worker.PullWorker):
-    worker.get_latest()  -> (x_um, y_um, z_counts) | None
+    worker.get_latest()  -> (x_um, y_um) | (x_um, y_um, z_um) | None — the
+                            3-tuple only on a rig with a Z stage (controller.
+                            settings.has_z); every existing caller already
+                            indexes [0]/[1], so this is additive.
     worker.set_sink(fn)  -> record every sample
     worker.rate_update   -> pyqtSignal(float)   # samples / second
     worker.error         -> pyqtSignal(str)
-
-`z_counts` is None unless StageSettings.z_enabled — raw encoder counts, not
-microns, since Z has no measured calibration (see devices/stage/settings.py).
 """
 from __future__ import annotations
 import time
@@ -30,6 +30,9 @@ class StagePollWorker(PullWorker):
         super().__init__()
         self._ctrl = controller
         self._hz   = max(0.5, poll_hz)
+        # Read once at construction, not per-tick: has_z is fixed for the
+        # life of a session (set at connect() time from the loaded config).
+        self._has_z = controller.has_z
 
     def _run(self) -> None:
         # NOTE: pacing uses acq.worker.paced(), which paces this REAL device
@@ -45,12 +48,12 @@ class StagePollWorker(PullWorker):
             if self._stop:
                 break
             try:
-                x, y = self._ctrl.read_xy_um()
-                z = self._ctrl.read_z_counts()
+                xy = self._ctrl.read_xy_um()
+                pos = (*xy, self._ctrl.read_z_um()) if self._has_z else xy
             except Exception as e:
                 self.error.emit(f"stage: read failed ({e})")
                 break
-            self._publish((x, y, z))
+            self._publish(pos)
             elapsed = time.perf_counter() - t0
             if n % max(1, int(self._hz)) == 0 and elapsed > 0:
                 self.rate_update.emit(n / elapsed)

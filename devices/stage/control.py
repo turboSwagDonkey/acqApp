@@ -20,11 +20,13 @@ class StageControllerError(Exception):
 
 
 def _pick_axis(s: StageSettings, which: str) -> StageAxis:
-    if which == "z":
-        if s.z is None:
-            raise StageControllerError("Z axis is not enabled")
-        return s.z
-    return s.x if which == "x" else s.y
+    if which == "x":
+        return s.x
+    if which == "y":
+        return s.y
+    if s.z is None:
+        raise StageControllerError("this rig has no Z stage")
+    return s.z
 
 
 def _rotate_jog(which: str, delta_um: float, deg: float) -> tuple[float, float]:
@@ -71,7 +73,8 @@ class StageController:
             raise StageControllerError(str(e)) from e
         # The calibrated command→encoder map, so absolute moves land right.
         # (A no-op on backends with no such scale, e.g. the MCM301.)
-        for ax in (self._s.x, self._s.y):
+        axes = (self._s.x, self._s.y, self._s.z) if self._s.z else (self._s.x, self._s.y)
+        for ax in axes:
             if ax.slope is not None and ax.offset is not None:
                 dev.set_linear_map(ax.index, ax.slope, ax.offset)
         self._dev = dev
@@ -88,6 +91,20 @@ class StageController:
     def _axis(self, which: str) -> StageAxis:
         return _pick_axis(self._s, which)
 
+    @property
+    def has_z(self) -> bool:
+        return self._s.has_z
+
+    @property
+    def supports_reframe(self) -> bool:
+        """Whether the connected backend can drive a hard-limit frame
+        re-establish at all (see establish_frame below) -- False on the
+        MCM301, whose position readout is already a stable encoder count and
+        never drifts. CalibrationDialog uses this to decide whether a
+        hard-limit calibration button is worth showing for this rig's
+        hardware at all, rather than offering a button that always refuses."""
+        return self._dev is not None and hasattr(self._dev, "establish_frame")
+
     # ── reads ───────────────────────────────────────────────────────────────
     def read_xy_um(self) -> tuple[float, float]:
         if self._dev is None:
@@ -96,12 +113,14 @@ class StageController:
         sy = self._dev.get_status(self._s.y.index)
         return (self._s.x.to_um(sx.position), self._s.y.to_um(sy.position))
 
-    def read_z_counts(self) -> int | None:
-        """Raw encoder counts — None if Z is not enabled. Not microns: Z has
-        no measured counts_per_um, unlike X/Y (see StageSettings.z_enabled)."""
-        if self._dev is None or self._s.z is None:
-            return None
-        return self._dev.get_status(self._s.z.index).position
+    def read_z_um(self) -> float:
+        """Focus position. Raises on a rig with no Z stage — callers gate on
+        `settings.has_z` first, same as every other Z entry point here."""
+        if self._dev is None:
+            raise StageControllerError("not connected")
+        if self._s.z is None:
+            raise StageControllerError("this rig has no Z stage")
+        return self._s.z.to_um(self._dev.get_status(self._s.z.index).position)
 
     # ── motion (physically moves the stage) ─────────────────────────────────
     def move_to_um(self, which: str, target_um: float) -> None:
@@ -112,15 +131,16 @@ class StageController:
         self._dev.move_to_readout(ax.index, counts)
 
     def jog_um(self, which: str, delta_um: float) -> None:
-        """MOTION. `which="z"` moves in raw counts (delta_um is read as counts
-        — see StageSettings.z_enabled) with no frame_rotation_deg: rotation
-        is a camera-alignment concept for the XY plane, meaningless for Z."""
         if self._dev is None:
             raise StageControllerError("not connected")
         if which == "z":
+            # Focus is not part of the camera-aligned XY plane, so
+            # frame_rotation_deg (an X/Y-only display setting) never applies —
+            # the same single-axis move _rotate_jog degenerates to at deg==0.
             ax = self._axis("z")
             cur = self._dev.get_status(ax.index).position
-            target = ax.clamp_counts(int(round(cur + ax.sign * delta_um)))
+            target = ax.clamp_counts(
+                int(round(cur + ax.sign * delta_um * ax.counts_per_um)))
             self._dev.move_to_readout(ax.index, target)
             return
         dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
@@ -137,10 +157,10 @@ class StageController:
 
     def stop_all(self) -> None:
         if self._dev is not None:
-            axes = [self._s.x.index, self._s.y.index]
+            idxs = [self._s.x.index, self._s.y.index]
             if self._s.z is not None:
-                axes.append(self._s.z.index)
-            self._dev.stop_all(axes)
+                idxs.append(self._s.z.index)
+            self._dev.stop_all(idxs)
 
     # ── frame / origin calibration ──────────────────────────────────────────
     # A HARD LIMIT hit re-references the controller's command origin, which
@@ -164,14 +184,40 @@ class StageController:
         save_axis_updates(updates)
         return updates
 
-    def establish_frame(self, progress=None) -> dict[int, dict]:
-        """MOTION — drives X then Y into their REVERSE hard limits, then probes
-        twice to re-measure `enc = slope·cmd + offset`, restoring absolute
-        positioning after a limit hit.
+    def set_z_zero_here(self) -> dict[int, dict]:
+        """Z's own zero — deliberately separate from set_center_here(): an
+        operator centering X/Y in the field of view has nothing to do with
+        where the focus knob happens to be, so the two must never be coupled.
+        No motion. Soft/travel limits land at ±half the stage's rated 25.4 mm
+        travel (StageAxis.center_updates, the same math set_center_here() uses
+        for X/Y) around wherever Z is right now."""
+        if self._dev is None:
+            raise StageControllerError("not connected")
+        if self._s.z is None:
+            raise StageControllerError("this rig has no Z stage")
+        cz = self._dev.get_status(self._s.z.index).position
+        updates = {self._s.z.index: self._s.z.center_updates(cz, self._s.margin_um)}
+        self._s.z.apply_updates(updates[self._s.z.index])
+        save_axis_updates(updates)
+        return updates
+
+    def establish_frame(self, progress=None,
+                        axes: tuple[str, ...] = ("x", "y")) -> dict[int, dict]:
+        """MOTION — drives each of `axes` into its REVERSE hard limit, then
+        probes twice to re-measure `enc = slope·cmd + offset`, restoring
+        absolute positioning after a limit hit.
+
+        `axes` defaults to X/Y only — Z is opt-in via `axes=("z",)` and is a
+        SEPARATE call from the caller's side on purpose: Z is a focus axis, and
+        the UI trigger for it carries its own, much stronger warnings (this
+        method carries no awareness of what's mounted on the stage — that
+        judgment call belongs entirely to the caller). Requesting "z" on a rig
+        with none configured raises before anything moves.
 
         Never invents an origin: the driver's geometric centre is not where
         anyone wants 0,0 here, and overwriting a user-set one silently moves the
-        coordinate system. 0,0 comes from `set_center_here()` only.
+        coordinate system. 0,0 comes from `set_center_here()`/`set_z_zero_here()`
+        only.
 
         An existing origin is KEPT if it still falls inside the freshly measured
         travel, DROPPED if not — a limit hit can re-reference the encoder too,
@@ -182,11 +228,14 @@ class StageController:
         """
         if self._dev is None:
             raise StageControllerError("not connected")
+        if "z" in axes and self._s.z is None:
+            raise StageControllerError("this rig has no Z stage")
         if not hasattr(self._dev, "establish_frame"):
             raise StageControllerError(
                 f"The {self.backend_kind} backend has no drifting command "
                 "origin to re-establish — its position readout is already a "
-                "stable encoder count. Use 'Set 0,0 = center' instead.")
+                "stable encoder count. Use 'Set 0,0 = center' / 'Set Z = 0' "
+                "instead.")
 
         def say(msg: str) -> None:
             if progress is not None:
@@ -194,7 +243,7 @@ class StageController:
 
         updates: dict[int, dict] = {}
         dropped: list[str] = []
-        for ax in (self._s.x, self._s.y):
+        for ax in (self._axis(a) for a in axes):
             say(f"{ax.name}: driving to reverse limit…")
             res = self._dev.establish_frame(ax.index, ax.default_span())
             lo, hi = int(res["travel_min"]), int(res["travel_max"])
@@ -264,10 +313,9 @@ class MockStageController:
 
     def __init__(self, settings: StageSettings):
         self._s = settings
-        self._pos = {"x": 0.0, "y": 0.0}
-        self._target = {"x": 0.0, "y": 0.0}
-        if self._s.z is not None:
-            self._pos["z"] = self._target["z"] = 0.0
+        axes = ("x", "y", "z") if settings.has_z else ("x", "y")
+        self._pos = {k: 0.0 for k in axes}
+        self._target = {k: 0.0 for k in axes}
         self._open = False
 
     def connect(self) -> None:
@@ -279,37 +327,47 @@ class MockStageController:
     def _axis(self, which: str) -> StageAxis:
         return _pick_axis(self._s, which)
 
+    @property
+    def has_z(self) -> bool:
+        return self._s.has_z
+
+    @property
+    def supports_reframe(self) -> bool:
+        """The mock always implements establish_frame (it's what lets the
+        rest of the app be tested without real hardware), so it always
+        reports support -- matching StageController's real capability check
+        would require a fake backend object with no establish_frame, which
+        no test needs."""
+        return True
+
     def _clamp_um(self, which: str, um: float) -> float:
         lo, hi = self._axis(which).soft_limits_um()
         return max(lo, min(hi, um))
 
-    def _ease(self) -> None:
-        """Advance every tracked axis toward its target by up to _STEP_UM per
-        read — whatever keys `_pos` holds, so Z eases the same way once
-        enabled without a second copy of this loop."""
-        for k in self._pos:
-            d = self._target[k] - self._pos[k]
-            if abs(d) <= self._STEP_UM:
-                self._pos[k] = self._target[k]
-            else:
-                self._pos[k] += self._STEP_UM * (1 if d > 0 else -1)
+    def _ease(self, k: str) -> None:
+        d = self._target[k] - self._pos[k]
+        if abs(d) <= self._STEP_UM:
+            self._pos[k] = self._target[k]
+        else:
+            self._pos[k] += self._STEP_UM * (1 if d > 0 else -1)
 
     def read_xy_um(self) -> tuple[float, float]:
-        self._ease()
+        # advance current toward target by up to _STEP_UM per read
+        for k in ("x", "y"):
+            self._ease(k)
         return (self._pos["x"], self._pos["y"])
 
-    def read_z_counts(self) -> int | None:
-        if self._s.z is None:
-            return None
-        self._ease()
-        return int(round(self._pos["z"]))
+    def read_z_um(self) -> float:
+        if not self._s.has_z:
+            raise StageControllerError("this rig has no Z stage")
+        self._ease("z")
+        return self._pos["z"]
 
     def move_to_um(self, which: str, target_um: float) -> None:
         self._target[which] = self._clamp_um(which, target_um)
 
     def jog_um(self, which: str, delta_um: float) -> None:
-        if which == "z":
-            self._axis("z")     # raises StageControllerError if Z is disabled
+        if which == "z":     # not part of the XY plane — see StageController
             self._target["z"] = self._clamp_um("z", self._pos["z"] + delta_um)
             return
         dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
@@ -335,17 +393,30 @@ class MockStageController:
     def set_center_here(self) -> dict[int, dict]:
         cx, cy = self.read_xy_counts()
         updates = _center_here_updates(self._s, cx, cy)
-        # "here" is now the origin — Z (no origin concept yet) is left as is.
-        self._pos["x"] = self._pos["y"] = 0.0
+        z = {"z": self._pos["z"]} if self._s.has_z else {}
+        self._pos = {"x": 0.0, "y": 0.0, **z}   # "here" is now the origin
         self._target = dict(self._pos)
         return updates
 
-    def establish_frame(self, progress=None) -> dict[int, dict]:
+    def set_z_zero_here(self) -> dict[int, dict]:
+        if not self._s.has_z:
+            raise StageControllerError("this rig has no Z stage")
+        cz = self._s.z.um_to_counts(self._pos["z"])
+        updates = {self._s.z.index: self._s.z.center_updates(cz, self._s.margin_um)}
+        self._s.z.apply_updates(updates[self._s.z.index])
+        self._pos["z"] = self._target["z"] = 0.0   # "here" is now Z's origin
+        return updates      # simulated: never written to disk, like X/Y's mock
+
+    def establish_frame(self, progress=None,
+                        axes: tuple[str, ...] = ("x", "y")) -> dict[int, dict]:
         """Slope/offset only — same contract as the real one: the origin and the
-        soft limits are left alone."""
+        soft limits are left alone. See StageController.establish_frame for
+        why Z is opt-in via `axes`."""
         import time
+        if "z" in axes and not self._s.has_z:
+            raise StageControllerError("this rig has no Z stage")
         updates: dict[int, dict] = {}
-        for ax in (self._s.x, self._s.y):
+        for ax in (self._axis(a) for a in axes):
             if progress is not None:
                 progress(f"{ax.name}: driving to reverse limit… (simulated)")
             time.sleep(0.4)
@@ -357,7 +428,7 @@ class MockStageController:
         return updates
 
     def go_to_center(self) -> None:
-        self._target["x"] = self._target["y"] = 0.0
+        self._target = {"x": 0.0, "y": 0.0}
 
     def set_home_here(self) -> tuple[float, float]:
         self._s.x.home_counts, self._s.y.home_counts = self.read_xy_counts()

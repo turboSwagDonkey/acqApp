@@ -27,7 +27,8 @@ from _harness import Report
 # The simulated rig, imported rather than copied: a second camera model would
 # be a second set of assumptions to keep in step with this one. It is a plain
 # module — its own checks run only under __main__.
-from test_dmd_calibration import CH, CW, DH, DW, make_camera, true_transform
+from test_dmd_calibration import (CH, CW, DH, DW, TEST_CROSS_FRAC,
+                                  TEST_THICK_FRAC, make_camera, true_transform)
 
 from acqApp.devices.dmd.calibration import (STRIPE_OFFSETS, CalibrationError,
                                             apply_transform, calibrate)
@@ -160,7 +161,8 @@ def check_end_to_end(r: Report) -> None:
         n["n"] += 1
         rig.project(f)
 
-    c = calibrate(project, g.grab, (DW, DH), log=lambda _s: None)
+    c = calibrate(project, g.grab, (DW, DH), log=lambda _s: None,
+                 thick_frac=TEST_THICK_FRAC, cross_frac=TEST_CROSS_FRAC)
     r.check(c.rms_px < 2.0,
             f"a calibration comes back through a lagging camera "
             f"(rms {c.rms_px:.2f} px over {c.n_points} stripes)")
@@ -358,6 +360,61 @@ def check_wiring(r: Report) -> None:
     pump(app, 0.1)
 
 
+def check_geometry_controls(r: Report) -> None:
+    """The Model/cross-length controls (added for a rig whose camera is
+    tilted enough that the affine fit measurably mis-registers it — see
+    test_dmd_calibration.py's homography checks) seed from this rig's
+    profile, stay editable, and the operator's choice — not the seed — is
+    what reaches calibrate()."""
+    from _harness import qt_app
+    _app = qt_app()          # kept alive for the function's duration — an
+    # unreferenced QApplication is garbage-collected immediately, taking the
+    # C++ singleton with it, and every widget built after that segfaults with
+    # no Python traceback at all.
+    import acqApp.devices.dmd.sweep as SW
+
+    class FakeProjector:
+        resolution = (64, 48)
+
+        def project_frame(self, _f):
+            pass
+
+        def stop(self):
+            pass
+
+    real_seed = SW.config.rig_dmd_calibration
+    SW.config.rig_dmd_calibration = lambda: {"model": "homography",
+                                             "cross_frac": 0.06}
+    try:
+        dlg = SW.CalibrationDialog(FakeProjector(), lambda: None, real=True)
+        r.check(dlg._cmb_model.currentData() == "homography",
+                "the model combo seeds from the rig profile")
+        r.check(abs(dlg._spn_cross.value() - 6.0) < 1e-6,
+                "…and so does the cross-length spinbox (as a percent)")
+
+        captured: dict = {}
+
+        def fake_calibrate(_project, _grab, _size, **kw):
+            captured.update(kw)
+            raise SW.CalibrationError("stub — nothing to fit")
+
+        real_calibrate = SW.calibrate
+        SW.calibrate = fake_calibrate
+        try:
+            dlg._cmb_model.setCurrentIndex(0)      # override the seed: affine
+            dlg._spn_cross.setValue(12.5)
+            dlg._run()
+        finally:
+            SW.calibrate = real_calibrate
+        r.check(captured.get("model") == "affine",
+                "the dialog's own selection reaches calibrate(), not the "
+                "rig-profile seed it started from")
+        r.check(abs(captured.get("cross_frac", 0.0) - 0.125) < 1e-6,
+                "…and the percent spinbox arrives as a fraction")
+    finally:
+        SW.config.rig_dmd_calibration = real_seed
+
+
 def main() -> int:
     r = Report("dmd-sweep")
     check_fresh_grabber(r)
@@ -365,6 +422,7 @@ def main() -> int:
     check_display_modes(r)
     check_project_frame(r)
     check_wiring(r)
+    check_geometry_controls(r)
     return r.finish()
 
 

@@ -31,6 +31,38 @@ _TRIGGER_MODE: dict[str, str] = {
 _WAIT_TIMEOUT = 0.5
 _WAIT_MSG_EVERY = 5.0
 
+# DCAMERR_NOCAMERA sometimes comes back on a fresh dcamapi_init() with the
+# camera plugged in, powered, and otherwise fine — a transient USB-enumeration
+# race in Hamamatsu's own driver, not a real absence. A couple of short
+# retries clears it; three tries costs ~3 s in the worst case, negligible
+# next to the ~7 s the open itself takes.
+_NOCAMERA_RETRIES = 3
+_NOCAMERA_RETRY_DELAY_S = 1.5
+
+
+def open_camera(device_index: int = 0):
+    """`DCAM.DCAMCamera(idx=device_index)`, retried past a transient
+    DCAMERR_NOCAMERA. Shared by the startup pre-open (main.py) and this
+    worker's own-open fallback (_run(), below) — the same flakiness can hit
+    either one, and it should only be handled in one place.
+
+    Any other DCAMLibError (camera genuinely absent, held by another
+    process, real hardware fault) is raised immediately — only this one
+    named, known-transient code is worth a retry."""
+    from pylablib.devices import DCAM
+    from pylablib.devices.DCAM.dcamapi4_lib import DCAMLibError
+    for attempt in range(1, _NOCAMERA_RETRIES + 1):
+        try:
+            return DCAM.DCAMCamera(idx=device_index)
+        except DCAMLibError as e:
+            if e.name != "DCAMERR_NOCAMERA" or attempt == _NOCAMERA_RETRIES:
+                raise
+            print(f"[voltage_cam] DCAM reported NOCAMERA on attempt "
+                  f"{attempt}/{_NOCAMERA_RETRIES} — retrying in "
+                  f"{_NOCAMERA_RETRY_DELAY_S:g}s (known transient USB-"
+                  f"enumeration quirk, not a real absence)")
+            time.sleep(_NOCAMERA_RETRY_DELAY_S)
+
 
 class OrcaFireWorker(PullWorker):
     """Opened and closed inside run() so the worker is restartable. AcqConfig
@@ -295,8 +327,6 @@ class OrcaFireWorker(PullWorker):
                   f"or use a smaller ROI/binning. Live preview is unaffected.")
 
     def _run(self) -> None:
-        from pylablib.devices import DCAM
-
         cfg    = self._config
         preset = cfg.preset
 
@@ -309,7 +339,7 @@ class OrcaFireWorker(PullWorker):
         own_cam = self._ext_cam is None
         mark = time.perf_counter()
         if own_cam:
-            cam = DCAM.DCAMCamera(idx=self._device_index)
+            cam = open_camera(self._device_index)
             mark = _t("open", mark)
         else:
             cam = self._ext_cam       # reuse the already-open handle (no 7 s open)

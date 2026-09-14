@@ -117,10 +117,14 @@ def _open_camera() -> None:
     dcam = None
     try:
         from pylablib.devices import DCAM as dcam
+        from acqApp.devices.voltage_cam.acquisition import open_camera
         # Open OPTIMISTICALLY: `get_cameras_number()` re-enumerates on EVERY
         # call, not once (measured 6.5/5.3/5.3 s), so asking first added ~5.3 s
         # to every launch. Ask only if the open fails, where it is free.
-        handle = dcam.DCAMCamera(idx=0)
+        # open_camera() (not a bare DCAMCamera(idx=0)) retries past a
+        # transient DCAMERR_NOCAMERA — the same driver quirk the worker's own-
+        # open fallback in acquisition.py hits, handled in the one place.
+        handle = open_camera(0)
         _cam_info = handle.get_device_info()
         _cam_handle = handle
         print(f"Voltage cam: {_cam_info} "

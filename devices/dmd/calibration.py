@@ -36,8 +36,8 @@ MIN_MODULATION = 0.15
 # (512), so a stripe run off the true panel edge shows up as "invisible" here
 # rather than being mistaken for a camera-FOV limit.
 STRIPE_OFFSETS = tuple(range(-500, 501, 50))
-STRIPE_WIDTH = 0.025         # stripe thickness, fraction of the panel
-STRIPE_CROSS = 0.25         # its length across the other axis
+STRIPE_WIDTH = 0.01      # stripe thickness, fraction of the panel
+STRIPE_CROSS = 0.05         # its length across the other axis
 
 
 class CalibrationError(RuntimeError):
@@ -89,6 +89,8 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
                  dmd_size: tuple[int, int], *,
                  offsets=STRIPE_OFFSETS,
                  min_modulation: float = MIN_MODULATION,
+                 thick_frac: float = STRIPE_WIDTH,
+                 cross_frac: float = STRIPE_CROSS,
                  log: Callable[[str], None] = print) -> dict:
     """Step a stripe across each axis → {axis: [(offset, cam_x, cam_y), …]}.
 
@@ -96,6 +98,13 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
     on the rig it drifted 527 px, the frame clipping one side while vignetting
     ate the other, so its centroid measured the lopsidedness. A stripe's is
     local, and one off the frame is dropped.
+
+    `cross_frac` (the stripe's length across the other axis) is exposed rather
+    than fixed: a camera viewing the panel at a steep tilt magnifies the
+    near-field end of that length far more than the far-field end, and on a
+    rig tilted enough, the default 25% blows past the frame edge at nearly
+    every offset. Shrinking it keeps the footprint inside the frame; it does
+    not change what is being measured, only how much of it is imaged at once.
     """
     w, h = int(dmd_size[0]), int(dmd_size[1])
     half = (w / 2.0, h / 2.0)
@@ -107,7 +116,8 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
     for axis in (0, 1):
         for d in offsets:
             frac = d / half[axis]
-            project(offset_stripe(w, h, axis, d))
+            project(offset_stripe(w, h, axis, d,
+                                  thick_frac=thick_frac, cross_frac=cross_frac))
             mod = np.abs(modulation(np.asarray(grab(), dtype=np.float32), dark))
             m = mod >= min_modulation
             n = int(m.sum())
@@ -250,6 +260,181 @@ def deshear(vx: np.ndarray, vy: np.ndarray,
                            np.sin(th + turn * np.pi / 2.0)]))
 
 
+# ── the transform (full perspective, for a steeply tilted camera) ─────────────
+#
+# `fit_axes`/`deshear` above model a RELAY: a rotation, a per-axis scale, and
+# an offset (6 DOF) — correct when the camera looks at the DMD close to
+# straight-on. A camera tilted enough to matter cannot be described that way
+# at all: distance from the camera varies across the panel, so equal steps on
+# the DMD land at UNEQUAL spacing in the image (compressed on the far side,
+# stretched on the near side) — the textbook signature of this on the rig it
+# was found on was a stripe sweep that measured a handful of near-invisible
+# points on one side and multi-million-pixel, frame-clipping ones on the
+# other, with the "clipping" side switching only past a well-defined offset.
+# An affine fit cannot represent that no matter how it's weighted; the
+# textbook model for "camera views a flat panel at an angle" is a full
+# projective homography (8 DOF) instead, fit below by DLT.
+
+def _homography_points(seen: dict, w: int, h: int) -> list[tuple]:
+    """Each kept stripe's (DMD_x, DMD_y, cam_x, cam_y). Unlike fit_axes, which
+    only needs the SIGNED OFFSET along one line, a homography needs each
+    stripe's actual 2D position on the panel — offsets along the other axis
+    are implicitly zero (the stripe sits on the panel's centreline)."""
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    pts = []
+    for d, u, v in seen[0]:
+        pts.append((cx + d, cy, u, v))
+    for d, u, v in seen[1]:
+        pts.append((cx, cy + d, u, v))
+    return pts
+
+
+def _dlt(pts: list[tuple]) -> np.ndarray:
+    """The direct linear transform: two equations per correspondence, the 3×3
+    homography (up to scale) is the right singular vector of the smallest
+    singular value. Standard technique; nothing rig-specific here."""
+    rows = []
+    for X, Y, u, v in pts:
+        rows.append([-X, -Y, -1.0, 0.0, 0.0, 0.0, u * X, u * Y, u])
+        rows.append([0.0, 0.0, 0.0, -X, -Y, -1.0, v * X, v * Y, v])
+    _, _, Vt = np.linalg.svd(np.asarray(rows, dtype=np.float64))
+    H = Vt[-1].reshape(3, 3)
+    return H / H[2, 2] if abs(H[2, 2]) > 1e-9 else H
+
+
+def _solve_homography(pts: list[tuple], keep: np.ndarray):
+    """DLT over the kept points, residuals over ALL of them (so a rejection
+    pass can see what it would be excluding) — same shape as `_solve`."""
+    kept = [p for p, k in zip(pts, keep) if k]
+    if len(kept) < 8:
+        return None
+    H = _dlt(kept)
+    XY = np.array([[X, Y] for X, Y, _u, _v in pts], dtype=np.float64)
+    UV = np.array([[u, v] for _X, _Y, u, v in pts], dtype=np.float64)
+    pred = apply_transform(H, XY)
+    err = np.hypot(*(pred - UV).T)
+    rms = float(np.sqrt(np.mean(err[keep] ** 2))) if keep.any() else float("nan")
+    return H, rms, err
+
+
+def fit_homography(seen: dict, w: int, h: int):
+    """All stripes at once → (H, rms, n, keep, pts). Mirrors fit_axes's shape
+    and its "one robust rejection pass" philosophy (see that docstring for
+    why one pass, and median over rms for the cutoff) — only the model
+    underneath differs.
+
+    Needs more points than the affine fit (8 unknowns, not 6), and needs them
+    genuinely spread rather than merely counted: axis0-only points constrain
+    5 of the 8 (h00, h02, h10, h12, h20) and axis1-only points the other 3
+    (h01, h11, h21, reusing h02/h12) — miss either axis and that half of the
+    homography is unconstrained, not merely noisy. 3 per axis, 8 total, is
+    the least that determines every unknown at all.
+    """
+    if len(seen[0]) < 3 or len(seen[1]) < 3:
+        return None
+    pts = _homography_points(seen, w, h)
+    if len(pts) < 8:
+        return None
+    keep = np.ones(len(pts), dtype=bool)
+    out = _solve_homography(pts, keep)
+    if out is None:
+        return None
+    H, rms, err = out
+
+    sigma = 1.4826 * float(np.median(err))
+    if sigma > 0:
+        wild = err > 3.0 * sigma
+        if wild.any() and (~wild).sum() >= max(8, len(pts) // 2):
+            keep = ~wild
+            out = _solve_homography(pts, keep)
+            if out is not None:
+                H, rms, err = out
+    return H, rms, int(keep.sum()), keep, pts
+
+
+def holdout_error_homography(seen: dict, w: int, h: int) -> float | None:
+    """Same idea as `holdout_error`: refit without one stripe per axis, then
+    ask the fit to predict it — the residual above is optimistic by
+    construction, this is not."""
+    trial = {a: list(seen[a]) for a in (0, 1)}
+    held = []
+    for a in (0, 1):
+        if len(trial[a]) < 5:
+            return None
+        i = len(trial[a]) // 2
+        held.append((a, *trial[a].pop(i)))
+    out = fit_homography(trial, w, h)
+    if out is None:
+        return None
+    H, _rms, _n, _keep, _pts = out
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    errs = []
+    for axis, d, u, v in held:
+        X, Y = (cx + d, cy) if axis == 0 else (cx, cy + d)
+        pred = apply_transform(H, np.array([[X, Y]], dtype=np.float64))[0]
+        errs.append(float(np.hypot(u - pred[0], v - pred[1])))
+    return float(max(errs))
+
+
+def _calibrate_homography(seen: dict, w: int, h: int,
+                          grab: Callable[[], np.ndarray],
+                          log: Callable[[str], None]) -> "DmdCalibration":
+    fit = fit_homography(seen, w, h)
+    if fit is None:
+        raise CalibrationError(
+            f"too few usable stripes to fit a homography — {len(seen[0])} on "
+            f"x and {len(seen[1])} on y, and each axis needs at least 3 (8 "
+            f"total; a homography has more freedom than the affine fit, so it "
+            f"needs more points to pin down). The rest were off the frame or "
+            f"too dim — a smaller cross_frac may keep more of them inside "
+            f"the frame on a steeply tilted rig.")
+    H, rms, n, keep, pts = fit
+    total = len(pts)
+
+    # A homography has no single rotation or scale — both vary across the
+    # field, which is the whole point of using one — but the LOCAL behaviour
+    # at the panel centre (its Jacobian there) is still a fair number for an
+    # operator used to reading "px/mirror at N deg" from the affine path.
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    eps = 1.0
+    base = apply_transform(H, np.array([[cx, cy]], dtype=np.float64))[0]
+    dx = apply_transform(H, np.array([[cx + eps, cy]], dtype=np.float64))[0] - base
+    dy = apply_transform(H, np.array([[cx, cy + eps]], dtype=np.float64))[0] - base
+    kx, ky = float(np.hypot(*dx)), float(np.hypot(*dy))
+    ax = float(np.degrees(np.arctan2(dx[1], dx[0])))
+    log(f"[dmd-calib] homography fit: local x {kx:.3f} px/mirror, y {ky:.3f} "
+        f"px/mirror at {ax:+.2f}deg — AT THE PANEL CENTRE ONLY, this model's "
+        f"scale and rotation vary across the field by design")
+    if n < total:
+        log(f"[dmd-calib] {total - n} stripe(s) rejected as outliers "
+            f"(>3x the residual); {n} kept")
+    log(f"[dmd-calib] residual {rms:.2f} px over {n} stripes")
+    hold = holdout_error_homography(seen, w, h)
+    if hold is not None:
+        log(f"[dmd-calib] hold-out error {hold:.2f} px — refitted without a "
+            f"stripe, then asked to predict it. This is the number to trust, "
+            f"not the residual.")
+
+    shape = np.asarray(grab()).shape
+    c = DmdCalibration(
+        cam_to_dmd=np.linalg.inv(H), dmd_size=(w, h),
+        cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
+        holdout_px=float(hold or 0.0), model="homography",
+        stripes=[[axis, d, px, py] for axis in (0, 1)
+                for d, px, py in seen[axis]],
+        created=datetime.now().isoformat(timespec="seconds"),
+        notes=f"full projective fit (8 DOF, for a steeply tilted camera) — "
+              f"local scale near centre {kx:.3f} x {ky:.3f} px/mirror at "
+              f"{ax:+.2f}deg")
+    log(f"[dmd-calib] {c.describe()}")
+    log(f"[dmd-calib] the camera sees mirrors {c.visible_mirrors()}")
+    if rms > 10.0:
+        log("[dmd-calib] WARNING: that residual is large for a homography "
+            "fit too — check the log above for a stripe that was kept but "
+            "looks out of place.")
+    return c
+
+
 # ── the transform ─────────────────────────────────────────────────────────────
 
 def apply_transform(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
@@ -266,18 +451,34 @@ def calibrate(project: Callable[[np.ndarray], None],
               offsets=STRIPE_OFFSETS,
               allow_shear: bool = False,
               min_modulation: float = MIN_MODULATION,
+              thick_frac: float = STRIPE_WIDTH,
+              cross_frac: float = STRIPE_CROSS,
+              model: str = "affine",
               log: Callable[[str], None] = print) -> "DmdCalibration":
-    """Project the stripes, fit the affine, return the registration.
+    """Project the stripes, fit the registration, return it.
 
     `project(frame)` displays one device-sized frame; `grab()` returns the
     camera's view of it. Both are callables so the whole thing is testable
     against a transform we chose, before any light is emitted (PLAN §2).
 
+    `model="affine"` (default) is a rotation + per-axis scale + offset — right
+    for a camera that looks at the DMD close to straight-on, which is every
+    rig this shipped on before 2026-09. `model="homography"` is a full 8-DOF
+    projective fit for a rig tilted enough that "close to straight-on" no
+    longer holds — see the big comment above `_homography_points` for how to
+    tell which one a rig needs from its sweep log.
+
     **The caller owns the actuation** — this projects on every offset.
     """
+    if model not in ("affine", "homography"):
+        raise CalibrationError(f"unknown calibration model {model!r}")
     w, h = int(dmd_size[0]), int(dmd_size[1])
     seen = stripe_sweep(project, grab, (w, h), offsets=offsets,
-                        min_modulation=min_modulation, log=log)
+                        min_modulation=min_modulation,
+                        thick_frac=thick_frac, cross_frac=cross_frac, log=log)
+
+    if model == "homography":
+        return _calibrate_homography(seen, w, h, grab, log=log)
 
     fit = fit_axes(seen)
     if fit is None:

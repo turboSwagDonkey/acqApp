@@ -427,6 +427,86 @@ def check_readout_speed_absence_is_reported(r: Report) -> None:
             "a camera that raises reports 'error', and does not propagate")
 
 
+def check_nocamera_retry(r: Report) -> None:
+    """DCAMERR_NOCAMERA sometimes comes back on a fresh open with the camera
+    plugged in, powered, and fine — a transient USB-enumeration race in
+    Hamamatsu's own driver. open_camera() retries past exactly that code and
+    nothing else, so a real absence (or any other DCAM failure) still fails,
+    just not on a driver hiccup."""
+    import acqApp.devices.voltage_cam.acquisition as ACQ
+    import pylablib.devices.DCAM as real_dcam
+    from pylablib.devices.DCAM.dcamapi4_defs import DCAMERR
+    from pylablib.devices.DCAM.dcamapi4_lib import DCAMLibError
+
+    real_ctor = real_dcam.DCAMCamera
+    real_delay = ACQ._NOCAMERA_RETRY_DELAY_S
+    ACQ._NOCAMERA_RETRY_DELAY_S = 0.0    # the retry is what's tested, not the wait
+
+    # Fails NOCAMERA twice, then succeeds — must return the real handle, not
+    # swallow the eventual success into another exception.
+    calls = {"n": 0}
+
+    def flaky_then_ok(idx=0):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise DCAMLibError("dcamapi_init", DCAMERR.DCAMERR_NOCAMERA)
+        return "THE_HANDLE"
+
+    real_dcam.DCAMCamera = flaky_then_ok
+    try:
+        got = ACQ.open_camera(0)
+    finally:
+        real_dcam.DCAMCamera = real_ctor
+        ACQ._NOCAMERA_RETRY_DELAY_S = real_delay
+    r.check(got == "THE_HANDLE" and calls["n"] == 3,
+            f"two NOCAMERA failures are retried past, landing the real open "
+            f"on attempt {calls['n']}")
+
+    # Always NOCAMERA — a genuinely absent camera must still fail, not retry
+    # forever, and the retry count is bounded.
+    always_calls = {"n": 0}
+
+    def always_nocamera(idx=0):
+        always_calls["n"] += 1
+        raise DCAMLibError("dcamapi_init", DCAMERR.DCAMERR_NOCAMERA)
+
+    real_dcam.DCAMCamera = always_nocamera
+    ACQ._NOCAMERA_RETRY_DELAY_S = 0.0
+    try:
+        try:
+            ACQ.open_camera(0)
+            r.check(False, "a camera that never appears must still raise")
+        except DCAMLibError as e:
+            r.check(e.name == "DCAMERR_NOCAMERA"
+                    and always_calls["n"] == ACQ._NOCAMERA_RETRIES,
+                    f"…with the real error after exactly "
+                    f"{ACQ._NOCAMERA_RETRIES} attempts, not fewer, not "
+                    f"forever ({always_calls['n']})")
+    finally:
+        real_dcam.DCAMCamera = real_ctor
+        ACQ._NOCAMERA_RETRY_DELAY_S = real_delay
+
+    # A DIFFERENT DCAM error (camera held by another process, real fault)
+    # must NOT be retried — only the one named, known-transient code is.
+    other_calls = {"n": 0}
+
+    def other_error(idx=0):
+        other_calls["n"] += 1
+        raise DCAMLibError("dcamapi_init", DCAMERR.DCAMERR_BUSY)
+
+    real_dcam.DCAMCamera = other_error
+    try:
+        try:
+            ACQ.open_camera(0)
+            r.check(False, "a non-NOCAMERA DCAM error must still raise")
+        except DCAMLibError as e:
+            r.check(e.name != "DCAMERR_NOCAMERA" and other_calls["n"] == 1,
+                    f"…on the first attempt, not retried ({e.name}, "
+                    f"{other_calls['n']} call(s))")
+    finally:
+        real_dcam.DCAMCamera = real_ctor
+
+
 def main() -> int:
     r = Report("losses")
     qt_app()                            # the camera worker declares pyqtSignals
@@ -439,6 +519,7 @@ def main() -> int:
     check_skip_report_blames_the_loop(r)
     check_memory_capped_buffer_is_announced(r)
     check_readout_speed_absence_is_reported(r)
+    check_nocamera_retry(r)
     return r.finish()
 
 

@@ -31,6 +31,16 @@ from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
 DW, DH = 256, 192          # a small DMD
 CW, CH = 320, 240          # the "ORCA"
 
+# Independent of calibration.py's own STRIPE_WIDTH/STRIPE_CROSS — those are
+# tuned per rig (a real one has been hand-edited smaller than these, and
+# rigs.json can override them per profile), while the synthetic camera and
+# vignette model below were sized against THESE specific fractions. Passed
+# explicitly everywhere a stripe is projected here, so this test's own
+# geometry never silently drifts with whatever a real rig's file currently
+# says.
+TEST_THICK_FRAC = 0.025
+TEST_CROSS_FRAC = 0.25
+
 
 def true_transform() -> np.ndarray:
     """DMD → camera: scale, a 7° rotation and an offset."""
@@ -71,6 +81,8 @@ def make_camera(M, rng, *, vignette=True):
 def run(image, dmd_size=(DW, DH), **kw):
     """Drive `calibrate` against a synthetic camera."""
     held = {"f": np.zeros((DH, DW), np.uint8)}
+    kw.setdefault("thick_frac", TEST_THICK_FRAC)
+    kw.setdefault("cross_frac", TEST_CROSS_FRAC)
     return calibrate(lambda f: held.__setitem__("f", f),
                      lambda: image(held["f"]), dmd_size,
                      log=lambda _s: None, **kw)
@@ -271,11 +283,72 @@ def main() -> int:
     img = make_camera(big, rng)
     held = {"f": np.zeros((DH, DW), np.uint8)}
     seen = stripe_sweep(lambda f: held.__setitem__("f", f),
-                        lambda: img(held["f"]), (DW, DH), log=lambda _s: None)
+                        lambda: img(held["f"]), (DW, DH), log=lambda _s: None,
+                        thick_frac=TEST_THICK_FRAC, cross_frac=TEST_CROSS_FRAC)
     kept = len(seen[0]) + len(seen[1])
     r.check(kept < 2 * len(STRIPE_OFFSETS),
             f"…and with the field {big[0, 0]:.0f}x the panel, only {kept} of "
             f"{2 * len(STRIPE_OFFSETS)} stripes stay on the frame")
+
+    # ── 6b. a rig too tilted for affine — the homography model ───────────────
+    # Real perspective: the bottom row isn't [0, 0, 1], so scale genuinely
+    # varies across the panel — the thing an affine fit (however sheared)
+    # cannot represent at all. This is what the rig this was built for showed:
+    # a stripe sweep with near-invisible points on one side and multi-million-
+    # pixel, frame-clipping ones on the other.
+    tilt = np.array([[1.3, 0.05, 40.0], [0.02, 1.1, 20.0],
+                     [0.0015, 0.0005, 1.0]])
+    d0 = 0.0015 * (DW - 1) + 0.0005 * (DH - 1) + 1.0
+    r.check(d0 > 0.0 and (0.0005 * (DH - 1) + 1.0) > 0.0,
+            "control: the synthetic tilt's denominator stays positive across "
+            "the whole panel, so it is a well-posed homography, not one with "
+            "a vanishing line crossing the DMD")
+    img_tilt = make_camera(tilt, rng, vignette=False)
+    probe = np.array([[DW / 4, DH / 4], [3 * DW / 4, DH / 4],
+                      [DW / 4, 3 * DH / 4], [3 * DW / 4, 3 * DH / 4]], float)
+
+    # CONTROL: the affine fit, asked to explain real perspective, cannot —
+    # otherwise "homography does better" would prove nothing.
+    c_aff = run(img_tilt, model="affine")
+    err_aff = float(np.abs(apply_transform(np.linalg.inv(c_aff.cam_to_dmd), probe)
+                           - apply_transform(tilt, probe)).max())
+    r.check(err_aff > 5.0,
+            f"control: an affine fit measurably mis-registers real "
+            f"perspective ({err_aff:.2f} px)")
+
+    c_h = run(img_tilt, model="homography")
+    r.check(c_h.model == "homography", "the result records which model fit it")
+    err_h = float(np.abs(apply_transform(np.linalg.inv(c_h.cam_to_dmd), probe)
+                         - apply_transform(tilt, probe)).max())
+    r.check(err_h < 2.0,
+            f"…while the homography fit recovers it (max {err_h:.2f} px, vs "
+            f"{err_aff:.2f} px for the affine control on the same data)")
+    r.check(c_h.holdout_px >= 0.0, "hold-out error is computed for this model too")
+
+    # Needs more points than the affine fit (8 DOF, not 6) — too few must
+    # raise with a reason that names the right model.
+    try:
+        run(img_tilt, model="homography", offsets=(-100, 0, 100))
+        r.check(False, "too few points for a homography should raise")
+    except CalibrationError as e:
+        r.check("homography" in str(e),
+                f"…naming the model that needed more of them ({str(e)[:50]}…)")
+
+    # An unknown model name is refused up front, before any light is emitted.
+    try:
+        run(img_tilt, model="projective")
+        r.check(False, "an unrecognized model name should raise")
+    except CalibrationError as e:
+        r.check("projective" in str(e), f"…naming the bad value ({e})")
+
+    # cross_frac exists to keep a magnified stripe inside the frame on a rig
+    # like this one — smaller cross_frac, smaller footprint, same offset.
+    wide = offset_stripe(DW, DH, 0, 40.0, cross_frac=0.25)
+    narrow = offset_stripe(DW, DH, 0, 40.0, cross_frac=0.05)
+    r.check(0 < int(narrow.sum()) < int(wide.sum()),
+            f"a smaller cross_frac makes a smaller stripe ({int(narrow.sum())} "
+            f"vs {int(wide.sum())} lit px), which is what keeps a magnified "
+            f"footprint from clipping the frame edge on a tilted rig")
 
     # ── 6. it round-trips through JSON ───────────────────────────────────────
     import tempfile
