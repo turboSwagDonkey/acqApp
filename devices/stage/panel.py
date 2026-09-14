@@ -14,13 +14,13 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
+    QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout,
     QWidget,
 )
 
 from acqApp import style
 from acqApp.acq.worker import PullWorker
-from acqApp.devices.stage.map_widget import StageMap
+from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
                                    _C_SOFT, StageSettings, config_path,
                                    load_settings)
@@ -444,8 +444,8 @@ class SettingsPanel(QWidget):
         self._ctrl = None                       # bound while a session is running
         self._last_xy = (0.0, 0.0)
         self._last_z = 0.0      # meaningless (and unused) unless self._s.has_z
-        self._lbl_z_target: QLabel | None = None   # the Focus group's drag preview
         self._last_map_xy: tuple[float, float] | None = None
+        self._last_gauge_z: float | None = None
         self._axis_widgets: dict[str, dict] = {}
         self._cal_dialog: CalibrationDialog | None = None
         self._build()
@@ -505,10 +505,11 @@ class SettingsPanel(QWidget):
             lay.addRow(f"{self._s.z.name} (µm):", self._lbl_z)
         root.addWidget(grp)
 
-        # ── Travel map ──────────────────────────────────────────────────────
+        # ── Travel map (+ Z gauge, beside it) ────────────────────────────────
         map_grp = QGroupBox("Position in travel")
-        ml = QVBoxLayout(map_grp)
-        ml.setContentsMargins(4, 4, 4, 4)
+        outer = QHBoxLayout(map_grp)
+        outer.setContentsMargins(4, 4, 4, 4)
+        ml = QVBoxLayout()
         self._map = StageMap()
         self._map.set_axes(self._s.x, self._s.y, self._s.invert_y)
         ml.addWidget(self._map)
@@ -519,6 +520,25 @@ class SettingsPanel(QWidget):
             f'<span style="color:{_C_SOFT}">▭</span> soft limits')
         legend.setStyleSheet("font-size: 10px;")
         ml.addWidget(legend)
+        outer.addLayout(ml, 1)
+
+        # Z is depth, not a second position on the table — its own gauge
+        # beside the map rather than a third axis squeezed into it. A caption
+        # under it, the same row the map's legend occupies, since the colours
+        # are the map's own legend already (position/origin/home/soft limits
+        # share _C_CUR/_C_ORIGIN/_C_HOME/_C_SOFT) — this only needs to say
+        # WHICH axis the bar is.
+        self._z_gauge: ZGauge | None = None
+        if self._s.has_z:
+            zcol = QVBoxLayout()
+            self._z_gauge = ZGauge()
+            self._z_gauge.set_axis(self._s.z)
+            zcol.addWidget(self._z_gauge, 1)
+            zcap = QLabel(self._s.z.name)
+            zcap.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            zcap.setStyleSheet("font-size: 10px; color:#9aa0a6;")
+            zcol.addWidget(zcap)
+            outer.addLayout(zcol)
         root.addWidget(map_grp, 1)
 
         # ── Motion controls (enabled only while connected) ──────────────────
@@ -536,7 +556,15 @@ class SettingsPanel(QWidget):
             grid.addWidget(b, row, col)
             return b
 
+        # Z rides the same grid as X/Y now — one Motion group, one control
+        # shape for every axis, rather than X/Y's grid plus Z's own slider
+        # block below it. (Z's *calibration* — CalibrationDialog's "Focus
+        # (Z)" section — stays separate; that risk profile is genuinely
+        # different, drives into the objective, and needs its own warnings.
+        # The jog/goto shape here does not.)
         axis_rows = [("x", self._s.x), ("y", self._s.y)]
+        if self._s.has_z:
+            axis_rows.append(("z", self._s.z))
         for r, (key, ax) in enumerate(axis_rows, start=1):
             grid.addWidget(QLabel(ax.name), r, 0)
             btn_minus = _btn("−", 28, r, 1, lambda _, k=key: self._jog(k, -1))
@@ -565,13 +593,6 @@ class SettingsPanel(QWidget):
                 "buttons": [btn_minus, btn_plus, btn_go, btn_stop],
             }
         root.addWidget(self._motion)
-
-        # ── Focus (Z) — its own group, not another grid row: a slider is a
-        #    different control shape, and Z is a different KIND of motion —
-        #    depth under an objective, not travel across open table. ────────
-        self._focus: QGroupBox | None = None
-        if self._s.has_z:
-            self._build_focus_group(root)
 
         # ── Session home + go-to-origin (navigation, not calibration) ───────
         self._nav = QGroupBox("Home (this session)")
@@ -652,123 +673,6 @@ class SettingsPanel(QWidget):
         self._update_frame_status()
         self._update_home_label()
 
-    def _build_focus_group(self, root: QVBoxLayout) -> None:
-        """Z's own control: a vertical slider (coarse, absolute — drag,
-        release to commit) flanked by jog arrows (fine, relative — same
-        step-and-controller path every X/Y jog button already uses), plus a
-        numeric Go for typed precision. Kept out of the shared X/Y grid
-        entirely — different control shape, and Z is a different kind of
-        motion (focus depth under an objective, not travel across open
-        table)."""
-        ax = self._s.z
-        self._focus = QGroupBox(f"Focus ({ax.name})")
-        fl = QVBoxLayout(self._focus)
-
-        row_pos = QHBoxLayout()
-        row_pos.addWidget(QLabel("Target:"))
-        self._lbl_z_target = QLabel("—")
-        row_pos.addWidget(self._lbl_z_target)
-        row_pos.addStretch()
-        fl.addLayout(row_pos)
-
-        lo, hi = ax.soft_limits_um()
-        btn_up = QPushButton("▲")
-        btn_up.setMaximumWidth(28)
-        btn_up.setToolTip("Jog up by the step size below.")
-        btn_up.clicked.connect(lambda: self._jog("z", +1))
-
-        self._sld_z = QSlider(Qt.Orientation.Vertical)
-        self._sld_z.setMinimumHeight(120)
-        self._sld_z.setRange(int(round(lo)), int(round(hi)))
-        self._sld_z.setValue(0)
-        self._sld_z.setToolTip(
-            "Drag to preview a target, release to move there (through the "
-            "same large-move confirm as Go). Disabled until Z has a valid "
-            "frame — jog still works either way.")
-        self._sld_z.valueChanged.connect(self._on_z_slider_moved)
-        self._sld_z.sliderReleased.connect(self._on_z_slider_released)
-
-        btn_down = QPushButton("▼")
-        btn_down.setMaximumWidth(28)
-        btn_down.setToolTip("Jog down by the step size below.")
-        btn_down.clicked.connect(lambda: self._jog("z", -1))
-
-        col = QVBoxLayout()
-        col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        col.addWidget(btn_up)
-        col.addWidget(self._sld_z, 1)
-        col.addWidget(btn_down)
-        slider_row = QHBoxLayout()
-        slider_row.addStretch()
-        slider_row.addLayout(col)
-        slider_row.addStretch()
-        fl.addLayout(slider_row, 1)
-
-        form = QFormLayout()
-        spn_step = QDoubleSpinBox()
-        spn_step.setRange(0.1, 5000.0)
-        spn_step.setDecimals(1)
-        spn_step.setValue(ax.step_um)
-        spn_step.setMaximumWidth(80)
-        form.addRow("Jog step (µm):", spn_step)
-
-        spn_goto = QDoubleSpinBox()
-        spn_goto.setRange(lo, hi)
-        spn_goto.setDecimals(1)
-        spn_goto.setSuffix(" µm")
-        spn_goto.setMaximumWidth(100)
-        form.addRow("Go to (µm):", spn_goto)
-        fl.addLayout(form)
-
-        btn_row = QHBoxLayout()
-        btn_go = QPushButton("Go")
-        btn_go.setMaximumWidth(40)
-        btn_go.clicked.connect(lambda: self._goto("z"))
-        btn_row.addWidget(btn_go)
-        btn_stop = QPushButton("Stop")
-        btn_stop.setMaximumWidth(50)
-        btn_stop.clicked.connect(lambda: self._stop("z"))
-        btn_row.addWidget(btn_stop)
-        btn_row.addStretch()
-        fl.addLayout(btn_row)
-
-        # Same bookkeeping shape as the X/Y grid's per-axis dict — every
-        # generic handler (_jog, _goto, _stop, _update_frame_status,
-        # _refresh_goto_ranges) that reads self._axis_widgets[key] keeps
-        # working unmodified. buttons[2] is the Go button, same convention as
-        # the X/Y rows (frame-gating toggles that index).
-        self._axis_widgets["z"] = {
-            "step": spn_step, "goto": spn_goto, "slider": self._sld_z,
-            "buttons": [btn_down, btn_up, btn_go, btn_stop],
-        }
-        root.addWidget(self._focus)
-
-    def _on_z_slider_moved(self, value: int) -> None:
-        """Fires on every value change, drag or programmatic — see
-        set_readout's guard for why that's safe: only a real user release
-        (sliderReleased) ever commands a move."""
-        self._lbl_z_target.setText(f"{value} µm")
-
-    def _on_z_slider_released(self) -> None:
-        if self._ctrl is None:
-            return
-        target = float(self._sld_z.value())
-        cur = self._last_z
-        if abs(target - cur) > self._s.confirm_move_z_um:
-            if QMessageBox.question(
-                self, "Confirm move",
-                f"Move {self._s.z.name} from {cur:.0f} to {target:.0f} µm "
-                f"({abs(target - cur):.0f} µm)?"
-            ) != QMessageBox.StandardButton.Yes:
-                # Snap back to the last known position — the drag preview
-                # showed a target that was never actually sent.
-                self._sld_z.blockSignals(True)
-                self._sld_z.setValue(int(round(cur)))
-                self._sld_z.blockSignals(False)
-                self._lbl_z_target.setText(f"{cur:.0f} µm")
-                return
-        self._call("Move failed", lambda c: c.move_to_um("z", target))
-
     # ── binding to a live controller ────────────────────────────────────────
     def bind_controller(self, controller) -> None:
         """Attach the connected controller (session start) or None (stop)."""
@@ -778,6 +682,8 @@ class SettingsPanel(QWidget):
         self._set_controls_enabled(controller is not None)
         if controller is None:
             self._map.clear_position()
+            if self._z_gauge is not None:
+                self._z_gauge.clear_position()
             if self._cal_dialog is not None and not self._cal_dialog.running:
                 self._cal_dialog.reject()
                 self._cal_dialog = None
@@ -785,9 +691,7 @@ class SettingsPanel(QWidget):
         self._update_home_label()
 
     def _set_controls_enabled(self, on: bool) -> None:
-        self._motion.setEnabled(on)
-        if self._focus is not None:
-            self._focus.setEnabled(on)
+        self._motion.setEnabled(on)      # Z rides along — it's a row in here now
         self._nav.setEnabled(on)
         self._fovs.setEnabled(on)
         self._btn_stop_all.setEnabled(on)
@@ -810,14 +714,14 @@ class SettingsPanel(QWidget):
         # No competing motion while the stage is driving into a hard limit.
         connected = self._ctrl is not None and not busy
         self._motion.setEnabled(connected)
-        if self._focus is not None:
-            self._focus.setEnabled(connected)
         self._nav.setEnabled(connected)
         self._fovs.setEnabled(connected)
         self._refresh_goto_ranges()
         self._update_frame_status()
         self._update_home_label()
         self._map.update()
+        if self._z_gauge is not None:
+            self._z_gauge.update()          # origin/soft-limits may have moved
         self.settings_changed.emit(self.settings)
 
     # ── frame status ────────────────────────────────────────────────────────
@@ -838,10 +742,6 @@ class SettingsPanel(QWidget):
             ax_ok = ok if key in ("x", "y") else self._axis(key).has_frame
             w["goto"].setEnabled(ax_ok)
             w["buttons"][2].setEnabled(ax_ok)   # the "Go" button
-            if "slider" in w:
-                # The slider commands an absolute position exactly like Go —
-                # jog (the arrow buttons) is unaffected, same as X/Y.
-                w["slider"].setEnabled(ax_ok)
         self._update_home_label()
 
     def _axis(self, key: str):
@@ -852,13 +752,10 @@ class SettingsPanel(QWidget):
         return self._s.z
 
     def _refresh_goto_ranges(self) -> None:
-        """Re-range the go-to spin boxes (and the Z slider) after the soft
-        limits move."""
+        """Re-range the go-to spin boxes after the soft limits move."""
         for key, w in self._axis_widgets.items():
             lo, hi = self._axis(key).soft_limits_um()
             w["goto"].setRange(lo, hi)
-            if "slider" in w:
-                w["slider"].setRange(int(round(lo)), int(round(hi)))
 
     # ── session home ────────────────────────────────────────────────────────
     def _update_home_label(self) -> None:
@@ -981,10 +878,11 @@ class SettingsPanel(QWidget):
         self._call("STOP ALL failed", lambda c: c.stop_all())
 
     # ── live readout from the poll worker ───────────────────────────────────
-    # Below this, a move isn't visually distinguishable on the map (a few mm
-    # of travel drawn into ~300 px) — StageMap.set_position always repaints
-    # unconditionally, so guard here like wheel.py's _axis/_title do for the
-    # analogous reason: a stationary stage otherwise repaints every poll tick.
+    # Below this, a move isn't visually distinguishable on the map or the Z
+    # gauge (a few mm of travel drawn into ~300 px) — both widgets' set_
+    # position always repaints unconditionally, so guard here like wheel.py's
+    # _axis/_title do for the analogous reason: a stationary stage otherwise
+    # repaints every poll tick.
     _MAP_EPS_UM = 0.5
 
     def set_readout(self, x_um: float, y_um: float, z_um: float | None = None) -> None:
@@ -994,15 +892,11 @@ class SettingsPanel(QWidget):
         if z_um is not None and self._lbl_z is not None:
             self._last_z = z_um
             self._lbl_z.setText(f"{z_um:8.1f}")
-            sld = self._axis_widgets.get("z", {}).get("slider")
-            if sld is not None and not sld.isSliderDown():
-                # Never fight the user mid-drag — this only syncs the handle
-                # to reality while nobody is holding it.
-                clamped = max(sld.minimum(), min(sld.maximum(), int(round(z_um))))
-                sld.blockSignals(True)
-                sld.setValue(clamped)
-                sld.blockSignals(False)
-                self._lbl_z_target.setText(f"{z_um:.0f} µm")
+            if (self._z_gauge is not None
+                    and (self._last_gauge_z is None
+                        or abs(z_um - self._last_gauge_z) >= self._MAP_EPS_UM)):
+                self._last_gauge_z = z_um
+                self._z_gauge.set_position(z_um)
         last = self._last_map_xy
         if (last is None or abs(x_um - last[0]) >= self._MAP_EPS_UM
                 or abs(y_um - last[1]) >= self._MAP_EPS_UM):

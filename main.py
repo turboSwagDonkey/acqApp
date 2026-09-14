@@ -1221,19 +1221,19 @@ class MainWindow(QMainWindow):
         are draggable — counting assumes an order the operator may have changed.
         """
         dlg = self._settings_dialog
-        order = list(config.MODULES)
+        order = {k: i for i, k in enumerate(config.MODULES)}
         last = dlg.panel_index(self._save_panel) if self._save_panel else -1
         for m in self._modules:
             if m.key == key or m.panel is None:
                 continue
-            if order.index(m.key) < order.index(key):
+            if order[m.key] < order[key]:
                 last = max(last, dlg.panel_index(m.panel))
         return last + 1
 
     def _plot_tab_index(self, key: str) -> int:
-        order = list(config.MODULES)
+        order = {k: i for i, k in enumerate(config.MODULES)}
         return len([k for k in self._module_plots
-                    if k != key and order.index(k) < order.index(key)])
+                    if k != key and order[k] < order[key]])
 
     def _refresh_central(self) -> None:
         """Rebuild the centre pane only if its owner changed.

@@ -213,6 +213,56 @@ def main() -> int:
             "default size covers the widest panel without scrolling")
     r.check(want.width() <= avail.width() and want.height() <= avail.height(),
             "…and still fits on the screen it opens on")
+
+    # The bug this guards: a SAVED size that is nowhere near sane must not win
+    # forever afterward — corrupted by an interrupted write, or from a window
+    # saved on a monitor that's since been unplugged. restoreGeometry() can
+    # return True on exactly such a QByteArray, so showEvent must not trust
+    # "restore succeeded" alone (dialogs.py's `_looks_sane`). A fresh,
+    # panel-less dialog, so this cannot disturb `dlg`'s own panels/tabs.
+    from PyQt6.QtCore import QByteArray, QSize
+
+    from acqApp.dialogs import SettingsDialog, _looks_sane
+
+    r.check(not _looks_sane(QSize(50, 40), SettingsDialog._MIN_DEFAULT),
+            "control: _looks_sane flags a tiny size")
+    r.check(_looks_sane(QSize(*SettingsDialog._MIN_DEFAULT),
+                        SettingsDialog._MIN_DEFAULT),
+            "control: _looks_sane accepts a floor-sized window")
+
+    # Corrupted/garbage bytes: restoreGeometry() fails outright.
+    bad = SettingsDialog()
+    bad._saved_geom = QByteArray(b"not a real geometry blob")
+    bad.show()
+    pump(app, 0.1)
+    r.check(bad.width() >= SettingsDialog._MIN_DEFAULT[0] // 2
+            and bad.height() >= SettingsDialog._MIN_DEFAULT[1] // 2,
+            f"a corrupt saved geometry falls back to the computed default, "
+            f"not whatever a failed restore leaves behind "
+            f"({bad.width()}x{bad.height()})")
+    bad.close()
+
+    # A GENUINELY saved tiny geometry: restoreGeometry() succeeds — it's a
+    # real, validly-encoded rectangle — but the size itself is not credible.
+    seed = SettingsDialog()
+    seed.show()
+    pump(app, 0.05)
+    seed.resize(60, 50)
+    pump(app, 0.05)
+    tiny_geom = seed.saveGeometry()
+    seed.close()
+
+    tiny = SettingsDialog()
+    tiny._saved_geom = tiny_geom
+    tiny.show()
+    pump(app, 0.1)
+    r.check(tiny.width() >= SettingsDialog._MIN_DEFAULT[0] // 2
+            and tiny.height() >= SettingsDialog._MIN_DEFAULT[1] // 2,
+            f"a validly-restored but implausibly tiny geometry is overridden "
+            f"too, not trusted just because restoreGeometry() succeeded "
+            f"({tiny.width()}x{tiny.height()})")
+    tiny.close()
+
     # Clicking the page you are already on shuts the window, as the single
     # ⚙ Settings toggle used to. The tab switch above left `puffer` current, so
     # that is the item that closes it — clicking any OTHER one just switches.
@@ -321,10 +371,9 @@ def main() -> int:
     # led_intensity (a dial, like puffer_duration_s) are deliberate
     # exceptions — the LED's own on/off runtime state must still never
     # persist (would turn illumination on in an empty rig). Scoped to the two
-    # device sections that actually own an LED: `routines` legitimately
-    # persists a step's `led` field (a protocol instruction — "turn the LED
-    # on for this step" — the same kind of fact as `project`, not runtime
-    # state) and must not be caught by this.
+    # device sections that actually own an LED — routines has no LED field of
+    # its own to worry about here: the illumination LED now simply follows
+    # capture (engine.py), it is not a per-step setting that gets saved.
     led_sections = {k: saved.get(k, {}) for k in ("voltage_cam", "pupil_cam")}
     scrubbed = (json.dumps(led_sections).lower()
                .replace("led_follow_live", "").replace("led_intensity", ""))

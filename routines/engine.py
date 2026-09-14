@@ -364,11 +364,16 @@ class RoutineEngine:
     def _begin_capture(self) -> None:
         step = self._r.steps[self._i]
         try:
-            if step.project:
+            # Light follows the pattern: a step either shows something or it
+            # doesn't. The LED is unconditional — it's imaging illumination
+            # for the recording, not a stimulus, so it tracks CAPTURE itself
+            # rather than a per-step choice; a rig with no LED loaded no-ops
+            # here the same way an unloaded DMD no-ops `light`.
+            if step.pattern:
                 self._h.light(True)
-            if step.led:
-                self._h.led(True)
-            self._puff_next = (self._h.now() + step.puff_interval_s
+            self._h.led(True)
+            now = self._h.now()
+            self._puff_next = (now + step.puff_interval_s
                                if step.puff_interval_s > 0 else None)
             frame0 = self._frames()
             if step.unit == "frames" and frame0 is None:
@@ -376,7 +381,7 @@ class RoutineEngine:
             run = StepRun(index=self._i, cycle=self._cycle,
                           attempt=self._attempt,
                           label=step.label or step.describe(),
-                          t0=self._h.now(), frame0=frame0)
+                          t0=now, frame0=frame0)
             self._run = run
             self._h.begin_step(run)      # the adapter may open a file here
             self._open = True

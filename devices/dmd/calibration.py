@@ -102,9 +102,10 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
     `cross_frac` (the stripe's length across the other axis) is exposed rather
     than fixed: a camera viewing the panel at a steep tilt magnifies the
     near-field end of that length far more than the far-field end, and on a
-    rig tilted enough, the default 25% blows past the frame edge at nearly
-    every offset. Shrinking it keeps the footprint inside the frame; it does
-    not change what is being measured, only how much of it is imaged at once.
+    rig tilted enough even the default (5%, lowered from an original 25% that
+    blew past the frame edge at nearly every offset) can still be too much.
+    Shrinking it keeps the footprint inside the frame; it does not change
+    what is being measured, only how much of it is imaged at once.
     """
     w, h = int(dmd_size[0]), int(dmd_size[1])
     half = (w / 2.0, h / 2.0)

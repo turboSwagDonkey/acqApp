@@ -67,9 +67,17 @@ class Step:
     label:    str = ""
     x_um:     float | None = None     # None = leave this axis where it is
     y_um:     float | None = None
-    pattern:  str = ""                # "" = leave the DMD's loaded pattern
-    project:  bool = False            # emit light for the length of the step
-    led:      bool = False            # primary illumination LED on for the step
+    fov:      str = ""                # name of the saved FOV x_um/y_um came
+                                       # from, purely a display label — "" once
+                                       # either axis is hand-edited, since the
+                                       # numbers may no longer match that spot.
+    pattern:  str = ""                # "" = leave the DMD's loaded pattern;
+                                       # light follows it (engine.py) — a step
+                                       # either shows something or it doesn't,
+                                       # there is no "loaded but dark" state.
+                                       # The illumination LED is independent of
+                                       # both and simply tracks CAPTURE: the
+                                       # camera recording is what wants light.
     length:   float = 100.0           # in `unit` — never converted
     unit:     str = "frames"
     settle_s: float = 0.25            # after the move/pattern, before capture
@@ -80,12 +88,11 @@ class Step:
 
     def describe(self) -> str:
         """One line for the panel and the log."""
-        where = ", ".join(f"{a}={v:.0f}um" for a, v in
-                          (("x", self.x_um), ("y", self.y_um)) if v is not None)
+        where = (f"FOV {self.fov}" if self.fov else
+                ", ".join(f"{a}={v:.0f}um" for a, v in
+                          (("x", self.x_um), ("y", self.y_um)) if v is not None))
         what = pattern_label(self.pattern) if self.pattern else ""
         bits = [b for b in (where, what,
-                            "light" if self.project else "",
-                            "LED" if self.led else "",
                             f"puff/{self.puff_interval_s:g}s"
                             if self.puff_interval_s > 0 else "") if b]
         head = self.label or f"{self.length:g} {self.unit}"
@@ -206,7 +213,6 @@ class RigLimits:
     y_um:            tuple[float, float] | None = None
     has_stage:       bool = False
     has_dmd:         bool = False
-    has_led:         bool = False
     has_puffer:      bool = False
     has_frames:      bool = False   # a camera is loaded, so frames() ticks
     cam_trigger_mode: str = ""      # the loaded camera's OWN trigger setting
@@ -274,12 +280,10 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
                     if p:
                         out.append(f"{at}: {p}")
 
-        if (s.project or s.pattern) and not rig.has_dmd:
+        if s.pattern and not rig.has_dmd:
             out.append(f"{at}: uses the DMD, which is not loaded")
         if s.pattern and not Path(s.pattern).is_file():
             out.append(f"{at}: pattern {Path(s.pattern).name!r} is not a file")
-        if s.led and not rig.has_led:
-            out.append(f"{at}: turns the LED on, which is not loaded")
         if s.puff_interval_s < 0:
             out.append(f"{at}: puff interval = {s.puff_interval_s:g} s; "
                        f"must not be negative")

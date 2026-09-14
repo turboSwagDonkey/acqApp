@@ -117,7 +117,6 @@ class RoutinesModule(ModuleAdapter):
         # measured in frames.
         return RigLimits(x_um=x, y_um=y, has_stage=stage is not None,
                          has_dmd=self.win.pattern_target() is not None,
-                         has_led=self.win.led_target() is not None,
                          has_puffer=self.win.puffer_target() is not None,
                          has_frames=FRAME_STREAM in self.win.module_keys(),
                          cam_trigger_mode=self.win.cam_trigger_mode() or "")

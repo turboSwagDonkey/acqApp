@@ -43,6 +43,7 @@ class StagePollWorker(PullWorker):
         # docstring.
         self._stop = False
         period = 1.0 / self._hz
+        rate_every = max(1, int(self._hz))   # ~once/sec, fixed for the run
         t0 = time.perf_counter()
         for n in paced(period, t0):
             if self._stop:
@@ -55,5 +56,5 @@ class StagePollWorker(PullWorker):
                 break
             self._publish(pos)
             elapsed = time.perf_counter() - t0
-            if n % max(1, int(self._hz)) == 0 and elapsed > 0:
+            if n % rate_every == 0 and elapsed > 0:
                 self.rate_update.emit(n / elapsed)

@@ -158,7 +158,14 @@ def main() -> int:
     mod["dmd"].stop_display()
     win._btn_run.setChecked(False)
     r.check(not win._sync.running, "session clock stopped")
-    r.check(all(m.worker is None for m in win._modules), "workers released")
+    # Stage is the one exception: its poll worker is "always-on" (built and
+    # released with the CONNECTION — build_controller/close_controller, the
+    # same pair puffer/DMD/LED use — not the session), so jogging works with
+    # no Live view running. Session stop must not touch it either way.
+    r.check(all(m.worker is None for m in win._modules if m.key != "stage"),
+            "every session-scoped worker is released")
+    r.check(mod["stage"].worker is not None,
+            "…but the stage's poll worker survives Live view stopping")
     r.check(not mod["voltage_cam"].controller.is_on,
             "primary LED followed Live view off again")
 

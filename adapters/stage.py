@@ -1,15 +1,28 @@
 """
 The XY stage's adapter. The calibration itself is shared with the standalone
 `stage_control/` app and lives in `devices/stage/settings.py`.
+
+The connection is built and torn down with `build_controller`/`close_controller`
+— the "always-on" pair every simple output (puffer, LED, DMD) already uses —
+rather than `build_session`/`stop`. Positioning the stage is something an
+operator does before ever pressing Live view, unlike a camera's frame stream,
+which only means anything once a session's shared clock exists; the stage's
+own poll loop needs no clock at all (`StagePollWorker` times itself off
+`time.perf_counter()`). Opening the port is safe on its own — CLAUDE.md's
+line is "device open/config is safe", it is COMMANDING motion that needs an
+explicit button press, and that gate (`SettingsPanel._call`) is unchanged.
+Live/Record only adds recording the position that was already being read.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
+from acqApp.acq.devices import ModuleHost
 from acqApp.devices.stage.acquisition import StagePollWorker
 from acqApp.devices.stage.control import MockStageController, StageController
 from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
@@ -27,6 +40,15 @@ class StageModule(ModuleAdapter):
     # must keep coming from the shared stage_control config: StageSettings nests
     # two StageAxis objects, which do not survive this config's flat JSON.
     _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg")
+
+    def __init__(self, win: ModuleHost) -> None:
+        super().__init__(win)
+        # The panel's readout needs refreshing whether or not Live view is
+        # running MainWindow's own shared display timer — that one only ticks
+        # session-scoped modules. Same 30 Hz, its own clock.
+        self._disp_timer = QTimer()
+        self._disp_timer.setInterval(33)
+        self._disp_timer.timeout.connect(self.update_display)
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -59,8 +81,8 @@ class StageModule(ModuleAdapter):
         except Exception:
             return {}
 
-    # ── session ──
-    def build_session(self, emulate: bool) -> None:
+    # ── connection (always-on: see the module docstring) ──
+    def build_controller(self, emulate: bool) -> None:
         s = self.panel.settings if self.panel is not None else load_stage_settings()
         ctrl = MockStageController(s) if emulate else StageController(s)
         try:
@@ -71,25 +93,35 @@ class StageModule(ModuleAdapter):
         self.win.status(f"stage: connected ({ctrl.backend_kind})")
         self.controller = ctrl
         self._adopt(StagePollWorker(ctrl, s.poll_hz))
+        self.worker.start()             # no session to wait on — see __init__
         self.panel.bind_controller(ctrl)
+        self._disp_timer.start()
 
-    def stop(self) -> None:
-        super().stop()
-        # Release the stage: unbind the controls first, then close the link.
+    def close_controller(self) -> None:
+        # Unbind the controls first, then stop the poller, then close the
+        # link — the reverse of build_controller. Reached by module unload,
+        # Emulate real<->mock swap, and app close alike; a raise here (port
+        # gone, stage unplugged) must not strand it half torn-down, so every
+        # step is independent of the others succeeding.
+        self._disp_timer.stop()
         if self.panel is not None:
             self.panel.bind_controller(None)
+        if self.worker is not None:
+            self.worker.stop()
+            self.worker = None
         if self.controller is not None:
-            # `MainWindow._on_run_toggled` stops every adapter in one loop, so
-            # a raise here (unplugged stage, port gone mid-session) would strand
-            # every module after this one with its worker still running.
             try:
                 self.controller.close()
             except Exception as e:
                 print(f"[stage] close failed ({type(e).__name__}: {e})")
             self.controller = None
 
-    def close_controller(self) -> None:
-        pass        # the stage link is session-scoped, not an always-on output
+    def start(self) -> None:
+        pass    # already running since build_controller — a session adds
+                # recording (attach_sink), it does not own the connection
+
+    def stop(self) -> None:
+        pass    # the connection outlives the session; see close_controller
 
     def update_display(self) -> None:
         pos = self.worker.get_latest() if self.worker is not None else None
@@ -115,7 +147,8 @@ class StageModule(ModuleAdapter):
         if not self.panel.connected:
             QMessageBox.information(
                 self.panel, "Stage not connected",
-                "Connect the stage (start a session) before saving a FOV.")
+                "The stage isn't connected — check the port on the Stage "
+                "tab and that the hardware is powered on.")
             return
         x_um, y_um, z_um = self.panel.current_position
         name, ok = QInputDialog.getText(self.panel, "Save FOV", "Name:")

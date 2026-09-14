@@ -23,7 +23,7 @@ class Estimate:
     seconds: float = 0.0        # settle + seconds-steps + converted frames
     frames:  float = 0.0        # frames left unconverted (no frame rate)
     moves:   int = 0            # steps that move the stage — travel is untimed
-    lit:     int = 0            # steps that emit light
+    lit:     int = 0            # steps with a pattern — light follows it
     hz:      float | None = None
 
     @property
@@ -66,7 +66,7 @@ def estimate(routine: Routine, hz: float | None = None) -> Estimate:
         moves=sum(1 for i in order
                   if routine.steps[i].x_um is not None
                   or routine.steps[i].y_um is not None),
-        lit=sum(1 for i in order if routine.steps[i].project),
+        lit=sum(1 for i in order if routine.steps[i].pattern),
         hz=hz if hz and hz > 0 else None,
     )
 

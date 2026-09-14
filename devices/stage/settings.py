@@ -6,8 +6,9 @@ created in one place, so both read *and write* this file rather than drift.
 Two halves, expiring differently:
   * frame-INDEPENDENT — `counts_per_um`, `span_counts`. Stable forever.
   * frame-SPECIFIC    — `slope`, `offset`, `true_center`, `travel_*`, `soft_*`.
-    Valid only until the next HARD LIMIT hit, which re-references the
-    controller's command origin. `establish_frame` remakes them.
+    Valid only until the next HARD LIMIT hit re-references the controller's
+    command origin — an MCM6101 quirk the MCM301 doesn't share (see
+    backend.py). `establish_frame` remakes them where it applies.
 
 No Qt (widgets are in `panel.py`), so this is testable without a QApplication.
 """
@@ -170,9 +171,10 @@ class StageSettings:
     @property
     def has_frame(self) -> bool:
         """Absolute go-to trustworthy for the IMAGING plane. Deliberately X/Y
-        only: Z carries its own `has_frame` and is never calibrated by
-        `establish_frame`, so folding it in here would disable the XY go-to on
-        every rig that has an uncalibrated focus axis."""
+        only: Z calibrates independently (its own `has_frame`, its own
+        opt-in `establish_frame(axes=("z",))` / `set_z_zero_here()`), so
+        folding it in here would disable XY go-to on every rig whose focus
+        axis happens to be uncalibrated."""
         return self.x.has_frame and self.y.has_frame
 
     @property

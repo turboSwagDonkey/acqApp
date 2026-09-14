@@ -17,7 +17,8 @@ Verified on this hardware:
   * Addressing : each installed stepper card lives in a FIXED controller
                  slot -- 4, 5, 6 (not axis index 0,1,2 like the old driver).
   * Axes       : slots 4 and 5 hold MMP-201121 stages (0.5 um/count, travel
-                 +-50800 counts); slot 6 holds a PLS-283529, left unexercised.
+                 +-50800 counts); slot 6 holds a PLS-283529, now driven as
+                 the app's Z/focus axis (2026-09-13).
 
 Every method that causes MOTION is clearly marked. Nothing moves unless you
 call one of those methods.
@@ -33,7 +34,7 @@ from pathlib import Path
 # Fixed slot numbers for this controller (per Thorlabs MCM301 SDK docs).
 SLOT_X = 4
 SLOT_Y = 5
-SLOT_Z = 6  # present on the hardware; not driven by this app yet
+SLOT_Z = 6  # the rig's focus axis; driven via StageSettings.z when configured
 
 DEFAULT_BAUD = 115200
 DEFAULT_TIMEOUT_S = 3

@@ -140,7 +140,7 @@ def check_validation(r: Report, tmp: Path) -> None:
     pattern.write_bytes(b"not really a png, but it is a file")
 
     good = Routine(steps=[Step(x_um=100.0, y_um=-200.0, pattern=str(pattern),
-                               project=True, length=100, unit="frames")])
+                               length=100, unit="frames")])
     r.check(validate(good, FULL_RIG) == [],
             "control: a valid routine on a full rig is accepted")
 
@@ -156,8 +156,8 @@ def check_validation(r: Report, tmp: Path) -> None:
         ("a frames step with no camera loaded",
          Routine(steps=[Step(length=100, unit="frames")]),
          RigLimits(has_frames=False), "no camera"),
-        ("a step that projects with no DMD loaded",
-         Routine(steps=[Step(project=True, length=1, unit="seconds")]),
+        ("a step with a pattern but no DMD loaded",
+         Routine(steps=[Step(pattern=str(pattern), length=1, unit="seconds")]),
          RigLimits(), "DMD"),
         ("a step that moves with no stage loaded",
          Routine(steps=[Step(x_um=10.0, length=1, unit="seconds")]),
@@ -257,7 +257,7 @@ def check_order(r: Report, tmp: Path) -> None:
     pattern.write_bytes(b"x")
     rig = FakeRig(travel_s=0.30)
     routine = Routine(steps=[Step(x_um=50.0, y_um=60.0, pattern=str(pattern),
-                                  project=True, length=0.20, unit="seconds",
+                                  length=0.20, unit="seconds",
                                   settle_s=0.25)])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
@@ -314,11 +314,13 @@ def check_move_timeout(r: Report) -> None:
 
 # ── a fault pauses; the partial data is kept ──────────────────────────────────
 
-def check_pause_keeps_data(r: Report) -> None:
+def check_pause_keeps_data(r: Report, tmp: Path) -> None:
     """PLAN §6 (4): pause everything that is not capture, and keep the frames."""
+    pattern = tmp / "pause.png"
+    pattern.write_bytes(b"x")
     rig = FakeRig()
     routine = Routine(steps=[Step(label="A", length=1.0, unit="seconds",
-                                  settle_s=0.0, project=True),
+                                  settle_s=0.0, pattern=str(pattern)),
                              Step(label="B", length=1.0, unit="seconds",
                                   settle_s=0.0)])
     eng = RoutineEngine(routine, rig.hooks())
@@ -378,11 +380,13 @@ def check_skip(r: Report) -> None:
             f"skip drops the step and runs the next one ({got})")
 
 
-def check_setup_failure(r: Report) -> None:
+def check_setup_failure(r: Report, tmp: Path) -> None:
     """A move that raises must pause BEFORE any light reaches the sample."""
+    pattern = tmp / "setup.png"
+    pattern.write_bytes(b"x")
     rig = FakeRig()
     rig.fail_move = True
-    eng = RoutineEngine(Routine(steps=[Step(x_um=10.0, project=True,
+    eng = RoutineEngine(Routine(steps=[Step(x_um=10.0, pattern=str(pattern),
                                             length=1, unit="seconds")]),
                         rig.hooks())
     eng.start()
@@ -395,7 +399,7 @@ def check_setup_failure(r: Report) -> None:
     # And the projector failing at the top of capture is the same shape.
     rig2 = FakeRig()
     rig2.fail_light = True
-    e2 = RoutineEngine(Routine(steps=[Step(project=True, length=1,
+    e2 = RoutineEngine(Routine(steps=[Step(pattern=str(pattern), length=1,
                                            unit="seconds", settle_s=0.0)]),
                        rig2.hooks())
     e2.start()
@@ -646,7 +650,7 @@ def check_panel_repaint(r: Report, app) -> None:
     app.processEvents()
 
 
-def check_step_table(r: Report, app) -> None:
+def check_step_table(r: Report, app, tmp: Path) -> None:
     """The step list edits through widgets, not through typed words.
 
     Every field used to be free text in a table cell — "yes"/"no" for the
@@ -683,11 +687,6 @@ def check_step_table(r: Report, app) -> None:
         return tbl.itemDelegateForColumn(c).createEditor(
             tbl, QStyleOptionViewItem(), tbl.model().index(row, c))
 
-    ed = editor(0, "project")
-    r.check(isinstance(ed, QComboBox),
-            f"the Light cell opens a drop-down ({type(ed).__name__})")
-    r.check([ed.itemData(i) for i in range(ed.count())] == [False, True],
-            "…offering exactly no/yes")
     ed = editor(0, "unit")
     r.check(isinstance(ed, QComboBox),
             f"the Unit cell opens a drop-down ({type(ed).__name__})")
@@ -697,9 +696,12 @@ def check_step_table(r: Report, app) -> None:
     ed = editor(0, "settle_s")
     r.check(isinstance(ed, QDoubleSpinBox) and ed.suffix() == " s",
             f"a duration cell opens a spin box in seconds ({type(ed).__name__})")
-    ed = editor(0, "x_um")
+    # Stage's own "no change" spin box lives in the panel's position dialog
+    # now (`_position_spin`), not a table delegate — same sentinel shape,
+    # moved rather than lost when the two axis columns became one.
+    ed = panel._position_spin(None)
     r.check(isinstance(ed, QDoubleSpinBox) and ed.specialValueText() == NO_CHANGE,
-            f"an axis cell opens a spin box with a {NO_CHANGE!r} state")
+            f"a blank position opens at the {NO_CHANGE!r} state")
     # …and that state is REACHABLE. Qt puts specialValueText on the minimum, so
     # a sentinel parked far below the range is a state the arrows can never get
     # to — it was 9000 presses below the bottom of the range, i.e. settable
@@ -713,6 +715,9 @@ def check_step_table(r: Report, app) -> None:
     ed.stepBy(+1)
     r.check(ed.value() == lo and ed.text() != NO_CHANGE,
             f"…and one step back up is a position again ({ed.text()!r})")
+    filled = panel._position_spin(250.0)
+    r.check(filled.value() == 250.0 and filled.text() != NO_CHANGE,
+            f"a real value opens as itself, not blank ({filled.text()!r})")
     # CONTROL: the free-text field is still free text — the point is typed
     # editors where the value is constrained, not spin boxes everywhere.
     idx = tbl.model().index(0, col["label"])
@@ -723,46 +728,71 @@ def check_step_table(r: Report, app) -> None:
     r.check(isinstance(ed, QLineEdit),
             f"control: the Step name is still typed ({type(ed).__name__})")
 
-    # What a delegate does when the operator picks something: it writes the
-    # VALUE, and the table renders the text from it.
-    tbl.item(0, col["project"]).setData(VALUE, True)
-    r.check(routine.steps[0].project is True,
-            "choosing 'yes' in the Light cell sets project on the step")
-    r.check(tbl.item(0, col["project"]).text() == "yes",
-            f"…and the cell reads back as yes "
-            f"({tbl.item(0, col['project']).text()!r})")
-    r.check(len(edits) == 1, f"…as ONE settings change, not two ({len(edits)})")
-
-    # CONTROL: text alone is not a value. This is the old failure mode — a
-    # word typed into the cell deciding what the step does.
-    before = routine.steps[1].project
-    tbl.item(1, col["project"]).setText("yes")
-    r.check(routine.steps[1].project == before,
-            "control: text typed into a cell cannot set a value the editor "
-            "would not produce")
-
     tbl.item(0, col["unit"]).setData(VALUE, "seconds")
     r.check(routine.steps[0].unit == "seconds",
             "the Unit cell sets the unit")
 
-    # The optional axes: "leave" is a state, not an empty string.
-    tbl.item(0, col["x_um"]).setData(VALUE, 250.0)
-    r.check(routine.steps[0].x_um == 250.0 and
-            tbl.item(0, col["x_um"]).text() == "250 um",
-            f"an axis takes a number ({tbl.item(0, col['x_um']).text()!r})")
-    tbl.item(0, col["x_um"]).setData(VALUE, None)
-    r.check(routine.steps[0].x_um is None and
-            tbl.item(0, col["x_um"]).text() == NO_CHANGE,
-            f"…and clears back to {NO_CHANGE!r} "
-            f"({tbl.item(0, col['x_um']).text()!r})")
+    # Stage is X and Y together now, "(x, y)" — not typed into directly (no
+    # delegate, like Pattern), so the test drives the Step fields the way the
+    # Set position…/Fill from FOV… dialogs do, then checks the rendering.
+    routine.steps[0].x_um, routine.steps[0].y_um = 250.0, None
+    panel._reload_table()
+    r.check(tbl.item(0, col["xy"]).text() == f"(250 um, {NO_CHANGE})",
+            f"Stage renders both axes as one pair "
+            f"({tbl.item(0, col['xy']).text()!r})")
+    r.check(tbl.item(0, col["xy"]).data(VALUE) == (250.0, None),
+            "…and the pair is the value of record, not just the text")
+    r.check(not (tbl.item(0, col["xy"]).flags() & Qt.ItemFlag.ItemIsEditable),
+            "…and is not typed into, the same as Pattern")
 
-    # Delete on the cell: the other way to say "this step does not move it",
-    # because an axis is otherwise cleared by stepping under the range.
-    tbl.item(1, col["x_um"]).setData(VALUE, 400.0)
-    tbl.setCurrentCell(1, col["x_um"])
+    # A step filled from a saved FOV names it instead of showing two numbers
+    # nobody recognises a spot by (the panel's `_pick_fov_for` sets `.fov`).
+    routine.steps[0].x_um, routine.steps[0].y_um = 111.0, 222.0
+    routine.steps[0].fov = "window1"
+    panel._reload_table()
+    r.check(tbl.item(0, col["xy"]).text() == "window1 (111 um, 222 um)",
+            f"the FOV's name goes in FRONT of the coordinates "
+            f"({tbl.item(0, col['xy']).text()!r})")
+    r.check("111" in tbl.item(0, col["xy"]).toolTip()
+            and "222" in tbl.item(0, col["xy"]).toolTip(),
+            f"…with the real numbers still on hand in the tooltip "
+            f"({tbl.item(0, col['xy']).toolTip()!r})")
+
+    # Typing a new position (Set position…) detaches the name — see
+    # `_set_position_for`, which clears `.fov` the same way this does.
+    routine.steps[0].x_um, routine.steps[0].fov = 999.0, ""
+    panel._reload_table()
+    r.check(tbl.item(0, col["xy"]).text() == "(999 um, 222 um)",
+            f"a typed position drops the FOV name off the whole cell "
+            f"({tbl.item(0, col['xy']).text()!r})")
+
+    # Right-click's "Set position…" reaches the panel's dialog-driven setter,
+    # the same split every other per-step action already has. Fake the modal
+    # as cancelled (a monkeypatched instance method would not do — the signal
+    # already connected to the ORIGINAL bound method at _build() time, not a
+    # live lookup — so the dialog class itself is what has to be faked, the
+    # same reason test_stage_panel.py fakes QMessageBox at the class level).
+    from PyQt6.QtWidgets import QDialog
+
+    real_exec = QDialog.exec
+    QDialog.exec = lambda self: False
+    try:
+        before = (routine.steps[0].x_um, routine.steps[0].y_um)
+        tbl.position_requested.emit()
+    finally:
+        QDialog.exec = real_exec
+    r.check((routine.steps[0].x_um, routine.steps[0].y_um) == before,
+            "the signal reaches the panel's handler without raising, and a "
+            "cancelled dialog changes nothing")
+
+    # Delete on the cell clears BOTH axes together, back to "no change" —
+    # Stage is one fact now, not two cells that happen to sit together.
+    routine.steps[1].x_um, routine.steps[1].y_um = 400.0, 50.0
+    panel._reload_table()
+    tbl.setCurrentCell(1, col["xy"])
     QTest.keyClick(tbl, Qt.Key.Key_Delete)
-    r.check(routine.steps[1].x_um is None,
-            f"Delete on an axis cell sets it back to {NO_CHANGE!r}")
+    r.check(routine.steps[1].x_um is None and routine.steps[1].y_um is None,
+            "Delete on Stage clears both axes, not one at a time")
     # CONTROL: Delete is not a general erase — a cell that cannot hold nothing
     # must ignore it rather than blanking a length.
     before = routine.steps[1].length
@@ -816,16 +846,63 @@ def check_step_table(r: Report, app) -> None:
     r.check(routine.steps[0].pattern == "" and
             tbl.item(0, col["pattern"]).text() == "—",
             "'No pattern' clears it back to whatever the DMD has")
+    r.check(tbl.item(0, col["pattern"]).icon().isNull(),
+            "…and the thumbnail clears with it")
 
-    # The summary is the only place the whole protocol is totalled up.
-    routine.steps[0].project = True
+    # A real image file gets a thumbnail — a pattern IS an image, so seeing
+    # it beats reading its filename.
+    from PyQt6.QtGui import QPixmap
+
+    real_pattern = tmp / "real_pattern.png"
+    QPixmap(8, 8).save(str(real_pattern), "PNG")
+    routine.steps[0].pattern = str(real_pattern)
+    panel._reload_table()
+    r.check(not tbl.item(0, col["pattern"]).icon().isNull(),
+            "a step with a real pattern image shows a thumbnail")
+
+    # An ROI set has no image of its own, but its shapes get one too — the
+    # name (from `pattern_label`) stays, alongside a thumbnail (`_roi_icon`)
+    # rather than instead of one.
+    from acqApp.devices.dmd import roi_store
+    from acqApp.devices.dmd.roi import CircleRoi, RoiSet
+
+    roi_set = RoiSet([CircleRoi(x=50.0, y=50.0, r=20.0)])
+    roi_path = roi_store.save("some_set", roi_set)
+    routine.steps[0].pattern = str(roi_path)
+    panel._reload_table()
+    r.check(tbl.item(0, col["pattern"]).text() == "ROI: some_set",
+            f"an ROI set still names itself, the same as before "
+            f"({tbl.item(0, col['pattern']).text()!r})")
+    r.check(not tbl.item(0, col["pattern"]).icon().isNull(),
+            "…AND now shows a thumbnail of its shapes")
+
+    # CONTROL: an empty/unreadable ROI file has nothing to rasterise — no
+    # thumbnail, but no crash either (`_roi_icon` catches read failures).
+    empty_path = tmp / "empty_set.roi.json"
+    empty_path.write_text(
+        json.dumps({"name": "empty_set", "rois": []}), encoding="utf-8")
+    routine.steps[0].pattern = str(empty_path)
+    panel._reload_table()
+    r.check(tbl.item(0, col["pattern"]).icon().isNull(),
+            "control: an ROI set with nothing in it gets no thumbnail")
+    corrupt_path = tmp / "corrupt_set.roi.json"
+    corrupt_path.write_text("{not json", encoding="utf-8")
+    routine.steps[0].pattern = str(corrupt_path)
+    try:
+        panel._reload_table()
+        r.check(True, "control: a corrupt ROI file does not crash the repaint")
+    except Exception as e:                        # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} escaped a corrupt ROI file: {e}")
+
+    # The summary is the only place the whole protocol is totalled up. Light
+    # is not a separate setting any more — it follows the pattern.
+    routine.steps[0].pattern = r"C:\patterns\grid.png"
     panel._refresh_summary()
     text = panel._lbl_summary.text()
     r.check("2 run(s)" in text and "emit light" in text,
             f"the summary says how much work it is and that it emits light "
             f"({text!r})")
-    routine.steps[0].project = False
-    routine.steps[1].project = False
+    routine.steps[0].pattern = ""
     panel._refresh_summary()
     r.check("emit light" not in panel._lbl_summary.text(),
             f"control: with nothing projecting it does not warn "
@@ -841,25 +918,53 @@ def check_step_table(r: Report, app) -> None:
     app.processEvents()
 
 
+def _select_rows(tbl, first: int, last: int) -> None:
+    """Select a contiguous row range the way a shift-click/drag would —
+    ContiguousSelection mode means this is the only shape a real selection
+    can take, so this is the fixture for "select steps N-M" throughout."""
+    from PyQt6.QtWidgets import QTableWidgetSelectionRange
+    tbl.clearSelection()
+    tbl.setRangeSelected(
+        QTableWidgetSelectionRange(first, 0, last, tbl.columnCount() - 1), True)
+
+
 def check_group_panel(r: Report, app) -> None:
-    """Adding/removing a repeat group through the panel's own controls."""
+    """Adding/removing a repeat group by selecting rows in the table — the
+    fix for the old flow (typing 1-based row numbers into two spinboxes,
+    disconnected from the table you were looking at)."""
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(label="A"), Step(label="B"), Step(label="C")])
     panel = SettingsPanel(routine)
 
-    panel._spn_g_start.setValue(2)     # 1-based in the UI, "steps 2 to 3"
-    panel._spn_g_end.setValue(3)
+    r.check(not panel._btn_g_add.isEnabled(),
+            "control: nothing selected -> Group selected starts disabled")
+    panel._tbl.select_row(0)
+    r.check(not panel._btn_g_add.isEnabled(),
+            "control: a single selected row is not a group candidate either")
+
+    _select_rows(panel._tbl, 1, 2)              # steps B, C (0-based 1..2)
+    r.check(panel._btn_g_add.isEnabled(),
+            "2+ contiguous rows selected -> Group selected is offered")
+    r.check("2-3" in panel._lbl_g_selection.text(),
+            f"…and the selection is named in 1-based step numbers "
+            f"({panel._lbl_g_selection.text()!r})")
+
     panel._spn_g_repeats.setValue(4)
-    panel._add_group()
+    panel._group_selected()
     r.check(len(routine.groups) == 1 and routine.groups[0].start == 1
             and routine.groups[0].end == 2 and routine.groups[0].repeats == 4,
-            f"Add turns the 1-based Steps/to/× fields into a 0-based Group "
+            f"the table's own (0-based) selection becomes the Group "
             f"({routine.groups})")
     r.check(panel._lst_groups.count() == 1
             and "2-3" in panel._lst_groups.item(0).text()
             and "4" in panel._lst_groups.item(0).text(),
             f"…and the list shows it ({panel._lst_groups.item(0).text()!r})")
+    r.check(panel._tbl._group_at(1) is routine.groups[0]
+            and panel._tbl._group_at(2) is routine.groups[0]
+            and panel._tbl._group_at(0) is None,
+            "…and the table itself knows which rows are grouped (for the "
+            "row-header badge and background tint), not just the list below")
 
     # Round-trips through to_dict/from_dict, the same as steps.
     reloaded = Routine.from_dict(routine.to_dict())
@@ -867,13 +972,53 @@ def check_group_panel(r: Report, app) -> None:
             and reloaded.groups[0].end == 2 and reloaded.groups[0].repeats == 4,
             "a saved template keeps its repeat group")
 
+    # The repeat count stays editable after the group exists — double-click
+    # it rather than delete-and-regroup just to change "how many times".
+    from PyQt6.QtWidgets import QInputDialog
+
+    real_get_int = QInputDialog.getInt
+    QInputDialog.getInt = staticmethod(lambda *a, **k: (7, True))
+    try:
+        panel._edit_group_repeats(panel._lst_groups.item(0))
+    finally:
+        QInputDialog.getInt = real_get_int
+    r.check(routine.groups[0].repeats == 7,
+            f"double-clicking a group lets its repeat count be changed "
+            f"({routine.groups[0].repeats})")
+    r.check("7" in panel._lst_groups.item(0).text(),
+            f"…and the list reflects the new count "
+            f"({panel._lst_groups.item(0).text()!r})")
+
+    # CONTROL: cancelling the dialog must leave it alone.
+    QInputDialog.getInt = staticmethod(lambda *a, **k: (99, False))
+    try:
+        panel._edit_group_repeats(panel._lst_groups.item(0))
+    finally:
+        QInputDialog.getInt = real_get_int
+    r.check(routine.groups[0].repeats == 7,
+            "control: cancelling the repeat-count dialog changes nothing")
+
     panel._lst_groups.setCurrentRow(0)
     panel._del_group()
     r.check(routine.groups == [] and panel._lst_groups.count() == 0,
             "Remove selected clears it from both the routine and the list")
+    r.check(panel._tbl._group_at(1) is None,
+            "…and the table stops tinting/badging those rows")
+
+    # Right-click's "Group selected steps…" is the same call the button
+    # makes — table.group_requested is wired straight to it.
+    _select_rows(panel._tbl, 0, 1)
+    panel._tbl.group_requested.emit()
+    r.check(len(routine.groups) == 1 and routine.groups[0].start == 0
+            and routine.groups[0].end == 1,
+            f"the context menu's Group action reaches the same handler "
+            f"({routine.groups})")
+    panel._lst_groups.setCurrentRow(0)
+    panel._del_group()
 
     # set_routine (template load) replaces groups, not just steps.
-    panel._add_group()
+    _select_rows(panel._tbl, 0, 1)
+    panel._group_selected()
     other = Routine(steps=[Step(), Step()])
     panel.set_routine(other)
     r.check(panel.settings.groups == [],
@@ -1031,8 +1176,7 @@ def check_templates(r: Report) -> None:
 
     rt = Routine(name="grid 3x3", cycles=2, save_mode="per_step",
                  steps=[Step(label="a", x_um=100.0, length=50, unit="frames"),
-                        Step(label="b", project=True, length=1.5,
-                             unit="seconds")])
+                        Step(label="b", length=1.5, unit="seconds")])
     path = templates.save(rt)
     r.check(path.exists() and path.name.endswith(templates.SUFFIX),
             f"saving writes one file ({path.name})")
@@ -1253,16 +1397,16 @@ def check_app(r: Report, app, tmp) -> None:
     win._save_panel._ed_template.setText("{subject}_{date}_{time}")
     win._save_panel._on_edited()
 
-    # The stage link is session-scoped, so the targets only exist once a session
-    # does — which is also when a routine could possibly run.
-    r.check(win.stage_target() is None,
-            "no stage target before a session — nothing to drive yet")
-    win._btn_run.setChecked(True)
-
+    # Stage and DMD both connect at module load (build_controller, the
+    # "always-on" pattern every simple device uses) — a routine's targets
+    # exist whether or not Live view has ever run; only actually RUNNING a
+    # routine needs Start to open the recording.
     r.check(win.stage_target() is mod["stage"],
-            "the window offers the loaded stage as a routine target")
+            "the window offers the loaded stage as a routine target, even "
+            "before Live view starts")
     r.check(win.pattern_target() is mod["dmd"],
             "…and the loaded DMD as a pattern target")
+    win._btn_run.setChecked(True)
 
     # `StageTarget.stop_motion` says it must not raise, and it runs when the
     # stage has ALREADY failed — the engine calls it on every fault. A dead
@@ -1293,11 +1437,13 @@ def check_app(r: Report, app, tmp) -> None:
     inside_y = lo_y + (hi_y - lo_y) * 0.62
 
     # ── refusals, before anything is recorded or moved ──
+    app_pattern = tmp / "app.png"
+    app_pattern.write_bytes(b"x")
     panel._r.steps = [Step(label="one", x_um=inside, length=5, unit="frames",
                            settle_s=0.0),
                       Step(label="two", x_um=inside, y_um=inside_y,
-                           project=True, length=0.30, unit="seconds",
-                           settle_s=0.05)]
+                           pattern=str(app_pattern), length=0.30,
+                           unit="seconds", settle_s=0.05)]
     panel._reload_table()
 
     # ── Start opens the recording it needs ──
@@ -1442,9 +1588,9 @@ def main() -> int:
         check_units(r)
         check_order(r, tmp)
         check_move_timeout(r)
-        check_pause_keeps_data(r)
+        check_pause_keeps_data(r, tmp)
         check_skip(r)
-        check_setup_failure(r)
+        check_setup_failure(r, tmp)
         check_frames_vanish(r)
         check_cycles_and_attrs(r)
         check_groups(r)
@@ -1461,7 +1607,7 @@ def main() -> int:
             app = qt_app()
             check_templates(r)
             check_panel_repaint(r, app)
-            check_step_table(r, app)
+            check_step_table(r, app, tmp)
             check_group_panel(r, app)
             check_move_row_repaint(r)
             check_panel_tracker(r, app)

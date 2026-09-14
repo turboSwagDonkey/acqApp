@@ -208,11 +208,11 @@ class SettingsPanel(QWidget):
         fields stay live for Visuomotor too — only its own duration/gain
         fields and the drift source differ (`_visuomotor_frame`).
 
-        Within "Stimulus geometry", Map/Tuning/Size override Diameter/X/Y
-        entirely (region-derived geometry) so none of it applies; Contrast
-        and Size both leave Orientation live (it still rotates the grating
-        drawn inside the circle) while Tuning/Map don't — see control.py's
-        `_begin_*_trial` methods.
+        Within "Stimulus geometry", all four region trial types override
+        Diameter/X/Y entirely (region-derived geometry) so none of it
+        applies; of those, Contrast and Size leave Orientation live (it
+        still rotates the grating drawn inside the circle) while Tuning/Map
+        don't — see control.py's `_begin_*_trial` methods.
 
         Loop variables are a Grating/Visuomotor-only concept too: Map/
         Tuning/Contrast/Size each run their own dedicated internal sweep

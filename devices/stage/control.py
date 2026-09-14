@@ -1,9 +1,10 @@
-"""XY stage — controller that OWNS the serial connection.
+"""XY stage — controller that OWNS the connection to whichever backend is
+connected (see backend.py).
 
-Only one program can hold the MCM6101's port, so a single StageController is the
-sole device owner. The polling worker (on its thread) and the GUI motion buttons
-both call it; the driver is lock-guarded, so reads and motion commands serialize
-safely on one connection.
+Only one program can hold the controller's port, so a single StageController is
+the sole device owner. The polling worker (on its thread) and the GUI motion
+buttons both call it, sharing one connection — serialized by a lock in the
+MCM6101 driver; the MCM301 driver has none (see mcm301_driver.py).
 
 Motion methods take and return MICRONS, and soft limits clamp every target.
 Nothing moves unless `jog_um` / `move_to_um` is called.
@@ -100,9 +101,9 @@ class StageController:
         """Whether the connected backend can drive a hard-limit frame
         re-establish at all (see establish_frame below) -- False on the
         MCM301, whose position readout is already a stable encoder count and
-        never drifts. CalibrationDialog uses this to decide whether a
-        hard-limit calibration button is worth showing for this rig's
-        hardware at all, rather than offering a button that always refuses."""
+        never drifts. CalibrationDialog checks this for the Z button only
+        (the X/Y "Re-establish frame…" button always shows; on a backend
+        without the method it just refuses with a clear message)."""
         return self._dev is not None and hasattr(self._dev, "establish_frame")
 
     # ── reads ───────────────────────────────────────────────────────────────

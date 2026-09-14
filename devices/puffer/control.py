@@ -3,7 +3,7 @@ Air puffer — NI DAQ digital output controller + settings panel.
 
 PufferController  : fires a TTL pulse on a digital output line.
 MockPufferController: prints to stdout, no hardware needed.
-SettingsPanel     : QWidget for channel and default duration.
+SettingsPanel     : QWidget for channel, duration, test-fire and puff scheduling.
 """
 
 from __future__ import annotations

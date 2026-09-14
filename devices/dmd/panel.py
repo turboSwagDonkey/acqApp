@@ -603,7 +603,7 @@ class SettingsPanel(QWidget):
         return self._pattern_cache[1]
 
     def _update_preview(self) -> None:
-        """Renders the pattern array with a padded thatched magenta border around DMD bounds."""
+        """Renders the pattern array with a padded dashed magenta border around DMD bounds."""
         pw = self._preview.width()
         ph = self._preview.height()
         if pw <= 1 or ph <= 1:

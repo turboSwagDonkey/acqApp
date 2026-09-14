@@ -74,6 +74,20 @@ class ModuleSelectDialog(QDialog):
             k for k, cb in self._boxes.items() if cb.isChecked())
 
 
+def _looks_sane(size: QSize, floor: tuple[int, int]) -> bool:
+    """Is a RESTORED size (not a freshly computed one) plausible at all?
+
+    `restoreGeometry` can hand back True on a QByteArray that doesn't actually
+    describe a usable window — corrupted by an interrupted write, saved on a
+    monitor that's since been unplugged, or (seen in practice) saved mid-drag
+    at a few px on a side. None of that is a screen-size question `_fits_on_
+    screen`'s clamp already covers; it's "this is nowhere near what this
+    window would ever choose for itself", so it gets the same fallback as an
+    outright restore failure rather than reopening at a few pixels forever.
+    """
+    return size.width() >= floor[0] // 2 and size.height() >= floor[1] // 2
+
+
 def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
                     screen) -> QSize:
     """`hint` plus padding, never under `floor`, never over 90 % of the screen.
@@ -147,9 +161,9 @@ class PanelWindow(QDialog):
     def showEvent(self, event) -> None:
         if not self._sized:
             self._sized = True
-            if self._saved_geom is not None:
-                self.restoreGeometry(self._saved_geom)
-            else:
+            restored = (self._saved_geom is not None
+                       and self.restoreGeometry(self._saved_geom))
+            if not restored or not _looks_sane(self.size(), self._MIN_DEFAULT):
                 self.resize(self.default_size())
         super().showEvent(event)
         self.visibility_changed.emit(True)
@@ -241,9 +255,9 @@ class SettingsDialog(QDialog):
         # First show only: afterwards the operator's own size wins.
         if not self._sized:
             self._sized = True
-            if self._saved_geom is not None:
-                self.restoreGeometry(self._saved_geom)
-            else:
+            restored = (self._saved_geom is not None
+                       and self.restoreGeometry(self._saved_geom))
+            if not restored or not _looks_sane(self.size(), self._MIN_DEFAULT):
                 self.resize(self.default_size())
         super().showEvent(event)
 

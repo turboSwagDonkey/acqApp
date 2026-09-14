@@ -1,18 +1,20 @@
 """
-The Stage panel's Focus (Z) widgets — slider, jog arrows, and the
-calibration dialog's two-stage Z warning gate.
+The Stage panel's Z controls and the calibration dialog's two-stage Z
+warning gate.
 
 `tests/test_stage_z.py` covers the settings/controller/worker layers with no
 Qt at all; nothing there ever builds a `SettingsPanel` or opens
 `CalibrationDialog`, so none of the actual widget code added alongside those
 layers was exercised. This file is the Qt-level half.
 
-Two things matter enough to pin down:
+Z used to have its own vertical-slider control, separate from X/Y's grid —
+combined into one Motion grid (2026-09-13) since the day-to-day jog/goto shape
+is identical for all three axes; only Z's *calibration* (below) is genuinely
+higher-risk, being right under the objective, and keeps its own section and
+warnings. Two things matter enough to pin down:
 
-  1. The slider must never command a move while being dragged — only on
-     release, through the SAME large-move confirm as the typed "Go" (using
-     Z's own, tighter `confirm_move_z_um`, not X/Y's). A "No" on that confirm
-     must snap the handle back, not leave it sitting on an unsent target.
+  1. Z's Go button confirms against its OWN, tighter `confirm_move_z_um`, not
+     X/Y's much larger `confirm_move_um` — the whole reason the field exists.
   2. `_reestablish_frame_z` is a "multiple warnings" gate BY DESIGN — it must
      take two separate Yes answers before a `_FrameWorker` is ever
      constructed, and a No at either stage must abort with no worker started
@@ -37,7 +39,6 @@ stage_settings.config_path = lambda: _TMP / "config.json"
 
 from PyQt6.QtWidgets import QMessageBox                      # noqa: E402
 
-from acqApp.devices.stage.control import StageControllerError  # noqa: E402
 from acqApp.devices.stage.panel import CalibrationDialog, SettingsPanel  # noqa: E402
 from acqApp.devices.stage.settings import StageAxis, StageSettings  # noqa: E402
 
@@ -90,20 +91,76 @@ def _fake_dialogs() -> None:
     QMessageBox.question = staticmethod(next_answer)
 
 
-def check_focus_group_exists(r: Report) -> None:
+def check_z_rides_the_motion_grid(r: Report) -> None:
+    """Z is a row in the same Motion grid as X/Y now, not a separate group —
+    the whole point of combining them was one control shape for every axis."""
     p = SettingsPanel(_settings())
-    r.check(p._focus is not None, "a has_z rig gets a Focus (Z) group")
     r.check("z" in p._axis_widgets, "z is registered in _axis_widgets")
     w = p._axis_widgets["z"]
-    r.check("slider" in w, "…with a slider entry")
+    r.check(set(w) == {"step", "goto", "buttons"},
+            f"z's entry is the same shape as x/y's — no slider left over "
+            f"({sorted(w)})")
+    r.check(len(w["buttons"]) == 4,
+            "z has the same four buttons (jog-, jog+, Go, Stop) as x/y")
     lo, hi = p._s.z.soft_limits_um()
-    r.check(p._sld_z.minimum() == int(round(lo))
-            and p._sld_z.maximum() == int(round(hi)),
-            "the slider's range matches the axis's soft limits")
+    r.check(w["goto"].minimum() == lo and w["goto"].maximum() == hi,
+            "z's Go-to spin box ranges over its own soft limits")
 
     p2 = SettingsPanel(StageSettings())      # no z
-    r.check(p2._focus is None, "a no-z rig gets no Focus group at all")
-    r.check("z" not in p2._axis_widgets, "…and no 'z' entry in _axis_widgets")
+    r.check("z" not in p2._axis_widgets,
+            "a no-z rig gets no 'z' row at all")
+
+
+def check_z_gauge_exists_and_updates(r: Report) -> None:
+    """The Z visualization: a gauge beside the XY map (not a third axis
+    squeezed into it) — `set_readout` feeds it the way it feeds the map,
+    through the same sub-visual-move repaint guard."""
+    p = SettingsPanel(_settings(has_frame=True))
+    r.check(p._z_gauge is not None, "a has_z rig gets a Z gauge")
+    p.bind_controller(FakeCtrl())
+
+    calls: list[float] = []
+    p._z_gauge.set_position = lambda z: calls.append(z)
+    p.set_readout(0.0, 0.0, z_um=333.0)
+    r.check(calls == [333.0], f"the first Z readout repaints the gauge ({calls})")
+
+    calls.clear()
+    p.set_readout(0.0, 0.0, z_um=333.0 + p._MAP_EPS_UM / 4)   # sub-epsilon
+    r.check(calls == [],
+            f"a sub-epsilon Z move does not repaint the gauge ({calls})")
+
+    calls.clear()
+    p.set_readout(0.0, 0.0, z_um=333.0 + p._MAP_EPS_UM * 4)   # a real move
+    r.check(len(calls) == 1, f"control: a real Z move still repaints ({calls})")
+
+    p2 = SettingsPanel(StageSettings())      # no z
+    r.check(p2._z_gauge is None, "a no-z rig gets no Z gauge at all")
+
+
+def check_z_gauge_geometry(r: Report) -> None:
+    """ZGauge's own value->pixel mapping: a bigger value reads higher on
+    screen (there's only one sensible "up" for a single axis, unlike
+    StageMap's invert_y), and an out-of-range value clamps into the bar
+    instead of escaping it."""
+    from acqApp.devices.stage.map_widget import ZGauge
+
+    g = ZGauge()
+    g.resize(80, 200)
+    z = StageAxis(6, "Z", 1.0, step_um=20.0)
+    g.set_axis(z)
+
+    lim = z.travel_limits_um()
+    bar = g._bar()
+    y_lo, y_hi = g._y_for(lim[0], lim, bar), g._y_for(lim[1], lim, bar)
+    r.check(y_hi < y_lo, f"a bigger Z value is higher on screen ({y_hi} < {y_lo})")
+
+    y_mid = g._y_for((lim[0] + lim[1]) / 2.0, lim, bar)
+    r.check(abs(y_mid - (y_lo + y_hi) / 2.0) < 1.0,
+            "the midpoint value lands at the midpoint pixel")
+
+    y_over = g._y_for(lim[1] + 10_000.0, lim, bar)
+    r.check(abs(y_over - bar.top()) < 1e-6,
+            "a value past the top of travel clamps to the top of the bar")
 
 
 def check_jog_arrows(r: Report) -> None:
@@ -121,81 +178,34 @@ def check_jog_arrows(r: Report) -> None:
             "down arrow jogs -step through jog_um")
 
 
-def check_slider_commits_on_release_only(r: Report) -> None:
-    _fake_dialogs()
-    _ANSWERS.clear()
-    p = SettingsPanel(_settings(has_frame=True))
-    c = FakeCtrl()
-    p.bind_controller(c)
-    p._last_z = 0.0
-
-    p._sld_z.setValue(200)          # a plain valueChanged — no release yet
-    r.check("move_to_um" not in c.names(),
-            "dragging the slider alone never commands a move")
-    r.check(p._lbl_z_target.text() == "200 µm",
-            "…but the drag-preview label does update live")
-
-    # A small move (< confirm_move_z_um): release commits with no dialog.
-    p._on_z_slider_released()
-    r.check(("move_to_um", ("z", 200.0), {}) in c.calls,
-            "release commits the move via move_to_um")
-
-
-def check_slider_confirms_large_move(r: Report) -> None:
-    _fake_dialogs()
-    p = SettingsPanel(_settings(has_frame=True))
-    c = FakeCtrl()
-    p.bind_controller(c)
-    p._last_z = 0.0
-
-    # A large jump answered No: no move, and the handle snaps back.
-    _ANSWERS[:] = [QMessageBox.StandardButton.No]
-    p._sld_z.setValue(5000)         # >> confirm_move_z_um (500)
-    p._on_z_slider_released()
-    r.check("move_to_um" not in c.names(),
-            "a large move answered No never reaches the controller")
-    r.check(p._sld_z.value() == 0,
-            "…and the slider snaps back to the last known position")
-    r.check(p._lbl_z_target.text() == "0 µm",
-            "…and the preview label snaps back to match")
-
-    # Same large jump answered Yes: it goes through.
-    _ANSWERS[:] = [QMessageBox.StandardButton.Yes]
-    p._sld_z.setValue(5000)
-    p._on_z_slider_released()
-    r.check(("move_to_um", ("z", 5000.0), {}) in c.calls,
-            "the same move answered Yes reaches the controller")
-
-
-def check_frame_gating_disables_slider(r: Report) -> None:
+def check_frame_gating_disables_z_goto(r: Report) -> None:
+    """Same rule X/Y already have (test_stage_panel.py's check_frame_gating):
+    absolute go-to is meaningless without a frame, jog is not."""
     p = SettingsPanel(_settings(has_frame=False))
     p.bind_controller(FakeCtrl())
-    r.check(p._sld_z.isEnabled() is False,
-            "no valid Z frame -> the slider (absolute go-to) is disabled")
-    r.check(p._axis_widgets["z"]["buttons"][0].isEnabled(),
-            "…but a jog arrow stays enabled (jog needs no frame)")
+    w = p._axis_widgets["z"]
+    r.check(not w["goto"].isEnabled(),
+            "no valid Z frame -> the Go-to spin box is disabled")
+    r.check(not w["buttons"][2].isEnabled(),
+            "…and the Go button too")
+    r.check(w["buttons"][0].isEnabled(),
+            "…but a jog button stays enabled (jog needs no frame)")
 
     p2 = SettingsPanel(_settings(has_frame=True))
     p2.bind_controller(FakeCtrl())
-    r.check(p2._sld_z.isEnabled() is True,
-            "a valid Z frame enables the slider")
+    w2 = p2._axis_widgets["z"]
+    r.check(w2["goto"].isEnabled() and w2["buttons"][2].isEnabled(),
+            "a valid Z frame enables Go-to and the Go button")
 
 
-def check_set_readout_syncs_without_fighting_drag(r: Report) -> None:
+def check_set_readout_updates_z(r: Report) -> None:
     p = SettingsPanel(_settings(has_frame=True))
     p.bind_controller(FakeCtrl())
-
     p.set_readout(0.0, 0.0, z_um=333.0)
-    r.check(p._sld_z.value() == 333, "set_readout syncs the idle slider")
-    r.check(p._last_z == 333.0, "…and _last_z, used by _goto/_on_z_slider_released")
-
-    # Simulate "the user is holding the slider down" and confirm a readout
-    # tick does not yank the handle out from under them.
-    p._sld_z.setSliderDown(True)
-    p.set_readout(0.0, 0.0, z_um=9000.0)
-    r.check(p._sld_z.value() == 333,
-            "a readout tick never moves the handle while it's held down")
-    p._sld_z.setSliderDown(False)
+    r.check(p._last_z == 333.0,
+            "set_readout updates _last_z, used by _goto's confirm-move check")
+    r.check(p._lbl_z.text().strip() == "333.0",
+            f"…and the Z readout label ({p._lbl_z.text()!r})")
 
 
 def check_goto_uses_z_threshold(r: Report) -> None:
@@ -310,12 +320,12 @@ def main() -> int:
     app = qt_app()
     r = Report("stage-focus-ui")
     try:
-        check_focus_group_exists(r)
+        check_z_rides_the_motion_grid(r)
+        check_z_gauge_exists_and_updates(r)
+        check_z_gauge_geometry(r)
         check_jog_arrows(r)
-        check_slider_commits_on_release_only(r)
-        check_slider_confirms_large_move(r)
-        check_frame_gating_disables_slider(r)
-        check_set_readout_syncs_without_fighting_drag(r)
+        check_frame_gating_disables_z_goto(r)
+        check_set_readout_updates_z(r)
         check_goto_uses_z_threshold(r)
         check_calibration_dialog_z_section(r)
         check_set_zero_z_here(r)

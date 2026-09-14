@@ -129,8 +129,8 @@ def _vis_stim() -> ProbeResult:
 def _mirror() -> ProbeResult:
     """Manual only (PLAN.md §6): ThorImage drives the real switch over a
     serial port it holds exclusively, so acqApp has nothing of its own to
-    probe here — see devices/mirror/_read_mirror_axis.py for how the
-    physical chip was identified offline."""
+    probe here — see devices/mirror/_scan_chips.py for how the physical
+    chip was identified offline."""
     return ProbeResult("stub", "operator-asserted state — no device of its "
                               "own (ThorImage owns the real switch)")
 

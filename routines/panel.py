@@ -27,6 +27,13 @@ and the **summary line** is what the protocol costs before it starts
 
 The step *table* is `routines/table.py` — every cell edits through a widget
 that can only produce a legal value, which is why nothing here parses "yes".
+Per-step actions (Duplicate, Remove, Pattern/ROI/Clear pattern, Set position,
+Fill from FOV) live on the table's own right-click menu rather than as
+buttons here — this
+panel keeps only +Step and reordering visible, since those are the two used on
+every single step. Repeat groups (`routines/settings.py`'s `Group`) come from
+selecting the range in the table, not typing row numbers: `_on_selection_
+changed` mirrors the table's selection into the "Group selected" control.
 """
 from __future__ import annotations
 
@@ -35,9 +42,9 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QProgressBar, QPushButton, QSpinBox,
-    QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
@@ -46,7 +53,7 @@ from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
 from acqApp.routines.settings import (SAVE_MODES, START_TRIGGERS, Group,
                                       Routine, Step)
-from acqApp.routines.table import StepTable
+from acqApp.routines.table import NO_CHANGE, StepTable
 
 
 class SettingsPanel(QWidget):
@@ -147,15 +154,26 @@ class SettingsPanel(QWidget):
         self._tbl = StepTable(self._r.steps)
         self._tbl.setMinimumHeight(160)
         self._tbl.changed.connect(self._emit)
-        self._tbl.pattern_requested.connect(self._pick_pattern_for)
+        self._tbl.pattern_requested.connect(self._pick_pattern)
+        self._tbl.roi_requested.connect(self._pick_roi)
+        self._tbl.fov_requested.connect(self._pick_fov)
+        self._tbl.position_requested.connect(self._set_position)
+        self._tbl.duplicate_requested.connect(self._dup_step)
+        self._tbl.remove_requested.connect(self._del_step)
+        self._tbl.clear_pattern_requested.connect(self._clear_pattern)
+        self._tbl.group_requested.connect(self._group_selected)
+        self._tbl.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._tbl, 1)
 
+        # Everything but adding a step and reordering — used constantly, so
+        # kept as buttons — moved to a right-click menu on the table itself
+        # (Duplicate/Remove/Pattern/ROI/Clear pattern/FOV/Group selected):
+        # three crowded rows of buttons was the single biggest complaint about
+        # this panel, and every one of those actions already had a row-level
+        # meaning the menu can just name.
         btns = QHBoxLayout()
         self._add_buttons(btns, (
             ("+ Step", self._add_step, "Append a step to the list."),
-            ("Duplicate", self._dup_step,
-             "Copy the selected step — a grid is one step edited N times."),
-            ("Remove", self._del_step, "Delete the selected step."),
             ("↑", self._move_up,
              "Move the selected step earlier. Dragging the row and "
              "Ctrl+Up do the same."),
@@ -163,66 +181,49 @@ class SettingsPanel(QWidget):
              "Move the selected step later. Dragging the row and "
              "Ctrl+Down do the same.")))
         btns.addStretch(1)
+        hint = QLabel("Right-click a step for Duplicate, Remove, Pattern, "
+                      "ROI set, Position, and Group selected.")
+        hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
+        btns.addWidget(hint)
         lay.addLayout(btns)
-
-        # A secondary row, not folded into the one above: both of these
-        # duplicate an interaction already on the cell itself (their own
-        # tooltips say so) — they read as pattern shortcuts, not list
-        # operations, and crowded the primary row before this split.
-        pat_btns = QHBoxLayout()
-        self._add_buttons(pat_btns, (
-            ("Pattern…", self._pick_pattern,
-             "Set the selected step's DMD pattern file. Double-clicking "
-             "the Pattern cell does the same."),
-            ("ROI set…", self._pick_roi,
-             "Set the selected step's pattern to a saved photostimulation "
-             "ROI set — the same ones saved from the DMD's ROI editor — "
-             "resolved through the current calibration when the step runs."),
-            ("No pattern", self._clear_pattern,
-             "Leave the DMD showing whatever it already has for this "
-             "step. Delete on the cell does the same — as it does on a "
-             "Stage X or Y cell, which sets it back to \"no change\"."),
-            ("FOV…", self._pick_fov,
-             "Fill the selected step's Stage X/Y from a saved FOV — a "
-             "one-time copy, like Pattern…; renaming or deleting the FOV "
-             "later does not change this step.")))
-        pat_btns.addStretch(1)
-        lay.addLayout(pat_btns)
 
         # ── repeat groups ────────────────────────────────────────────────────
         # A contiguous range of steps, repeated as a unit, nested inside
-        # `cycles` (which repeats the WHOLE list). Spinboxes rather than a
-        # table-row selection, the puffer panel's "Scheduled puffs" shape —
-        # the table stays single-selection, so this needs no change there.
+        # `cycles` (which repeats the WHOLE list). Select the range IN the
+        # table (or right-click it -> "Group selected steps…") rather than
+        # typing row numbers here — the repeat count is the only thing left
+        # to ask for once the selection already says which steps. That count
+        # stays editable after the fact too (double-click the group below) —
+        # changing "how many times" should not mean deleting and regrouping.
         ggrp = QGroupBox("Repeat groups")
         gl = QVBoxLayout(ggrp)
         gl.setSpacing(4)
 
         grow = QHBoxLayout()
-        grow.addWidget(QLabel("Steps"))
-        self._spn_g_start = QSpinBox()
-        self._spn_g_start.setRange(1, 9999)
-        grow.addWidget(self._spn_g_start)
-        grow.addWidget(QLabel("to"))
-        self._spn_g_end = QSpinBox()
-        self._spn_g_end.setRange(1, 9999)
-        grow.addWidget(self._spn_g_end)
+        self._lbl_g_selection = QLabel("Select 2+ steps in the table to group them")
+        self._lbl_g_selection.setStyleSheet("color:#9aa0a6;")
+        grow.addWidget(self._lbl_g_selection, 1)
         grow.addWidget(QLabel("×"))
         self._spn_g_repeats = QSpinBox()
         self._spn_g_repeats.setRange(2, 999)
         self._spn_g_repeats.setValue(2)
-        self._spn_g_repeats.setToolTip("How many times this range of steps "
-                                       "repeats before the routine moves on.")
+        self._spn_g_repeats.setToolTip("How many times the selected steps "
+                                       "repeat before the routine moves on.")
         grow.addWidget(self._spn_g_repeats)
-        btn_g_add = QPushButton("Add")
-        btn_g_add.setToolTip("Group steps [Steps..to] to repeat × times, "
-                             "nested inside \"Repeat the list\" above.")
-        btn_g_add.clicked.connect(self._add_group)
-        grow.addWidget(btn_g_add)
+        self._btn_g_add = QPushButton("Group selected")
+        self._btn_g_add.setEnabled(False)
+        self._btn_g_add.setToolTip("Group the steps selected in the table "
+                                   "above to repeat × times, nested inside "
+                                   "\"Repeat the list\" above.")
+        self._btn_g_add.clicked.connect(self._group_selected)
+        grow.addWidget(self._btn_g_add)
         gl.addLayout(grow)
 
         self._lst_groups = QListWidget()
         self._lst_groups.setMaximumHeight(70)
+        self._lst_groups.setToolTip("Double-click a group to change its "
+                                    "repeat count.")
+        self._lst_groups.itemDoubleClicked.connect(self._edit_group_repeats)
         gl.addWidget(self._lst_groups)
 
         btn_g_del = QPushButton("Remove selected")
@@ -331,12 +332,23 @@ class SettingsPanel(QWidget):
         for g in self._r.groups:
             self._lst_groups.addItem(
                 f"steps {g.start + 1}-{g.end + 1} × {g.repeats}")
+        self._tbl.set_groups(self._r.groups)
 
-    def _add_group(self) -> None:
-        start = self._spn_g_start.value() - 1
-        end = self._spn_g_end.value() - 1
-        if end < start:
-            start, end = end, start
+    def _on_selection_changed(self) -> None:
+        """The Repeat-groups control tracks the table's own selection rather
+        than asking for row numbers a second time — 2+ contiguous rows is a
+        candidate group, anything else is not one yet."""
+        span = self._tbl.selected_range()
+        self._btn_g_add.setEnabled(span is not None)
+        self._lbl_g_selection.setText(
+            f"Steps {span[0] + 1}-{span[1] + 1} selected" if span is not None
+            else "Select 2+ steps in the table to group them")
+
+    def _group_selected(self) -> None:
+        span = self._tbl.selected_range()
+        if span is None:
+            return
+        start, end = span
         self._r.groups.append(Group(start=start, end=end,
                                     repeats=self._spn_g_repeats.value()))
         self._reload_groups()
@@ -346,6 +358,22 @@ class SettingsPanel(QWidget):
         row = self._lst_groups.currentRow()
         if 0 <= row < len(self._r.groups):
             del self._r.groups[row]
+            self._reload_groups()
+            self._emit()
+
+    def _edit_group_repeats(self, item) -> None:
+        """The repeat count is the one thing about an existing group worth
+        changing without redoing the selection — everything else (which
+        steps) means picking a different range and regrouping."""
+        row = self._lst_groups.row(item)
+        if not (0 <= row < len(self._r.groups)):
+            return
+        g = self._r.groups[row]
+        n, ok = QInputDialog.getInt(
+            self, "Repeat count",
+            f"Steps {g.start + 1}-{g.end + 1} repeat:", g.repeats, 1, 999)
+        if ok and n != g.repeats:
+            g.repeats = n
             self._reload_groups()
             self._emit()
 
@@ -419,6 +447,56 @@ class SettingsPanel(QWidget):
             self._reload_table()
             self._emit()
 
+    # A blank cell below the lowest real position — same sentinel shape as
+    # table.py's _NumberDelegate, so "no change" is a state the spin boxes
+    # can reach, not a magic number.
+    _POS_LO, _POS_HI, _POS_STEP = -1e5, 1e5, 100.0
+
+    def _position_spin(self, value: float | None) -> QDoubleSpinBox:
+        sb = QDoubleSpinBox()
+        sb.setDecimals(0)
+        sb.setSuffix(" um")
+        sb.setRange(self._POS_LO - self._POS_STEP, self._POS_HI)
+        sb.setSingleStep(self._POS_STEP)
+        sb.setSpecialValueText(NO_CHANGE)
+        sb.setKeyboardTracking(False)
+        sb.setValue(self._POS_LO - self._POS_STEP if value is None else value)
+        return sb
+
+    def _set_position(self) -> None:
+        self._set_position_for(self._selected())
+
+    def _set_position_for(self, row: int) -> None:
+        """Stage is one combined cell now (`table.py`'s "xy"), not two —
+        typing a number takes a small dialog instead of an inline spin box,
+        the same way Pattern always has (a file dialog, not a typed cell)."""
+        if not (0 <= row < len(self._r.steps)):
+            return
+        step = self._r.steps[row]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Stage position for this step")
+        form = QFormLayout(dlg)
+        x_spin = self._position_spin(step.x_um)
+        y_spin = self._position_spin(step.y_um)
+        form.addRow("X:", x_spin)
+        form.addRow("Y:", y_spin)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                               | QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        form.addRow(box)
+        if not dlg.exec():
+            return
+
+        def val(sb: QDoubleSpinBox) -> float | None:
+            blank = self._POS_LO - self._POS_STEP
+            return None if sb.value() <= blank + 1e-9 else sb.value()
+
+        step.x_um, step.y_um = val(x_spin), val(y_spin)
+        step.fov = ""            # typed — no longer necessarily a saved spot
+        self._reload_table()
+        self._emit()
+
     def _pick_fov(self) -> None:
         self._pick_fov_for(self._selected())
 
@@ -432,6 +510,7 @@ class SettingsPanel(QWidget):
         if dlg.fov is not None:
             self._r.steps[row].x_um = dlg.fov.x_um
             self._r.steps[row].y_um = dlg.fov.y_um
+            self._r.steps[row].fov = dlg.fov.name
             self._reload_table()
             self._emit()
 
