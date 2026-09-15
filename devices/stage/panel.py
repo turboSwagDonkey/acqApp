@@ -446,6 +446,10 @@ class SettingsPanel(QWidget):
         self._last_z = 0.0      # meaningless (and unused) unless self._s.has_z
         self._last_map_xy: tuple[float, float] | None = None
         self._last_gauge_z: float | None = None
+        # The FOV a goto_fov() last actually issued a move to, cleared the
+        # moment the live position drifts off it again (set_readout) — the
+        # Save panel's "append active FOV name" option (see active_fov_name).
+        self._active_fov = None
         self._axis_widgets: dict[str, dict] = {}
         self._cal_dialog: CalibrationDialog | None = None
         self._build()
@@ -867,7 +871,9 @@ class SettingsPanel(QWidget):
             if move_z:
                 c.move_to_um("z", fov.z_um)
 
-        self._call("Move failed", _go)
+        if self._call("Move failed", _go):
+            # "Active" until the stage drifts off it again — see set_readout.
+            self._active_fov = fov
 
     # The panic path (Esc, app-wide), so guarded hardest: a dead link is exactly
     # when it is pressed, and an escaping slot exception aborts the process.
@@ -885,7 +891,22 @@ class SettingsPanel(QWidget):
     # repaints every poll tick.
     _MAP_EPS_UM = 0.5
 
+    def _off_active_fov(self, x_um: float, y_um: float,
+                       z_um: float | None) -> bool:
+        """Has the live position drifted off `self._active_fov`'s spot? Same
+        epsilon as the map/gauge repaint guard — noise below it is not a
+        move."""
+        fov = self._active_fov
+        if abs(x_um - fov.x_um) >= self._MAP_EPS_UM \
+                or abs(y_um - fov.y_um) >= self._MAP_EPS_UM:
+            return True
+        if self._s.has_z and fov.z_um is not None and z_um is not None:
+            return abs(z_um - fov.z_um) >= self._MAP_EPS_UM
+        return False
+
     def set_readout(self, x_um: float, y_um: float, z_um: float | None = None) -> None:
+        if self._active_fov is not None and self._off_active_fov(x_um, y_um, z_um):
+            self._active_fov = None
         self._last_xy = (x_um, y_um)
         self._lbl_x.setText(f"{x_um:8.1f}")
         self._lbl_y.setText(f"{y_um:8.1f}")
@@ -909,6 +930,12 @@ class SettingsPanel(QWidget):
     @property
     def connected(self) -> bool:
         return self._ctrl is not None
+
+    @property
+    def active_fov_name(self) -> str:
+        """The name of the FOV the stage is currently sitting at, or "" —
+        see `_active_fov`/`_off_active_fov`."""
+        return self._active_fov.name if self._active_fov is not None else ""
 
     @property
     def current_position(self) -> tuple[float, float, float | None]:

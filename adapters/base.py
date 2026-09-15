@@ -290,11 +290,6 @@ class ModuleAdapter:
         """
         return None
 
-    def cam_trigger_mode(self) -> str | None:
-        """This module's own trigger setting, or None if it has no such
-        notion. A routine's TTL start trigger validates against it."""
-        return None
-
     def busy_reason(self) -> str:
         """Why the module set must not change right now, or "".
 

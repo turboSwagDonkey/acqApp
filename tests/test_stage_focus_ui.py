@@ -227,6 +227,39 @@ def check_goto_uses_z_threshold(r: Report) -> None:
             "No here blocks it even though it's far under the XY threshold")
 
 
+def check_active_fov(r: Report) -> None:
+    """goto_fov() marks a FOV active; set_readout() clears it again the
+    moment the live position drifts off it — the Save panel's "append
+    active FOV name" option reads exactly this (StageModule.active_fov_name,
+    adapters/stage.py)."""
+    from acqApp.devices.stage.fov_store import SavedFov
+
+    s = _settings(has_frame=True)
+    p = SettingsPanel(s)
+    p.bind_controller(FakeCtrl())
+    fov = SavedFov(path=Path("f.fov.json"), name="window1", saved_at="",
+                   x_um=100.0, y_um=200.0, z_um=None,
+                   camera_preset=None, image_path=None)
+
+    r.check(p.active_fov_name == "", "no FOV is active before any goto")
+    p.goto_fov(fov)
+    r.check(p.active_fov_name == "window1", "goto_fov marks the FOV active")
+
+    p.set_readout(100.0, 200.0)
+    r.check(p.active_fov_name == "window1",
+            "…and stays active at (near) the same position")
+
+    p.set_readout(100.0 + p._MAP_EPS_UM * 4, 200.0)
+    r.check(p.active_fov_name == "",
+            "…but clears once the live position drifts off it")
+
+    # CONTROL: noise under the epsilon must not read as a move away.
+    p.goto_fov(fov)
+    p.set_readout(100.0 + p._MAP_EPS_UM / 4, 200.0)
+    r.check(p.active_fov_name == "window1",
+            "control: sub-epsilon noise does not clear it")
+
+
 def check_calibration_dialog_z_section(r: Report) -> None:
     s = _settings()
     dlg = CalibrationDialog(FakeCtrl(), s)
@@ -327,6 +360,7 @@ def main() -> int:
         check_frame_gating_disables_z_goto(r)
         check_set_readout_updates_z(r)
         check_goto_uses_z_threshold(r)
+        check_active_fov(r)
         check_calibration_dialog_z_section(r)
         check_set_zero_z_here(r)
         check_reframe_z_needs_both_warnings(r, app)

@@ -11,10 +11,11 @@ value: the value lives in `UserRole` while the text is a rendering of it,
 usually — **Details** renders as something OTHER than its raw value the same
 two ways Stage/Pattern always have:
 
-- **Move**'s Details is X and Y together, `(x, y)` — one place, not two
-  cells. Filled from a saved FOV (double-click, or right-click -> Fill from
-  FOV…) it shows the FOV's name in front of the numbers instead. Typing a
-  new number (double-click -> Set position…) detaches the name.
+- **Move**'s Details is X, Y (and Z, on a rig with a focus axis) together,
+  `(x, y)` or `(x, y, z)` — one place, not several cells. Filled from a saved
+  FOV (double-click, or right-click -> Fill from FOV…) it shows the FOV's
+  name in front of the numbers instead. Typing a new number (double-click ->
+  Set position…) detaches the name.
 - **Display**'s Details shows a thumbnail once a pattern is set, a picture
   being the whole point of an image path; an ROI set rasterises its shapes
   over their own bounding box instead (`_roi_icon`).
@@ -81,6 +82,7 @@ VALUE = Qt.ItemDataRole.UserRole
 
 KIND_LABELS: dict[str, str] = {
     "move": "Move", "display": "Display", "wait": "Wait", "puff": "Puff",
+    "trigger": "Trigger",
 }
 
 # Columns, in order: (title, field, tooltip). "details" is a synthetic field
@@ -89,12 +91,13 @@ KIND_LABELS: dict[str, str] = {
 COLS = (
     ("Step",    "label", "Your name for this step. It goes into the file."),
     ("Kind",    "kind",  "What this step does: Move the stage, start "
-                         "Displaying a pattern, Wait, or Puff."),
-    ("Details", "details", "Move: where to send the stage, as (X, Y). "
+                         "Displaying a pattern, Wait, Puff, or wait for an "
+                         "external Trigger on the camera's line."),
+    ("Details", "details", "Move: where to send the stage, as (X, Y, Z). "
                          "Double-click, or right-click -> Set position…, to "
-                         "type numbers; Delete clears both back to \"no "
-                         "change\". Filled from a saved FOV, the cell names "
-                         "it in front of the numbers instead.\nDisplay: the "
+                         "type numbers; Delete clears every axis back to "
+                         "\"no change\". Filled from a saved FOV, the cell "
+                         "names it in front of the numbers instead.\nDisplay: the "
                          "DMD pattern, shown as a thumbnail once one is set. "
                          "Double-click to choose one, Delete to stop "
                          "displaying."),
@@ -355,14 +358,15 @@ class StepTable(QTableWidget):
     def _paint_details(self, item: QTableWidgetItem, s: Step) -> None:
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if s.kind == "move":
-            # Not typed into — see Details' entry in COLS. The pair is still
-            # the value of record (VALUE, above) and still what the engine
-            # drives to; only the rendering changes for a named spot.
-            item.setData(VALUE, (s.x_um, s.y_um))
+            # Not typed into — see Details' entry in COLS. The triple is
+            # still the value of record (VALUE, above) and still what the
+            # engine drives to; only the rendering changes for a named spot.
+            item.setData(VALUE, (s.x_um, s.y_um, s.z_um))
             item.setIcon(QIcon())
-            item.setText(_xy_text(s.x_um, s.y_um, s.fov))
+            item.setText(_xyz_text(s.x_um, s.y_um, s.z_um, s.fov))
+            z_part = f", {s.z_um:g} um" if s.z_um is not None else ""
             item.setToolTip(
-                f"{s.x_um:g} um, {s.y_um:g} um — from the saved FOV "
+                f"{s.x_um:g} um, {s.y_um:g} um{z_part} — from the saved FOV "
                 f"{s.fov!r}. Double-click to type new numbers, which "
                 f"detaches the name." if s.fov else
                 "Double-click to set a position, or right-click -> Fill "
@@ -374,6 +378,16 @@ class StepTable(QTableWidget):
             item.setIcon(_pattern_icon(s.pattern))
             item.setText(pattern_label(s.pattern) if s.pattern
                         else "stop displaying")
+        elif s.kind == "trigger":
+            item.setData(VALUE, None)
+            item.setIcon(QIcon())
+            item.setText("wait for camera trigger")
+            item.setToolTip(
+                "Holds here until an external edge arrives on the camera's "
+                "trigger line. Nothing to set — the length of what follows is "
+                "what decides how long the recording lasts.\nPut the Recording "
+                "bracket on the steps AFTER this one, so the file starts on "
+                "the edge.")
         else:
             item.setData(VALUE, None)
             item.setIcon(QIcon())
@@ -489,7 +503,7 @@ class StepTable(QTableWidget):
         s = self._steps[row]
         if field == "details":
             if s.kind == "move":
-                s.x_um = s.y_um = None
+                s.x_um = s.y_um = s.z_um = None
                 s.fov = ""       # no longer a full pair, so no longer that spot
             elif s.kind == "display":
                 s.pattern = ""
@@ -611,7 +625,7 @@ class StepTable(QTableWidget):
                 menu.addSeparator()
                 act = menu.addAction("Set position…")
                 act.triggered.connect(self.position_requested.emit)
-                act = menu.addAction("Fill Stage X/Y from FOV…")
+                act = menu.addAction("Fill Stage X/Y/Z from FOV…")
                 act.triggered.connect(self.fov_requested.emit)
         if span is not None:
             if row >= 0:
@@ -626,13 +640,17 @@ class StepTable(QTableWidget):
             menu.exec(event.globalPos())
 
 
-def _xy_text(x: float | None, y: float | None, fov: str) -> str:
-    """Move's Details as one fact: "(x, y)", or the saved FOV's name in front
-    of it once one is filled — a recognised spot is read by name, not by the
-    two numbers that happen to describe it."""
+def _xyz_text(x: float | None, y: float | None, z: float | None,
+             fov: str) -> str:
+    """Move's Details as one fact: "(x, y)", or "(x, y, z)" once a step has a
+    Z target (most rigs and most steps never do — Z only joins the text when
+    it is actually set), or the saved FOV's name in front of it once one is
+    filled — a recognised spot is read by name, not by the numbers that
+    happen to describe it."""
     def part(v: float | None) -> str:
         return NO_CHANGE if v is None else f"{v:g} um"
-    coords = f"({part(x)}, {part(y)})"
+    coords = (f"({part(x)}, {part(y)})" if z is None else
+             f"({part(x)}, {part(y)}, {part(z)})")
     return f"{fov} {coords}" if fov else coords
 
 

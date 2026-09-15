@@ -7,7 +7,7 @@ The important part is `isolate_user_state()`. The GUI tests drive the REAL
 MainWindow, which persists as a side effect of ordinary use — the Save tab
 writes `acqapp_local.json` on every field change, closing writes the dock layout
 to QSettings — so without it the tests overwrite the operator's save folder,
-subject ID and panel layout. Every test that builds a window calls it.
+mouse ID and panel layout. Every test that builds a window calls it.
 """
 from __future__ import annotations
 

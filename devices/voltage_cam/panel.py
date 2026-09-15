@@ -3,7 +3,11 @@ Voltage-imaging camera — settings panel.
 
 SettingsPanel : QWidget that emits a signal per parameter.
                 Resolution/binning/trigger lock while acquisition runs;
-                exposure is hot-changeable at any time.
+                exposure is hot-changeable at any time. `set_trigger_mode()`
+                lets a routine drive the combo itself (adapters/
+                voltage_cam.py's `set_external_trigger`), the same way
+                `set_preset()` already lets the DMD calibration drive the
+                resolution combo.
 
 The owner (MainWindow / toy) reads .get_config() to build an AcqConfig
 before starting the worker, and wires exposure_changed to worker.set_exposure().
@@ -309,6 +313,14 @@ class SettingsPanel(QWidget):
         click: it only takes effect at the next Start."""
         if key in PRESET_KEYS:
             self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(key))
+
+    def set_trigger_mode(self, mode: str) -> None:
+        """Programmatically select a trigger mode — a routine forces External
+        edge before it opens its recording, for a TTL start or for any
+        `trigger` step (see adapters/voltage_cam.py's `set_external_trigger`).
+        Structural, like `set_preset()`: only takes effect at the next Start."""
+        if mode in TRIGGER_MODES:
+            self._cmb_trigger.setCurrentText(mode)
 
     def set_exposure(self, us: float) -> None:
         """Programmatically set exposure (e.g. from a Mode preset). Hot, like

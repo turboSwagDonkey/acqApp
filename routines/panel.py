@@ -148,11 +148,10 @@ class SettingsPanel(QWidget):
         idx = self._cmb_trigger.findData(self._r.start_trigger)
         self._cmb_trigger.setCurrentIndex(max(0, idx))
         self._cmb_trigger.setToolTip(
-            "Manual: Start begins the routine right away.\nTTL: Start opens "
-            "the recording and arms the routine, then waits for the voltage "
-            "camera to report a frame it did not have yet — which only "
-            "happens on a real pulse if the camera's own Trigger is set to "
-            "External edge.")
+            "Manual: Start begins the routine right away.\nTTL: Start puts "
+            "the camera in External edge mode itself, opens the recording "
+            "and arms the routine, then waits for a frame the camera did "
+            "not have yet — which only happens on a real pulse.")
         form.addRow("Start trigger:", self._cmb_trigger)
         lay.addLayout(form)
 
@@ -565,8 +564,10 @@ class SettingsPanel(QWidget):
         form = QFormLayout(dlg)
         x_spin = self._position_spin(step.x_um)
         y_spin = self._position_spin(step.y_um)
+        z_spin = self._position_spin(step.z_um)
         form.addRow("X:", x_spin)
         form.addRow("Y:", y_spin)
+        form.addRow("Z:", z_spin)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(dlg.accept)
@@ -579,7 +580,7 @@ class SettingsPanel(QWidget):
             blank = self._POS_LO - self._POS_STEP
             return None if sb.value() <= blank + 1e-9 else sb.value()
 
-        step.x_um, step.y_um = val(x_spin), val(y_spin)
+        step.x_um, step.y_um, step.z_um = val(x_spin), val(y_spin), val(z_spin)
         step.fov = ""            # typed — no longer necessarily a saved spot
         self._reload_table()
         self._emit()
@@ -597,6 +598,7 @@ class SettingsPanel(QWidget):
         if dlg.fov is not None:
             self._r.steps[row].x_um = dlg.fov.x_um
             self._r.steps[row].y_um = dlg.fov.y_um
+            self._r.steps[row].z_um = dlg.fov.z_um
             self._r.steps[row].fov = dlg.fov.name
             self._reload_table()
             self._emit()
@@ -691,21 +693,25 @@ class SettingsPanel(QWidget):
         if phase != self._painted:
             running = phase == Phase.RUNNING
             armed = phase == Phase.ARMED
+            waiting = phase == Phase.WAITING
             paused = phase == Phase.PAUSED
-            held = running or armed or paused
+            held = running or armed or waiting or paused
             self._btn_start.setEnabled(not held)
-            self._btn_pause.setEnabled(running)
+            # Pause is offered while WAITING too: a trigger step can legitimately
+            # sit there for minutes, and the operator must be able to take the
+            # rig back without waiting for an edge that may never come.
+            self._btn_pause.setEnabled(running or waiting)
             for b in (self._btn_resume, self._btn_skip):
                 b.setEnabled(paused)
-            self._btn_abort.setEnabled(running or armed or paused)
+            self._btn_abort.setEnabled(held)
             # The step list must not be edited out from under a running engine:
             # it holds an index into it. Armed counts too — the recording it
             # opened is already running, one TTL pulse from step 1.
             self._tbl.setEnabled(not held)
             self._lbl_state.setStyleSheet(
                 "color:#d08770;" if paused else
-                (f"color:{style.HEX['routines']};" if (running or armed)
-                 else ""))
+                (f"color:{style.HEX['routines']};"
+                 if (running or armed or waiting) else ""))
             self._painted = phase
         # The text moves within a phase (progress, step number); the styling
         # does not.

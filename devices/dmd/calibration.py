@@ -18,7 +18,7 @@ geometry being measured.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -691,3 +691,22 @@ class DmdCalibration:
                 + (f", hold-out {self.holdout_px:.2f} px"
                    if self.holdout_px else "")
                 + (f" ({self.created})" if self.created else ""))
+
+
+def flip_y(calib: DmdCalibration) -> DmdCalibration:
+    """A copy of `calib` with the camera→DMD mapping mirrored across the
+    panel's own Y axis (mirror row `r` becomes `dmd_size[1] - 1 - r`).
+
+    A manual correction, not a re-fit: the stripe-sweep homography is
+    measured empirically and should already capture any real reflection in
+    the optical path, but an operator-confirmed rig can still need this knob
+    (`DmdSettings.roi_flip_y`, 2026-09-14) — composing a flip onto the fitted
+    matrix, rather than re-deriving one, keeps `dmd_to_cam` (a plain inverse)
+    correct for free, and every consumer of `cam_to_dmd` (the ROI editor's
+    field outline and accessible checks, and the real projection mask) sees
+    the same corrected transform.
+    """
+    h = float(calib.dmd_size[1])
+    flip = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, h - 1.0], [0.0, 0.0, 1.0]])
+    M = flip @ np.asarray(calib.cam_to_dmd, dtype=np.float64)
+    return replace(calib, cam_to_dmd=M)

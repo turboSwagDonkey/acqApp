@@ -347,13 +347,12 @@ class MainWindow(QMainWindow):
         """
         return self._first(lambda m: m.frame_rate_hz())
 
-    def cam_trigger_mode(self) -> str | None:
-        """The loaded voltage camera's own trigger setting, or None.
-
-        Pooled like `frame_rate_hz`: a routine's TTL start trigger validates
-        against this, without importing the camera adapter.
-        """
-        return self._first(lambda m: m.cam_trigger_mode())
+    def active_fov_name(self) -> str:
+        """The name of the FOV the stage is currently sitting at, or "" if
+        none is active or no stage is loaded — for the Save panel's "append
+        active FOV name" option."""
+        stage = self.stage_target()
+        return stage.active_fov_name() if stage is not None else ""
 
     def _first(self, ask):
         """The first loaded module that answers `ask` with something."""
@@ -436,6 +435,26 @@ class MainWindow(QMainWindow):
         prev = m.preset_key()
         m.set_preset(preset)
         return prev
+
+    def set_camera_trigger(self, key: str, on: bool) -> bool | None:
+        """Switch module `key`'s camera into/out of External edge trigger
+        mode; returns whether it ended up there, or None if not loaded or
+        it has no such notion (`set_external_trigger`) — see
+        `acq.devices.ModuleHost.set_camera_trigger`."""
+        m = self._module(key)
+        return (m.set_external_trigger(on)
+               if m is not None and hasattr(m, "set_external_trigger")
+               else None)
+
+    def rearm_camera_trigger(self, key: str) -> bool | None:
+        """Re-gate module `key`'s external trigger so the next edge is
+        detectable; None if not loaded or it has no such notion
+        (`rearm_trigger`) — see
+        `acq.devices.ModuleHost.rearm_camera_trigger`."""
+        m = self._module(key)
+        return (m.rearm_trigger()
+               if m is not None and hasattr(m, "rearm_trigger")
+               else None)
 
     def set_mode(self, name: str) -> None:
         """Apply the sidebar's named cross-module preset (the Mode dropdown).
@@ -692,7 +711,16 @@ class MainWindow(QMainWindow):
 
         # Session-wide, not a module's, and the first thing to get right before
         # recording — so it leads the tabs.
-        self._save_panel = SavePanel(config.load_dataclass(SaveConfig, "saving"))
+        save_cfg = config.load_dataclass(SaveConfig, "saving")
+        if not save_cfg.mouse_id:
+            # Renamed from `subject` (2026-09-14) — carry an already-typed
+            # animal ID across rather than dropping it silently. `session`
+            # has no equivalent in `project`, a different concept, so no
+            # migration for that one.
+            old_subject = config.load_settings("saving").get("subject")
+            if isinstance(old_subject, str) and old_subject.strip():
+                save_cfg.mouse_id = old_subject.strip()
+        self._save_panel = SavePanel(save_cfg)
         self._save_panel.settings_changed.connect(self._save_save_settings)
         self._settings_dialog.add_panel(self._save_panel, "Save", "saving")
 
@@ -1329,8 +1357,8 @@ class MainWindow(QMainWindow):
             "created":  now.strftime("%Y%m%d_%H%M%S"),
             "emulated": self._emulate,
             "modules":  ",".join(sorted(self._enabled)),
-            "subject":  sc.subject,
-            "session":  sc.session,
+            "mouse_id": sc.mouse_id,
+            "project":  sc.project,
         }
         for m in self._modules:
             metadata.update(m.metadata())
@@ -1407,6 +1435,21 @@ class MainWindow(QMainWindow):
         self._btn_rec.setText("● Record")
         self._lbl_rec.setText("")
 
+    def roll_recording(self) -> bool:
+        """Close the current recording and immediately open a new one — a
+        routine splitting one continuous capture into several files
+        (`adapters/routines.py`), not an operator action. Goes straight to
+        the underlying start/stop rather than through `set_recording`/the
+        Record button: both calls happen synchronously with no event-loop
+        turn between them, so the button's own checked state and the status
+        line never visibly pass through "stopped" — RoutinesModule guards
+        its own `detach_sink()` against mistaking this for the operator
+        having stopped recording out from under a running routine.
+        """
+        self._stop_recording()
+        self._start_recording()
+        return self._recorder is not None
+
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 
     def _on_tick(self, elapsed: float) -> None:
@@ -1415,6 +1458,8 @@ class MainWindow(QMainWindow):
         # other status() call unreadable for the whole time a session runs.
         self._lbl_time.setText(f"t = {elapsed:.1f} s")
         self._refresh_rec_readout(elapsed)
+        if self._save_panel is not None:
+            self._save_panel.set_active_fov(self.active_fov_name())
 
     def _refresh_rec_readout(self, elapsed: float) -> None:
         """Elapsed / size on disk / drops, while recording.

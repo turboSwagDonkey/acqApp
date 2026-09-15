@@ -83,7 +83,7 @@ class StageModule(ModuleAdapter):
 
     # ── connection (always-on: see the module docstring) ──
     def build_controller(self, emulate: bool) -> None:
-        s = self.panel.settings if self.panel is not None else load_stage_settings()
+        s = self._settings()
         ctrl = MockStageController(s) if emulate else StageController(s)
         try:
             ctrl.connect()
@@ -215,11 +215,12 @@ class StageModule(ModuleAdapter):
         rather than starting and failing at its first move."""
         return self if self.controller is not None else None
 
-    def move_to(self, x_um: float | None, y_um: float | None) -> None:
+    def move_to(self, x_um: float | None, y_um: float | None,
+               z_um: float | None = None) -> None:
         """MOTION. One axis at a time, because the controller commands one."""
         if self.controller is None:
             raise RuntimeError("stage not connected")
-        for which, um in (("x", x_um), ("y", y_um)):
+        for which, um in (("x", x_um), ("y", y_um), ("z", z_um)):
             if um is not None:
                 self.controller.move_to_um(which, float(um))
 
@@ -235,8 +236,26 @@ class StageModule(ModuleAdapter):
             except Exception as e:      # noqa: BLE001 — link gone, port gone
                 print(f"[stage] stop_all failed ({type(e).__name__}: {e})")
 
+    def _settings(self):
+        """The SHARED calibration, read live so a recalibration reaches a
+        routine too, and off disk before the panel exists."""
+        return (self.panel.settings if self.panel is not None
+                else load_stage_settings())
+
     def limits_um(self):
-        """The SHARED calibration's soft limits — the same ones the panel
-        clamps to, read live so a recalibration reaches a routine too."""
-        s = self.panel.settings if self.panel is not None else load_stage_settings()
+        """The soft limits the panel clamps to — see `_settings`."""
+        s = self._settings()
         return (s.x.soft_limits_um(), s.y.soft_limits_um())
+
+    def has_z(self) -> bool:
+        """Whether this rig has a Z (focus) axis a routine may move."""
+        return self._settings().has_z
+
+    def z_limits_um(self):
+        """Z's soft limits, live like `limits_um()`; None with no Z stage."""
+        s = self._settings()
+        return s.z.soft_limits_um() if s.has_z else None
+
+    # ── what the Save panel may ask (acq.devices.ModuleHost.active_fov_name) ──
+    def active_fov_name(self) -> str:
+        return self.panel.active_fov_name if self.panel is not None else ""

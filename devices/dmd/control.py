@@ -71,8 +71,11 @@ def roi_frame(settings, width: int, height: int):
               "turned into mirrors. Run Calibrate… first.")
         return None
     try:
+        from acqApp.devices.dmd.calibration import flip_y
         from acqApp.devices.dmd.roi import RoiSet
         calib = _load_calibration(settings.calib_path)
+        if settings.roi_flip_y:
+            calib = flip_y(calib)
         frame = RoiSet.from_list(list(settings.rois)).dmd_frame(calib)
     except Exception as e:                        # noqa: BLE001
         print(f"[DMD] ROI mode: could not build the mask ({type(e).__name__}: "
@@ -118,6 +121,10 @@ class DmdSettings:
     # `calib_path` registration they can be drawn and saved, not projected.
     rois:          tuple       = ()
     calib_path:    str         = ""
+    # A manual correction for a rig whose measured registration is right in X
+    # but backwards in Y (operator-confirmed) — mirrors the mapping in
+    # `calibration.flip_y` wherever it is loaded, rather than re-fitting.
+    roi_flip_y:    bool        = False
 
 
 class DmdController(QObject):
@@ -161,10 +168,12 @@ class DmdController(QObject):
         geometry_changed = (
             (settings.scale_pct, settings.rotation_deg, settings.offset_x,
              settings.offset_y, settings.invert, settings.fit,
-             settings.display_mode, settings.rois, settings.calib_path)
+             settings.display_mode, settings.rois, settings.calib_path,
+             settings.roi_flip_y)
             != (self._s.scale_pct, self._s.rotation_deg, self._s.offset_x,
                 self._s.offset_y, self._s.invert, self._s.fit,
-                self._s.display_mode, self._s.rois, self._s.calib_path))
+                self._s.display_mode, self._s.rois, self._s.calib_path,
+                self._s.roi_flip_y))
         self._s = settings
         # Always reload on geometry change, even MODE_PATTERN with no file chosen:
         # load_pattern() already clears _pattern to None in that case, and a

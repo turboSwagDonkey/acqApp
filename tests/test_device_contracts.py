@@ -275,13 +275,16 @@ def main() -> int:
         def is_recording(self): return False
         def camera_preset(self, key): return None
         def set_camera_preset(self, key, preset): return None
+        def set_camera_trigger(self, key, on): return None
+        def rearm_camera_trigger(self, key): return None
         def set_modules(self, keys): return [], []
         def stage_target(self): return None
         def pattern_target(self): return None
         def led_target(self): return None
         def puffer_target(self): return None
         def frame_rate_hz(self): return None
-        def cam_trigger_mode(self): return None
+        def active_fov_name(self): return ""
+        def roll_recording(self): return False
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

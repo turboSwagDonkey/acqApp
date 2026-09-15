@@ -15,8 +15,8 @@ A step now completes on its own terms (`_enter_step` dispatches on
 this file only decides WHEN to open/close one as `self._i` moves through
 `self._order`, via `_update_recording`. The engine never touches the
 Recorder: it emits `begin_recording`/`end_recording`, and whether that
-rolls a file (`save_mode="per_step"`) or marks a boundary is the adapter's
-business.
+rolls a file (`save_mode="per_repeat"`/`"per_group"`) or marks a boundary
+is the adapter's business.
 
 **A device failure PAUSES; it does not abort** (operator, PLAN §6 (4)): motion
 stopped, light off, capture untouched, the operator decides. Two consequences
@@ -42,6 +42,24 @@ from acqApp.routines.settings import (Routine, Step, play_order,
 # A move that never reports arrival must fault, not hang the routine forever.
 MOVE_TIMEOUT_S = 30.0
 
+# The same argument for a `trigger` step, but far more generous: an external
+# source decides when, and a stimulus rig may legitimately be quiet for
+# minutes. This only exists so a miswired line is eventually reported rather
+# than hanging the routine forever.
+TRIGGER_TIMEOUT_S = 600.0
+
+# Dead time at the start of a `trigger` step, before an arriving frame counts
+# as its edge. `arm_trigger` is asynchronous — the camera's capture loop acts
+# on the request only when its own frame wait next expires — so frames already
+# in flight keep being written for a moment, and would otherwise read as an
+# edge that never happened. Must therefore exceed that loop's frame-wait
+# timeout (`devices/voltage_cam/acquisition.py`'s `_WAIT_TIMEOUT`, 0.5 s).
+#
+# It is also the smallest gap between one recording ending and the next edge
+# being detectable: an edge inside the window is ignored, which is the
+# operator's "build for safety" choice over latching it.
+TRIGGER_DRAIN_S = 1.5
+
 
 class Phase:
     """Where the engine is. Strings, so they go into the file and the panel."""
@@ -50,6 +68,11 @@ class Phase:
                             # first externally-triggered frame
     RUNNING = "running"     # executing a step — the panel reads `step.kind`
                             # and `progress()` for what to say, not the phase
+    WAITING = "waiting"     # inside a `trigger` step: the camera is re-armed
+                            # and this is waiting for ITS edge. Distinct from
+                            # ARMED, which happens once before step 1 and is
+                            # about the routine as a whole; this recurs mid-run
+                            # and the panel says which step it belongs to.
     PAUSED  = "paused"      # a fault, or the operator — resume/skip/abort
     DONE    = "done"
 
@@ -74,13 +97,18 @@ class RoutineHooks:
     """
     now:            Callable[[], float]                       # session-clock seconds
     frames:         Callable[[], int | None] = lambda: None    # monotonic frame count
-    move:           Callable[[float | None, float | None], None] = _noop
+    move:           Callable[[float | None, float | None, float | None],
+                             None] = _noop
     moving:         Callable[[], bool] = lambda: False         # still travelling?
     stop_motion:    Callable[[], None] = _noop
     set_pattern:    Callable[[str], None] = _noop
     light:          Callable[[bool], None] = _noop
     led:            Callable[[bool], None] = _noop
     puff:           Callable[[], None] = _noop     # fires one puff, its own duration
+    # Re-gates the camera so its NEXT edge is detectable; it latches otherwise,
+    # so without this only a run's first edge would ever be seen. Inert by
+    # default — an engine driven without a camera just waits on `frames`.
+    arm_trigger:    Callable[[], None] = _noop
     begin_recording: Callable[["RecordingRun"], None] = _noop
     end_recording:   Callable[["RecordingRun"], None] = _noop
     log:            Callable[[str], None] = _noop
@@ -107,10 +135,12 @@ class RecordingRun:
     def attrs(self, session_origin: float = 0.0) -> dict[str, Any]:
         """What one recording run records about itself.
 
-        Named here once so the two save modes cannot disagree: `single` files
-        the list of these as `routine_runs`, `per_step` will write each as its
-        own file's attributes. Every run names the session origin and its own
-        t0 **on the same clock**, so a folder reassembles onto one timebase.
+        Named here once so every save mode reads it the same way: `single`
+        files the list of these as `routine_runs`, `per_repeat`/`per_group`
+        write each (rolled file's slice) the same way — see
+        `adapters/routines.py`'s `final_metadata()`. Every run names the
+        session origin and its own t0 **on the same clock**, so a folder of
+        several files reassembles onto one timebase.
         """
         return {
             "routine_recording_session_origin": float(session_origin),
@@ -135,10 +165,14 @@ class RoutineEngine:
     """Runs a `Routine` through `RoutineHooks`, one `tick()` at a time."""
 
     def __init__(self, routine: Routine, hooks: RoutineHooks, *,
-                 move_timeout_s: float = MOVE_TIMEOUT_S) -> None:
+                 move_timeout_s: float = MOVE_TIMEOUT_S,
+                 trigger_timeout_s: float = TRIGGER_TIMEOUT_S,
+                 trigger_drain_s: float = TRIGGER_DRAIN_S) -> None:
         self._r = routine
         self._h = hooks
         self._timeout = move_timeout_s
+        self._trig_timeout = trigger_timeout_s
+        self._trig_drain = trigger_drain_s
         self.runs: list[RecordingRun] = []
         self.fault = ""
         self._phase = Phase.IDLE
@@ -161,6 +195,9 @@ class RoutineEngine:
         self._wait_frame0: int | None = None
         self._started_at: float | None = None   # session clock at start()
         self._arm_frame0: int | None = None      # frame count when armed
+        self._trig_frame0: int | None = None     # frame count when a `trigger`
+                                                  # step re-armed the camera
+        self._trig_t0 = 0.0                      # when it started waiting
 
     # ── readout ───────────────────────────────────────────────────────────────
     @property
@@ -171,8 +208,10 @@ class RoutineEngine:
     def running(self) -> bool:
         """Is the rig under this engine's control? PAUSED counts — the stage is
         stopped but the routine still owns it, so modules must stay put.
-        ARMED counts too — the recording it opened is already running."""
-        return self._phase in (Phase.ARMED, Phase.RUNNING, Phase.PAUSED)
+        ARMED counts too — the recording it opened is already running. So does
+        WAITING: mid-routine, holding at a `trigger` step for its edge."""
+        return self._phase in (Phase.ARMED, Phase.RUNNING, Phase.WAITING,
+                               Phase.PAUSED)
 
     @property
     def step(self) -> Step | None:
@@ -277,7 +316,10 @@ class RoutineEngine:
             self._enter_step()
 
     def pause(self, reason: str = "paused by the operator") -> None:
-        if self._phase != Phase.RUNNING:
+        # WAITING counts: a `trigger` step can sit there for minutes, and the
+        # operator must be able to take the rig back rather than be held by an
+        # edge that may never arrive.
+        if self._phase not in (Phase.RUNNING, Phase.WAITING):
             return
         self._halt(reason)
 
@@ -302,7 +344,7 @@ class RoutineEngine:
 
     def abort(self) -> None:
         """Stop for good. Capture is still the operator's to stop."""
-        if self._phase in (Phase.ARMED, Phase.RUNNING):
+        if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.WAITING):
             self._halt("aborted")
         self._safe(self._h.stop_motion)
         self._safe(self._h.light, False)
@@ -314,6 +356,8 @@ class RoutineEngine:
         """Advance the state machine. Cheap, and safe to call at any rate."""
         if self._phase == Phase.ARMED:
             self._tick_armed()
+        elif self._phase == Phase.WAITING:
+            self._tick_trigger()
         elif self._phase == Phase.RUNNING:
             if self._step_done:
                 self._step_done = False
@@ -339,6 +383,31 @@ class RoutineEngine:
             return
         if n > self._arm_frame0:
             self._enter_step()
+
+    def _tick_trigger(self) -> None:
+        """Inside a `trigger` step: a frame beyond the baseline is its edge.
+
+        The baseline is not simply "the count at entry" — `arm_trigger` is
+        asynchronous, so frames already in flight keep being written for a
+        moment. For `TRIGGER_DRAIN_S` those RAISE the baseline instead of
+        satisfying it; only afterwards does an increase mean a real edge. That
+        window is also why an edge arriving while the routine was busy
+        elsewhere is ignored rather than counted.
+        """
+        n = self._frames()
+        if n is None:
+            self._halt("no frame count to detect the trigger by")
+            return
+        t = self._h.now()
+        if t - self._trig_t0 < self._trig_drain:
+            self._trig_frame0 = max(self._trig_frame0, n)
+            return
+        if n > self._trig_frame0:
+            self._phase = Phase.RUNNING
+            self._step_done = True
+            return
+        if t - self._trig_t0 > self._trig_timeout:
+            self._halt(f"no camera trigger within {self._trig_timeout:g} s")
 
     def _tick_move(self) -> None:
         step = self._r.steps[self._i]
@@ -407,8 +476,9 @@ class RoutineEngine:
                 # sample is a stimulus nobody asked for. `_tick_move` restores
                 # `self._dmd_on` once the stage has arrived and settled.
                 self._h.light(False)
-                if step.x_um is not None or step.y_um is not None:
-                    self._h.move(step.x_um, step.y_um)
+                if (step.x_um is not None or step.y_um is not None
+                        or step.z_um is not None):
+                    self._h.move(step.x_um, step.y_um, step.z_um)
             elif step.kind == "display":
                 if step.pattern:
                     self._h.set_pattern(step.pattern)
@@ -426,12 +496,25 @@ class RoutineEngine:
             elif step.kind == "puff":
                 self._h.puff()
                 self._step_done = True
+            elif step.kind == "trigger":
+                # Ask for the re-arm, then start the clock the drain window is
+                # measured against — `_tick_trigger` keeps raising the baseline
+                # for that long, which is what absorbs the frames still being
+                # written while the camera's capture loop gets round to the
+                # request.
+                self._h.arm_trigger()
+                self._trig_t0 = self._h.now()
+                self._trig_frame0 = self._frames()
+                if self._trig_frame0 is None:
+                    raise RuntimeError(
+                        "no frame count to detect a trigger by")
         except Exception as e:           # noqa: BLE001 — any device failure
             self._halt(f"step {self._i + 1} setup failed "
                        f"({type(e).__name__}: {e})")
             return
         self._issued_at = self._safe_value(self._h.now, 0.0)
-        self._phase = Phase.RUNNING
+        self._phase = (Phase.WAITING if step.kind == "trigger"
+                       else Phase.RUNNING)
         # Position in the EXPANDED order, not the table row alone — inside a
         # repeat group "step 3" on its own does not say which repeat this is.
         self._h.log(f"step {self._i + 1} ({self._pos + 1}/{len(self._order)} "

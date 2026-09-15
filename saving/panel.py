@@ -12,9 +12,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget,
 )
 
-from acqApp.saving.config import (_DEFAULT_SUBDIR, TOKENS, SaveConfig, _gb,
-                                  benchmark_drive, default_folder, free_bytes,
-                                  list_drives)
+from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
+                                  SaveConfig, _gb, benchmark_drive,
+                                  default_folder, free_bytes, list_drives)
 
 
 class SavePanel(QWidget):
@@ -39,6 +39,7 @@ class SavePanel(QWidget):
             self._cfg.folder = str(default_folder())
         self._rate_mbps: float = 0.0        # set by the owner from the cam config
         self._writer_mbps: float = 0.0      # …and what the writer sustains
+        self._active_fov: str = ""          # set by the owner (MainWindow), live
         self._build()
         self._refresh()
 
@@ -88,20 +89,26 @@ class SavePanel(QWidget):
         row_w.setLayout(row)
         lay.addRow("Folder:", row_w)
 
-        self._ed_subject = QLineEdit(self._cfg.subject)
-        self._ed_subject.setPlaceholderText("animal / subject ID")
-        self._ed_subject.editingFinished.connect(self._on_edited)
-        lay.addRow("Subject:", self._ed_subject)
+        self._ed_mouse_id = QLineEdit(self._cfg.mouse_id)
+        self._ed_mouse_id.setPlaceholderText("animal / mouse ID")
+        self._ed_mouse_id.editingFinished.connect(self._on_edited)
+        lay.addRow("Mouse ID:", self._ed_mouse_id)
 
-        self._ed_session = QLineEdit(self._cfg.session)
-        self._ed_session.setPlaceholderText("optional run label")
-        self._ed_session.editingFinished.connect(self._on_edited)
-        lay.addRow("Session:", self._ed_session)
+        self._ed_project = QLineEdit(self._cfg.project)
+        self._ed_project.setPlaceholderText("optional project label")
+        self._ed_project.editingFinished.connect(self._on_edited)
+        lay.addRow("Project:", self._ed_project)
 
         self._ed_template = QLineEdit(self._cfg.template)
         self._ed_template.setToolTip("Tokens: " + "  ".join(TOKENS))
         self._ed_template.editingFinished.connect(self._on_edited)
         lay.addRow("Filename:", self._ed_template)
+
+        self._chk_fov = QCheckBox("Append active FOV name")
+        self._chk_fov.setChecked(self._cfg.append_fov)
+        self._chk_fov.toggled.connect(self._on_edited)
+        lay.addRow("", self._chk_fov)
+        self._update_fov_checkbox()
 
         self._chk_subfolder = QCheckBox("Give each recording its own subfolder")
         self._chk_subfolder.setChecked(self._cfg.subfolder)
@@ -236,15 +243,29 @@ class SavePanel(QWidget):
 
     def _on_edited(self, *_a) -> None:
         self._cfg.folder    = self._ed_folder.text().strip()
-        self._cfg.subject   = self._ed_subject.text().strip()
-        self._cfg.session   = self._ed_session.text().strip()
-        self._cfg.template  = self._ed_template.text().strip() or "{subject}_{date}_{time}"
+        self._cfg.mouse_id  = self._ed_mouse_id.text().strip()
+        self._cfg.project   = self._ed_project.text().strip()
+        self._cfg.template  = (self._ed_template.text().strip()
+                              or DEFAULT_TEMPLATE)
         self._cfg.subfolder = self._chk_subfolder.isChecked()
         self._cfg.split       = self._chk_split.isChecked()
         self._cfg.orca_format = self._cmb_orca_format.currentData()
+        self._cfg.append_fov  = self._chk_fov.isChecked()
         self._sync_drive_combo()
         self._refresh()
         self.settings_changed.emit()
+
+    def _current_fov(self) -> str:
+        """The name to append to the stem right now — empty unless a FOV is
+        active AND the operator opted in, so turning the box on with nothing
+        active is a silent no-op rather than an empty trailing underscore."""
+        return self._active_fov if self._chk_fov.isChecked() else ""
+
+    def _update_fov_checkbox(self) -> None:
+        self._chk_fov.setEnabled(bool(self._active_fov))
+        self._chk_fov.setToolTip(
+            f'Appends "{self._active_fov}" to the filename.' if self._active_fov
+            else "No FOV is active — go to one on the Stage tab first.")
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -257,11 +278,21 @@ class SavePanel(QWidget):
 
     def resolve(self, when: datetime | None = None, *,
                 unique: bool = False) -> Path:
-        return self._cfg.resolve(when, unique=unique)
+        return self._cfg.resolve(when, unique=unique, fov=self._current_fov())
 
     def resolve_dir(self, when: datetime | None = None, *,
                     unique: bool = False) -> Path:
-        return self._cfg.resolve_dir(when, unique=unique)
+        return self._cfg.resolve_dir(when, unique=unique, fov=self._current_fov())
+
+    def set_active_fov(self, name: str) -> None:
+        """The Stage tab's current FOV, or "" once the stage drifts off it —
+        called on the shared display tick (MainWindow.active_fov_name())."""
+        name = name or ""
+        if name == self._active_fov:
+            return
+        self._active_fov = name
+        self._update_fov_checkbox()
+        self._refresh()
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """Data rate of the current acquisition config, for the capacity estimate.

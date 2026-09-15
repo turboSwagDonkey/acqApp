@@ -1,8 +1,9 @@
 """Where a session file goes — the model, and no Qt.
 
-The filename template is operator free text, so `{subject}` alone resolves every
-recording of the day to one path; `resolve(unique=True)` is what stops the
-second truncating the first. `tests/test_save_paths.py` drives this directly.
+The filename template is operator free text, so `{mouse_id}` alone resolves
+every recording of the day to one path; `resolve(unique=True)` is what stops
+the second truncating the first. `tests/test_save_paths.py` drives this
+directly.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from typing import Callable
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEFAULT_SUBDIR = "acq_sessions"
 
-TOKENS = ("{subject}", "{session}", "{date}", "{time}")
+TOKENS = ("{mouse_id}", "{project}", "{date}", "{time}")
 
 
 def sanitize(name: str, fallback: str = "session") -> str:
@@ -109,14 +110,24 @@ def benchmark_drive(root: str, size_bytes: int) -> float | None:
     return written_mb / elapsed if elapsed > 0 else None
 
 
+# Named once: the dataclass default, `stem()`'s fallback for a blank template
+# and the panel's own fallback all have to agree, and three literals could
+# drift apart.
+DEFAULT_TEMPLATE = "{mouse_id}_{date}_{time}"
+
+
 @dataclass
 class SaveConfig:
     """Where a recording goes and what it is named."""
     folder:    str  = ""       # blank -> default_folder()
-    subject:   str  = ""
-    session:   str  = ""
-    template:  str  = "{subject}_{date}_{time}"
+    mouse_id:  str  = ""
+    project:   str  = ""
+    template:  str  = DEFAULT_TEMPLATE
     subfolder: bool = True     # give each recording its own directory
+    # Appended to the resolved stem (before the _NNN uniqueness pass) when a
+    # FOV is active on the Stage tab — see StagePanel.active_fov_name and
+    # MainWindow.active_fov_name(). Empty/no active FOV is a no-op.
+    append_fov: bool = False
     # Split mode: each device in its own native-ish file (TIFF/DCIMG image
     # stacks, one combined CSV for scalar streams, one JSON for settings)
     # instead of one composite .h5 — see resolve_dir(). "dcimg" is Phase 2
@@ -128,19 +139,24 @@ class SaveConfig:
         return Path(self.folder).expanduser() if self.folder.strip() \
             else default_folder()
 
-    def stem(self, when: datetime | None = None) -> str:
-        """Filename stem with tokens substituted (no extension)."""
+    def stem(self, when: datetime | None = None, *, fov: str = "") -> str:
+        """Filename stem with tokens substituted (no extension), plus the
+        active FOV's name appended if `fov` is non-empty — a plain suffix,
+        not a template token, so turning it on needs no template edit."""
         when = when or datetime.now()
-        out = self.template or "{subject}_{date}_{time}"
+        out = self.template or DEFAULT_TEMPLATE
         for tok, val in (
-            ("{subject}", sanitize(self.subject, "subject")),
-            ("{session}", sanitize(self.session, "")),
-            ("{date}",    when.strftime("%Y%m%d")),
-            ("{time}",    when.strftime("%H%M%S")),
+            ("{mouse_id}", sanitize(self.mouse_id, "mouse_id")),
+            ("{project}",  sanitize(self.project, "")),
+            ("{date}",     when.strftime("%Y%m%d")),
+            ("{time}",     when.strftime("%H%M%S")),
         ):
             out = out.replace(tok, val)
         out = re.sub(r"_{2,}", "_", out).strip("_ ")     # tidy empty tokens
-        return sanitize(out, when.strftime("session_%Y%m%d_%H%M%S"))
+        out = sanitize(out, when.strftime("session_%Y%m%d_%H%M%S"))
+        if fov.strip():
+            out = f"{out}_{sanitize(fov)}"
+        return out
 
     def _path_for(self, base: Path, stem: str) -> Path:
         return (base / stem / f"{stem}.h5") if self.subfolder \
@@ -150,7 +166,7 @@ class SaveConfig:
         return base / stem
 
     def _resolve(self, build: Callable[[Path, str], Path],
-                 when: datetime | None, *, unique: bool) -> Path:
+                 when: datetime | None, *, unique: bool, fov: str = "") -> Path:
         """Shared auto-numbering for resolve()/resolve_dir(), which differ
         only in `build` (a `.h5` file vs a session folder): `_001`, `_002`,
         … until `build(base, stem)` doesn't exist. A template without
@@ -159,7 +175,7 @@ class SaveConfig:
         truncation — auto-numbering keeps the Record button working with
         an animal on the rig.
         """
-        stem = self.stem(when)
+        stem = self.stem(when, fov=fov)
         base = self.resolved_folder()
         path = build(base, stem)
         if not unique:
@@ -174,23 +190,24 @@ class SaveConfig:
         return build(base, f"{stem}_{when.strftime('%H%M%S_%f')}")
 
     def resolve(self, when: datetime | None = None, *,
-                unique: bool = False) -> Path:
+                unique: bool = False, fov: str = "") -> Path:
         """Full path of the .h5 file for a recording starting now.
 
         With `unique=True` the returned path does not exist — see
-        `_resolve()`.
+        `_resolve()`. `fov` (the active FOV's name, if any) is appended to
+        the stem — see `stem()`.
         """
-        return self._resolve(self._path_for, when, unique=unique)
+        return self._resolve(self._path_for, when, unique=unique, fov=fov)
 
     def resolve_dir(self, when: datetime | None = None, *,
-                    unique: bool = False) -> Path:
+                    unique: bool = False, fov: str = "") -> Path:
         """Session folder for `split` mode: `<folder>/<stem>/`, holding one
         file per device instead of one composite .h5. Split mode always
         gets its own folder regardless of `subfolder` — several files with
         nowhere to live together is a mess. Same auto-numbering as
         `resolve()` — see `_resolve()`.
         """
-        return self._resolve(self._dir_for, when, unique=unique)
+        return self._resolve(self._dir_for, when, unique=unique, fov=fov)
 
 
 def default_folder() -> Path:

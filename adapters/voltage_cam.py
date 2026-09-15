@@ -16,8 +16,14 @@ from acqApp.adapters.base import (DISP_DS, LEVELS_EVERY, PLOT_HISTORY,
                                  ModuleAdapter, _image_view, _plot)
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
 from acqApp.devices.voltage_cam.led import LedController, MockLedController
-from acqApp.devices.voltage_cam.presets import AcqConfig, DEFAULT_PRESET, PRESET_KEYS, WRITER_MBPS
+from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
+                                                PRESET_KEYS, TRIGGER_MODES,
+                                                WRITER_MBPS)
 from acqApp.devices.voltage_cam.panel import SettingsPanel as CamSettingsPanel
+
+# TRIGGER_MODES[i] rather than a second literal, so this and the panel's
+# combo cannot say different things about how the two modes are spelled.
+_INT_TRIGGER, _EXT_TRIGGER = TRIGGER_MODES[0], TRIGGER_MODES[1]
 
 
 class VoltageCamModule(ModuleAdapter):
@@ -186,18 +192,57 @@ class VoltageCamModule(ModuleAdapter):
         panel turns "100 frames" into seconds with it; nothing records it."""
         return self.panel.get_config().expected_hz
 
-    def cam_trigger_mode(self) -> str | None:
-        """This camera's own trigger setting — a routine's TTL start trigger
-        validates against it, since a free-running camera never sees a frame
-        it didn't already have."""
-        return self.panel.get_config().trigger_mode
-
     def _on_exposure(self, us: float) -> None:
         if self.worker is not None:
             self.worker.set_exposure(us)
 
     # (binning is structural: it only takes effect on the next Start, because the
     # panel locks resolution/binning/trigger for the whole session.)
+
+    # ── what a routine may drive (ModuleHost.set_camera_trigger) ──
+    def set_external_trigger(self, on: bool) -> bool:
+        """Put the camera in External edge (True) or back to Internal
+        (False), restarting live view to apply it if that's actually a
+        change — trigger mode is a start-of-acquisition setting on this
+        camera, not hot-changeable (devices/voltage_cam/acquisition.py sets
+        it right before `start_acquisition()`).
+
+        Returns whether the camera ended up in that mode. `False` if a
+        restart was needed but a recording is already running — refused,
+        unattempted, rather than interrupting it; this module always being
+        loaded when this is called (unlike "no camera at all") is what lets
+        the caller (`main.py`'s `set_camera_trigger` pooling, `None` only
+        for THAT case) tell the two apart. Mirrors `adapters/dmd.py`'s
+        `calibrate()`, the other place in the app that already stops/
+        reconfigures/restarts this camera for a structural setting.
+        """
+        want = _EXT_TRIGGER if on else _INT_TRIGGER
+        if self.panel.get_config().trigger_mode == want:
+            return on
+        if self.win.is_recording():
+            return False
+        was_live = self.win.set_live(False)
+        self.panel.set_trigger_mode(want)
+        self.win.set_live(was_live)
+        return on
+
+    def rearm_trigger(self) -> bool:
+        """Re-gate the external trigger so the next edge is detectable, for a
+        routine taking one recording per edge. False if there is no running
+        worker to ask (nothing is capturing, so there is nothing to re-arm).
+
+        Unlike `set_external_trigger` this is cheap and hot: it restarts only
+        the camera's acquisition, inside the capture thread, leaving the
+        session, the open file and live view alone. It does NOT put the camera
+        into External edge mode — `set_external_trigger` does that once, before
+        the routine starts.
+        """
+        # Both worker classes implement it (the mock as a no-op, for exactly
+        # this parity), so only "nothing is capturing" has to be handled.
+        if self.worker is None:
+            return False
+        self.worker.rearm_trigger()
+        return True
 
     # ── session ──
     def build_session(self, emulate: bool) -> None:
@@ -304,7 +349,6 @@ class VoltageCamModule(ModuleAdapter):
         return {"cam_preset":      cfg.preset_key,
                 "cam_binning":     cfg.binning,
                 "cam_exposure_us": cfg.exposure_us,
-                "cam_trigger":     cfg.trigger_mode,
                 # Placeholder — no frame has settled it yet. Overwritten by
                 # final_metadata(); here so the attribute exists at all if the
                 # app dies mid-recording.

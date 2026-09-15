@@ -70,8 +70,6 @@ class FakeCam:
     def get_all_readout_speeds(self): return ["slow", "fast"]
     def get_readout_speed(self): return "fast"
     def set_readout_speed(self, s): pass
-    def set_trigger_mode(self, m): pass
-    def setup_ext_trigger(self): pass
     def get_frame_timings(self): return _Timings()
     def start_acquisition(self, nframes=None): pass
     def stop_acquisition(self): pass

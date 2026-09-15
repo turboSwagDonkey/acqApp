@@ -114,14 +114,14 @@ EDITS = [
     ("routines",    "cycles",    lambda p: p._spn_cycles.setValue(4),
      lambda p: p.settings.cycles,               4),
     ("routines",    "save mode",
-     lambda p: p._cmb_save.setCurrentIndex(p._cmb_save.findData("per_step")),
-     lambda p: p.settings.save_mode,            "per_step"),
+     lambda p: p._cmb_save.setCurrentIndex(p._cmb_save.findData("per_repeat")),
+     lambda p: p.settings.save_mode,            "per_repeat"),
 ]
 
 SAVE_EDITS = [
-    ("subject",  lambda p: p._ed_subject.setText("m17"),         "m17"),
-    ("template", lambda p: p._ed_template.setText("{subject}_{time}"),
-     "{subject}_{time}"),
+    ("mouse_id", lambda p: p._ed_mouse_id.setText("m17"),        "m17"),
+    ("template", lambda p: p._ed_template.setText("{mouse_id}_{time}"),
+     "{mouse_id}_{time}"),
 ]
 
 

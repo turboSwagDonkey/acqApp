@@ -213,8 +213,11 @@ class DmdModule(ModuleAdapter):
         if not path:
             return None, ""
         try:
-            from acqApp.devices.dmd.calibration import DmdCalibration
-            return DmdCalibration.load(path), ""
+            from acqApp.devices.dmd.calibration import DmdCalibration, flip_y
+            calib = DmdCalibration.load(path)
+            if self.panel is not None and self.panel.settings.roi_flip_y:
+                calib = flip_y(calib)
+            return calib, ""
         except Exception as e:      # noqa: BLE001 — missing, corrupt, or stale
             return None, (f"DMD calibration {Path(path).name} could not be "
                           f"read ({type(e).__name__}) — ROIs can be drawn but "

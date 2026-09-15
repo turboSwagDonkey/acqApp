@@ -37,8 +37,9 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
 
 from acqApp import style
 from acqApp.routines.estimate import clock, estimate, step_seconds
-from acqApp.routines.settings import (Recording, Routine, play_order,
-                                      recording_region_at, recording_run_ids)
+from acqApp.routines.settings import (Recording, Routine, group_region_at,
+                                      play_order, recording_region_at,
+                                      recording_run_ids)
 from acqApp.routines.table import KIND_LABELS, GROUP_TINT, REC_TINT
 
 PX_PER_SEC = 30.0
@@ -101,8 +102,7 @@ def _group_spans(routine: Routine, order: list[int]) -> list[tuple[int, int, int
     spans: list[tuple[int, int, int]] = []
     active: tuple[int, int] | None = None      # (group_index, start_pos)
     for pos, step_i in enumerate(order):
-        gi = next((i for i, g in enumerate(routine.groups)
-                  if g.start <= step_i <= g.end), None)
+        gi = group_region_at(routine, step_i)
         cur = None if active is None else active[0]
         if gi != cur:
             if active is not None:

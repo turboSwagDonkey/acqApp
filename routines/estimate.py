@@ -47,6 +47,11 @@ def step_seconds(step: Step, hz: float | None) -> tuple[float, float]:
     - `wait`: `length`/`unit`, converted to seconds at `hz` if given.
     - `display`/`puff`: instant — nothing to time, the same way a puffer's
       own fire duration was never timed either.
+    - `trigger`: **counted as zero**, though it is the one kind that can take
+      arbitrarily long. How soon an external source sends its edge is not ours
+      to know, and guessing would be worse than plainly excluding it — so a
+      routine built on trigger steps estimates only the capturing it does
+      between them, and always finishes later than the figure shown.
     """
     if step.kind == "move":
         return max(0.0, step.settle_s), 0.0
@@ -74,7 +79,8 @@ def estimate(routine: Routine, hz: float | None = None) -> Estimate:
         frames=frames * cycles,
         moves=sum(1 for i in order if routine.steps[i].kind == "move"
                   and (routine.steps[i].x_um is not None
-                       or routine.steps[i].y_um is not None)),
+                       or routine.steps[i].y_um is not None
+                       or routine.steps[i].z_um is not None)),
         lit=sum(1 for i in order if routine.steps[i].kind == "display"
                and routine.steps[i].pattern),
         hz=hz if hz and hz > 0 else None,

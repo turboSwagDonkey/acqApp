@@ -24,7 +24,7 @@ from _harness import Report
 from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
-                                            deshear, fit_axes,
+                                            deshear, fit_axes, flip_y,
                                             holdout_error,
                                             offset_stripe, stripe_sweep)
 
@@ -135,6 +135,26 @@ def main() -> int:
     r.check(d[0] < 0,
             f"control: that transform really does run DMD +x towards camera -x "
             f"({d[0]:+.0f} px), so a sign error would have been caught")
+
+    # ── 2b. the manual Y-flip (DmdSettings.roi_flip_y) mirrors DMD rows only ──
+    # A rig-side correction, not a re-fit — so this holds it to plain algebra
+    # rather than another synthetic-camera round trip: flip_y's mapping at
+    # DMD row y must agree with the ORIGINAL's at row (h-1-y), exactly.
+    cf = flip_y(c)
+    r.check(cf.dmd_size == c.dmd_size and cf.cam_size == c.cam_size,
+            "flip_y keeps both recorded sizes — only the mapping's sense "
+            "changes")
+    probe = np.array([[10.0, 20.0], [DW - 5.0, DH - 5.0], [DW / 2, DH / 4]])
+    mirrored = probe.copy()
+    mirrored[:, 1] = (DH - 1) - probe[:, 1]
+    got = apply_transform(cf.dmd_to_cam, probe)
+    want = apply_transform(c.dmd_to_cam, mirrored)
+    r.check(float(np.abs(got - want).max()) < 1e-6,
+            "flip_y(calib) at DMD row y lands where calib itself lands at "
+            "row (h-1-y)")
+    r.check(float(np.abs(flip_y(cf).cam_to_dmd - c.cam_to_dmd).max()) < 1e-9,
+            "control: flipping twice is the identity — a pure mirror, not a "
+            "shift hiding as one")
 
     # CONTROL: vignetting must not move the answer. It ate the previous method.
     c_flat = run(make_camera(M, rng, vignette=False))

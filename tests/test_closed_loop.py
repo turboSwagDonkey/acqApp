@@ -272,8 +272,8 @@ def check_app(r: Report, app, tmp) -> int:
     mod = {m.key: m for m in win._modules}
 
     win._save_panel._ed_folder.setText(str(out))
-    win._save_panel._ed_subject.setText("loop")
-    win._save_panel._ed_template.setText("{subject}_{date}_{time}")
+    win._save_panel._ed_mouse_id.setText("loop")
+    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     win._save_panel._on_edited()
 
     panel = mod["closed_loop"].panel

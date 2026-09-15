@@ -2,7 +2,7 @@
 Save-path resolution and the no-overwrite guarantee (audit #2).
 
 The scenario this exists to prevent: the filename template is free text, so an
-operator who sets it to `{subject}` gets the same path for every recording of
+operator who sets it to `{mouse_id}` gets the same path for every recording of
 the day — and the HDF5 writer used to open with mode "w". The second recording
 silently truncated the first, with no error and no way back.
 
@@ -33,31 +33,43 @@ WHEN = datetime(2026, 8, 12, 14, 30, 5)
 
 def check_stem(r: Report) -> None:
     """Token substitution and sanitisation — the inputs are operator free text."""
-    cfg = SaveConfig(subject="m17", session="run2",
-                     template="{subject}_{session}_{date}_{time}")
+    cfg = SaveConfig(mouse_id="m17", project="run2",
+                     template="{mouse_id}_{project}_{date}_{time}")
     r.check(cfg.stem(WHEN) == "m17_run2_20260812_143005",
             f"all four tokens substituted (got {cfg.stem(WHEN)!r})")
 
-    # A path separator in the subject would otherwise create a directory, or
+    # A path separator in the mouse ID would otherwise create a directory, or
     # escape the save folder entirely.
-    cfg = SaveConfig(subject=r"m17/../x", template="{subject}")
+    cfg = SaveConfig(mouse_id=r"m17/../x", template="{mouse_id}")
     r.check("/" not in cfg.stem(WHEN) and "\\" not in cfg.stem(WHEN),
-            f"path separators sanitised out of the subject "
+            f"path separators sanitised out of the mouse ID "
             f"(got {cfg.stem(WHEN)!r})")
     r.check(sanitize("") == "session" and sanitize("  ..  ") == "session",
             "empty/degenerate names fall back rather than producing ''")
 
     # An unfilled token must not leave a dangling separator.
-    cfg = SaveConfig(subject="m17", session="", template="{subject}_{session}")
+    cfg = SaveConfig(mouse_id="m17", project="", template="{mouse_id}_{project}")
     r.check(cfg.stem(WHEN) == "m17", f"empty token tidied (got {cfg.stem(WHEN)!r})")
+
+    # The active FOV name is a plain suffix, not a template token — opt-in via
+    # `fov=`, appended after everything else, sanitised the same way.
+    cfg = SaveConfig(mouse_id="m17", template="{mouse_id}")
+    r.check(cfg.stem(WHEN) == cfg.stem(WHEN, fov=""),
+            "no FOV is a no-op — today's plain stem, unchanged")
+    r.check(cfg.stem(WHEN, fov="window1") == "m17_window1",
+            f"a FOV name is appended after the resolved stem "
+            f"(got {cfg.stem(WHEN, fov='window1')!r})")
+    r.check("/" not in cfg.stem(WHEN, fov="a/b") and cfg.stem(WHEN, fov="a/b")
+            == "m17_a_b",
+            f"the FOV name is sanitised too (got {cfg.stem(WHEN, fov='a/b')!r})")
 
 
 def check_unique(r: Report, tmp: Path) -> None:
     """resolve(unique=True) must never name a file that already exists."""
     for subfolder in (True, False):
         base = tmp / f"sub{int(subfolder)}"
-        cfg = SaveConfig(folder=str(base), subject="m17",
-                         template="{subject}", subfolder=subfolder)
+        cfg = SaveConfig(folder=str(base), mouse_id="m17",
+                         template="{mouse_id}", subfolder=subfolder)
         label = "subfolder" if subfolder else "flat"
 
         first = cfg.resolve(WHEN, unique=True)

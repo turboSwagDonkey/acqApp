@@ -20,11 +20,31 @@ from PyQt6.QtCore import pyqtSignal
 from acqApp.acq.worker import PullWorker, paced
 from .presets import AcqConfig, WRITER_MBPS
 
-# UI trigger label → pylablib's high-level trigger mode.
+# UI trigger label → pylablib's high-level trigger mode. "External edge" is
+# DCAM's TRIGGER SOURCE=MASTER PULSE, not its plain EXTERNAL: the pulse here is
+# a single START edge, and EXTERNAL captures exactly one frame per edge — one
+# static frame and then nothing, the symptom this started as. Capture runs off
+# the camera's own master-pulse generator, which that edge starts.
 _TRIGGER_MODE: dict[str, str] = {
     "Internal (free-running)": "int",
-    "External edge":           "ext",
+    "External edge":           "master_pulse",
 }
+
+# Master-pulse generator config, set explicitly rather than trusting whatever
+# the camera was last left at — the point of arming this from the routine, not
+# the operator's memory. MODE=START is load-bearing: CONTINUOUS (the camera's
+# own default) free-runs off INTERVAL and never consults the line at all, which
+# is what made a TTL routine start itself ~100 ms after Start.
+#
+# Enums must be written as NUMERIC codes — DCAMAttribute.set_value passes the
+# value straight to the C library, so a string raises ValueError, and
+# `enum_as_str` is read-only (set_attribute_value does not accept it).
+_TRIG_SRC_PROP        = "TRIGGER SOURCE"            # 1 INT 2 EXT 3 SW 4 MASTER
+_MP_TRIG_SRC_PROP     = "MASTER PULSE TRIGGER SOURCE"   # 1 EXTERNAL 2 SOFTWARE
+_MP_MODE_PROP         = "MASTER PULSE MODE"         # 1 CONTINUOUS 2 START 3 BURST
+_MP_INTERVAL_PROP     = "MASTER PULSE INTERVAL"     # seconds
+_MP_TRIG_SRC_EXTERNAL = 1
+_MP_MODE_START        = 2
 
 # Long enough not to busy-poll a free-running camera, short enough that Stop
 # stays responsive; and how often to repeat the complaint when none arrives.
@@ -100,6 +120,7 @@ class OrcaFireWorker(PullWorker):
         self._ext_cam      = cam
         self._exp_lock     = threading.Lock()
         self._pending_exp: float | None = None
+        self._pending_rearm = False     # see rearm_trigger()
         self._achievable_hz: float = 0.0
         self._skipped: int = 0
         self._last_exp_error: str | None = None
@@ -122,6 +143,21 @@ class OrcaFireWorker(PullWorker):
         self._config.exposure_us = us
         with self._exp_lock:
             self._pending_exp = us
+
+    def rearm_trigger(self) -> None:
+        """Queue a stop/start of acquisition, so the NEXT external edge is
+        detectable again — in MASTER PULSE/START mode the first edge starts the
+        stream and further edges do nothing until acquisition is restarted, so
+        a routine recording once per edge has to restart it between recordings.
+
+        Queued, not done here: this is called from the Qt thread, and the DCAM
+        calls belong to the capture thread that owns the handle. So the caller
+        cannot treat it as complete on return — the loop acts on it when its
+        own frame wait next expires, which is what `routines/engine.py`'s
+        `TRIGGER_DRAIN_S` accounts for.
+        """
+        with self._exp_lock:
+            self._pending_rearm = True
 
     @property
     def achievable_hz(self) -> float:
@@ -368,11 +404,39 @@ class OrcaFireWorker(PullWorker):
             mode = _TRIGGER_MODE.get(cfg.trigger_mode, "int")
             try:
                 cam.set_trigger_mode(mode)
-                if mode == "ext":
-                    cam.setup_ext_trigger()
+                if mode == "master_pulse":
+                    # invert=True is TRIGGER POLARITY=POSITIVE, i.e. start on
+                    # the RISING edge — when the trigger goes on. pylablib's
+                    # default (invert=False) is POLARITY=NEGATIVE, which starts
+                    # on the falling edge instead, so the recording only began
+                    # when the trigger was switched OFF.
+                    cam.setup_ext_trigger(invert=True)
+                    cam.set_attribute_value(
+                        _MP_TRIG_SRC_PROP, _MP_TRIG_SRC_EXTERNAL,
+                        error_on_missing=False)
+                    cam.set_attribute_value(
+                        _MP_MODE_PROP, _MP_MODE_START,
+                        error_on_missing=False)
+                    # Leave the generator free to tick as fast as the sensor can
+                    # be read: in START mode its INTERVAL caps the frame rate,
+                    # and the camera's own default (0.1 s) would pin the whole
+                    # recording to 10 Hz regardless of the preset. Too short is
+                    # safe — the camera simply captures as fast as it can.
+                    cam.set_attribute_value(
+                        _MP_INTERVAL_PROP, cam.get_frame_period(),
+                        error_on_missing=False)
             except Exception as e:
+                # Deliberately not "falling back to internal": set_trigger_mode
+                # may already have taken effect above, and claiming otherwise
+                # sent the last round of debugging in the wrong direction.
+                src = "?"
+                try:
+                    src = cam.get_attribute_value(_TRIG_SRC_PROP,
+                                                  enum_as_str=True)
+                except Exception:
+                    pass
                 print(f"[voltage_cam] trigger setup failed ({e}); "
-                      "using camera default (internal)")
+                      f"camera left at TRIGGER SOURCE={src}")
 
             # --- capture loop ---
             # pylablib's default 100 frames is at once too big at full frame
@@ -397,6 +461,28 @@ class OrcaFireWorker(PullWorker):
                     with self._exp_lock:
                         pending = self._pending_exp
                         self._pending_exp = None
+                        rearm = self._pending_rearm
+                        self._pending_rearm = False
+                    if rearm:
+                        # Stop/start is the only way to re-gate the master-pulse
+                        # generator; see rearm_trigger(). Buffers are rebuilt
+                        # with the same nframes, so the loop below is unaffected.
+                        try:
+                            cam.stop_acquisition()
+                            cam.start_acquisition(nframes=nframes)
+                            # Both mirror camera counters that restart from 0
+                            # here. Leaving them would make the next status
+                            # tick report a large NEGATIVE rate (acquired minus
+                            # a pre-restart total) and a phantom drop.
+                            self._skipped = 0
+                            n_acquired = 0
+                        except Exception as e:      # noqa: BLE001
+                            # Report and carry on: the routine's own trigger
+                            # timeout is what turns "never re-armed" into a
+                            # pause, and killing the capture thread here would
+                            # take the whole session down with it.
+                            print(f"[voltage_cam] trigger re-arm failed "
+                                  f"({type(e).__name__}: {e})")
                     if pending is not None:
                         try:
                             cam.set_exposure(pending * 1e-6)
@@ -525,6 +611,13 @@ class MockCameraWorker(PullWorker):
     def set_exposure(self, us: float) -> None:
         """No-op on the mock worker (kept for API parity with OrcaFireWorker)."""
         self._config.exposure_us = us
+
+    def rearm_trigger(self) -> None:
+        """No-op on the mock worker: it free-runs, so there is nothing to
+        re-gate. A `trigger` step therefore ends on the mock's own next frame
+        — the routine stays exercisable end to end without the rig, which is
+        the point of the mock."""
+        return None
 
     def _run(self) -> None:
         self._stop = False

@@ -1,13 +1,21 @@
 """Experiment routines — the protocol, and no Qt.
 
 A routine is a list of atomic steps executed in order: move, start
-displaying, wait, puff. A **Recording** is a separate, draggable bracket
-over a contiguous range of steps — "the camera is capturing for these" —
-independent of what those steps individually do. `Step`, `Recording` and
-`Routine` are what persists; `validate()` is what refuses a run *before*
-it starts.
+displaying, wait, puff, wait for an external trigger. A **Recording** is a
+separate, draggable bracket over a contiguous range of steps — "the camera
+is capturing for these" — independent of what those steps individually do.
+`Step`, `Recording` and `Routine` are what persists; `validate()` is what
+refuses a run *before* it starts.
 
-Four kinds, one step class (`KINDS`): a step is one thing regardless of
+**One recording per external edge** is a `trigger` step inside a repeat
+group, with the Recording bracket on the steps AFTER it: each repeat
+re-arms the camera, waits for its edge, and only then opens the file. With
+`save_mode="per_repeat"` that is a folder of one file per edge. The bracket
+must not cover the trigger step itself — `validate()` refuses that, since
+the file would be open while waiting, and re-arming restarts the camera's
+acquisition underneath it.
+
+Five kinds, one step class (`KINDS`): a step is one thing regardless of
 which fields it uses, the same way `x_um=None` already meant "leave this
 axis alone" before this redesign — a field a step's kind doesn't use just
 stays at its default, the table renders it as "—", and nothing here reads
@@ -35,32 +43,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from acqApp.devices.voltage_cam.presets import TRIGGER_MODES
-
 UNITS = ("frames", "seconds")
-KINDS = ("move", "display", "wait", "puff")
+KINDS = ("move", "display", "wait", "puff", "trigger")
 
-# key -> label. `single` keeps the one-file-per-session invariant; `per_step`
-# trades it for a folder, and pays for it in acq/writer attributes (see engine).
+# key -> label. `single` keeps the one-file-per-session invariant; the other
+# two trade it for a folder of files, rolled by `adapters/routines.py` at
+# every RecordingRun boundary (`per_repeat`) or only when the covering Group
+# actually changes (`per_group`, coarser — repeats of the same Group share a
+# file). Provenance (which group/repeat/cycle) lives in each file's own
+# metadata (RecordingRun.attrs()), not the filename.
 SAVE_MODES: dict[str, str] = {
-    "single":   "One file for the whole routine",
-    "per_step": "One file per step",
+    "single":     "One file for the whole routine",
+    "per_repeat": "One file per repeat (each recording run)",
+    "per_group":  "One file per group",
 }
 
 # key -> label. `manual` is the button; `ttl` arms the routine on Start and
 # holds it there until the voltage camera reports a frame it did not have at
-# arm time — the camera's own "External edge" trigger mode is what makes that
-# frame arrive on a real TTL pulse rather than on its own clock, so nothing
-# here reads a DAQ line: the camera already IS the TTL input.
+# arm time — `adapters/routines.py` puts the camera in External edge mode
+# itself before arming (ModuleHost.set_camera_trigger), so nothing here
+# reads a DAQ line: the camera already IS the TTL input.
 START_TRIGGERS: dict[str, str] = {
     "manual": "Manual — click Start",
     "ttl":    "TTL — waits for the camera's externally-triggered frame",
 }
-
-# The camera setting a "ttl" start trigger depends on. TRIGGER_MODES[1] rather
-# than a second literal, so the two cannot say different things about what
-# "External edge" is spelled as.
-CAM_EXT_TRIGGER = TRIGGER_MODES[1]
 
 # A settle a routine may ask for. Not a safety limit — an obviously-wrong entry
 # (3600 s between steps) is worth catching at validation.
@@ -93,10 +99,12 @@ class Step:
     # move only
     x_um:     float | None = None
     y_um:     float | None = None
-    fov:      str = ""                # name of the saved FOV x_um/y_um came
-                                       # from, purely a display label — "" once
-                                       # either axis is hand-edited, since the
-                                       # numbers may no longer match that spot.
+    z_um:     float | None = None     # focus; None on a rig with no Z stage
+    fov:      str = ""                # name of the saved FOV x_um/y_um(/z_um)
+                                       # came from, purely a display label —
+                                       # "" once any axis is hand-edited, since
+                                       # the numbers may no longer match that
+                                       # spot.
     settle_s: float = 0.25            # after arrival, before the step ends
     # display only — "" means STOP displaying (light off), not "leave alone":
     # unlike the old composite Step, a Display step is a stated action, so
@@ -111,7 +119,8 @@ class Step:
         if self.kind == "move":
             where = (f"FOV {self.fov}" if self.fov else
                      ", ".join(f"{a}={v:.0f}um" for a, v in
-                               (("x", self.x_um), ("y", self.y_um))
+                               (("x", self.x_um), ("y", self.y_um),
+                                ("z", self.z_um))
                                if v is not None) or "no change")
             body = f"move to {where}"
         elif self.kind == "display":
@@ -119,6 +128,8 @@ class Step:
                     else "stop displaying")
         elif self.kind == "wait":
             body = f"wait {self.length:g} {self.unit}"
+        elif self.kind == "trigger":
+            body = "wait for camera trigger"
         else:
             body = "puff"
         return f"{self.label} ({body})" if self.label else body
@@ -188,6 +199,16 @@ def recording_region_at(routine: "Routine", step_index: int) -> int | None:
     drift apart."""
     return next((i for i, r in enumerate(routine.recordings)
                 if r.start <= step_index <= r.end), None)
+
+
+def group_region_at(routine: "Routine", step_index: int) -> int | None:
+    """Which `routine.groups` range (its index) covers `step_index`, or None
+    if no Group does. Same shape as `recording_region_at` — shared by
+    `adapters/routines.py`'s per-group save mode (repeats of the SAME Group
+    share one output file) and by `routines/timeline.py`, which used to do
+    this lookup inline."""
+    return next((i for i, g in enumerate(routine.groups)
+                if g.start <= step_index <= g.end), None)
 
 
 def recording_run_ids(routine: "Routine", order: list[int]) -> list[int | None]:
@@ -303,6 +324,8 @@ class Routine:
         except (TypeError, ValueError):
             cycles = 1
         mode = d.get("save_mode")
+        if mode == "per_step":            # retired name; closest equivalent
+            mode = "per_repeat"
         trigger = d.get("start_trigger")
         return cls(name=str(d.get("name") or "routine"), steps=steps,
                    groups=groups, recordings=recordings, cycles=cycles,
@@ -396,11 +419,12 @@ class RigLimits:
     """
     x_um:            tuple[float, float] | None = None    # stage soft limits
     y_um:            tuple[float, float] | None = None
+    z_um:            tuple[float, float] | None = None    # None: no Z stage
     has_stage:       bool = False
+    has_z:           bool = False   # the loaded stage has a Z (focus) axis
     has_dmd:         bool = False
     has_puffer:      bool = False
     has_frames:      bool = False   # a camera is loaded, so frames() ticks
-    cam_trigger_mode: str = ""      # the loaded camera's OWN trigger setting
 
 
 def _limit_problem(axis: str, value: float,
@@ -428,14 +452,9 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         out.append(f"unknown save mode {routine.save_mode!r}")
     if routine.start_trigger not in START_TRIGGERS:
         out.append(f"unknown start trigger {routine.start_trigger!r}")
-    elif routine.start_trigger == "ttl":
-        if not rig.has_frames:
-            out.append("start trigger is TTL, but no camera is loaded to "
-                       "receive it")
-        elif rig.cam_trigger_mode != CAM_EXT_TRIGGER:
-            out.append(f"start trigger is TTL, but the camera's trigger is "
-                       f"set to {rig.cam_trigger_mode or 'unknown'!r} — set "
-                       f"it to {CAM_EXT_TRIGGER!r} on the Voltage cam page")
+    elif routine.start_trigger == "ttl" and not rig.has_frames:
+        out.append("start trigger is TTL, but no camera is loaded to "
+                   "receive it")
 
     for i, s in enumerate(routine.steps, start=1):
         at = f"step {i}"
@@ -443,7 +462,7 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
             out.append(f"{at}: unknown kind {s.kind!r}")
             continue
         if s.kind == "move":
-            if s.x_um is not None or s.y_um is not None:
+            if s.x_um is not None or s.y_um is not None or s.z_um is not None:
                 if not rig.has_stage:
                     out.append(f"{at}: moves the stage, which is not loaded")
                 else:
@@ -454,6 +473,14 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
                         p = _limit_problem(axis, v, lim)
                         if p:
                             out.append(f"{at}: {p}")
+                    if s.z_um is not None:
+                        if not rig.has_z:
+                            out.append(f"{at}: moves Z, but this rig has no "
+                                      f"Z stage")
+                        else:
+                            p = _limit_problem("z", s.z_um, rig.z_um)
+                            if p:
+                                out.append(f"{at}: {p}")
             if s.settle_s < 0:
                 out.append(f"{at}: settle = {s.settle_s:g} s; must not be "
                            f"negative")
@@ -480,6 +507,21 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         elif s.kind == "puff":
             if not rig.has_puffer:
                 out.append(f"{at}: uses the puffer, which is not loaded")
+        elif s.kind == "trigger":
+            if not rig.has_frames:
+                # The edge is only ever observable as frames appearing, so
+                # with no camera there is nothing that could end this step.
+                out.append(f"{at}: waits for the camera's trigger, but no "
+                           f"camera is loaded")
+            if recording_region_at(routine, i - 1) is not None:
+                # Two reasons, both hard. The point of the step is that the
+                # recording starts ON the edge — inside a bracket the file is
+                # already open while it waits, which is backwards. And arming
+                # restarts the camera's acquisition, which must not happen
+                # underneath an open file. Put the bracket after this step.
+                out.append(f"{at}: waits for a trigger inside a recording "
+                           f"bracket; move the bracket to start after this "
+                           f"step, so the recording begins on the edge")
 
     n = len(routine.steps)
     spans: list[tuple[int, int]] = []

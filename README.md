@@ -175,9 +175,11 @@ code.
 
 **Start** begins live acquisition + preview. **Record** streams every sample to
 one HDF5 file per session. The **Save** tab picks the destination drive and
-folder, names the file from a token template (`{subject}`, `{session}`,
-`{date}`, `{time}`), and shows how many minutes the free space is worth at the
-current data rate. It also shows the exact path the next recording will get:
+folder, names the file from a token template (`{mouse_id}`, `{project}`,
+`{date}`, `{time}`, plus the active FOV's name appended when "Append active
+FOV name" is checked and a saved FOV is currently active on the Stage tab),
+and shows how many minutes the free space is worth at the current data rate.
+It also shows the exact path the next recording will get:
 
 - A template that resolves to an existing file is **auto-numbered** (`_001`,
   `_002`) rather than overwriting it, and the numbered name is what the preview
@@ -272,8 +274,8 @@ for the same by setting `own_window` (`adapters/base.py`); the shell never
 learns which module did.
 
 A **routine** is a list of **atomic steps** executed in order — Move the
-stage, start Displaying a pattern, Wait, Puff — repeated for as many cycles
-as the operator asks. It is the first feature in the app whose whole purpose
+stage, start Displaying a pattern, Wait, Puff, wait for an external
+Trigger — repeated for as many cycles as the operator asks. It is the first feature in the app whose whole purpose
 is to **actuate**, which is why it is shaped the way it is.
 
 A **Recording** is a separate, draggable bracket over a contiguous range of
@@ -308,7 +310,7 @@ executor) and `routines/estimate.py`, all Qt-free; the panel is
 a repeat group as one bracket, recordings as separate bars, one per
 repeat, never merged. **Every actuation reaches the engine as a callable**, the way the DMD calibration
 takes `project`/`grab`, so a whole routine — move, display, wait, puff,
-fault, resume, and when a Recording bracket opens and closes — is driven
+trigger, fault, resume, and when a Recording bracket opens and closes — is driven
 against fakes on a fake clock in `tests/test_routines.py` before anything on
 the rig moves. `adapters/routines.py` is the only part that touches a real
 stage or projector, and it reaches them through
@@ -324,21 +326,58 @@ left running. (`ModuleHost.set_recording`, the twin of the `set_live` the DMD
 calibration uses to turn the live view on for itself.)
 
 **Start trigger: manual, or TTL through the camera.** Manual is Start doing
-the above right away. TTL opens the recording and *arms* the routine instead —
-step 1 does not begin until the voltage camera reports a frame it did not
-have at arm time. No DAQ line is read for this: the camera's own trigger
-setting (Voltage cam tab, "External edge") is what makes that frame arrive on
-a real pulse into the camera's TTL input rather than on the camera's own
-clock, so the camera already **is** the TTL input the routine waits on.
-Validation refuses a TTL start trigger up front if no camera is loaded, or if
-the loaded one is not actually set to External edge — arming against a
-free-running camera would wait forever, since it never produces a frame it
-didn't already have. The panel shows **ARMED — waiting for the camera's TTL
-trigger** while it waits; Abort cancels the arm cleanly, since nothing has
-moved or lit up yet.
+the above right away. TTL opens the recording and *arms* the routine instead
+— step 1 does not begin until the voltage camera reports a frame it did not
+have at arm time. `adapters/routines.py` puts the camera in External edge
+mode itself before arming (`ModuleHost.set_camera_trigger`, restarting live
+view to apply it if needed — mirroring the DMD calibration's own stop/
+reconfigure/restart dance), rather than trusting the operator to have
+already set it on the Voltage cam tab, where it can silently drift back to
+Internal between being set and the routine actually arming. That restart is
+refused rather than interrupting a recording already in progress.
+Validation refuses a TTL start trigger up front if no camera is loaded. The
+panel shows **ARMED — waiting for the camera's TTL trigger** while it waits;
+Abort cancels the arm cleanly, since nothing has moved or lit up yet.
+
+**How the camera is actually gated (measured, 2026-09-14).** DCAM's
+`TRIGGER SOURCE` for External edge is `MASTER PULSE`, not plain `EXTERNAL`:
+`EXTERNAL` captures exactly one frame per edge, so a single start pulse gives
+one static frame and then nothing. Capture runs off the camera's own
+master-pulse generator instead, configured as `MASTER PULSE TRIGGER SOURCE =
+EXTERNAL` and — the part that matters — **`MASTER PULSE MODE = START`**. The
+camera's default `CONTINUOUS` free-runs that generator off its own interval
+and never consults the line at all, which read as "the trigger is off but the
+app acts like it's on". `MASTER PULSE INTERVAL` is set from the frame period,
+because in `START` mode it caps the frame rate (the 0.1 s default pins a
+recording to 10 Hz). Polarity is `POSITIVE` via
+`setup_ext_trigger(invert=True)` — pylablib's `invert=False` default is
+`NEGATIVE`, i.e. start on the trigger going *off*. All four verified against
+the real camera with the line toggled by hand: zero frames while low, first
+frame ~20 ms after it went high. Note these are enums that must be written as
+**numeric codes** — `set_attribute_value` passes the value straight to the C
+library, so a string raises `ValueError`, and `enum_as_str` is read-only.
+
+**One recording per external edge: the `Trigger` step.** For "100 recordings
+at FOV 1, each started by an edge and lasting *x* seconds", put a **Trigger**
+step and a Wait in a repeat group of 100, and draw the Recording bracket over
+the **Wait alone**. Each repeat re-arms the camera, holds in **WAITING** until
+its edge lands, then opens the file — so with `save_mode="per_repeat"` you get
+one file per edge. The bracket must not cover the Trigger step itself;
+validation refuses that, because the file would otherwise be open while
+waiting, and re-arming restarts the camera's acquisition underneath it.
+Re-arming is necessary because `START` mode **latches**: the first edge starts
+the stream and later edges do nothing until acquisition is restarted
+(`ModuleHost.rearm_camera_trigger`, queued onto the capture thread). Since
+that queueing is asynchronous, frames already in flight would otherwise read
+as an edge, so an arriving frame only counts after `TRIGGER_DRAIN_S` (1.5 s,
+comfortably over the capture loop's 0.5 s frame-wait). That window is also
+why an edge arriving while the routine is busy elsewhere is **ignored** rather
+than latched — the operator's call. Pause works while WAITING, since an edge
+may never come. Between edges the camera produces no frames at all, so **live
+view is black while waiting** — inherent to gating capture on the line.
 
 **The step list is edited through widgets, not words.** Kind is a drop-down
-(Move/Display/Wait/Puff); Length/Unit are only editable on a Wait row and
+(Move/Display/Wait/Puff/Trigger); Length/Unit are only editable on a Wait row and
 Settle only on a Move row — every other row renders them as **"—"** rather
 than a number that means nothing for that kind. A Move step's target reads
 **no change** on an axis it should not move, rather than being blank, which
@@ -376,13 +415,14 @@ settled, since a lit panel travelling across the sample is a stimulus nobody
 asked for; and the module set cannot change while a routine runs, since the
 routine holds an index into it.
 
-> `save_mode = per_step` (a folder of one file per recording, instead of one
-> file for the routine) is modelled, validated and carried into
-> `RecordingRun.attrs()` — every recording names the session origin and its
-> own t0 on the same clock, so a folder can be reassembled onto one timebase.
-> **The rolling itself is not built yet**; both modes currently produce one
-> session file with `/routine` boundaries in it. A further split — one file
-> per Recording bracket, in its own subfolder — is a separate, later change.
+> `save_mode = per_repeat`/`per_group` (2026-09-14) roll to a fresh file at a
+> `RecordingRun` boundary — every repeat, or only when the covering Group
+> actually changes — via `MainWindow.roll_recording()`, a plain stop-then-
+> start of the recorder. Provenance (which group/repeat/cycle) travels in
+> each file's own metadata (`RecordingRun.attrs()`, naming the routine's
+> start on the shared clock so a folder of files reassembles onto one
+> timebase), not the filename — the existing `_NNN` auto-numbering already
+> gives distinct, chronologically-sortable names for free.
 
 ### Closed loop
 

@@ -32,7 +32,7 @@ PUPIL_FIT_STREAMS = ["pupil_x", "pupil_y", "pupil_major", "pupil_minor",
 
 PUPIL_THRESHOLD = 57                    # not the default, so a stuck one shows
 
-CONFIG_ATTRS = ["created", "emulated", "modules", "subject", "cam_exposure_us",
+CONFIG_ATTRS = ["created", "emulated", "modules", "mouse_id", "cam_exposure_us",
                 "wheel_rate_hz", "pupil_rate_hz", "stage_port", "dmd_on_time_ms",
                 "puffer_channel", "puffer_duration_s",
                 # A pupil trace without the threshold that produced it is not
@@ -72,8 +72,8 @@ def main() -> int:
     mod = {m.key: m for m in win._modules}
 
     win._save_panel._ed_folder.setText(str(out))
-    win._save_panel._ed_subject.setText("smoke")
-    win._save_panel._ed_template.setText("{subject}_{date}_{time}")
+    win._save_panel._ed_mouse_id.setText("smoke")
+    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     win._save_panel._on_edited()
     r.check(win._save_panel.writable_error() is None, "save target is writable")
 

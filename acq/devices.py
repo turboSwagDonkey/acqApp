@@ -145,7 +145,8 @@ class StageTarget(Protocol):
     signal exists — `RoutineHooks.moving` is the seam it plugs into.
     """
 
-    def move_to(self, x_um: float | None, y_um: float | None) -> None:
+    def move_to(self, x_um: float | None, y_um: float | None,
+               z_um: float | None = None) -> None:
         """Move; None leaves that axis where it is."""
 
     def stop_motion(self) -> None:
@@ -154,6 +155,12 @@ class StageTarget(Protocol):
     def limits_um(self) -> tuple[tuple[float, float] | None,
                                  tuple[float, float] | None]:
         """(x, y) soft limits, so a routine is validated before it starts."""
+
+    def has_z(self) -> bool:
+        """Whether this rig has a Z (focus) axis a routine may move."""
+
+    def z_limits_um(self) -> tuple[float, float] | None:
+        """Z soft limits, or None on a rig with no Z stage."""
 
 
 @runtime_checkable
@@ -284,6 +291,37 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def set_camera_trigger(self, key: str, on: bool) -> bool | None:
+        """Switch module `key`'s camera into (True) or out of (False)
+        External edge trigger mode, restarting live view itself if that
+        requires it. Returns whether it ended up in that mode (`False`
+        means a restart was needed but a recording is already running —
+        refused, unattempted); `None` only if the module is not loaded or
+        has no such notion at all, which a caller needs to tell apart from
+        a live refusal.
+
+        For a routine's "TTL" start trigger and for any `trigger` step
+        (`adapters/routines.py`), which command this themselves rather than
+        trusting the operator to have set it beforehand — a mode that drifted
+        back to Internal between being set and the routine arming would
+        otherwise wait forever.
+        """
+        ...
+
+    def rearm_camera_trigger(self, key: str) -> bool | None:
+        """Re-gate module `key`'s external trigger so the NEXT edge is
+        detectable. True if asked for, False if there is no running worker
+        to ask, None if the module is not loaded or has no such notion.
+
+        For a routine taking one recording per edge (`routines/settings.py`'s
+        `trigger` step): the camera latches, so without this only the first
+        edge of a run would ever be seen. Cheap and hot, unlike
+        `set_camera_trigger` — it restarts the camera's acquisition inside its
+        own capture thread and leaves the session, the open file and live view
+        alone. Asynchronous: True means queued, not applied.
+        """
+        ...
+
     def stage_target(self) -> Any:
         """The loaded module a routine may move, or None.
 
@@ -315,17 +353,6 @@ class ModuleHost(Protocol):
         """
         ...
 
-    def cam_trigger_mode(self) -> str | None:
-        """The loaded voltage camera's own trigger setting, or None.
-
-        Pooled like `frame_rate_hz`: a routine's TTL start trigger is only
-        real if the camera is actually configured for "External edge" —
-        `routines/settings.py`'s `validate()` reads this to refuse a TTL
-        routine armed against a free-running camera, which would never see a
-        frame it didn't already have.
-        """
-        ...
-
     def latest_frame(self, key: str) -> Any:
         """The newest frame from another module's camera, or None.
 
@@ -337,5 +364,28 @@ class ModuleHost(Protocol):
 
         Only the newest frame, never a grab: this must not command a camera,
         because the operator decides when the DMD is all-on.
+        """
+        ...
+
+    def active_fov_name(self) -> str:
+        """The name of the FOV the stage is currently sitting at, or "" if
+        none is active or no stage is loaded.
+
+        For the Save panel's "append active FOV name" option — reached
+        through the host so `saving/` never has to know the stage exists.
+        """
+        ...
+
+    def roll_recording(self) -> bool:
+        """Close the current recording and immediately open a new one;
+        returns whether the new one actually started.
+
+        For an experiment routine splitting one continuous capture into
+        several files (`routines/settings.py`'s per-repeat/per-group save
+        modes) — not an operator action, and not the same as
+        `set_recording(False)` then `set_recording(True)`, which would go
+        through the Record button and risk `RoutinesModule.detach_sink()`
+        mistaking the gap for the recording having stopped out from under a
+        running routine.
         """
         ...

@@ -44,19 +44,23 @@ from pathlib import Path
 from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineError, RoutineHooks
-from acqApp.routines.settings import (CAM_EXT_TRIGGER, KINDS, UNITS, Group,
-                                      Recording, RigLimits, Routine, Step,
-                                      play_order, recording_run_ids, validate)
+from acqApp.routines.settings import (KINDS, UNITS, Group, Recording,
+                                      RigLimits, Routine, Step, play_order,
+                                      recording_run_ids, validate)
 
 FULL_RIG = RigLimits(x_um=(-5000.0, 5000.0), y_um=(-5000.0, 5000.0),
                      has_stage=True, has_dmd=True, has_frames=True,
                      has_puffer=True)
-# Same rig, but the camera is actually armed for External edge — the one
-# condition a TTL start trigger needs that a plain loaded camera does not
-# guarantee.
+# The same rig, but with a Z (focus) axis too — most rigs don't have one,
+# which is why FULL_RIG above stays Z-less as the common case.
+Z_RIG = RigLimits(x_um=FULL_RIG.x_um, y_um=FULL_RIG.y_um,
+                  z_um=(-500.0, 500.0), has_stage=True, has_z=True,
+                  has_dmd=True, has_frames=True, has_puffer=True)
+# Same rig, but with a camera loaded — the one condition a TTL start trigger
+# needs at validation time (arming the camera itself is `adapters/
+# routines.py`'s job now, not something validate() checks for statically).
 TTL_RIG = RigLimits(x_um=FULL_RIG.x_um, y_um=FULL_RIG.y_um, has_stage=True,
-                    has_dmd=True, has_frames=True, has_puffer=True,
-                    cam_trigger_mode=CAM_EXT_TRIGGER)
+                    has_dmd=True, has_frames=True, has_puffer=True)
 DT = 0.01                      # the worker's tick, near enough
 
 
@@ -81,23 +85,51 @@ class FakeRig:
         self.fail_move = False
         self.fail_light = False
         self.fail_begin = False        # begin_recording (the FILE) raises
+        self.fail_arm = False          # arm_trigger raises
         self.puffed = 0
         self.begun: list = []
         self.ended: list = []
+        # ── external trigger ──
+        # `gated` is the camera sitting in External edge mode with no edge yet:
+        # the clock keeps running but no frames are produced. That is what a
+        # `trigger` step waits out, and `_gated_total` is the frame-time lost
+        # to it, so `frames()` still matches `t` exactly whenever nothing ever
+        # gated — which is every pre-existing test in this file.
+        self.gated = False
+        self.rearms = 0
+        self._gated_total = 0.0
 
     # clock + camera
     def now(self) -> float:
         return self.t
 
     def frames(self) -> int | None:
-        return int(self.t * self.hz) if self.frames_running else None
+        if not self.frames_running:
+            return None
+        return int((self.t - self._gated_total) * self.hz)
 
     def advance(self, dt: float = DT) -> None:
         self.t += dt
+        if self.gated:
+            self._gated_total += dt
+
+    # external trigger
+    def arm_trigger(self) -> None:
+        """What the camera adapter does: re-gate, so the next edge shows up as
+        frames starting again."""
+        self.rearms += 1
+        self.log.append(("arm_trigger",))
+        if self.fail_arm:
+            raise RuntimeError("camera could not be re-armed")
+        self.gated = True
+
+    def fire_trigger(self) -> None:
+        """The external edge arrives: frames start flowing again."""
+        self.gated = False
 
     # stage
-    def move(self, x, y) -> None:
-        self.log.append(("move", x, y))
+    def move(self, x, y, z=None) -> None:
+        self.log.append(("move", x, y, z))
         if self.fail_move:
             raise RuntimeError("serial link down")
         self._arrive_at = self.t + self.travel_s
@@ -144,6 +176,7 @@ class FakeRig:
                             moving=self.moving, stop_motion=self.stop_motion,
                             set_pattern=self.set_pattern, light=self.light,
                             led=self.led, puff=self.puff,
+                            arm_trigger=self.arm_trigger,
                             begin_recording=self.begin_recording,
                             end_recording=self.end_recording,
                             log=lambda _m: None)
@@ -179,12 +212,18 @@ def check_validation(r: Report, tmp: Path) -> None:
     good_ttl = Routine(steps=[Step(kind="wait", length=1, unit="seconds")],
                        start_trigger="ttl")
     r.check(validate(good_ttl, TTL_RIG) == [],
-            "control: a TTL start trigger is accepted once the camera is "
-            "actually armed for External edge")
+            "control: a TTL start trigger is accepted once a camera is "
+            "loaded to receive it")
 
     cases = [
         ("a move step outside the soft limits",
          Routine(steps=[Step(kind="move", x_um=9_000.0)]), FULL_RIG,
+         "soft limits"),
+        ("a move step targeting Z on a rig with no Z stage",
+         Routine(steps=[Step(kind="move", z_um=10.0)]), FULL_RIG,
+         "no Z stage"),
+        ("a Z target outside Z's own soft limits",
+         Routine(steps=[Step(kind="move", z_um=9_000.0)]), Z_RIG,
          "soft limits"),
         ("a frames wait with no camera loaded",
          Routine(steps=[Step(kind="wait", length=100, unit="frames")]),
@@ -214,9 +253,17 @@ def check_validation(r: Report, tmp: Path) -> None:
         ("a TTL start trigger with no camera loaded",
          Routine(steps=[Step(kind="wait", length=1, unit="seconds")],
                 start_trigger="ttl"), RigLimits(), "no camera"),
-        ("a TTL start trigger against a camera not set to External edge",
-         Routine(steps=[Step(kind="wait", length=1, unit="seconds")],
-                start_trigger="ttl"), FULL_RIG, "External edge"),
+        # A trigger step is only observable as frames appearing, so with no
+        # camera nothing could ever end it.
+        ("a trigger step with no camera loaded",
+         Routine(steps=[Step(kind="trigger")]), RigLimits(), "no camera"),
+        # The recording must start ON the edge, and re-arming restarts the
+        # camera's acquisition — neither is safe underneath an open file.
+        ("a trigger step inside a recording bracket",
+         Routine(steps=[Step(kind="trigger"),
+                       Step(kind="wait", length=1, unit="seconds")],
+                recordings=[Recording(start=0, end=1)]),
+         FULL_RIG, "inside a recording bracket"),
     ]
     for label, routine, rig, needle in cases:
         problems = validate(routine, rig)
@@ -233,8 +280,15 @@ def check_validation(r: Report, tmp: Path) -> None:
                     tall) != [],
             "…and the same number on the narrow axis still is")
 
+    # A Z target inside Z's own limits, on a rig that has one, is accepted —
+    # the control for the two Z refusal cases above.
+    r.check(validate(Routine(steps=[Step(kind="move", x_um=10.0, y_um=10.0,
+                                        z_um=50.0)]), Z_RIG) == [],
+            "control: an (x, y, z) move within every axis's own limits, on "
+            "a rig with a Z stage, is accepted")
+
     # Persistence round trip: the panel saves this into acqapp_local.json.
-    src = Routine(name="grid", cycles=3, save_mode="per_step",
+    src = Routine(name="grid", cycles=3, save_mode="per_repeat",
                   start_trigger="ttl",
                   steps=[Step(kind="move", label="a", x_um=1.0, settle_s=0.1),
                          Step(kind="wait", label="b", length=5, unit="frames"),
@@ -247,6 +301,11 @@ def check_validation(r: Report, tmp: Path) -> None:
     r.check(Routine.from_dict({"start_trigger": "nonsense"}).start_trigger
             == "manual",
             "an unrecognised saved start trigger falls back to manual")
+    r.check(Routine.from_dict({"save_mode": "per_step"}).save_mode
+            == "per_repeat",
+            "a saved routine from before the per-group/per-repeat split "
+            "migrates its old 'per_step' mode to the closest equivalent, "
+            "rather than silently falling back to single")
     r.check(Routine.from_dict(
         {"steps": [{"kind": "wait", "gone": 1, "label": "x"}],
          "cycles": "nonsense"}).steps[0].label == "x",
@@ -456,7 +515,7 @@ def check_order(r: Report, tmp: Path) -> None:
     rig = FakeRig(travel_s=0.30)
     routine = Routine(steps=[Step(kind="display", pattern=str(pattern)),
                              Step(kind="move", x_um=50.0, y_um=60.0,
-                                  settle_s=0.25)])
+                                  z_um=70.0, settle_s=0.25)])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
     drive(eng, rig)
@@ -465,6 +524,9 @@ def check_order(r: Report, tmp: Path) -> None:
     r.check(kinds[:4] == ["pattern", "light", "light", "move"],
             f"pattern, light-on, then the move's blank, then the move itself "
             f"({kinds[:4]})")
+    r.check(rig.log[3] == ("move", 50.0, 60.0, 70.0),
+            f"a step's z_um reaches the move hook alongside x/y "
+            f"({rig.log[3]})")
     r.check(rig.log[1] == ("light", True) and rig.log[2] == ("light", False),
             "the display's light-on is immediately followed by the move's "
             "blank")
@@ -687,7 +749,7 @@ def check_setup_failure(r: Report, tmp: Path) -> None:
             and "recording could not start" in e3.fault,
             f"a recording that fails to OPEN pauses with its own message "
             f"({e3.fault!r})")
-    r.check(("move", 10.0, None) not in rig3.log and e3.runs == [],
+    r.check(("move", 10.0, None, None) not in rig3.log and e3.runs == [],
             "…and the step's own action never ran on top of that pause")
 
     # Resuming once the file starts working again must actually resume — a
@@ -695,7 +757,7 @@ def check_setup_failure(r: Report, tmp: Path) -> None:
     # failed" from "the resume that is happening now" and stuck forever.
     rig3.fail_begin = False
     e3.resume()
-    r.check(e3.phase == Phase.RUNNING and ("move", 10.0, None) in rig3.log,
+    r.check(e3.phase == Phase.RUNNING and ("move", 10.0, None, None) in rig3.log,
             f"…and resuming once the file opens again actually runs the "
             f"step ({e3.phase})")
 
@@ -714,13 +776,17 @@ def check_frames_vanish(r: Report) -> None:
             f"a frames step whose counter vanishes pauses ({eng.fault!r})")
 
 
-# ── cycles, and the per-step file guarantee ───────────────────────────────────
+# ── cycles, and the per-repeat file guarantee ─────────────────────────────────
 
 def check_cycles_and_attrs(r: Report) -> None:
     """Repeats run in order, and every recording file can be put back on one
-    clock — each step wrapped in its own Recording, `per_step`-style."""
+    clock — each step wrapped in its own Recording, `per_repeat`-style. (The
+    engine itself never reads `save_mode` — only `adapters/routines.py`
+    does — so this exercises the RecordingRun/attrs shape the file-rolling
+    feature relies on, not the rolling itself; see check_file_rolling for
+    that.)"""
     rig = FakeRig()
-    routine = Routine(name="grid", cycles=3, save_mode="per_step",
+    routine = Routine(name="grid", cycles=3, save_mode="per_repeat",
                       steps=[Step(kind="wait", label="A", length=0.10,
                                   unit="seconds"),
                              Step(kind="wait", label="B", length=0.10,
@@ -845,6 +911,187 @@ def check_ttl_start_trigger(r: Report) -> None:
     eng3.tick()
     r.check(eng3.phase == Phase.PAUSED and "frame count" in eng3.fault,
             f"the camera going away while armed pauses ({eng3.fault!r})")
+
+
+def check_trigger_step(r: Report) -> None:
+    """A `trigger` step: one recording per external edge, repeated.
+
+    The operator's case — "100 recordings at FOV 1, each started by an edge,
+    each lasting x seconds" — is a repeat group over [trigger, wait], with the
+    Recording bracket on the wait ALONE so the file opens on the edge rather
+    than while waiting for it. Here with 3 repeats instead of 100.
+
+    Drain and timeout are shortened; at their real values (1.5 s / 600 s) this
+    would tick for the better part of an hour on the fake clock.
+    """
+    DRAIN = 0.2
+    routine = Routine(
+        steps=[Step(kind="trigger", label="edge"),
+               Step(kind="wait", label="capture", length=0.5, unit="seconds")],
+        groups=[Group(start=0, end=1, repeats=3)],
+        recordings=[Recording(start=1, end=1)])
+    rig = FakeRig(hz=100.0)
+    eng = RoutineEngine(routine, rig.hooks(), trigger_drain_s=DRAIN,
+                        trigger_timeout_s=5.0)
+    eng.start()
+
+    r.check(eng.phase == Phase.WAITING and eng.running,
+            f"a trigger step puts the engine in WAITING, which still counts as "
+            f"running ({eng.phase})")
+    r.check(rig.rearms == 1 and rig.gated,
+            f"…having re-armed the camera, so the next edge is detectable "
+            f"(rearms={rig.rearms}, gated={rig.gated})")
+    r.check(rig.begun == [],
+            "…and NOT opened a recording — the bracket is on the next step, so "
+            "the file starts on the edge")
+
+    # Frames still being written while the re-arm takes effect must not read as
+    # the edge. Un-gate inside the drain window: the count moves, and the step
+    # must ignore it.
+    rig.fire_trigger()
+    for _ in range(int(DRAIN / DT) - 5):
+        rig.advance()
+        eng.tick()
+    r.check(eng.phase == Phase.WAITING,
+            "frames arriving inside the drain window raise the baseline "
+            "instead of ending the step — an in-flight frame is not an edge")
+
+    # Past the drain, with frames flowing, the edge is genuine.
+    drive(eng, rig, until=lambda e: e.phase != Phase.WAITING)
+    r.check(eng.phase == Phase.RUNNING,
+            f"a frame after the drain window ends the trigger step ({eng.phase})")
+    r.check(rig.begun == [],
+            "…the recording still has not opened: the trigger step is not in "
+            "the bracket, so it opens as the NEXT step is entered")
+    rig.advance()
+    eng.tick()                       # completes the step, enters the wait
+    r.check(len(rig.begun) == 1,
+            f"…and it opens there, once the edge has already landed "
+            f"({len(rig.begun)})")
+
+    # Each repeat re-arms and waits again. Fire the remaining edges as they
+    # come, each once the drain window has passed — the only time an edge can
+    # be seen at all. `waiting_since` tracks that from the outside rather than
+    # reading the engine's own timer.
+    fired, waiting_since = 1, None
+    while rig.t < 30.0 and eng.phase not in (Phase.DONE, Phase.PAUSED):
+        if eng.phase == Phase.WAITING and rig.gated:
+            if waiting_since is None:
+                waiting_since = rig.now()
+            elif rig.now() - waiting_since >= DRAIN:
+                rig.fire_trigger()
+                fired += 1
+                waiting_since = None
+        rig.advance()
+        eng.tick()
+
+    r.check(eng.phase == Phase.DONE,
+            f"three triggered repeats run to completion ({eng.phase}, "
+            f"fault={eng.fault!r})")
+    r.check(rig.rearms == 3 and fired == 3,
+            f"one re-arm per repeat, one edge each — the camera latches, so "
+            f"every recording needs its own (rearms={rig.rearms}, "
+            f"edges={fired})")
+    r.check(len(rig.begun) == 3 and len(rig.ended) == 3,
+            f"three recording runs, one per edge ({len(rig.begun)} opened, "
+            f"{len(rig.ended)} closed)")
+    r.check(all(not run.interrupted for run in eng.runs),
+            "…none of them interrupted")
+
+    # A step that never sees its edge faults rather than hanging the routine.
+    rig2 = FakeRig(hz=100.0)
+    eng2 = RoutineEngine(routine, rig2.hooks(), trigger_drain_s=DRAIN,
+                         trigger_timeout_s=1.0)
+    eng2.start()
+    drive(eng2, rig2, limit_s=5.0, until=lambda e: e.phase == Phase.PAUSED)
+    r.check(eng2.phase == Phase.PAUSED and "trigger" in eng2.fault,
+            f"an edge that never arrives times out into a pause rather than "
+            f"waiting forever ({eng2.fault!r})")
+
+    # The operator can take the rig back mid-wait.
+    rig3 = FakeRig(hz=100.0)
+    eng3 = RoutineEngine(routine, rig3.hooks(), trigger_drain_s=DRAIN)
+    eng3.start()
+    r.check(eng3.phase == Phase.WAITING, "…control: waiting again")
+    eng3.pause()
+    r.check(eng3.phase == Phase.PAUSED,
+            f"Pause works while WAITING — an edge may never come, and the "
+            f"operator must not be held by it ({eng3.phase})")
+
+    # A camera that cannot be re-armed is a fault at the step, not a silent
+    # wait on an edge nothing can deliver.
+    rig4 = FakeRig(hz=100.0)
+    rig4.fail_arm = True
+    eng4 = RoutineEngine(routine, rig4.hooks(), trigger_drain_s=DRAIN)
+    eng4.start()
+    r.check(eng4.phase == Phase.PAUSED and "setup failed" in eng4.fault,
+            f"a camera that cannot be re-armed pauses the routine "
+            f"({eng4.fault!r})")
+
+
+def check_arm_camera_trigger(r: Report) -> None:
+    """`RoutinesModule._arm_camera_trigger()` — the fix itself: a TTL-start
+    routine puts the camera in External edge mode through the host, before
+    ever opening its own recording, rather than trusting the operator to
+    have set it. Qt-free: this method only calls `self.win`/`self.panel`,
+    neither of which needs a real window."""
+    from acqApp.adapters.routines import FRAME_STREAM, RoutinesModule
+
+    class FakeHost:
+        def __init__(self, result: bool | None) -> None:
+            self.result = result
+            self.calls: list[tuple] = []
+            self.statuses: list[str] = []
+
+        def set_camera_trigger(self, key, on):
+            self.calls.append((key, on))
+            return self.result
+
+        def status(self, msg):
+            self.statuses.append(msg)
+
+    class FakePanel:
+        def __init__(self) -> None:
+            self.problems: list[list[str]] = []
+
+        def show_problems(self, problems):
+            self.problems.append(list(problems))
+
+    # Success: the camera confirms it's in External edge mode.
+    host = FakeHost(True)
+    adapter = RoutinesModule(host)
+    adapter.panel = FakePanel()
+    r.check(adapter._arm_camera_trigger() is True,
+            "arming succeeds when the host confirms External edge")
+    r.check(host.calls == [(FRAME_STREAM, True)],
+            f"…asking the host for exactly the voltage camera, on "
+            f"({host.calls})")
+    r.check(adapter.panel.problems == [], "…and shows no problem")
+
+    # Failure: no camera loaded at all (host returns None for "not loaded"
+    # the same way `set_camera_preset` already does).
+    host2 = FakeHost(None)
+    adapter2 = RoutinesModule(host2)
+    adapter2.panel = FakePanel()
+    r.check(adapter2._arm_camera_trigger() is False,
+            "arming fails when the host can't find the module")
+    r.check(adapter2.panel.problems and "no camera loaded" in
+           adapter2.panel.problems[0][0],
+            f"…and shows a problem naming the reason "
+            f"({adapter2.panel.problems})")
+    r.check(host2.statuses and "refused" in host2.statuses[0],
+            f"…and the status line says the routine was refused "
+            f"({host2.statuses})")
+
+    # Failure: a recording is already running and the camera isn't already
+    # External edge — VoltageCamModule.set_external_trigger's own contract
+    # (adapters/voltage_cam.py) for "would need a restart, can't do it now".
+    host3 = FakeHost(False)
+    adapter3 = RoutinesModule(host3)
+    adapter3.panel = FakePanel()
+    r.check(adapter3._arm_camera_trigger() is False,
+            "control: a host returning False (not None) is still a failure "
+            "— only True means armed")
 
 
 # ── pre-redesign templates auto-migrate ───────────────────────────────────────
@@ -1237,8 +1484,8 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check(tbl.item(0, col["details"]).text() == f"(250 um, {NO_CHANGE})",
             f"Move's Details renders both axes as one pair "
             f"({tbl.item(0, col['details']).text()!r})")
-    r.check(tbl.item(0, col["details"]).data(VALUE) == (250.0, None),
-            "…and the pair is the value of record, not just the text")
+    r.check(tbl.item(0, col["details"]).data(VALUE) == (250.0, None, None),
+            "…and the triple is the value of record, not just the text")
     r.check(not (tbl.item(0, col["details"]).flags() & Qt.ItemFlag.ItemIsEditable),
             "…and is not typed into")
 
@@ -1250,6 +1497,20 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check(tbl.item(0, col["details"]).text() == "window1 (111 um, 222 um)",
             f"the FOV's name goes in FRONT of the coordinates "
             f"({tbl.item(0, col['details']).text()!r})")
+
+    # Z only joins the text once a step actually has one — most rigs and
+    # most steps never do, so the common (x, y) rendering must not gain a
+    # silent third number.
+    routine.steps[0].z_um = 333.0
+    panel._reload_table()
+    r.check(tbl.item(0, col["details"]).text()
+            == "window1 (111 um, 222 um, 333 um)",
+            f"a step with a Z target renders all three axes "
+            f"({tbl.item(0, col['details']).text()!r})")
+    r.check(tbl.item(0, col["details"]).data(VALUE) == (111.0, 222.0, 333.0),
+            "…and the value of record carries Z too")
+    routine.steps[0].z_um = None
+    panel._reload_table()
 
     # Typing a new position detaches the name.
     routine.steps[0].x_um, routine.steps[0].fov = 999.0, ""
@@ -1310,8 +1571,9 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     panel._reload_table()
     tbl.setCurrentCell(0, col["details"])
     QTest.keyClick(tbl, Qt.Key.Key_Delete)
-    r.check(routine.steps[0].x_um is None and routine.steps[0].y_um is None,
-            "Delete on Move's Details clears both axes, not one at a time")
+    r.check(routine.steps[0].x_um is None and routine.steps[0].y_um is None
+            and routine.steps[0].z_um is None,
+            "Delete on Move's Details clears every axis, not one at a time")
     # CONTROL: Delete is not a general erase — a cell that must hold a number
     # ignores it, and clear_cell("details") on a Wait/Puff row is a no-op.
     tbl.item(1, col["kind"]).setData(VALUE, "wait")
@@ -1655,7 +1917,7 @@ def check_templates(r: Report) -> None:
     r.check(templates.names() == [],
             f"an empty library lists nothing ({templates.names()})")
 
-    rt = Routine(name="grid 3x3", cycles=2, save_mode="per_step",
+    rt = Routine(name="grid 3x3", cycles=2, save_mode="per_repeat",
                  steps=[Step(kind="move", label="a", x_um=100.0),
                         Step(kind="wait", label="b", length=1.5, unit="seconds")])
     path = templates.save(rt)
@@ -1667,7 +1929,7 @@ def check_templates(r: Report) -> None:
     back = templates.load("grid 3x3")
     r.check([vars(x) for x in back.steps] == [vars(x) for x in rt.steps],
             "every field of every step comes back")
-    r.check(back.cycles == 2 and back.save_mode == "per_step"
+    r.check(back.cycles == 2 and back.save_mode == "per_repeat"
             and back.name == "grid 3x3",
             f"…and so do the cycles and the save mode "
             f"({back.cycles}, {back.save_mode})")
@@ -1889,8 +2151,8 @@ def check_app(r: Report, app, tmp) -> None:
     adapter, panel = mod["routines"], mod["routines"].panel
 
     win._save_panel._ed_folder.setText(str(out))
-    win._save_panel._ed_subject.setText("routine")
-    win._save_panel._ed_template.setText("{subject}_{date}_{time}")
+    win._save_panel._ed_mouse_id.setText("routine")
+    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     win._save_panel._on_edited()
 
     r.check(win.stage_target() is mod["stage"],
@@ -2073,6 +2335,89 @@ def check_app(r: Report, app, tmp) -> None:
                 "…each with its own t0 on the shared clock and its fault flag")
 
 
+def check_file_rolling(r: Report, app, tmp) -> None:
+    """save_mode "per_repeat"/"per_group" actually roll to new files through
+    the real MainWindow — `main.py`'s `roll_recording()`, the one path a
+    fake rig cannot exercise (adapters/routines.py's `_needs_roll`/
+    `_roll_for` are only proven end-to-end here)."""
+    out = tmp / "routine_roll"
+    win = make_window({"stage", "routines"})
+    mod = {m.key: m for m in win._modules}
+    adapter, panel = mod["routines"], mod["routines"].panel
+
+    win._save_panel._ed_folder.setText(str(out))
+    win._save_panel._ed_mouse_id.setText("roll")
+    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
+    win._save_panel._on_edited()
+
+    def run_to_done(steps, groups, recordings, save_mode) -> int:
+        """Run one routine to completion, -> how many NEW .h5 files appeared."""
+        before = set(out.rglob("*.h5"))
+        panel._r.steps = steps
+        panel._r.groups = groups
+        panel._r.recordings = recordings
+        panel._r.cycles = 1
+        # Not `panel._r.save_mode = ...` directly — the `settings` property
+        # `_start()` reads overwrites it from this combo box on every read.
+        panel._cmb_save.setCurrentIndex(panel._cmb_save.findData(save_mode))
+        panel._reload_table()
+        adapter._start()
+        if not r.check(adapter._engine is not None,
+                       f"[{save_mode}] the routine starts "
+                       f"({panel._lbl_state.text() if adapter._engine is None else ''})"):
+            return 0
+        for _ in range(400):
+            win._display_tick()
+            pump(app, 0.01)
+            if adapter._engine.phase == Phase.DONE:
+                break
+        r.check(adapter._engine.phase == Phase.DONE,
+                f"[{save_mode}] the routine ran to the end "
+                f"(phase={adapter._engine.phase}, fault={adapter._engine.fault!r})")
+        return len(set(out.rglob("*.h5")) - before)
+
+    # One Recording spanning a 3x-repeated 2-step group -> 3 RecordingRuns
+    # (routines/engine.py: a Recording across a repeated Group yields one
+    # run per repeat) -> per_repeat rolls a file for each.
+    n = run_to_done(
+        [Step(kind="move", label="m", x_um=10.0, settle_s=0.0),
+         Step(kind="wait", label="w", length=0.02, unit="seconds")],
+        [Group(start=0, end=1, repeats=3)], [Recording(start=0, end=1)],
+        "per_repeat")
+    r.check(n == 3, f"per_repeat: one file per repeat of the group ({n})")
+
+    # Two DIFFERENT groups, each repeated twice, each with its OWN Recording
+    # -> per_group shares a file across repeats of the SAME group and rolls
+    # only when the covering group actually changes -> 2 files (one per
+    # group), not 4 (one per repeat) — the whole point of the coarser mode.
+    multi_group_steps = [
+        Step(kind="move", label="a", x_um=10.0, settle_s=0.0),
+        Step(kind="wait", label="wa", length=0.02, unit="seconds"),
+        Step(kind="move", label="b", x_um=20.0, settle_s=0.0),
+        Step(kind="wait", label="wb", length=0.02, unit="seconds"),
+    ]
+    multi_group_groups = [Group(start=0, end=1, repeats=2),
+                          Group(start=2, end=3, repeats=2)]
+    multi_group_recordings = [Recording(start=0, end=1),
+                              Recording(start=2, end=3)]
+    n2 = run_to_done(list(multi_group_steps), multi_group_groups,
+                     multi_group_recordings, "per_group")
+    r.check(n2 == 2,
+            f"per_group: repeats of the same group share a file, only "
+            f"moving to the other one rolls ({n2})")
+
+    # CONTROL: save_mode="single" over the SAME multi-group protocol is the
+    # behavior every one of these modes departs from — exactly one file.
+    n3 = run_to_done(list(multi_group_steps), multi_group_groups,
+                     multi_group_recordings, "single")
+    r.check(n3 == 1,
+            f"control: single mode never rolls, over the identical protocol "
+            f"({n3})")
+
+    win.close()
+    pump(app, 0.2)
+
+
 def main() -> int:
     r = Report("routines")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_routines_"))
@@ -2091,6 +2436,8 @@ def main() -> int:
         check_recording_repeats(r)
         check_transitions(r)
         check_ttl_start_trigger(r)
+        check_trigger_step(r)
+        check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)
         # The window persists as a side effect of ordinary use, so isolate
@@ -2107,6 +2454,7 @@ def main() -> int:
             check_move_row_repaint(r)
             check_panel_tracker(r, app)
             check_app(r, app, state)
+            check_file_rolling(r, app, state)
         finally:
             import shutil
             shutil.rmtree(state, ignore_errors=True)
