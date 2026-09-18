@@ -14,6 +14,9 @@ sessions/
 # Saved FOV bookmarks (devices/stage/fov_store.py) — a position + a camera
 # snapshot, rig-specific like rois/ above, plus the PNGs would bloat the repo.
 /fov_library/
+# Saved routine templates (routines/templates.py) — a protocol for THIS rig's
+# instruments, same reasoning as rois/ and fov_library/ above.
+/routine_templates/
 *.tif
 *.tiff
 *.h5

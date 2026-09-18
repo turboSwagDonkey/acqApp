@@ -211,6 +211,44 @@ def group_region_at(routine: "Routine", step_index: int) -> int | None:
                 if g.start <= step_index <= g.end), None)
 
 
+def group_repeat_at(routine: "Routine",
+                    order: list[int]) -> list[tuple[int, int] | None]:
+    """Parallel to `order` (a `play_order(routine)` result): at each position,
+    `(1-based repeat number, total repeats)` if it falls inside a repeat
+    Group, else None.
+
+    For the operator's own progress reading (`adapters/routines.py`'s status
+    text): a Group's steps repeat in place, so "step 1/2" alone reads
+    identically on repeat 1, repeat 2, … repeat 100 of a `[trigger, wait]`
+    pair — nothing else in the display says which one is running.
+
+    Walks `order` itself, like `recording_run_ids` — a running count of steps
+    seen so far for the step's own Group, divided by the Group's span, is the
+    0-based repeat index. Needs no assumption about how `order` was built
+    beyond "one Group's range appears as contiguous repeats", which is
+    exactly what `play_order` guarantees.
+    """
+    n = len(routine.steps)
+    valid = [g for g in routine.groups if 0 <= g.start <= g.end < n]
+    group_of: dict[int, int] = {}     # step_index -> index into `valid`
+    for gi, g in enumerate(valid):
+        for step_i in range(g.start, g.end + 1):
+            group_of[step_i] = gi
+
+    seen = [0] * len(valid)           # steps of each group visited so far
+    out: list[tuple[int, int] | None] = []
+    for step_i in order:
+        gi = group_of.get(step_i)
+        if gi is None:
+            out.append(None)
+            continue
+        g = valid[gi]
+        span, reps = g.end - g.start + 1, max(1, g.repeats)
+        out.append((seen[gi] // span + 1, reps))
+        seen[gi] += 1
+    return out
+
+
 def recording_run_ids(routine: "Routine", order: list[int]) -> list[int | None]:
     """Parallel to `order` (a `play_order(routine)` result): a run-serial
     number at each position that is inside some Recording, None elsewhere.

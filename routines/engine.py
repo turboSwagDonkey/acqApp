@@ -48,17 +48,29 @@ MOVE_TIMEOUT_S = 30.0
 # than hanging the routine forever.
 TRIGGER_TIMEOUT_S = 600.0
 
-# Dead time at the start of a `trigger` step, before an arriving frame counts
-# as its edge. `arm_trigger` is asynchronous — the camera's capture loop acts
-# on the request only when its own frame wait next expires — so frames already
-# in flight keep being written for a moment, and would otherwise read as an
-# edge that never happened. Must therefore exceed that loop's frame-wait
-# timeout (`devices/voltage_cam/acquisition.py`'s `_WAIT_TIMEOUT`, 0.5 s).
+# Minimum dead time at the start of a `trigger` step. `arm_trigger` is
+# asynchronous — the camera's capture loop acts on the request only when its
+# own frame wait next expires — so frames already in flight keep being written
+# for a moment. Must exceed that loop's frame-wait timeout
+# (`devices/voltage_cam/acquisition.py`'s `_WAIT_TIMEOUT`, 0.5 s).
 #
-# It is also the smallest gap between one recording ending and the next edge
-# being detectable: an edge inside the window is ignored, which is the
-# operator's "build for safety" choice over latching it.
+# This is a floor, NOT the whole guard: a fixed window was tried first and is
+# not sufficient, because how long the re-arm actually takes is not knowable
+# here (buffer reallocation alone can outlast any guess). Rig symptom it
+# produced: a recording ended, the routine paused for exactly this long, then
+# started the next one with no edge — the first still-in-flight frame after
+# the window read as a trigger. `TRIGGER_SETTLE_S` is what actually decides.
 TRIGGER_DRAIN_S = 1.5
+
+# How long the frame count must hold COMPLETELY STILL before the engine will
+# believe the camera is really gated and start watching for an edge. Frames
+# arriving before that are left over from before the re-arm took effect: they
+# raise the baseline and restart this window.
+#
+# This is what makes the wait self-verifying rather than timed: if the camera
+# never stops producing frames, the count never settles, and the step faults
+# saying so instead of silently treating the next frame as a trigger.
+TRIGGER_SETTLE_S = 0.75
 
 
 class Phase:
@@ -167,12 +179,14 @@ class RoutineEngine:
     def __init__(self, routine: Routine, hooks: RoutineHooks, *,
                  move_timeout_s: float = MOVE_TIMEOUT_S,
                  trigger_timeout_s: float = TRIGGER_TIMEOUT_S,
-                 trigger_drain_s: float = TRIGGER_DRAIN_S) -> None:
+                 trigger_drain_s: float = TRIGGER_DRAIN_S,
+                 trigger_settle_s: float = TRIGGER_SETTLE_S) -> None:
         self._r = routine
         self._h = hooks
         self._timeout = move_timeout_s
         self._trig_timeout = trigger_timeout_s
         self._trig_drain = trigger_drain_s
+        self._trig_settle = trigger_settle_s
         self.runs: list[RecordingRun] = []
         self.fault = ""
         self._phase = Phase.IDLE
@@ -195,9 +209,12 @@ class RoutineEngine:
         self._wait_frame0: int | None = None
         self._started_at: float | None = None   # session clock at start()
         self._arm_frame0: int | None = None      # frame count when armed
-        self._trig_frame0: int | None = None     # frame count when a `trigger`
-                                                  # step re-armed the camera
+        self._trig_frame0: int | None = None     # frame count a `trigger` step
+                                                  # measures its edge against
         self._trig_t0 = 0.0                      # when it started waiting
+        self._trig_still_since = 0.0             # when the count last moved
+        self._trig_gated = False                 # count has held still long
+                                                  # enough to trust it
 
     # ── readout ───────────────────────────────────────────────────────────────
     @property
@@ -385,23 +402,41 @@ class RoutineEngine:
             self._enter_step()
 
     def _tick_trigger(self) -> None:
-        """Inside a `trigger` step: a frame beyond the baseline is its edge.
+        """Inside a `trigger` step, in two stages: first wait for the camera to
+        actually go quiet, and only then treat a new frame as its edge.
 
-        The baseline is not simply "the count at entry" — `arm_trigger` is
-        asynchronous, so frames already in flight keep being written for a
-        moment. For `TRIGGER_DRAIN_S` those RAISE the baseline instead of
-        satisfying it; only afterwards does an increase mean a real edge. That
-        window is also why an edge arriving while the routine was busy
-        elsewhere is ignored rather than counted.
+        The second stage alone is not enough, and assuming it was is what let a
+        rig run start its next recording with no trigger at all. `arm_trigger`
+        is asynchronous and its true latency is unknowable here, so frames keep
+        arriving for a while after the step begins; any fixed window can expire
+        while they are still coming, and the next one then reads as an edge.
+
+        So the baseline is only frozen once the count has held still for
+        `TRIGGER_SETTLE_S` — proof the camera really stopped, rather than a
+        guess that it must have by now. A count that never settles is a camera
+        that is not re-arming, and faults saying exactly that instead of
+        fabricating a trigger. `TRIGGER_DRAIN_S` survives only as a floor, so
+        a camera that happens to be momentarily idle cannot look settled before
+        the re-arm has even been picked up.
         """
         n = self._frames()
         if n is None:
             self._halt("no frame count to detect the trigger by")
             return
         t = self._h.now()
-        if t - self._trig_t0 < self._trig_drain:
-            self._trig_frame0 = max(self._trig_frame0, n)
+
+        if not self._trig_gated:
+            if n != self._trig_frame0:      # still draining: not an edge
+                self._trig_frame0 = n
+                self._trig_still_since = t
+            elif (t - self._trig_still_since >= self._trig_settle
+                    and t - self._trig_t0 >= self._trig_drain):
+                self._trig_gated = True
+            if not self._trig_gated and t - self._trig_t0 > self._trig_timeout:
+                self._halt("the camera never stopped producing frames after "
+                           "the trigger re-arm — it is not re-arming")
             return
+
         if n > self._trig_frame0:
             self._phase = Phase.RUNNING
             self._step_done = True
@@ -497,13 +532,12 @@ class RoutineEngine:
                 self._h.puff()
                 self._step_done = True
             elif step.kind == "trigger":
-                # Ask for the re-arm, then start the clock the drain window is
-                # measured against — `_tick_trigger` keeps raising the baseline
-                # for that long, which is what absorbs the frames still being
-                # written while the camera's capture loop gets round to the
-                # request.
+                # Ask for the re-arm, then hand `_tick_trigger` a baseline it
+                # will keep moving until the count actually goes still — the
+                # camera has almost certainly not stopped yet at this point.
                 self._h.arm_trigger()
-                self._trig_t0 = self._h.now()
+                self._trig_t0 = self._trig_still_since = self._h.now()
+                self._trig_gated = False
                 self._trig_frame0 = self._frames()
                 if self._trig_frame0 is None:
                     raise RuntimeError(

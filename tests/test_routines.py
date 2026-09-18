@@ -396,6 +396,41 @@ def check_groups(r: Report) -> None:
             "overall_progress reflects the repeat, not just 3 table rows")
 
 
+def check_group_repeat_at(r: Report) -> None:
+    """`group_repeat_at` — what fixed the routine panel showing "step 1/2"
+    identically on every one of a `trigger` step's repeats, with nothing
+    anywhere saying which repeat was running (rig, 2026-09-17)."""
+    from acqApp.routines.settings import group_repeat_at
+
+    routine = Routine(steps=[Step(kind="trigger"),
+                             Step(kind="wait", length=8.0, unit="seconds")],
+                      groups=[Group(start=0, end=1, repeats=3)],
+                      recordings=[Recording(start=1, end=1)])
+    order = play_order(routine)
+    rep = group_repeat_at(routine, order)
+    r.check(order == [0, 1, 0, 1, 0, 1],
+            f"control: the trigger+wait pair plays 3 times ({order})")
+    r.check(rep == [(1, 3), (1, 3), (2, 3), (2, 3), (3, 3), (3, 3)],
+            f"…and each pass is numbered 1/3, 2/3, 3/3 — same repeat number "
+            f"for both steps of one pass ({rep})")
+
+    # No group at all: every position is None, not a spurious (1, 1).
+    plain = Routine(steps=[Step(kind="wait"), Step(kind="wait")])
+    r.check(group_repeat_at(plain, play_order(plain)) == [None, None],
+            "a routine with no repeat group reports no repeat anywhere")
+
+    # A step OUTSIDE the group (the operator's Move-then-repeat shape) is
+    # None; only the grouped range is numbered.
+    with_move = Routine(
+        steps=[Step(kind="move", label="FOV"), Step(kind="trigger"),
+              Step(kind="wait", length=1.0, unit="seconds")],
+        groups=[Group(start=1, end=2, repeats=2)])
+    rep2 = group_repeat_at(with_move, play_order(with_move))
+    r.check(rep2 == [None, (1, 2), (1, 2), (2, 2), (2, 2)],
+            f"the ungrouped Move stays None; only the repeated pair is "
+            f"numbered ({rep2})")
+
+
 def check_recording_repeats(r: Report) -> None:
     """The trickiest correctness point in the redesign: a Recording drawn
     across an ENTIRE repeated Group's range must produce N separate
@@ -921,10 +956,11 @@ def check_trigger_step(r: Report) -> None:
     Recording bracket on the wait ALONE so the file opens on the edge rather
     than while waiting for it. Here with 3 repeats instead of 100.
 
-    Drain and timeout are shortened; at their real values (1.5 s / 600 s) this
-    would tick for the better part of an hour on the fake clock.
+    Drain, settle and timeout are all shortened; at their real values
+    (1.5 s / 0.75 s / 600 s) this would tick for the better part of an hour on
+    the fake clock.
     """
-    DRAIN = 0.2
+    DRAIN, SETTLE = 0.2, 0.1
     routine = Routine(
         steps=[Step(kind="trigger", label="edge"),
                Step(kind="wait", label="capture", length=0.5, unit="seconds")],
@@ -932,7 +968,7 @@ def check_trigger_step(r: Report) -> None:
         recordings=[Recording(start=1, end=1)])
     rig = FakeRig(hz=100.0)
     eng = RoutineEngine(routine, rig.hooks(), trigger_drain_s=DRAIN,
-                        trigger_timeout_s=5.0)
+                        trigger_settle_s=SETTLE, trigger_timeout_s=5.0)
     eng.start()
 
     r.check(eng.phase == Phase.WAITING and eng.running,
@@ -946,20 +982,31 @@ def check_trigger_step(r: Report) -> None:
             "the file starts on the edge")
 
     # Frames still being written while the re-arm takes effect must not read as
-    # the edge. Un-gate inside the drain window: the count moves, and the step
-    # must ignore it.
-    rig.fire_trigger()
-    for _ in range(int(DRAIN / DT) - 5):
+    # the edge — they raise the baseline and restart the settle window. This is
+    # the rig bug: a fixed window expired while these were still arriving, and
+    # the next one started a recording with no trigger.
+    rig.fire_trigger()                      # residual frames, re-arm not yet in
+    for _ in range(int((DRAIN + SETTLE) / DT) + 10):
         rig.advance()
         eng.tick()
     r.check(eng.phase == Phase.WAITING,
-            "frames arriving inside the drain window raise the baseline "
-            "instead of ending the step — an in-flight frame is not an edge")
+            "a camera that never goes quiet never satisfies the step — "
+            "in-flight frames raise the baseline instead of ending it")
 
-    # Past the drain, with frames flowing, the edge is genuine.
+    # Now the camera really stops. Going quiet is not itself an edge.
+    rig.gated = True
+    for _ in range(int((DRAIN + SETTLE) / DT) + 10):
+        rig.advance()
+        eng.tick()
+    r.check(eng.phase == Phase.WAITING,
+            f"…and the camera merely going quiet is not an edge either "
+            f"({eng.phase})")
+
+    # Settled, so the next frame is a genuine edge.
+    rig.fire_trigger()
     drive(eng, rig, until=lambda e: e.phase != Phase.WAITING)
     r.check(eng.phase == Phase.RUNNING,
-            f"a frame after the drain window ends the trigger step ({eng.phase})")
+            f"the first frame after it settled IS the edge ({eng.phase})")
     r.check(rig.begun == [],
             "…the recording still has not opened: the trigger step is not in "
             "the bracket, so it opens as the NEXT step is entered")
@@ -978,7 +1025,7 @@ def check_trigger_step(r: Report) -> None:
         if eng.phase == Phase.WAITING and rig.gated:
             if waiting_since is None:
                 waiting_since = rig.now()
-            elif rig.now() - waiting_since >= DRAIN:
+            elif rig.now() - waiting_since >= DRAIN + SETTLE + 0.1:
                 rig.fire_trigger()
                 fired += 1
                 waiting_since = None
@@ -998,10 +1045,31 @@ def check_trigger_step(r: Report) -> None:
     r.check(all(not run.interrupted for run in eng.runs),
             "…none of them interrupted")
 
+    # THE RIG BUG (2026-09-16), as a test: a camera that keeps streaming
+    # through the re-arm must FAULT, naming the reason — never silently treat
+    # the next frame as an edge, which is what started a second recording with
+    # no trigger. `rig_free`'s `arm_trigger` is overridden to log the call but
+    # never actually gate, the way the real camera appeared to.
+    rig_free = FakeRig(hz=100.0)
+    rig_free.arm_trigger = lambda: rig_free.log.append(("arm_trigger",))
+    eng_free = RoutineEngine(routine, rig_free.hooks(), trigger_drain_s=DRAIN,
+                             trigger_settle_s=SETTLE, trigger_timeout_s=1.0)
+    eng_free.start()
+    drive(eng_free, rig_free, limit_s=5.0,
+          until=lambda e: e.phase == Phase.PAUSED)
+    r.check(eng_free.phase == Phase.PAUSED,
+            f"a camera that ignores the re-arm pauses the routine rather than "
+            f"inventing an edge ({eng_free.phase})")
+    r.check("not re-arming" in eng_free.fault,
+            f"…and the fault says what is actually wrong ({eng_free.fault!r})")
+    r.check(rig_free.begun == [],
+            f"…with no recording ever opened for the trigger that never "
+            f"happened ({rig_free.begun})")
+
     # A step that never sees its edge faults rather than hanging the routine.
     rig2 = FakeRig(hz=100.0)
     eng2 = RoutineEngine(routine, rig2.hooks(), trigger_drain_s=DRAIN,
-                         trigger_timeout_s=1.0)
+                         trigger_settle_s=SETTLE, trigger_timeout_s=1.0)
     eng2.start()
     drive(eng2, rig2, limit_s=5.0, until=lambda e: e.phase == Phase.PAUSED)
     r.check(eng2.phase == Phase.PAUSED and "trigger" in eng2.fault,
@@ -1010,7 +1078,8 @@ def check_trigger_step(r: Report) -> None:
 
     # The operator can take the rig back mid-wait.
     rig3 = FakeRig(hz=100.0)
-    eng3 = RoutineEngine(routine, rig3.hooks(), trigger_drain_s=DRAIN)
+    eng3 = RoutineEngine(routine, rig3.hooks(), trigger_drain_s=DRAIN,
+                         trigger_settle_s=SETTLE)
     eng3.start()
     r.check(eng3.phase == Phase.WAITING, "…control: waiting again")
     eng3.pause()
@@ -1022,7 +1091,8 @@ def check_trigger_step(r: Report) -> None:
     # wait on an edge nothing can deliver.
     rig4 = FakeRig(hz=100.0)
     rig4.fail_arm = True
-    eng4 = RoutineEngine(routine, rig4.hooks(), trigger_drain_s=DRAIN)
+    eng4 = RoutineEngine(routine, rig4.hooks(), trigger_drain_s=DRAIN,
+                         trigger_settle_s=SETTLE)
     eng4.start()
     r.check(eng4.phase == Phase.PAUSED and "setup failed" in eng4.fault,
             f"a camera that cannot be re-armed pauses the routine "
@@ -1758,8 +1828,15 @@ def check_group_panel(r: Report, app) -> None:
             "control: nothing selected -> neither Group nor Mark as recording "
             "is offered")
     panel._tbl.select_row(0)
-    r.check(not panel._btn_g_add.isEnabled() and not panel._btn_r_add.isEnabled(),
-            "control: a single selected row is not a candidate for either")
+    r.check(not panel._btn_g_add.isEnabled(),
+            "a single selected row is still not a repeat group — one step "
+            "repeated in place is what a Wait's own length already says")
+    r.check(panel._btn_r_add.isEnabled(),
+            "…but IS a candidate recording: a `trigger` step has to sit "
+            "outside the bracket that follows it, so a one-step Recording is "
+            "exactly what the per-edge pattern needs")
+    r.check("Step 1" in panel._lbl_r_selection.text(),
+            f"…named in the singular ({panel._lbl_r_selection.text()!r})")
 
     _select_rows(panel._tbl, 1, 2)              # steps B, C (0-based 1..2)
     r.check(panel._btn_g_add.isEnabled() and panel._btn_r_add.isEnabled(),
@@ -1871,6 +1948,69 @@ def check_group_panel(r: Report, app) -> None:
     r.check(panel.settings.groups == [] and panel.settings.recordings == [],
             "loading a template with neither clears the panel's own")
     app.processEvents()
+
+
+def check_per_edge_routine_is_buildable(r: Report, app) -> None:
+    """The operator's per-edge protocol, built the way the UI actually builds
+    it — and the bug that shipped without this: `selected_range()` refused
+    fewer than 2 rows, so "Mark as recording" could not be applied to the
+    single Wait a `trigger` step must be followed by. Every earlier test
+    constructed `Recording(start=1, end=1)` straight into the model, so none
+    of them touched the panel path that forbade it.
+
+    "100 recordings at FOV 1, each started by an edge, each x seconds" =
+    [move, trigger, wait] with the group over the last two and the bracket on
+    the wait ALONE.
+    """
+    from acqApp.routines.panel import SettingsPanel
+
+    routine = Routine(steps=[Step(kind="move", label="FOV 1", x_um=0.0,
+                                  y_um=0.0, settle_s=0.0),
+                             Step(kind="trigger", label="edge"),
+                             Step(kind="wait", label="capture", length=5.0,
+                                  unit="seconds")])
+    panel = SettingsPanel(routine)
+
+    # The repeat group: trigger + wait, so the move happens once.
+    _select_rows(panel._tbl, 1, 2)
+    panel._spn_g_repeats.setValue(100)
+    panel._group_selected()
+    r.check(len(routine.groups) == 1 and routine.groups[0].start == 1
+            and routine.groups[0].end == 2
+            and routine.groups[0].repeats == 100,
+            f"the trigger+wait pair repeats 100x, leaving the move outside "
+            f"({routine.groups})")
+
+    # The bracket: the wait ALONE — this is what used to be impossible.
+    panel._tbl.select_row(2)
+    r.check(panel._btn_r_add.isEnabled(),
+            "the single Wait row can be marked as a recording")
+    panel._record_selected()
+    r.check(len(routine.recordings) == 1
+            and routine.recordings[0].start == 2
+            and routine.recordings[0].end == 2,
+            f"…producing a one-step Recording over just it "
+            f"({routine.recordings})")
+    r.check(panel._lst_recordings.count() == 1
+            and panel._lst_recordings.item(0).text() == "step 3",
+            f"…listed in the singular ({panel._lst_recordings.item(0).text()!r})")
+
+    # The whole point: the trigger step is NOT inside the bracket, so
+    # validate() accepts it. (The reverse case is covered in check_validation.)
+    panel._cmb_save.setCurrentIndex(panel._cmb_save.findData("per_repeat"))
+    built = panel.settings
+    r.check(built.save_mode == "per_repeat",
+            f"one file per edge is selectable ({built.save_mode})")
+    problems = validate(built, FULL_RIG)
+    r.check(problems == [],
+            f"the assembled per-edge routine validates clean ({problems})")
+
+    # And it survives a save/reload, like any other routine.
+    reloaded = Routine.from_dict(built.to_dict())
+    r.check(reloaded.steps[1].kind == "trigger"
+            and reloaded.groups[0].repeats == 100
+            and reloaded.recordings[0].start == reloaded.recordings[0].end == 2,
+            "…and round-trips through a saved template intact")
 
 
 def check_move_row_repaint(r: Report) -> None:
@@ -2433,6 +2573,7 @@ def main() -> int:
         check_frames_vanish(r)
         check_cycles_and_attrs(r)
         check_groups(r)
+        check_group_repeat_at(r)
         check_recording_repeats(r)
         check_transitions(r)
         check_ttl_start_trigger(r)
@@ -2451,6 +2592,7 @@ def main() -> int:
             check_panel_repaint(r, app)
             check_step_table(r, app, tmp)
             check_group_panel(r, app)
+            check_per_edge_routine_is_buildable(r, app)
             check_move_row_repaint(r)
             check_panel_tracker(r, app)
             check_app(r, app, state)

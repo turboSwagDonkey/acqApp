@@ -32,7 +32,7 @@ Recording bracket on the wait). Same physical line as the TTL start, so
 `_start` puts the camera in External edge mode for either. Each such step
 re-arms the camera through `ModuleHost.rearm_camera_trigger` — it latches,
 so without that only a run's first edge would ever be seen — and that call
-is asynchronous, which is what `TRIGGER_DRAIN_S` in the engine accounts for.
+is asynchronous, which is what the engine's `TRIGGER_SETTLE_S` accounts for.
 
 **Save modes `per_repeat`/`per_group` roll to a fresh file at a
 `RecordingRun` boundary** (`_needs_roll`/`_roll_for`), via
@@ -47,6 +47,18 @@ failure path pauses it) from there would be overwritten by that code
 before it ever took effect. `_tick()` is the only place both `eng.tick()`
 and any resulting roll are guaranteed to run at the same, non-reentrant,
 top-level frame.
+
+**Every status message goes through `_status()`, to the console as well as
+the window's status bar** (2026-09-17) — `MainWindow.status()` alone only
+ever reached the bar, so a pause, a fault, or an uncaught tick exception
+looked like the routine had gone silently quiet to an operator who works
+from the console, which is this app's actual workflow at the rig.
+
+**The panel names which REPEAT is running, not just which table row**
+(`_repeat_suffix`, `routines/settings.py`'s `group_repeat_at`) — "step 1/2"
+alone reads identically on repeat 1 and repeat 100 of a `[trigger, wait]`
+pair, since a Group replays the same table rows in place; only the repeat
+number actually changes.
 """
 from __future__ import annotations
 
@@ -62,7 +74,7 @@ from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
 from acqApp.routines.estimate import clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import (RigLimits, Routine, group_region_at,
-                                      validate)
+                                      group_repeat_at, play_order, validate)
 
 # A step boundary lands within one tick of its true instant; at 106 Hz that is
 # under three frames, and the boundary itself is recorded from the clock, not
@@ -99,6 +111,9 @@ class RoutinesModule(ModuleAdapter):
         self._rec = None                # the Recorder, while recording
         self._filed = 0                 # step boundaries handed to the file
         self._n_steps = 0               # steps in the routine that is running
+        self._group_repeat: list[tuple[int, int] | None] = []   # see
+                                         # group_repeat_at, indexed by
+                                         # eng.order_position
         self._routine: Routine | None = None    # the one that is running
         self._rate_tick = 0
         # True only when Start opened the recording. What makes "stop what you
@@ -114,6 +129,16 @@ class RoutinesModule(ModuleAdapter):
         self._rolling = False           # guards detach_sink()'s abort-on-stop
         self._routine_origin = 0.0      # session-clock t when Start was pressed
 
+    def _status(self, msg: str) -> None:
+        """Every routine status message, everywhere in this file — including
+        the engine's own `log` hook and every direct call below. The status
+        bar alone was where "routine paused: <reason>" went, invisible to an
+        operator watching the console, which is this app's actual workflow at
+        the rig: a pause or an uncaught tick exception read as the routine
+        just going silently quiet."""
+        self.win.status(msg)
+        print(f"[routines] {msg}")
+
     # ── construction ──
     def build_panel(self) -> QWidget:
         saved = config.load_settings(self.key).get("routine")
@@ -124,7 +149,7 @@ class RoutinesModule(ModuleAdapter):
         self.panel.resume_requested.connect(self._resume)
         self.panel.skip_requested.connect(self._skip)
         self.panel.abort_requested.connect(self._abort)
-        self.panel.status_message.connect(self.win.status)
+        self.panel.status_message.connect(self._status)
         # Parented to the panel, so it dies with the UI rather than ticking on
         # into an unloaded module.
         self._timer = QTimer(self.panel)
@@ -204,7 +229,7 @@ class RoutinesModule(ModuleAdapter):
             arm_trigger=arm_trigger,
             begin_recording=self._on_recording_begin,
             end_recording=self._on_recording_end,
-            log=self.win.status,
+            log=self._status,
         )
 
     # ── run control ──
@@ -217,7 +242,7 @@ class RoutinesModule(ModuleAdapter):
         problems = validate(routine, self._rig())
         if problems:
             self.panel.show_problems(problems)
-            self.win.status(f"routine refused: {problems[0]}")
+            self._status(f"routine refused: {problems[0]}")
             return
 
         # External edge mode is needed by a TTL start AND by any `trigger`
@@ -238,15 +263,16 @@ class RoutinesModule(ModuleAdapter):
         self._routine_origin = self.win.sync.clock.now()
         self._routine = routine
         self._n_steps = len(routine.steps)
+        self._group_repeat = group_repeat_at(routine, play_order(routine))
         self._engine = RoutineEngine(routine, self._hooks())
         self._engine.start(trigger=routine.start_trigger)
         self._timer.start()
         if routine.start_trigger == "ttl":
-            self.win.status(f"routine '{routine.name}' armed — waiting for "
-                            f"the camera's TTL trigger")
+            self._status(f"routine '{routine.name}' armed — waiting for "
+                         f"the camera's TTL trigger")
         else:
-            self.win.status(f"routine '{routine.name}' started — "
-                            f"{routine.total_steps()} step(s)")
+            self._status(f"routine '{routine.name}' started — "
+                         f"{routine.total_steps()} step(s)")
 
     def _arm_camera_trigger(self) -> bool:
         """Put the voltage camera in External edge mode before the routine's
@@ -265,7 +291,7 @@ class RoutinesModule(ModuleAdapter):
               else "a recording is already running with the camera not in "
                    "External edge mode — stop it first")
         self.panel.show_problems([msg])
-        self.win.status(f"routine refused: {msg}")
+        self._status(f"routine refused: {msg}")
         return False
 
     def _open_recording(self) -> bool:
@@ -282,7 +308,7 @@ class RoutinesModule(ModuleAdapter):
             return False
         self._own_rec = not was
         if self._own_rec:
-            self.win.status("recording started for the routine")
+            self._status("recording started for the routine")
         return True
 
     def _close_own_recording(self) -> None:
@@ -330,7 +356,7 @@ class RoutinesModule(ModuleAdapter):
             eng.tick()
         except Exception as e:           # noqa: BLE001
             self._stop_ticking()
-            self.win.status(f"routine tick failed ({type(e).__name__}: {e})")
+            self._status(f"routine tick failed ({type(e).__name__}: {e})")
             return
         if self._pending_roll_run is not None:
             run, self._pending_roll_run = self._pending_roll_run, None
@@ -461,7 +487,7 @@ class RoutinesModule(ModuleAdapter):
         if self._engine is not None and self._engine.running:
             self._engine.abort()
             self._stop_ticking()
-            self.win.status("routine aborted — the recording stopped")
+            self._status("routine aborted — the recording stopped")
         self._own_rec = False
         self._rec = None
 
@@ -511,7 +537,8 @@ class RoutinesModule(ModuleAdapter):
             self.panel.set_state(
                 eng.phase,
                 f"WAITING for the camera's trigger — step {i + 1}/"
-                f"{self._n_steps}  cycle {cycle + 1}", i)
+                f"{self._n_steps}  cycle {cycle + 1}{self._repeat_suffix(eng)}",
+                i)
             # No fraction: how long an external source takes is unknowable,
             # and a bar creeping along would imply otherwise.
             self.panel.set_progress(eng.overall_progress(),
@@ -529,11 +556,16 @@ class RoutinesModule(ModuleAdapter):
             return
         i, cycle, attempt = eng.position
         step = eng.step
-        where = f"step {i + 1}/{self._n_steps}  cycle {cycle + 1}"
+        where = (f"step {i + 1}/{self._n_steps}  cycle {cycle + 1}"
+                f"{self._repeat_suffix(eng)}")
         if attempt > 1:
             where += f"  (attempt {attempt})"
         # What "step i is running" means depends on its kind — a Move doesn't
-        # have a length to report a fraction of, a Wait does.
+        # have a length to report a fraction of, a Wait does. A `trigger` step
+        # reaches here only for the one tick between its edge landing and
+        # `_advance()` processing it — briefly RUNNING, `eng.step` still the
+        # trigger step — so it needs its own case rather than falling into
+        # the puffer's label.
         if step is not None:
             if step.kind == "move":
                 where += " — moving/settling"
@@ -542,12 +574,25 @@ class RoutinesModule(ModuleAdapter):
                           f"{step.length:g} {step.unit}")
             elif step.kind == "display":
                 where += " — displaying" if step.pattern else " — stopping display"
+            elif step.kind == "trigger":
+                where += " — trigger received"
             else:
                 where += " — puffing"
         # The row is bolded in the table, so "which step is this" is answered
         # by looking at the protocol rather than by counting the label's index.
         self.panel.set_state(eng.phase, where, i)
         self.panel.set_progress(eng.overall_progress(), self._left(eng))
+
+    def _repeat_suffix(self, eng) -> str:
+        """Returns "  repeat N/M" if the running step sits inside a repeat
+        Group, else "". Without this, "step 1/2" for a `[trigger, wait]` pair
+        reads identically whether it's repeat 1 of 3 or repeat 3 of 3 — the
+        ONLY thing in the whole display that would say otherwise is the
+        progress bar's fraction, easy to miss on a routine that is otherwise
+        silent between edges."""
+        pos = eng.order_position
+        rep = self._group_repeat[pos] if pos < len(self._group_repeat) else None
+        return f"  repeat {rep[0]}/{rep[1]}" if rep else ""
 
     def _left(self, eng) -> str:
         """Elapsed, and what is left — a floor, since no move is timed."""

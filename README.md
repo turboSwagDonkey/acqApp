@@ -364,17 +364,35 @@ the **Wait alone**. Each repeat re-arms the camera, holds in **WAITING** until
 its edge lands, then opens the file — so with `save_mode="per_repeat"` you get
 one file per edge. The bracket must not cover the Trigger step itself;
 validation refuses that, because the file would otherwise be open while
-waiting, and re-arming restarts the camera's acquisition underneath it.
+waiting, and re-arming must happen underneath it.
+
 Re-arming is necessary because `START` mode **latches**: the first edge starts
-the stream and later edges do nothing until acquisition is restarted
-(`ModuleHost.rearm_camera_trigger`, queued onto the capture thread). Since
-that queueing is asynchronous, frames already in flight would otherwise read
-as an edge, so an arriving frame only counts after `TRIGGER_DRAIN_S` (1.5 s,
-comfortably over the capture loop's 0.5 s frame-wait). That window is also
-why an edge arriving while the routine is busy elsewhere is **ignored** rather
-than latched — the operator's call. Pause works while WAITING, since an edge
-may never come. Between edges the camera produces no frames at all, so **live
-view is black while waiting** — inherent to gating capture on the line.
+the stream and later edges do nothing on their own. A bare
+`stop_acquisition()`/`start_acquisition()` is **not enough** — confirmed at the
+rig (2026-09-16/17): that pair pauses reading frames, but the master-pulse
+generator's own "already got my edge" latch survives it untouched, so the next
+`start_acquisition()` free-runs with no edge at all (one recording worked, the
+next began on its own). What actually resets the latch, also confirmed live,
+is writing `MASTER PULSE MODE` away from `START` and back to it — the property
+**write** is what clears it, not the acquisition state (`OrcaFireWorker.
+_do_rearm`, queued via `ModuleHost.rearm_camera_trigger` onto the capture
+thread since the DCAM calls belong to that thread, not the routine's).
+
+That queueing is asynchronous, so frames already in flight keep arriving for a
+while after a re-arm is requested — how long is not knowable from the engine,
+so a fixed window was tried first and **also failed at the rig**: it expired
+while frames were still coming, and the next one read as a trigger. Detection
+is instead self-verifying: the frame count must hold completely still for
+`TRIGGER_SETTLE_S` (0.75 s, past a `TRIGGER_DRAIN_S` floor of 1.5 s) before the
+engine starts trusting it, and only *then* does an increase mean a real edge.
+A camera that never goes quiet faults, naming the reason, rather than
+fabricating a trigger. That same stillness requirement is what makes an edge
+arriving while the routine is busy elsewhere get **ignored** rather than
+latched — the operator's call. Pause works while WAITING, since an edge may
+never come. Between edges the camera produces no frames at all, so **live view
+is black while waiting** — inherent to gating capture on the line. The panel
+also names which repeat is running (`RoutinesModule._repeat_suffix`) — "step
+1/2" alone would read identically on repeat 1 and repeat 100.
 
 **The step list is edited through widgets, not words.** Kind is a drop-down
 (Move/Display/Wait/Puff/Trigger); Length/Unit are only editable on a Wait row and

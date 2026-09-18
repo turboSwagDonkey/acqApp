@@ -263,9 +263,11 @@ class SettingsPanel(QWidget):
         rrow.addWidget(self._lbl_r_selection, 1)
         self._btn_r_add = QPushButton("Mark as recording")
         self._btn_r_add.setEnabled(False)
-        self._btn_r_add.setToolTip("Mark the steps selected in the table "
-                                   "above as one recording bracket — the "
-                                   "camera captures for exactly these steps.")
+        self._btn_r_add.setToolTip(
+            "Mark the step(s) selected in the table above as one recording "
+            "bracket — the camera captures for exactly these steps. A single "
+            "step is fine, and is what a Trigger step needs: the bracket goes "
+            "on what FOLLOWS it, so the file starts on the edge.")
         self._btn_r_add.clicked.connect(self._record_selected)
         rrow.addWidget(self._btn_r_add)
         rl.addLayout(rrow)
@@ -385,17 +387,21 @@ class SettingsPanel(QWidget):
 
     def _on_selection_changed(self) -> None:
         """The Repeat-groups and Recordings controls track the table's own
-        selection rather than asking for row numbers a second time — 2+
-        contiguous rows is a candidate for either, anything else is not one
-        yet."""
+        selection rather than asking for row numbers a second time. A group
+        needs 2+ contiguous rows; a recording needs only 1 — see
+        `StepTable.selected_range`."""
         span = self._tbl.selected_range()
         selected = f"Steps {span[0] + 1}-{span[1] + 1} selected" if span else None
         self._btn_g_add.setEnabled(span is not None)
         self._lbl_g_selection.setText(
             selected or "Select 2+ steps in the table to group them")
-        self._btn_r_add.setEnabled(span is not None)
+
+        rec = self._tbl.selected_range(min_rows=1)
+        self._btn_r_add.setEnabled(rec is not None)
         self._lbl_r_selection.setText(
-            selected or "Select 2+ steps in the table to mark them as recording")
+            (f"Step {rec[0] + 1} selected" if rec[0] == rec[1] else
+             f"Steps {rec[0] + 1}-{rec[1] + 1} selected") if rec else
+            "Select a step in the table to mark it as recording")
 
     def _group_selected(self) -> None:
         span = self._tbl.selected_range()
@@ -418,11 +424,14 @@ class SettingsPanel(QWidget):
     def _reload_recordings(self) -> None:
         self._lst_recordings.clear()
         for r in self._r.recordings:
-            self._lst_recordings.addItem(f"steps {r.start + 1}-{r.end + 1}")
+            self._lst_recordings.addItem(
+                f"step {r.start + 1}" if r.start == r.end else
+                f"steps {r.start + 1}-{r.end + 1}")
         self._tbl.set_recordings(self._r.recordings)
 
     def _record_selected(self) -> None:
-        span = self._tbl.selected_range()
+        # One step is a legitimate recording — see `StepTable.selected_range`.
+        span = self._tbl.selected_range(min_rows=1)
         if span is None:
             return
         start, end = span

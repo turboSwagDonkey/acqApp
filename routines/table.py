@@ -579,14 +579,19 @@ class StepTable(QTableWidget):
         if 0 <= row < self.rowCount():
             self.selectRow(row)
 
-    def selected_range(self) -> tuple[int, int] | None:
+    def selected_range(self, min_rows: int = 2) -> tuple[int, int] | None:
         """(first, last) rows of the current selection, inclusive — or None
-        with fewer than 2 rows selected, since a "group"/"recording" of one
-        step is not what those controls are for. ContiguousSelection
-        guarantees no gaps, so min/max is the whole selection, not just its
-        ends."""
+        with fewer than `min_rows` selected. ContiguousSelection guarantees no
+        gaps, so min/max is the whole selection, not just its ends.
+
+        Two rows is right for a repeat GROUP (one step repeated in place is
+        what a Wait's own length already says), but a RECORDING of one step is
+        a real thing and callers pass `min_rows=1` for it: a `trigger` step has
+        to sit OUTSIDE the bracket that follows it, so "record exactly this one
+        Wait" is the whole point of the per-edge pattern.
+        """
         rows = self._selected_rows()
-        if len(rows) < 2:
+        if len(rows) < min_rows:
             return None
         return min(rows), max(rows)
 
@@ -604,6 +609,7 @@ class StepTable(QTableWidget):
             self.select_row(idx.row())
         row = self.selected_row()
         span = self.selected_range()
+        rec_span = self.selected_range(min_rows=1)
 
         menu = QMenu(self)
         if row >= 0:
@@ -627,14 +633,18 @@ class StepTable(QTableWidget):
                 act.triggered.connect(self.position_requested.emit)
                 act = menu.addAction("Fill Stage X/Y/Z from FOV…")
                 act.triggered.connect(self.fov_requested.emit)
-        if span is not None:
+        if span is not None or rec_span is not None:
             if row >= 0:
                 menu.addSeparator()
+        if span is not None:
             act = menu.addAction(
                 f"Group selected steps {span[0] + 1}-{span[1] + 1}…")
             act.triggered.connect(self.group_requested.emit)
+        if rec_span is not None:
+            lo, hi = rec_span
             act = menu.addAction(
-                f"Mark steps {span[0] + 1}-{span[1] + 1} as recording…")
+                f"Mark step {lo + 1} as recording…" if lo == hi else
+                f"Mark steps {lo + 1}-{hi + 1} as recording…")
             act.triggered.connect(self.record_requested.emit)
         if not menu.isEmpty():
             menu.exec(event.globalPos())

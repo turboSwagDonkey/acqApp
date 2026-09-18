@@ -40,10 +40,12 @@ _TRIGGER_MODE: dict[str, str] = {
 # value straight to the C library, so a string raises ValueError, and
 # `enum_as_str` is read-only (set_attribute_value does not accept it).
 _TRIG_SRC_PROP        = "TRIGGER SOURCE"            # 1 INT 2 EXT 3 SW 4 MASTER
+_TRIG_POLARITY_PROP   = "TRIGGER POLARITY"          # 1 NEGATIVE 2 POSITIVE
 _MP_TRIG_SRC_PROP     = "MASTER PULSE TRIGGER SOURCE"   # 1 EXTERNAL 2 SOFTWARE
 _MP_MODE_PROP         = "MASTER PULSE MODE"         # 1 CONTINUOUS 2 START 3 BURST
 _MP_INTERVAL_PROP     = "MASTER PULSE INTERVAL"     # seconds
 _MP_TRIG_SRC_EXTERNAL = 1
+_MP_MODE_CONTINUOUS   = 1
 _MP_MODE_START        = 2
 
 # Long enough not to busy-poll a free-running camera, short enough that Stop
@@ -144,17 +146,63 @@ class OrcaFireWorker(PullWorker):
         with self._exp_lock:
             self._pending_exp = us
 
+    @staticmethod
+    def _trigger_readback(cam) -> str:
+        """What the camera says its trigger state actually IS, for the log.
+
+        Only the properties that decide whether capture is gated; anything
+        unreadable degrades to `?` rather than costing the caller a frame.
+        """
+        def g(prop: str) -> str:
+            try:
+                return str(cam.get_attribute_value(prop, enum_as_str=True))
+            except Exception:       # noqa: BLE001 — a log line is not worth a raise
+                return "?"
+        src = g(_TRIG_SRC_PROP)
+        if src != "MASTER PULSE":
+            return f"{_TRIG_SRC_PROP}={src}"
+        return (f"{_TRIG_SRC_PROP}={src}, {_MP_MODE_PROP}={g(_MP_MODE_PROP)}, "
+                f"{_MP_TRIG_SRC_PROP}={g(_MP_TRIG_SRC_PROP)}, "
+                f"{_TRIG_POLARITY_PROP}={g(_TRIG_POLARITY_PROP)}, "
+                f"{_MP_INTERVAL_PROP}={g(_MP_INTERVAL_PROP)}")
+
+    @staticmethod
+    def _do_rearm(cam, nframes: int) -> None:
+        """The actual re-arm, confirmed live against the real camera
+        (2026-09-17): a bare `stop_acquisition()`/`start_acquisition()` is NOT
+        enough. That pair pauses reading frames, but MASTER PULSE MODE=START's
+        own "already got my edge" latch survives it untouched, so the very
+        next `start_acquisition()` free-runs with no edge at all — the actual
+        rig bug (one edge worked, the second recording began on its own).
+
+        What resets the latch is writing `MASTER PULSE MODE` itself: away
+        from START to CONTINUOUS, then back to START, around the stop/start.
+        It is the property WRITE that clears it, not the acquisition state —
+        tested by cycling the mode with acquisition already stopped and
+        restarted, and confirmed gated (zero frames) until a real external
+        edge arrived. Only `MASTER PULSE MODE` needs rewriting; `TRIGGER
+        SOURCE`/`MASTER PULSE TRIGGER SOURCE`/polarity survive the cycle.
+        """
+        cam.stop_acquisition()
+        cam.set_attribute_value(
+            _MP_MODE_PROP, _MP_MODE_CONTINUOUS, error_on_missing=False)
+        cam.set_attribute_value(
+            _MP_MODE_PROP, _MP_MODE_START, error_on_missing=False)
+        cam.start_acquisition(nframes=nframes)
+
     def rearm_trigger(self) -> None:
-        """Queue a stop/start of acquisition, so the NEXT external edge is
-        detectable again — in MASTER PULSE/START mode the first edge starts the
-        stream and further edges do nothing until acquisition is restarted, so
-        a routine recording once per edge has to restart it between recordings.
+        """Queue a re-arm, so the NEXT external edge is detectable again — in
+        MASTER PULSE/START mode the first edge starts the stream and further
+        edges do nothing on their own, so a routine recording once per edge
+        has to re-arm between recordings. `_do_rearm` is the actual sequence
+        and the reasoning behind it; this just queues that call.
 
         Queued, not done here: this is called from the Qt thread, and the DCAM
         calls belong to the capture thread that owns the handle. So the caller
         cannot treat it as complete on return — the loop acts on it when its
-        own frame wait next expires, which is what `routines/engine.py`'s
-        `TRIGGER_DRAIN_S` accounts for.
+        own frame wait next expires, and residual frames keep arriving for a
+        while after that, which is what `routines/engine.py`'s
+        `TRIGGER_SETTLE_S` accounts for.
         """
         with self._exp_lock:
             self._pending_rearm = True
@@ -425,18 +473,17 @@ class OrcaFireWorker(PullWorker):
                     cam.set_attribute_value(
                         _MP_INTERVAL_PROP, cam.get_frame_period(),
                         error_on_missing=False)
+                # Read back rather than restate what was asked for: every one of
+                # these was wrong at some point, and a log that echoed the
+                # intent would have hidden all of it. This is the line that says
+                # whether the camera is really gated or free-running.
+                print(f"[voltage_cam] trigger: {self._trigger_readback(cam)}")
             except Exception as e:
                 # Deliberately not "falling back to internal": set_trigger_mode
                 # may already have taken effect above, and claiming otherwise
                 # sent the last round of debugging in the wrong direction.
-                src = "?"
-                try:
-                    src = cam.get_attribute_value(_TRIG_SRC_PROP,
-                                                  enum_as_str=True)
-                except Exception:
-                    pass
-                print(f"[voltage_cam] trigger setup failed ({e}); "
-                      f"camera left at TRIGGER SOURCE={src}")
+                print(f"[voltage_cam] trigger setup failed ({e}); camera left "
+                      f"at {self._trigger_readback(cam)}")
 
             # --- capture loop ---
             # pylablib's default 100 frames is at once too big at full frame
@@ -454,7 +501,7 @@ class OrcaFireWorker(PullWorker):
             # reveal the mid-run slowdown we watch for.
             n_acquired, win_n = 0, 0
             status_t0 = time.perf_counter()
-            wait_fails, wait_msg_t0 = 0, 0.0
+            wait_fails, wait_msg_t0, wait_seq_t0 = 0, 0.0, 0.0
 
             try:
                 while not self._stop:
@@ -464,18 +511,16 @@ class OrcaFireWorker(PullWorker):
                         rearm = self._pending_rearm
                         self._pending_rearm = False
                     if rearm:
-                        # Stop/start is the only way to re-gate the master-pulse
-                        # generator; see rearm_trigger(). Buffers are rebuilt
-                        # with the same nframes, so the loop below is unaffected.
                         try:
-                            cam.stop_acquisition()
-                            cam.start_acquisition(nframes=nframes)
+                            self._do_rearm(cam, nframes)
                             # Both mirror camera counters that restart from 0
                             # here. Leaving them would make the next status
                             # tick report a large NEGATIVE rate (acquired minus
                             # a pre-restart total) and a phantom drop.
                             self._skipped = 0
                             n_acquired = 0
+                            print(f"[voltage_cam] re-armed: "
+                                  f"{self._trigger_readback(cam)}")
                         except Exception as e:      # noqa: BLE001
                             # Report and carry on: the routine's own trigger
                             # timeout is what turns "never re-armed" into a
@@ -510,16 +555,32 @@ class OrcaFireWorker(PullWorker):
                         # and retrying it unpaced spins a core all session. Tell
                         # them apart by elapsed time, not by exception type.
                         waited = time.perf_counter() - t_wait
+                        full_timeout = waited >= _WAIT_TIMEOUT * 0.5
+                        if wait_fails == 0:
+                            wait_seq_t0 = t_wait
                         wait_fails += 1
-                        if waited < _WAIT_TIMEOUT * 0.5:
+                        if not full_timeout:
                             time.sleep(min(0.02 * wait_fails, _WAIT_TIMEOUT))
                         now = time.perf_counter()
                         if wait_fails == 1 or now - wait_msg_t0 >= _WAIT_MSG_EVERY:
                             wait_msg_t0 = now
-                            print(f"[voltage_cam] no frame "
-                                  f"({wait_fails} consecutive, "
-                                  f"{waited * 1e3:.0f} ms): "
-                                  f"{type(e).__name__}: {e}")
+                            # A full-length timeout in External edge mode is the
+                            # camera doing its job — gated, no edge yet — and
+                            # printing it as `DCAMTimeoutError` read as a fault
+                            # for exactly as long as it took someone to ask.
+                            # An IMMEDIATE failure is still a real error, in any
+                            # mode, so keep the exception for that.
+                            if mode == "master_pulse" and full_timeout:
+                                msg = (f"[voltage_cam] waiting for an external "
+                                       f"trigger — no frame for "
+                                       f"{now - wait_seq_t0:.1f} s (normal "
+                                       f"while the line is idle)")
+                            else:
+                                msg = (f"[voltage_cam] no frame "
+                                       f"({wait_fails} consecutive, "
+                                       f"{waited * 1e3:.0f} ms): "
+                                       f"{type(e).__name__}: {e}")
+                            print(msg)
                         continue
 
                     # Snapshot once: the sink decides how much we read, and it
@@ -590,9 +651,16 @@ class MockCameraWorker(PullWorker):
     _FPS = 30.0
     _STOP_WAIT_MS = 2000
 
+    # How long the mock stays dark after a re-arm before its own "edge"
+    # arrives. Must outlast the engine's settle window
+    # (`routines/engine.py`'s TRIGGER_SETTLE_S) or a mock routine could never
+    # tell the gate apart from a camera that ignores the trigger entirely.
+    _GATE_S = 1.2
+
     def __init__(self, config: AcqConfig | None = None):
         super().__init__()
         self._config = config or AcqConfig()
+        self._gated_until = 0.0
 
     @property
     def timestamp_source(self) -> str:
@@ -613,11 +681,17 @@ class MockCameraWorker(PullWorker):
         self._config.exposure_us = us
 
     def rearm_trigger(self) -> None:
-        """No-op on the mock worker: it free-runs, so there is nothing to
-        re-gate. A `trigger` step therefore ends on the mock's own next frame
-        — the routine stays exercisable end to end without the rig, which is
-        the point of the mock."""
-        return None
+        """Go dark for `_GATE_S`, then resume — the mock's stand-in for "gated,
+        until an edge arrives".
+
+        Not a no-op, deliberately. A free-running mock would look exactly like
+        a camera that ignores the trigger line, which the engine now (rightly)
+        faults on rather than treating the next frame as an edge. Emulating the
+        gate is what keeps a `trigger` routine drivable end to end without the
+        rig, and makes the mock exercise the real waiting path instead of
+        skipping past it.
+        """
+        self._gated_until = time.perf_counter() + self._GATE_S
 
     def _run(self) -> None:
         self._stop = False
@@ -635,6 +709,8 @@ class MockCameraWorker(PullWorker):
             if self._stop:
                 break
             acquired = time.perf_counter()
+            if acquired < self._gated_until:
+                continue         # gated by a re-arm — see rearm_trigger()
             t     = acquired - t0
             frame = rng.integers(1500, 2500, (H, W), dtype=np.uint16)
             sig   = int(300 * np.sin(2 * np.pi * 0.5 * t))
