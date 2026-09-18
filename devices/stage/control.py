@@ -106,12 +106,30 @@ class StageController:
         without the method it just refuses with a clear message)."""
         return self._dev is not None and hasattr(self._dev, "establish_frame")
 
+    # ── hard-limit detection ─────────────────────────────────────────────────
+    def _note_limit(self, ax: StageAxis, status) -> None:
+        """Latch `ax.frame_stale` the moment a hard-limit status bit is seen.
+
+        Only meaningful on a backend whose command origin can actually drift
+        on a limit hit (`supports_reframe` — the MCM301's readout never does,
+        see its own docstring); checking here regardless would be harmless
+        but misleading, flagging a staleness that backend cannot have.
+        Sticky on purpose — the corruption started the instant the limit was
+        touched and persists after backing off it, so this must not clear
+        itself just because the bit reads False again next poll. Only a fresh
+        `establish_frame()` (StageAxis.apply_updates) clears it.
+        """
+        if self.supports_reframe and (status.at_fwd_limit or status.at_rev_limit):
+            ax.frame_stale = True
+
     # ── reads ───────────────────────────────────────────────────────────────
     def read_xy_um(self) -> tuple[float, float]:
         if self._dev is None:
             raise StageControllerError("not connected")
         sx = self._dev.get_status(self._s.x.index)
         sy = self._dev.get_status(self._s.y.index)
+        self._note_limit(self._s.x, sx)
+        self._note_limit(self._s.y, sy)
         return (self._s.x.to_um(sx.position), self._s.y.to_um(sy.position))
 
     def read_z_um(self) -> float:
@@ -121,13 +139,21 @@ class StageController:
             raise StageControllerError("not connected")
         if self._s.z is None:
             raise StageControllerError("this rig has no Z stage")
-        return self._s.z.to_um(self._dev.get_status(self._s.z.index).position)
+        sz = self._dev.get_status(self._s.z.index)
+        self._note_limit(self._s.z, sz)
+        return self._s.z.to_um(sz.position)
 
     # ── motion (physically moves the stage) ─────────────────────────────────
     def move_to_um(self, which: str, target_um: float) -> None:
         if self._dev is None:
             raise StageControllerError("not connected")
         ax = self._axis(which)
+        if not ax.has_frame:
+            raise StageControllerError(
+                f"{ax.name}: no valid frame (never calibrated, or invalidated "
+                f"by a hard-limit hit since) — absolute moves are refused "
+                f"until it is re-established. Jog instead, or use "
+                f"Calibrate… -> Re-establish frame.")
         counts = ax.clamp_counts(ax.um_to_counts(target_um))
         self._dev.move_to_readout(ax.index, counts)
 
@@ -139,7 +165,15 @@ class StageController:
             # frame_rotation_deg (an X/Y-only display setting) never applies —
             # the same single-axis move _rotate_jog degenerates to at deg==0.
             ax = self._axis("z")
-            cur = self._dev.get_status(ax.index).position
+            st = self._dev.get_status(ax.index)
+            self._note_limit(ax, st)
+            if ax.frame_stale:
+                raise StageControllerError(
+                    f"{ax.name}: a hard limit was hit since the last "
+                    f"calibration — the command map is unreliable, so even a "
+                    f"jog can land somewhere else. Re-establish the frame "
+                    f"before moving further.")
+            cur = st.position
             target = ax.clamp_counts(
                 int(round(cur + ax.sign * delta_um * ax.counts_per_um)))
             self._dev.move_to_readout(ax.index, target)
@@ -148,7 +182,15 @@ class StageController:
         for ax, d in ((self._s.x, dx), (self._s.y, dy)):
             if not d:
                 continue
-            cur = self._dev.get_status(ax.index).position
+            st = self._dev.get_status(ax.index)
+            self._note_limit(ax, st)
+            if ax.frame_stale:
+                raise StageControllerError(
+                    f"{ax.name}: a hard limit was hit since the last "
+                    f"calibration — the command map is unreliable, so even a "
+                    f"jog can land somewhere else. Re-establish the frame "
+                    f"before moving further.")
+            cur = st.position
             target = ax.clamp_counts(int(round(cur + ax.sign * d * ax.counts_per_um)))
             self._dev.move_to_readout(ax.index, target)
 
@@ -281,6 +323,9 @@ class StageController:
         if self._dev is None:
             raise StageControllerError("not connected")
         for ax in (self._s.x, self._s.y):
+            if not ax.has_frame:
+                raise StageControllerError(
+                    f"{ax.name}: no valid frame — see move_to_um.")
             self._dev.move_to_readout(ax.index, int(round(ax.ref_counts)))
 
     # ── session home (a bookmark, not calibration) ──────────────────────────
@@ -297,12 +342,23 @@ class StageController:
         self._s.x.home_counts = self._s.y.home_counts = None
 
     def go_home(self) -> None:
-        """MOTION: absolute move both axes back to the session home."""
+        """MOTION: absolute move both axes back to the session home.
+
+        `home_counts` is a raw encoder count captured fresh by
+        `set_home_here()`, independent of origin/`ref_counts` — so this only
+        needs the command map to still be trustworthy (`frame_stale`), not
+        the fuller `has_frame` `move_to_um` requires (home works even before
+        an axis has ever been zeroed, same as jog)."""
         if self._dev is None:
             raise StageControllerError("not connected")
         if self._s.x.home_counts is None or self._s.y.home_counts is None:
             raise StageControllerError("no home set this session")
         for ax in (self._s.x, self._s.y):
+            if ax.frame_stale:
+                raise StageControllerError(
+                    f"{ax.name}: a hard limit was hit since the last "
+                    f"calibration — the command map is unreliable. "
+                    f"Re-establish the frame before moving further.")
             self._dev.move_to_readout(ax.index, ax.clamp_counts(int(ax.home_counts)))
 
 
@@ -365,12 +421,25 @@ class MockStageController:
         return self._pos["z"]
 
     def move_to_um(self, which: str, target_um: float) -> None:
+        ax = self._axis(which)
+        if not ax.has_frame:
+            raise StageControllerError(
+                f"{ax.name}: no valid frame — see StageController.move_to_um.")
         self._target[which] = self._clamp_um(which, target_um)
 
     def jog_um(self, which: str, delta_um: float) -> None:
         if which == "z":     # not part of the XY plane — see StageController
+            if self._axis("z").frame_stale:
+                raise StageControllerError(
+                    "Z: a hard limit was hit since the last calibration — "
+                    "see StageController.jog_um.")
             self._target["z"] = self._clamp_um("z", self._pos["z"] + delta_um)
             return
+        for k in ("x", "y"):
+            if self._axis(k).frame_stale:
+                raise StageControllerError(
+                    f"{k.upper()}: a hard limit was hit since the last "
+                    f"calibration — see StageController.jog_um.")
         dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
         for k, d in (("x", dx), ("y", dy)):
             if not d:
@@ -429,6 +498,10 @@ class MockStageController:
         return updates
 
     def go_to_center(self) -> None:
+        for ax in (self._s.x, self._s.y):
+            if not ax.has_frame:
+                raise StageControllerError(
+                    f"{ax.name}: no valid frame — see StageController.go_to_center.")
         self._target = {"x": 0.0, "y": 0.0}
 
     def set_home_here(self) -> tuple[float, float]:
@@ -442,4 +515,8 @@ class MockStageController:
         if self._s.x.home_counts is None or self._s.y.home_counts is None:
             raise RuntimeError("no home set this session")
         for k, ax in (("x", self._s.x), ("y", self._s.y)):
+            if ax.frame_stale:
+                raise StageControllerError(
+                    f"{ax.name}: a hard limit was hit since the last "
+                    f"calibration — see StageController.go_home.")
             self._target[k] = self._clamp_um(k, ax.to_um(ax.home_counts))

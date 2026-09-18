@@ -54,6 +54,17 @@ class StageAxis:
     # A bookmark, NOT calibration: never loaded from or written to the config,
     # so a convenience marker can't be mistaken for the true zero next session.
     home_counts:    int | None = None
+    # Runtime-only, never loaded from or written to the config (there is no
+    # way to know from a file alone whether a limit was hit since it was last
+    # saved) — set live by StageController the moment a hard-limit status bit
+    # is observed on THIS axis. A limit hit re-references the controller's
+    # command origin (see driver.py), which silently invalidates `slope`/
+    # `offset` — every absolute move AND every jog after that point computes a
+    # command through the now-wrong linear map and lands somewhere other than
+    # the (correctly clamped, correctly displayed) target. Cleared only by a
+    # fresh `establish_frame()`, which remeasures slope/offset directly in
+    # raw command units and so is immune to the stale map itself.
+    frame_stale:    bool = False
 
     @property
     def sign(self) -> int:
@@ -61,8 +72,10 @@ class StageAxis:
 
     @property
     def has_frame(self) -> bool:
-        """True when absolute go-to can be trusted (command→encoder map known)."""
-        return self.slope is not None and self.offset is not None and self.origin_set
+        """True when absolute go-to can be trusted (command→encoder map known
+        AND not invalidated by an undetected hard-limit hit since)."""
+        return (self.slope is not None and self.offset is not None
+                and self.origin_set and not self.frame_stale)
 
     def default_span(self) -> int:
         """Full travel in counts — the configured value, else 1 inch worth."""
@@ -95,6 +108,13 @@ class StageAxis:
         for k in ("slope", "offset", "soft_min", "soft_max", "travel_min", "travel_max"):
             if k in upd:
                 setattr(self, k, upd[k])
+        # `slope` only ever arrives here from `establish_frame()` (the ONLY
+        # producer of that key — `center_updates()` never includes it), which
+        # just remeasured it directly in raw command units — immune to
+        # whatever the map was before, stale or not. That measurement is
+        # exactly what makes the map trustworthy again.
+        if "slope" in upd:
+            self.frame_stale = False
 
     def to_um(self, counts: float) -> float:
         if not self.counts_per_um:
@@ -105,11 +125,30 @@ class StageAxis:
         return int(round(self.ref_counts + self.sign * um * self.counts_per_um))
 
     def clamp_counts(self, counts: int) -> int:
-        if self.soft_min is not None:
-            counts = max(counts, self.soft_min)
-        if self.soft_max is not None:
-            counts = min(counts, self.soft_max)
-        return counts
+        """Clamp to the soft limits, if any are set — a no-op otherwise,
+        which is the correct, EXPECTED shape for an axis that has genuinely
+        never been calibrated at all: jog has to work with no soft limits
+        yet, or there would be no way to move a brand-new axis anywhere to
+        declare a zero in the first place (the bootstrap `set_z_zero_here()`/
+        `set_center_here()` needs before it can create one).
+
+        The one case this DOES refuse: `origin_set` True with no soft limits
+        — a contradiction normal app code cannot produce (`center_updates()`
+        always sets both together), but a hand-edited config file could.
+        `move_to_um`/`jog_um`/`go_home` already refuse earlier for the two
+        real dangers (uncalibrated axis reaching an absolute-move call;
+        invalidated by a hard-limit hit — see `has_frame`/`frame_stale`), so
+        this is a narrower, purely defense-in-depth backstop, not the fix
+        for either of those.
+        """
+        if self.soft_min is None or self.soft_max is None:
+            if self.origin_set:
+                raise ValueError(
+                    f"{self.name}: claims a calibrated origin but has no "
+                    f"soft limits — refusing to clamp {counts} counts "
+                    f"unbounded. Re-establish the frame.")
+            return counts
+        return max(self.soft_min, min(counts, self.soft_max))
 
     def soft_limits_um(self) -> tuple[float, float]:
         """Soft limits expressed in µm (sorted), or a safe default span."""

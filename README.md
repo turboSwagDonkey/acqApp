@@ -71,8 +71,24 @@ it drives the stage:
 jog, absolute go-to, stop, a session-scoped "home" bookmark, and a calibration
 that **drives both axes into their reverse hard limits** to re-measure the
 command→encoder map. Soft limits clamp every target, and absolute go-to is
-disabled until the frame is known, so a stale origin cannot silently send the
-stage to the wrong place.
+refused until the frame is known — enforced once, in `StageController` itself
+(`move_to_um`/`jog_um`/`go_home`/`go_to_center`), so every caller gets it for
+free rather than each having to check first (a saved-FOV recall and a
+routine's Move step both used to skip that check entirely).
+
+**A hard limit hit mid-session is detected, not just a config that was never
+calibrated.** Touching a limit re-references the controller's own command
+origin, silently invalidating the slope/offset conversion every absolute
+move — and every jog — depends on; nothing used to notice, so the panel kept
+reading "Frame OK" and the next move computed its target through a now-wrong
+map, landing somewhere other than the correctly-displayed, correctly-confirmed
+distance the operator saw (2026-09-18: this is what drove the Z stage into a
+sample). `StageController` now watches every status read (the same one the
+4 Hz poll worker already makes) for the hardware's own limit-switch bits and
+latches `StageAxis.frame_stale` the instant one is seen — sticky, so backing
+off the switch again doesn't un-flag it. Every motion method then refuses
+until a fresh **Re-establish frame…** remeasures slope/offset directly in raw
+command units, which is immune to the staleness it exists to fix.
 
 Calibration, soft limits and the origin live in the config **shared with the
 standalone `stage_control` app** (`../stage_control/config.json`, falling back
