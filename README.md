@@ -278,13 +278,17 @@ stage, start Displaying a pattern, Wait, Puff, wait for an external
 Trigger — repeated for as many cycles as the operator asks. It is the first feature in the app whose whole purpose
 is to **actuate**, which is why it is shaped the way it is.
 
-A **Recording** is a separate, draggable bracket over a contiguous range of
-steps — select the range in the table, right-click "Mark as recording…" —
-meaning "the camera is capturing for these steps," independent of what those
-steps individually do and independent of repeat groups (the two ranges may
-nest or overlap freely). This is the one thing that decides when a `/routine`
-file boundary opens and when the illumination LED comes on; a routine can
-move and display things outside any Recording with neither happening.
+A **Recording** is a sticker on one step — click that step's row number in
+the table to toggle it — meaning "the camera is capturing for this step,"
+independent of what the step itself does and independent of repeat groups (a
+recording may sit inside, outside, or straddle a group's edge freely). This
+is the one thing that decides when a `/routine` file boundary opens and when
+the illumination LED comes on; a routine can move and display things outside
+any Recording with neither happening. A recording covers exactly the one
+step it's stuck to, not a range — it does not carry over into the step
+after it — but a step inside a repeated Group still gets a fresh recording
+file every time it repeats: `routines/engine.py` opens a new one per
+`(cycle, serial)` automatically.
 
 A Wait step's length is set in **frames or seconds, the operator's choice
 per step**, and the two are never interconverted: at 106 Hz a rounded

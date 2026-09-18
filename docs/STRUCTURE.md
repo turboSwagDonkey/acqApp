@@ -235,8 +235,9 @@ devices/                one package per instrument
     panel.py
     settings.py
 routines/               experiment routines: atomic steps (move/display/wait/
-                        puff) executed in order, with a draggable Recording
-                        bracket over the steps the camera captures for
+                        puff) executed in order, with a Recording sticker on
+                        the one step the camera captures for (click its row
+                        number to toggle)
   panel.py              the protocol, the run controls, and one Start button
   table.py              the step list: every cell edits through a widget that
                         can only produce a legal value; Kind picks what a row

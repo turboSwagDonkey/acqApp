@@ -33,12 +33,18 @@ from FOV) live on the table's own right-click menu, gated by the row's kind,
 rather than as buttons here — this panel keeps only +Step (with a kind
 picker) and reordering visible, since those are used on every single step.
 
-Two things come from selecting a range in the table, not typing row numbers
-— `_on_selection_changed` mirrors the table's selection into both controls:
-**Repeat groups** (`routines/settings.py`'s `Group`) nest a range of steps
-inside `cycles`; **Recordings** (`Recording`) mark a range as "the camera is
-capturing for these" — independent of what those steps do, and independent
-of Groups (the two ranges may nest or overlap freely).
+A **repeat group** (`routines/settings.py`'s `Group`) comes from selecting a
+range in the table, not typing row numbers — `_on_selection_changed` mirrors
+the table's selection into the "Repeat groups" control, and nests that range
+of steps inside `cycles`. A **recording** (`Recording`) is not a selection at
+all: it is a sticker on one step, toggled by clicking that step's row number
+in the table (`StepTable.recording_toggled`) — "the camera is capturing for
+this step," independent of what the step does and independent of Groups (a
+recording may sit inside, outside, or straddling a group's edge freely). For
+now a recording covers exactly the one step it's stuck to; it does not carry
+over into the step after. A step inside a repeated Group gets a fresh
+recording file each time it repeats — `routines/engine.py` opens a new one
+per `(cycle, serial)` automatically, nothing here has to ask again.
 """
 from __future__ import annotations
 
@@ -166,7 +172,7 @@ class SettingsPanel(QWidget):
         self._tbl.remove_requested.connect(self._del_step)
         self._tbl.clear_pattern_requested.connect(self._clear_pattern)
         self._tbl.group_requested.connect(self._group_selected)
-        self._tbl.record_requested.connect(self._record_selected)
+        self._tbl.recording_toggled.connect(self._toggle_recording)
         self._tbl.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._tbl, 1)
 
@@ -197,8 +203,8 @@ class SettingsPanel(QWidget):
              "recordings as separate bars (one per repeat, never merged).")))
         btns.addStretch(1)
         hint = QLabel("Right-click a step for Duplicate, Remove, Pattern, "
-                      "ROI set, Position, Group selected, and Mark as "
-                      "recording.")
+                      "ROI set, Position, and Group selected. Click a step's "
+                      "number to toggle recording for it.")
         hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
         btns.addWidget(hint)
         lay.addLayout(btns)
@@ -245,41 +251,6 @@ class SettingsPanel(QWidget):
         btn_g_del.clicked.connect(self._del_group)
         gl.addWidget(btn_g_del)
         lay.addWidget(ggrp)
-
-        # ── recordings ───────────────────────────────────────────────────────
-        # A contiguous range of steps the camera is capturing for — independent
-        # of what those steps do, and independent of repeat groups (the two
-        # may nest or overlap freely). Same selection-driven shape as Repeat
-        # groups above, minus a repeat count: there is nothing else to ask for
-        # once the selection says which steps.
-        rgrp2 = QGroupBox("Recordings")
-        rl = QVBoxLayout(rgrp2)
-        rl.setSpacing(4)
-
-        rrow = QHBoxLayout()
-        self._lbl_r_selection = QLabel("Select 2+ steps in the table to mark "
-                                       "them as recording")
-        self._lbl_r_selection.setStyleSheet("color:#9aa0a6;")
-        rrow.addWidget(self._lbl_r_selection, 1)
-        self._btn_r_add = QPushButton("Mark as recording")
-        self._btn_r_add.setEnabled(False)
-        self._btn_r_add.setToolTip(
-            "Mark the step(s) selected in the table above as one recording "
-            "bracket — the camera captures for exactly these steps. A single "
-            "step is fine, and is what a Trigger step needs: the bracket goes "
-            "on what FOLLOWS it, so the file starts on the edge.")
-        self._btn_r_add.clicked.connect(self._record_selected)
-        rrow.addWidget(self._btn_r_add)
-        rl.addLayout(rrow)
-
-        self._lst_recordings = QListWidget()
-        self._lst_recordings.setMaximumHeight(70)
-        rl.addWidget(self._lst_recordings)
-
-        btn_r_del = QPushButton("Remove selected")
-        btn_r_del.clicked.connect(self._del_recording)
-        rl.addWidget(btn_r_del)
-        lay.addWidget(rgrp2)
 
         # What is about to happen, in one line — a step list is not something
         # you can total up by eye once it is longer than a screen.
@@ -386,22 +357,15 @@ class SettingsPanel(QWidget):
         self._tbl.set_groups(self._r.groups)
 
     def _on_selection_changed(self) -> None:
-        """The Repeat-groups and Recordings controls track the table's own
-        selection rather than asking for row numbers a second time. A group
-        needs 2+ contiguous rows; a recording needs only 1 — see
-        `StepTable.selected_range`."""
+        """The Repeat-groups control tracks the table's own selection rather
+        than asking for row numbers a second time — a group needs 2+
+        contiguous rows, see `StepTable.selected_range`. Recording has no
+        selection to track: it toggles straight off a header click."""
         span = self._tbl.selected_range()
         selected = f"Steps {span[0] + 1}-{span[1] + 1} selected" if span else None
         self._btn_g_add.setEnabled(span is not None)
         self._lbl_g_selection.setText(
             selected or "Select 2+ steps in the table to group them")
-
-        rec = self._tbl.selected_range(min_rows=1)
-        self._btn_r_add.setEnabled(rec is not None)
-        self._lbl_r_selection.setText(
-            (f"Step {rec[0] + 1} selected" if rec[0] == rec[1] else
-             f"Steps {rec[0] + 1}-{rec[1] + 1} selected") if rec else
-            "Select a step in the table to mark it as recording")
 
     def _group_selected(self) -> None:
         span = self._tbl.selected_range()
@@ -422,29 +386,22 @@ class SettingsPanel(QWidget):
 
     # ── recordings ───────────────────────────────────────────────────────────
     def _reload_recordings(self) -> None:
-        self._lst_recordings.clear()
-        for r in self._r.recordings:
-            self._lst_recordings.addItem(
-                f"step {r.start + 1}" if r.start == r.end else
-                f"steps {r.start + 1}-{r.end + 1}")
         self._tbl.set_recordings(self._r.recordings)
 
-    def _record_selected(self) -> None:
-        # One step is a legitimate recording — see `StepTable.selected_range`.
-        span = self._tbl.selected_range(min_rows=1)
-        if span is None:
+    def _toggle_recording(self, row: int) -> None:
+        """A step's sticker: on if nothing already covers `row`, off (removing
+        whatever range does) otherwise. Always adds a one-step `Recording` —
+        see the module docstring for why a recording is never a selection."""
+        if not (0 <= row < len(self._r.steps)):
             return
-        start, end = span
-        self._r.recordings.append(Recording(start=start, end=end))
+        existing = next((r for r in self._r.recordings
+                         if r.start <= row <= r.end), None)
+        if existing is not None:
+            self._r.recordings.remove(existing)
+        else:
+            self._r.recordings.append(Recording(start=row, end=row))
         self._reload_recordings()
         self._emit()
-
-    def _del_recording(self) -> None:
-        row = self._lst_recordings.currentRow()
-        if 0 <= row < len(self._r.recordings):
-            del self._r.recordings[row]
-            self._reload_recordings()
-            self._emit()
 
     def _edit_group_repeats(self, item) -> None:
         """The repeat count is the one thing about an existing group worth

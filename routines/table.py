@@ -27,20 +27,22 @@ a file dialog: the value is not free text.
 Rows are **dragged to reorder**, Ctrl+Up/Down do the same, both through
 `move_row` — one implementation of "what reordering means." Reordering does
 NOT rewrite `Group`/`Recording` ranges (index-based, like before this
-redesign) — a step dragged out of a group or recording bracket leaves the
-bracket pointing at whatever is now at those positions; this is a
+redesign) — a step dragged out of a group or off its recording sticker
+leaves the range pointing at whatever is now at that position; this is a
 pre-existing limitation carried over unchanged, not something this table
 tries to fix.
 
-Selection is **contiguous, not single**: both a repeat group (`Group`) and a
-recording bracket (`Recording`) are a start/end RANGE, so shift-click/
-shift-arrow extending a block is the one extra thing selection needs to
-express — `selected_range()` reads it back for the panel's "Group selected"
-and "Mark as recording" controls. `set_groups()`/`set_recordings()` tell the
-table which rows are in one, so it can tint them (blended where a row is in
-both) and badge the group's first row with its repeat count / every row of
-a recording with a marker, rather than that only being visible in a
-separate list below the table.
+Selection is **contiguous, not single**: a repeat group (`Group`) is a
+start/end RANGE, so shift-click/shift-arrow extending a block is the one
+extra thing selection needs to express — `selected_range()` reads it back for
+the panel's "Group selected" control. A recording, by contrast, is always
+exactly one step: click a row's header — where its number, and a group's
+repeat count, are shown — to toggle a `Recording(row, row)` there directly,
+no selection involved (`_on_header_clicked`). `set_groups()`/
+`set_recordings()` tell the table which rows are in one, so it can tint them
+(blended where a row is both grouped and recording) and badge the group's
+first row with its repeat count / a recording's row with a marker, rather
+than either only being visible in a separate list below the table.
 
 Most non-reordering actions live on a right-click menu (`contextMenuEvent`),
 gated by the row's kind — Set pattern/ROI/Clear only for Display rows, Set
@@ -189,7 +191,7 @@ class StepTable(QTableWidget):
     remove_requested = pyqtSignal()
     clear_pattern_requested = pyqtSignal()
     group_requested = pyqtSignal()          # the panel reads selected_range()
-    record_requested = pyqtSignal()         # ditto, for a Recording bracket
+    recording_toggled = pyqtSignal(int)     # row whose sticker was clicked
     reordered = pyqtSignal(int)             # the moved step's new row
 
     def __init__(self, steps: list[Step], parent=None) -> None:
@@ -247,6 +249,11 @@ class StepTable(QTableWidget):
 
         self.itemChanged.connect(self._on_item_changed)
         self.cellDoubleClicked.connect(self._on_double_click)
+        # The row header IS the recording sticker: click a step's number to
+        # toggle a one-step Recording there, no selection required.
+        self.verticalHeader().sectionClicked.connect(self._on_header_clicked)
+        self.verticalHeader().setToolTip(
+            "Click a step's number to toggle recording for that step.")
         self.reload()
 
     # ── painting ─────────────────────────────────────────────────────────────
@@ -385,9 +392,9 @@ class StepTable(QTableWidget):
             item.setToolTip(
                 "Holds here until an external edge arrives on the camera's "
                 "trigger line. Nothing to set — the length of what follows is "
-                "what decides how long the recording lasts.\nPut the Recording "
-                "bracket on the steps AFTER this one, so the file starts on "
-                "the edge.")
+                "what decides how long the recording lasts.\nPut the "
+                "recording sticker on the step AFTER this one, so the file "
+                "starts on the edge.")
         else:
             item.setData(VALUE, None)
             item.setIcon(QIcon())
@@ -579,21 +586,27 @@ class StepTable(QTableWidget):
         if 0 <= row < self.rowCount():
             self.selectRow(row)
 
-    def selected_range(self, min_rows: int = 2) -> tuple[int, int] | None:
+    def selected_range(self) -> tuple[int, int] | None:
         """(first, last) rows of the current selection, inclusive — or None
-        with fewer than `min_rows` selected. ContiguousSelection guarantees no
+        with fewer than 2 rows selected. ContiguousSelection guarantees no
         gaps, so min/max is the whole selection, not just its ends.
 
-        Two rows is right for a repeat GROUP (one step repeated in place is
-        what a Wait's own length already says), but a RECORDING of one step is
-        a real thing and callers pass `min_rows=1` for it: a `trigger` step has
-        to sit OUTSIDE the bracket that follows it, so "record exactly this one
-        Wait" is the whole point of the per-edge pattern.
+        Two rows is right for a repeat GROUP — one step repeated in place is
+        what a Wait's own length already says. A recording is never a range;
+        see `_on_header_clicked`.
         """
         rows = self._selected_rows()
-        if len(rows) < min_rows:
+        if len(rows) < 2:
             return None
         return min(rows), max(rows)
+
+    def _on_header_clicked(self, row: int) -> None:
+        """The recording sticker: click a step's row number to toggle a
+        one-step `Recording` there. A `trigger` step needs exactly this — the
+        bracket has to sit on what FOLLOWS it, never on the trigger itself, so
+        "record just this one step" has to be reachable with no range at all."""
+        if 0 <= row < len(self._steps):
+            self.recording_toggled.emit(row)
 
     # ── context menu ─────────────────────────────────────────────────────────
     def contextMenuEvent(self, event) -> None:
@@ -601,15 +614,14 @@ class StepTable(QTableWidget):
         the table, gated by the row's kind — Set pattern/ROI/Clear only make
         sense on a Display row, Set position/Fill from FOV only on a Move
         row. Right-click on a row already part of a multi-row selection keeps
-        that selection (so "Group selected"/"Mark as recording" are on
-        offer); right-click elsewhere collapses to just that row, like any
-        other list."""
+        that selection (so "Group selected" is on offer); right-click
+        elsewhere collapses to just that row, like any other list. Recording
+        is not here at all — click the row header instead."""
         idx = self.indexAt(event.pos())
         if idx.isValid() and idx.row() not in self._selected_rows():
             self.select_row(idx.row())
         row = self.selected_row()
         span = self.selected_range()
-        rec_span = self.selected_range(min_rows=1)
 
         menu = QMenu(self)
         if row >= 0:
@@ -633,19 +645,12 @@ class StepTable(QTableWidget):
                 act.triggered.connect(self.position_requested.emit)
                 act = menu.addAction("Fill Stage X/Y/Z from FOV…")
                 act.triggered.connect(self.fov_requested.emit)
-        if span is not None or rec_span is not None:
+        if span is not None:
             if row >= 0:
                 menu.addSeparator()
-        if span is not None:
             act = menu.addAction(
                 f"Group selected steps {span[0] + 1}-{span[1] + 1}…")
             act.triggered.connect(self.group_requested.emit)
-        if rec_span is not None:
-            lo, hi = rec_span
-            act = menu.addAction(
-                f"Mark step {lo + 1} as recording…" if lo == hi else
-                f"Mark steps {lo + 1}-{hi + 1} as recording…")
-            act.triggered.connect(self.record_requested.emit)
         if not menu.isEmpty():
             menu.exec(event.globalPos())
 

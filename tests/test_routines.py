@@ -1800,23 +1800,25 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             and any("Remove" in t for t in texts),
             f"…which every row keeps, regardless of kind ({texts})")
 
-    r.check(not any("Group selected" in t or "Mark steps" in t for t in texts),
-            "with only one row selected, neither group nor recording action "
-            "is offered")
+    r.check(not any("Group selected" in t for t in texts),
+            "with only one row selected, no group action is offered")
     texts2 = _menu_texts(tbl, 0, span=(0, 1))
     r.check(any("Group selected steps 1-2" in t for t in texts2),
             f"2+ contiguous rows selected offers Group selected ({texts2})")
-    r.check(any("Mark steps 1-2" in t and "recording" in t for t in texts2),
-            f"…and Mark as recording, the same way ({texts2})")
+    r.check(not any("recording" in t.lower() for t in texts2),
+            "recording is never on the context menu — it's the row header "
+            "click, not a selection action")
 
     app.processEvents()
 
 
 def check_group_panel(r: Report, app) -> None:
-    """Adding/removing a repeat group, and a recording bracket, by selecting
-    rows in the table — the fix for the old flow (typing 1-based row numbers
-    into spinboxes, disconnected from the table you were looking at). The
-    two controls mirror each other; a Recording has no repeat count."""
+    """Adding/removing a repeat group by selecting rows in the table — the
+    fix for the old flow (typing 1-based row numbers into spinboxes,
+    disconnected from the table you were looking at). A recording is not a
+    selection at all: it's a per-step sticker, toggled by clicking that
+    step's row header (`StepTable.recording_toggled`, read by the panel as
+    `_toggle_recording`)."""
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(kind="wait", label="A"),
@@ -1824,30 +1826,51 @@ def check_group_panel(r: Report, app) -> None:
                              Step(kind="wait", label="C")])
     panel = SettingsPanel(routine)
 
-    r.check(not panel._btn_g_add.isEnabled() and not panel._btn_r_add.isEnabled(),
-            "control: nothing selected -> neither Group nor Mark as recording "
-            "is offered")
+    r.check(not panel._btn_g_add.isEnabled(),
+            "control: nothing selected -> no Group offered")
+
+    # ── recordings: a header click toggles one step, no selection involved ──
+    panel._toggle_recording(0)
+    r.check(routine.recordings == [Recording(start=0, end=0)],
+            f"clicking step 1's row number stickers a one-step Recording "
+            f"there ({routine.recordings})")
+    r.check(panel._tbl._recording_at(0) is routine.recordings[0]
+            and panel._tbl._recording_at(1) is None,
+            "…and the table knows which row is recording")
+    panel._toggle_recording(0)
+    r.check(routine.recordings == [],
+            "clicking the same row again removes the sticker")
+
+    panel._tbl.recording_toggled.emit(1)
+    r.check(routine.recordings == [Recording(start=1, end=1)],
+            "the table's own signal (a real header click) reaches the same "
+            "handler")
+    panel._tbl.recording_toggled.emit(2)
+    r.check(routine.recordings == [Recording(start=1, end=1),
+                                   Recording(start=2, end=2)],
+            f"stickering a second step adds a SECOND one-step Recording, "
+            f"never a merged range ({routine.recordings})")
+    r.check(panel._tbl._recording_at(1) is not None
+            and panel._tbl._recording_at(2) is not None
+            and panel._tbl._recording_at(0) is None,
+            "…independently trackable per row")
+    panel._toggle_recording(1)
+    panel._toggle_recording(2)
+    r.check(routine.recordings == [], "both removed the same way they were added")
+
+    # ── repeat groups: a selected range, same as before ──
     panel._tbl.select_row(0)
     r.check(not panel._btn_g_add.isEnabled(),
             "a single selected row is still not a repeat group — one step "
             "repeated in place is what a Wait's own length already says")
-    r.check(panel._btn_r_add.isEnabled(),
-            "…but IS a candidate recording: a `trigger` step has to sit "
-            "outside the bracket that follows it, so a one-step Recording is "
-            "exactly what the per-edge pattern needs")
-    r.check("Step 1" in panel._lbl_r_selection.text(),
-            f"…named in the singular ({panel._lbl_r_selection.text()!r})")
 
     _select_rows(panel._tbl, 1, 2)              # steps B, C (0-based 1..2)
-    r.check(panel._btn_g_add.isEnabled() and panel._btn_r_add.isEnabled(),
-            "2+ contiguous rows selected -> both are offered")
-    r.check("2-3" in panel._lbl_g_selection.text()
-            and "2-3" in panel._lbl_r_selection.text(),
-            f"…and the selection is named in 1-based step numbers in both "
-            f"({panel._lbl_g_selection.text()!r}, "
-            f"{panel._lbl_r_selection.text()!r})")
+    r.check(panel._btn_g_add.isEnabled(),
+            "2+ contiguous rows selected -> Group selected is offered")
+    r.check("2-3" in panel._lbl_g_selection.text(),
+            f"…and the selection is named in 1-based step numbers "
+            f"({panel._lbl_g_selection.text()!r})")
 
-    # ── repeat groups ──
     panel._spn_g_repeats.setValue(4)
     panel._group_selected()
     r.check(len(routine.groups) == 1 and routine.groups[0].start == 1
@@ -1863,28 +1886,19 @@ def check_group_panel(r: Report, app) -> None:
             and panel._tbl._group_at(0) is None,
             "…and the table itself knows which rows are grouped")
 
-    # ── recordings, the same shape, minus a repeat count ──
-    panel._record_selected()
-    r.check(len(routine.recordings) == 1 and routine.recordings[0].start == 1
-            and routine.recordings[0].end == 2,
-            f"Mark as recording becomes a Recording over the same selection "
-            f"({routine.recordings})")
-    r.check(panel._lst_recordings.count() == 1
-            and "2-3" in panel._lst_recordings.item(0).text(),
-            f"…shown in its own list ({panel._lst_recordings.item(0).text()!r})")
-    r.check(panel._tbl._recording_at(1) is routine.recordings[0]
-            and panel._tbl._recording_at(2) is routine.recordings[0]
-            and panel._tbl._recording_at(0) is None,
-            "…and the table knows which rows are being recorded, "
-            "independent of the group above")
+    # A recording sticker on one of the grouped rows coexists with the group.
+    panel._toggle_recording(1)
+    r.check(routine.recordings == [Recording(start=1, end=1)]
+            and panel._tbl._group_at(1) is routine.groups[0],
+            "a recording nests inside a group without disturbing it")
 
     # Round-trips through to_dict/from_dict, the same as steps.
     reloaded = Routine.from_dict(routine.to_dict())
     r.check(len(reloaded.groups) == 1 and reloaded.groups[0].repeats == 4,
             "a saved template keeps its repeat group")
-    r.check(len(reloaded.recordings) == 1 and reloaded.recordings[0].start == 1
-            and reloaded.recordings[0].end == 2,
-            "…and its recording bracket")
+    r.check(reloaded.recordings == [Recording(start=1, end=1)],
+            "…and its recording sticker")
+    panel._toggle_recording(1)                   # clean up for what follows
 
     # The repeat count stays editable after the group exists.
     from PyQt6.QtWidgets import QInputDialog
@@ -1916,33 +1930,20 @@ def check_group_panel(r: Report, app) -> None:
     r.check(panel._tbl._group_at(1) is None,
             "…and the table stops tinting/badging those rows")
 
-    panel._lst_recordings.setCurrentRow(0)
-    panel._del_recording()
-    r.check(routine.recordings == [] and panel._lst_recordings.count() == 0,
-            "Remove selected does the same for the recording")
-    r.check(panel._tbl._recording_at(1) is None,
-            "…independently of the group above")
-
-    # Right-click's actions are the same calls the buttons make.
+    # Right-click's Group action is the same call the button makes.
     _select_rows(panel._tbl, 0, 1)
     panel._tbl.group_requested.emit()
     r.check(len(routine.groups) == 1 and routine.groups[0].start == 0
             and routine.groups[0].end == 1,
             f"the context menu's Group action reaches the same handler "
             f"({routine.groups})")
-    panel._tbl.record_requested.emit()
-    r.check(len(routine.recordings) == 1 and routine.recordings[0].start == 0
-            and routine.recordings[0].end == 1,
-            f"…and so does Mark as recording ({routine.recordings})")
     panel._lst_groups.setCurrentRow(0)
     panel._del_group()
-    panel._lst_recordings.setCurrentRow(0)
-    panel._del_recording()
 
     # set_routine (template load) replaces groups AND recordings, not just steps.
     _select_rows(panel._tbl, 0, 1)
     panel._group_selected()
-    panel._record_selected()
+    panel._toggle_recording(0)
     other = Routine(steps=[Step(kind="wait"), Step(kind="wait")])
     panel.set_routine(other)
     r.check(panel.settings.groups == [] and panel.settings.recordings == [],
@@ -1952,14 +1953,12 @@ def check_group_panel(r: Report, app) -> None:
 
 def check_per_edge_routine_is_buildable(r: Report, app) -> None:
     """The operator's per-edge protocol, built the way the UI actually builds
-    it — and the bug that shipped without this: `selected_range()` refused
-    fewer than 2 rows, so "Mark as recording" could not be applied to the
-    single Wait a `trigger` step must be followed by. Every earlier test
-    constructed `Recording(start=1, end=1)` straight into the model, so none
-    of them touched the panel path that forbade it.
+    it. Every earlier test constructed `Recording(start=1, end=1)` straight
+    into the model, so none of them touched the panel path that actually
+    stickers a single step.
 
     "100 recordings at FOV 1, each started by an edge, each x seconds" =
-    [move, trigger, wait] with the group over the last two and the bracket on
+    [move, trigger, wait] with the group over the last two and the sticker on
     the wait ALONE.
     """
     from acqApp.routines.panel import SettingsPanel
@@ -1981,19 +1980,11 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
             f"the trigger+wait pair repeats 100x, leaving the move outside "
             f"({routine.groups})")
 
-    # The bracket: the wait ALONE — this is what used to be impossible.
-    panel._tbl.select_row(2)
-    r.check(panel._btn_r_add.isEnabled(),
-            "the single Wait row can be marked as a recording")
-    panel._record_selected()
-    r.check(len(routine.recordings) == 1
-            and routine.recordings[0].start == 2
-            and routine.recordings[0].end == 2,
-            f"…producing a one-step Recording over just it "
-            f"({routine.recordings})")
-    r.check(panel._lst_recordings.count() == 1
-            and panel._lst_recordings.item(0).text() == "step 3",
-            f"…listed in the singular ({panel._lst_recordings.item(0).text()!r})")
+    # The sticker: the wait ALONE, no selection needed at all.
+    panel._toggle_recording(2)
+    r.check(routine.recordings == [Recording(start=2, end=2)],
+            f"clicking the Wait row's number stickers a Recording over just "
+            f"it ({routine.recordings})")
 
     # The whole point: the trigger step is NOT inside the bracket, so
     # validate() accepts it. (The reverse case is covered in check_validation.)
