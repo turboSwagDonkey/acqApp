@@ -74,7 +74,8 @@ from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
 from acqApp.routines.estimate import clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import (RigLimits, Routine, group_region_at,
-                                      group_repeat_at, play_order, validate)
+                                      group_repeat_at, play_order,
+                                      recording_region_at, validate)
 
 # A step boundary lands within one tick of its true instant; at 106 Hz that is
 # under three frames, and the boundary itself is recorded from the clock, not
@@ -128,6 +129,10 @@ class RoutinesModule(ModuleAdapter):
         self._pending_scope: dict[str, Any] = {}   # for the NEXT metadata() call
         self._rolling = False           # guards detach_sink()'s abort-on-stop
         self._routine_origin = 0.0      # session-clock t when Start was pressed
+        # How many files THIS run has opened for each Recording bracket
+        # (`routine.recordings` index) — the routine's own file-naming's
+        # trial number, see `_trial_for`.
+        self._trial_count: dict[int, int] = {}
 
     def _status(self, msg: str) -> None:
         """Every routine status message, everywhere in this file — including
@@ -253,15 +258,22 @@ class RoutinesModule(ModuleAdapter):
         if needs_ext and not self._arm_camera_trigger():
             return
 
-        if self._rec is None and not self._open_recording():
-            return
+        self._routine = routine
+        self._trial_count = {}
+        if self._rec is None:
+            first_index = min((r.start for r in routine.recordings), default=0)
+            region = recording_region_at(routine, first_index) or 0
+            fov, coords = self._fov_for(routine, first_index)
+            self.win.set_routine_save_context(fov, self._trial_for(region), coords)
+            if not self._open_recording():
+                self.win.set_routine_save_context(None, None)
+                return
         self._filed = 0
         self._pending_roll_run = None
         self._file_group_key = None
         self._filed_from = 0
         self._pending_scope = {}
         self._routine_origin = self.win.sync.clock.now()
-        self._routine = routine
         self._n_steps = len(routine.steps)
         self._group_repeat = group_repeat_at(routine, play_order(routine))
         self._engine = RoutineEngine(routine, self._hooks())
@@ -311,8 +323,36 @@ class RoutinesModule(ModuleAdapter):
             self._status("recording started for the routine")
         return True
 
+    def _fov_for(self, routine: Routine,
+                step_index: int) -> tuple[str, tuple[float | None, float | None,
+                                                     float | None] | None]:
+        """The FOV in effect at `step_index`: the last Move step at or
+        before it. A saved FOV's name, or "custom" paired with the raw
+        coordinates a step typed directly instead — `saving/config.py`'s
+        `resolve_routine()` names the file from the first, and a sidecar
+        (`write_routine_fov_sidecar`) keeps the second from being lost."""
+        for i in range(min(step_index, len(routine.steps) - 1), -1, -1):
+            s = routine.steps[i]
+            if s.kind == "move":
+                return (s.fov, None) if s.fov else \
+                    ("custom", (s.x_um, s.y_um, s.z_um))
+        return "custom", None
+
+    def _trial_for(self, region: int) -> int:
+        """Which file this is for Recording `region` (an index into
+        `routine.recordings`) — every new file it opens counts, whatever the
+        reason (a repeat group, a per_repeat/per_group roll)."""
+        n = self._trial_count.get(region, 0) + 1
+        self._trial_count[region] = n
+        return n
+
     def _close_own_recording(self) -> None:
         """Stop a recording this adapter started; leave the operator's alone."""
+        # Cleared regardless of ownership: a routine that ran inside a
+        # recording the OPERATOR had already started never owns it, but the
+        # FOV/trial context set for it must not leak into whatever the
+        # operator records next.
+        self.win.set_routine_save_context(None, None)
         if not self._own_rec:
             return
         self._own_rec = False            # before the call: detach_sink re-enters
@@ -430,6 +470,8 @@ class RoutinesModule(ModuleAdapter):
         `_rolling` guards `detach_sink()`'s "recording stopped out from
         under a running routine -> abort" safety net against mistaking this
         deliberate swap for the operator having pulled the plug."""
+        fov, coords = self._fov_for(self._routine, run.start_index)
+        self.win.set_routine_save_context(fov, self._trial_for(run.region), coords)
         self._pending_scope = self._scope_for(run)
         self._rolling = True
         try:
@@ -491,6 +533,7 @@ class RoutinesModule(ModuleAdapter):
             self._status("routine aborted — the recording stopped")
         self._own_rec = False
         self._rec = None
+        self.win.set_routine_save_context(None, None)
 
     def stop(self) -> None:
         """Session teardown. The routine cannot outlive the clock it times by."""

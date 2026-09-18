@@ -19,6 +19,7 @@ _LAZY = {
     "free_bytes":     "config",
     "default_folder": "config",
     "benchmark_drive": "config",
+    "write_routine_fov_sidecar": "config",
     "SavePanel":      "panel",
 }
 

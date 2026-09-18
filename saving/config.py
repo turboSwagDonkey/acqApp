@@ -7,6 +7,7 @@ directly.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -165,18 +166,15 @@ class SaveConfig:
     def _dir_for(self, base: Path, stem: str) -> Path:
         return base / stem
 
-    def _resolve(self, build: Callable[[Path, str], Path],
-                 when: datetime | None, *, unique: bool, fov: str = "") -> Path:
-        """Shared auto-numbering for resolve()/resolve_dir(), which differ
-        only in `build` (a `.h5` file vs a session folder): `_001`, `_002`,
-        … until `build(base, stem)` doesn't exist. A template without
-        `{time}` resolves every recording of the day to one path; the
-        writer would refuse that (mode "x"), so this is not about
-        truncation — auto-numbering keeps the Record button working with
-        an animal on the rig.
+    def _resolve_at(self, base: Path, stem: str,
+                    build: Callable[[Path, str], Path], *, unique: bool) -> Path:
+        """`_001`, `_002`, … until `build(base, stem)` doesn't exist. Shared by
+        every resolve*() below — a template without `{time}`, or two trials
+        that land on the same FOV/repeat, would otherwise resolve to one
+        path; the writer refuses that (mode "x"), so this is not about
+        truncation — auto-numbering keeps the Record button working with an
+        animal on the rig.
         """
-        stem = self.stem(when, fov=fov)
-        base = self.resolved_folder()
         path = build(base, stem)
         if not unique:
             return path
@@ -184,10 +182,14 @@ class SaveConfig:
             if not path.exists():
                 return path
             path = build(base, f"{stem}_{n:03d}")
-        # 999 collisions means the template is degenerate. Fall back to a stem
-        # that cannot collide rather than handing back an occupied path.
-        when = when or datetime.now()
-        return build(base, f"{stem}_{when.strftime('%H%M%S_%f')}")
+        # 999 collisions means the stem is degenerate. Fall back to one that
+        # cannot collide rather than handing back an occupied path.
+        return build(base, f"{stem}_{datetime.now():%H%M%S_%f}")
+
+    def _resolve(self, build: Callable[[Path, str], Path],
+                 when: datetime | None, *, unique: bool, fov: str = "") -> Path:
+        return self._resolve_at(self.resolved_folder(), self.stem(when, fov=fov),
+                                build, unique=unique)
 
     def resolve(self, when: datetime | None = None, *,
                 unique: bool = False, fov: str = "") -> Path:
@@ -209,6 +211,33 @@ class SaveConfig:
         """
         return self._resolve(self._dir_for, when, unique=unique, fov=fov)
 
+    def routine_base(self, when: datetime | None = None) -> Path:
+        """`<folder>/<project>/<mouse_id>/<date>` — the day's folder a
+        routine's trials sort into. One level per field, not filename
+        tokens: `resolve()`'s free-text template is for a manual recording,
+        this is a fixed hierarchy for one started by a routine."""
+        when = when or datetime.now()
+        return (self.resolved_folder() / sanitize(self.project, "project")
+               / sanitize(self.mouse_id, "mouse_id") / when.strftime("%Y%m%d"))
+
+    def resolve_routine(self, fov: str, trial: int,
+                        when: datetime | None = None, *,
+                        unique: bool = False) -> Path:
+        """A routine trial's `.h5`: `<routine_base>/FOV<fov>_T<trial>.h5`.
+        Same auto-numbering as `resolve()` if that exact name is taken."""
+        return self._resolve_at(self.routine_base(when),
+                                sanitize(f"FOV{fov}_T{trial}"),
+                                self._path_for, unique=unique)
+
+    def resolve_routine_dir(self, fov: str, trial: int,
+                            when: datetime | None = None, *,
+                            unique: bool = False) -> Path:
+        """`resolve_routine()`'s split-mode twin — a session folder instead
+        of one `.h5`, same as `resolve_dir()` is to `resolve()`."""
+        return self._resolve_at(self.routine_base(when),
+                                sanitize(f"FOV{fov}_T{trial}"),
+                                self._dir_for, unique=unique)
+
 
 def default_folder() -> Path:
     """Largest-free-space fixed drive, so the default is not the system drive."""
@@ -216,5 +245,19 @@ def default_folder() -> Path:
     if drives:
         return Path(drives[0][0]) / _DEFAULT_SUBDIR
     return Path.cwd() / "sessions"
+
+
+def write_routine_fov_sidecar(path: Path, x_um: float | None, y_um: float | None,
+                              z_um: float | None) -> None:
+    """Raw stage coordinates for a routine step that typed X/Y/Z directly
+    rather than naming a saved FOV — `resolve_routine()` then names the file
+    "FOVcustom", which alone would lose WHERE that actually was. Written
+    next to `path` (a `.fov.json` sidecar) or inside it, if `path` is a
+    split-mode session folder. The caller writes this only after `path`
+    (or its parent) has actually been created by opening the recording."""
+    target = (path / "fov.json") if path.is_dir() \
+        else path.with_name(f"{path.stem}.fov.json")
+    target.write_text(json.dumps({"x_um": x_um, "y_um": y_um, "z_um": z_um},
+                                 indent=2), encoding="utf-8")
 
 

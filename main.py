@@ -185,7 +185,7 @@ import pyqtgraph as pg
 from acqApp import adapters, style
 from acqApp.dialogs import (ConnectionMonitor, ModuleSelectDialog, PanelWindow,
                             SettingsDialog)
-from acqApp.saving import SaveConfig, SavePanel
+from acqApp.saving import SaveConfig, SavePanel, write_routine_fov_sidecar
 from acqApp.acq.sync import DEFAULT_TICK_MS, SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
@@ -256,6 +256,10 @@ class MainWindow(QMainWindow):
         # third of a display tick for exactly this "same string every time"
         # case.
         self._rec_warn: bool | None = None
+        # Set by RoutinesModule right before it opens/rolls a recording, read
+        # by _start_recording() below; None means "use the Save tab's own
+        # free-text template", which is what a manual Record press always does.
+        self._routine_save_ctx: tuple[str, int, tuple | None] | None = None
         self._save_panel: SavePanel | None = None
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         # Modules whose panel is a window of its own, by key. Hidden until the
@@ -1401,13 +1405,23 @@ class MainWindow(QMainWindow):
 
         now = datetime.now()
         sc = self._save_panel.settings
+        ctx = self._routine_save_ctx
         # unique=True: the writer refuses to truncate an existing session
         # (mode "x"), but failing to record is also a lost session — so take
         # the next free name rather than raise. Split mode resolves a
         # session FOLDER (SplitWriter.open() treats `path` as a directory);
-        # composite mode resolves the one .h5 file, unchanged.
-        path = (self._save_panel.resolve_dir(now, unique=True) if sc.split
-                else self._save_panel.resolve(now, unique=True))
+        # composite mode resolves the one .h5 file, unchanged. A routine's
+        # own (FOV, trial) context (set by RoutinesModule) uses the fixed
+        # Project/Mouse ID/Date/FOV_Trial folder scheme instead of the
+        # operator's free-text template — see saving/config.py.
+        if ctx is not None:
+            fov, trial, coords = ctx
+            path = (self._save_panel.resolve_routine_dir(fov, trial, now, unique=True)
+                    if sc.split else
+                    self._save_panel.resolve_routine(fov, trial, now, unique=True))
+        else:
+            path = (self._save_panel.resolve_dir(now, unique=True) if sc.split
+                    else self._save_panel.resolve(now, unique=True))
         metadata = {
             "created":  now.strftime("%Y%m%d_%H%M%S"),
             "emulated": self._emulate,
@@ -1431,6 +1445,10 @@ class MainWindow(QMainWindow):
             self.status(f"Cannot record → {path}: {e}")
             self._btn_rec.setChecked(False)
             return
+        if ctx is not None and ctx[2] is not None:
+            # A routine step typed raw X/Y/Z rather than naming a saved FOV —
+            # "FOVcustom" in the filename alone would lose where that was.
+            write_routine_fov_sidecar(path, *ctx[2])
         self._recorder = rec
         self._rec_path = path
         # The session clock may already be running (Live started earlier) — the
@@ -1504,6 +1522,16 @@ class MainWindow(QMainWindow):
         self._stop_recording()
         self._start_recording()
         return self._recorder is not None
+
+    def set_routine_save_context(self, fov: str | None, trial: int | None,
+                                 coords: tuple[float | None, float | None,
+                                              float | None] | None = None
+                                 ) -> None:
+        """See `ModuleHost.set_routine_save_context` — read by
+        `_start_recording()` above, in place of the Save tab's own
+        free-text template."""
+        self._routine_save_ctx = None if fov is None or trial is None \
+            else (fov, trial, coords)
 
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 

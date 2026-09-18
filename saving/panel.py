@@ -284,6 +284,16 @@ class SavePanel(QWidget):
                     unique: bool = False) -> Path:
         return self._cfg.resolve_dir(when, unique=unique, fov=self._current_fov())
 
+    def resolve_routine(self, fov: str, trial: int,
+                        when: datetime | None = None, *,
+                        unique: bool = False) -> Path:
+        return self._cfg.resolve_routine(fov, trial, when, unique=unique)
+
+    def resolve_routine_dir(self, fov: str, trial: int,
+                            when: datetime | None = None, *,
+                            unique: bool = False) -> Path:
+        return self._cfg.resolve_routine_dir(fov, trial, when, unique=unique)
+
     def set_active_fov(self, name: str) -> None:
         """The Stage tab's current FOV, or "" once the stage drifts off it —
         called on the shared display tick (MainWindow.active_fov_name())."""

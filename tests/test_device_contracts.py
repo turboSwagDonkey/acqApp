@@ -285,6 +285,7 @@ def main() -> int:
         def frame_rate_hz(self): return None
         def active_fov_name(self): return ""
         def roll_recording(self): return False
+        def set_routine_save_context(self, fov, trial, coords=None): ...
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

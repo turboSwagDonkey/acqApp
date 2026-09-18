@@ -389,3 +389,20 @@ class ModuleHost(Protocol):
         running routine.
         """
         ...
+
+    def set_routine_save_context(self, fov: str | None, trial: int | None,
+                                 coords: tuple[float | None, float | None,
+                                              float | None] | None = None
+                                 ) -> None:
+        """The (FOV, trial) label the NEXT `set_recording(True)`/
+        `roll_recording()` should save under — `saving/config.py`'s
+        Project/Mouse ID/Date/FOV_Trial folder scheme, in place of the
+        operator's free-text template. `None, None` clears it, so a manual
+        Record press right after a routine ends is unaffected.
+
+        `coords` is the raw X/Y/Z when `fov` is the generic "custom" (a
+        step that typed a position rather than naming a saved FOV) — kept
+        so a sidecar file can record where that actually was, since the
+        name alone would otherwise lose it.
+        """
+        ...
