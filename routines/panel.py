@@ -1,48 +1,44 @@
 """Experiment routines — the protocol, the run controls, and one Start button.
 
-The panel edits a `Routine` and emits it; it decides nothing. Three rules it
-does enforce, because they belong next to the button:
+The panel edits a `Routine` and emits it; decides nothing. Four rules it enforces
 
-- **Start starts everything it needs.** It opens the recording itself (through
-  `ModuleHost.set_recording`, as the DMD calibration opens the live view
-  through `set_live`) rather than refusing until the operator has found the
-  Record button in another part of the window. A routine that cannot record is
-  a routine that cannot run, so making the operator do it by hand only moved
-  the failure earlier.
+- **Start starts everything it needs.** Opens recording itself (through
+  `ModuleHost.set_recording`, like DMD calibration opens live view
+  via `set_live`) rather than refusing until operator has found
+  Record button in another part of the window. 
 - **Start is refused with the problems listed**, not greyed out with no reason.
   `validate()` returns sentences, and an operator who cannot start needs to
   read which step is wrong.
 - **Arming is not persisted**, as in `closed_loop/`: the step list is saved,
-  the fact that a routine is *running* never is. A restored "running" would
+  the fact that a routine is *running* never is. Restored "running" would
   drive the stage at launch.
 - **Templates are files, not another key in the config.** `routines/templates.py`
   owns the folder; this owns the four buttons over it. The routine being edited
-  is still the one that persists — loading a template overwrites it, saving one
-  copies it out.
+  persists — loading a template overwrites it, saving one copies it out.
 
 Two readouts, because "is it working" and "how long is this" are different
-questions: the **progress bar** is the whole routine, current step included,
-and the **summary line** is what the protocol costs before it starts
+questions: **progress bar** is whole routine, current step included,
+and **summary line** is what protocol costs before it starts
 (`routines/estimate.py`). Both are floors — nothing times a stage move.
 
 The step *table* is `routines/table.py` — a step is one atomic action (Move /
 Display / Wait / Puff) now, and every cell edits through a widget that can
-only produce a legal value, which is why nothing here parses "yes". Per-step
+only produce a legal value, which is why nothing parses "yes". Per-step
 actions (Duplicate, Remove, Pattern/ROI/Clear pattern, Set position, Fill
-from FOV) live on the table's own right-click menu, gated by the row's kind,
-rather than as buttons here — this panel keeps only +Step (with a kind
-picker) and reordering visible, since those are used on every single step.
+from FOV) live on table's right-click menu, gated by row's kind,
+rather than as buttons, panel keeps only +Step (with kind picker) 
+and reordering visible, since those are used on every step.
 
 A **repeat group** (`routines/settings.py`'s `Group`) comes from selecting a
-range in the table, not typing row numbers — `_on_selection_changed` mirrors
-the table's selection into the "Repeat groups" control, and nests that range
+range in table, not typing row numbers — `_on_selection_changed` mirrors
+the table's selection into the "Repeat groups" control, and nests range
 of steps inside `cycles`. A **recording** (`Recording`) is not a selection at
-all: it is a sticker on one step, toggled by clicking that step's row number
-in the table (`StepTable.recording_toggled`) — "the camera is capturing for
-this step," independent of what the step does and independent of Groups (a
+all, it is a sticker on step, toggled by clicking that step's row number
+in table (`StepTable.recording_toggled`) — "the camera is capturing for
+this step," independent of what step does and independent of Groups (a
 recording may sit inside, outside, or straddling a group's edge freely). For
 now a recording covers exactly the one step it's stuck to; it does not carry
-over into the step after. A step inside a repeated Group gets a fresh
+over into step after. A step inside a repeated Group gets a fresh
 recording file each time it repeats — `routines/engine.py` opens a new one
 per `(cycle, serial)` automatically, nothing here has to ask again.
 """
@@ -111,23 +107,20 @@ class SettingsPanel(QWidget):
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        # A protocol worth running twice is worth keeping. The library is a
-        # folder of files, so it copies to the rig machine with the repo.
+        # A protocol worth running twice is worth keeping — a folder of
+        # files copies to rig machine with repo.
         trow = QHBoxLayout()
         trow.addWidget(QLabel("Template:"))
         self._cmb_tpl = QComboBox()
-        self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces the "
-                                 "step list below.")
+        self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces step list below.")
         trow.addWidget(self._cmb_tpl, 1)
         self._add_buttons(trow, (
             ("Load", self._on_load_template,
-             "Replace the protocol below with the selected template."),
+             "Replace protocol below with selected template."),
             ("Save as…", self._on_save_template,
-             "Save the protocol below as a template, under a name you "
-             "choose."),
+             "Save protocol below as template, under chosen name."),
             ("Delete", self._on_delete_template,
-             "Delete the selected template. The protocol below is not "
-             "touched.")))
+             "Delete selected template. Protocol below is untouched.")))
         lay.addLayout(trow)
 
         form = QFormLayout()
@@ -176,12 +169,10 @@ class SettingsPanel(QWidget):
         self._tbl.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._tbl, 1)
 
-        # Everything but adding a step and reordering — used constantly, so
-        # kept as buttons — moved to a right-click menu on the table itself
-        # (Duplicate/Remove/Pattern/ROI/Clear pattern/FOV/Group selected/Mark
-        # as recording): three crowded rows of buttons was the single biggest
-        # complaint about this panel, and every one of those actions already
-        # had a row-level meaning the menu can just name.
+        # Add-step/reorder stay buttons (used constantly); everything else
+        # (Duplicate/Remove/Pattern/ROI/Clear/FOV/Group/Mark as recording)
+        # moved to table's right-click menu — three crowded button rows was
+        # this panel's single biggest complaint.
         btns = QHBoxLayout()
         btns.addWidget(QLabel("+ Step:"))
         self._cmb_new_kind = QComboBox()
@@ -209,12 +200,11 @@ class SettingsPanel(QWidget):
         btns.addWidget(hint)
         lay.addLayout(btns)
 
-        # ── repeat groups ────────────────────────────────────────────────────
-        # A contiguous range of steps, repeated as a unit, nested inside
-        # `cycles` (which repeats the WHOLE list). Select the range in the
-        # table rather than typing row numbers — the repeat count is the only
-        # thing left to ask for. It stays editable after the fact too
-        # (double-click the group below), so changing "how many times" isn't
+        # ── repeat groups ────────────────────────────────────────────────
+        # A contiguous range, repeated as unit, nested inside `cycles` (which
+        # repeats WHOLE list). Select range in table instead of typing row
+        # numbers — repeat count is only thing left to ask. Stays editable
+        # (double-click group below), so "how many times" isn't
         # delete-and-regroup.
         ggrp = QGroupBox("Repeat groups")
         gl = QVBoxLayout(ggrp)
@@ -252,8 +242,8 @@ class SettingsPanel(QWidget):
         gl.addWidget(btn_g_del)
         lay.addWidget(ggrp)
 
-        # What is about to happen, in one line — a step list is not something
-        # you can total up by eye once it is longer than a screen.
+        # What's about to happen, in one line — a step list longer than a
+        # screen can't be totalled up by eye.
         self._lbl_summary = QLabel()
         self._lbl_summary.setWordWrap(True)
         self._lbl_summary.setStyleSheet("color:#9aa0a6;")
@@ -266,9 +256,8 @@ class SettingsPanel(QWidget):
         rlay.setSpacing(4)
 
         self._btn_start = QPushButton("▶ Start routine")
-        # solid_btn, not toggle_btn: Start is not a toggle, it is the panel's
-        # primary action — and it is disabled for the whole of a run, which is
-        # the case the solid style renders honestly.
+        # solid_btn, not toggle_btn: Start is panel's primary action, not a
+        # toggle — disabled for whole run, which solid style renders honestly.
         self._btn_start.setStyleSheet(style.solid_btn("routines"))
         self._btn_start.setToolTip(
             "Check the protocol, start recording if it is not already running, "
@@ -308,9 +297,8 @@ class SettingsPanel(QWidget):
         self._lbl_state.setWordWrap(True)
         rlay.addWidget(self._lbl_state)
 
-        # Where the routine is, as a bar: a twelve-step protocol read off a
-        # line of text is counted, not seen. The running step is also marked
-        # in the table, which is where "which step" is actually answered.
+        # Where routine is, as a bar — a line of text is counted, not seen.
+        # Running step is also marked in table, which answers "which step".
         self._bar = QProgressBar()
         self._bar.setRange(0, 1000)          # tenths of a percent: 40 steps move it
         self._bar.setTextVisible(True)
@@ -339,9 +327,9 @@ class SettingsPanel(QWidget):
         self._cmb_save.currentIndexChanged.connect(self._emit)
         self._cmb_trigger.currentIndexChanged.connect(self._emit)
 
-    # ── the step list ────────────────────────────────────────────────────────
-    # The table edits `self._r.steps` in place; these are the operations on the
-    # list itself, which a table cell cannot express.
+    # ── step list ────────────────────────────────────────────────────────
+    # Table edits `self._r.steps` in place; these are operations on list
+    # itself, which a table cell can't express.
     def _reload_table(self) -> None:
         self._tbl.reload()
         self._reload_groups()
@@ -357,10 +345,10 @@ class SettingsPanel(QWidget):
         self._tbl.set_groups(self._r.groups)
 
     def _on_selection_changed(self) -> None:
-        """The Repeat-groups control tracks the table's own selection rather
-        than asking for row numbers a second time — a group needs 2+
-        contiguous rows, see `StepTable.selected_range`. Recording has no
-        selection to track: it toggles straight off a header click."""
+        """Repeat-groups control tracks table's selection rather than asking
+        for row numbers again — a group needs 2+ contiguous rows, see
+        `StepTable.selected_range`. Recording has no selection to track: it
+        toggles straight off a header click."""
         span = self._tbl.selected_range()
         selected = f"Steps {span[0] + 1}-{span[1] + 1} selected" if span else None
         self._btn_g_add.setEnabled(span is not None)
@@ -389,9 +377,9 @@ class SettingsPanel(QWidget):
         self._tbl.set_recordings(self._r.recordings)
 
     def _toggle_recording(self, row: int) -> None:
-        """A step's sticker: on if nothing already covers `row`, off (removing
-        whatever range does) otherwise. Always adds a one-step `Recording` —
-        see the module docstring for why a recording is never a selection."""
+        """Step's sticker: on if nothing covers `row`, off (removing whatever
+        range does) otherwise. Always adds a one-step `Recording` — see module
+        docstring for why recording is never a selection."""
         if not (0 <= row < len(self._r.steps)):
             return
         existing = next((r for r in self._r.recordings
@@ -404,9 +392,9 @@ class SettingsPanel(QWidget):
         self._emit()
 
     def _edit_group_repeats(self, item) -> None:
-        """The repeat count is the one thing about an existing group worth
-        changing without redoing the selection — everything else (which
-        steps) means picking a different range and regrouping."""
+        """Repeat count is only thing worth changing on an existing group
+        without redoing selection — everything else means picking a
+        different range and regrouping."""
         row = self._lst_groups.row(item)
         if not (0 <= row < len(self._r.groups)):
             return
@@ -454,16 +442,16 @@ class SettingsPanel(QWidget):
         self._move(+1)
 
     def _move(self, delta: int) -> None:
-        """One step earlier or later. The table owns what reordering means —
-        the arrows, Ctrl+Up/Down and a dropped row are the same operation."""
+        """One step earlier or later. Table owns what reordering means —
+        arrows, Ctrl+Up/Down, and a dropped row are same operation."""
         row = self._selected()
         if row >= 0:
             self._tbl.move_row(row, row + delta)
 
     def _show_timeline(self) -> None:
-        """One cycle of the routine being edited, drawn to scale — see
-        `routines/timeline.py`. Reads the live step/group/recording lists
-        directly; nothing here is editable, so there's nothing to sync back."""
+        """One cycle of routine being edited, drawn to scale — see
+        `routines/timeline.py`. Reads live step/group/recording lists
+        directly; nothing here editable, so nothing to sync back."""
         from acqApp.routines.timeline import TimelineDialog
 
         TimelineDialog(self._r, self._hz, self).exec()
@@ -498,9 +486,9 @@ class SettingsPanel(QWidget):
             self._reload_table()
             self._emit()
 
-    # A blank cell below the lowest real position — same sentinel shape as
-    # table.py's _NumberDelegate, so "no change" is a state the spin boxes
-    # can reach, not a magic number.
+    # Blank cell below lowest real position — same sentinel shape as
+    # table.py's _NumberDelegate, so "NA" is a state spin boxes reach,
+    # not a magic number.
     _POS_LO, _POS_HI, _POS_STEP = -1e5, 1e5, 100.0
 
     def _position_spin(self, value: float | None) -> QDoubleSpinBox:
@@ -518,10 +506,10 @@ class SettingsPanel(QWidget):
         self._set_position_for(self._selected())
 
     def _set_position_for(self, row: int) -> None:
-        """A Move step's Details is X and Y together (`table.py`'s
-        "details"), not two cells — typing a number takes a small dialog
-        instead of an inline spin box, the same way Display's pattern always
-        has (a file dialog, not a typed cell)."""
+        """Move step's Details is X and Y together (table.py's "details"),
+        not two cells — typing a number takes small dialog instead of inline
+        spin box, same way Display's pattern always has (file dialog, not
+        typed cell)."""
         if not (0 <= row < len(self._r.steps)):
             return
         step = self._r.steps[row]
@@ -570,9 +558,9 @@ class SettingsPanel(QWidget):
             self._emit()
 
     def _clear_pattern(self) -> None:
-        """Back to "stop displaying". The file dialog cannot express this —
-        cancelling it means "changed my mind", not "no pattern". The Delete
-        key on the cell does the same, through the same call."""
+        """Back to "stop displaying". File dialog can't express this —
+        cancelling means "changed my mind", not "no pattern". Delete key on
+        cell does same, through same call."""
         row = self._selected()
         if row >= 0 and self._r.steps[row].pattern:
             self._tbl.clear_cell(row, "details")
@@ -588,16 +576,16 @@ class SettingsPanel(QWidget):
                 + (f" x {r.cycles} cycles" if r.cycles > 1 else "")
                 + (f", {len(r.groups)} repeat group(s)" if r.groups else "")]
         # "about", not a promise: nothing times a stage move, so every total
-        # here is a floor. Frames become seconds only when a camera has told us
-        # its rate — otherwise they are reported as frames rather than guessed.
+        # is a floor. Frames become seconds only once camera reports rate —
+        # otherwise reported as frames, not guessed.
         bits.append(est.text() + (f" (at {est.hz:g} Hz)" if est.hz and
                                   any(x.unit == "frames" for x in r.steps)
                                   else ""))
         if est.moves:
             bits.append("moves the stage")
         if est.lit:
-            # Coloured, not capitalised: it is the one line that says light
-            # will be emitted, and shouting reads as decoration.
+            # Coloured, not capitalised: the one line saying light will be
+            # emitted — shouting reads as decoration.
             bits.append(f"<span style='color:#d08770'>{est.lit} step(s) emit "
                         f"light</span>")
         self._lbl_summary.setText(" · ".join(bits))
@@ -608,8 +596,8 @@ class SettingsPanel(QWidget):
         return self._hz
 
     def set_frame_rate(self, hz: float | None) -> None:
-        """The camera's rate, for the estimate only — a step measured in frames
-        is still never converted where it is *recorded* (settings.py)."""
+        """Camera's rate, for estimate only — a step measured in frames is
+        never converted where it's *recorded* (settings.py)."""
         hz = float(hz) if hz and hz > 0 else None
         if hz != self._hz:
             self._hz = hz
@@ -624,11 +612,11 @@ class SettingsPanel(QWidget):
             self._marked = row
 
     def set_progress(self, fraction: float | None, note: str = "") -> None:
-        """Where the routine is, 0..1, and one grey line under the bar.
+        """Where routine is, 0..1, and one grey line under bar.
 
-        `None` puts both away — before a run there is nothing to be part-way
-        through, and an empty bar reads as a stalled one. Repaints only on a
-        change, for the same reason `_set_phase` does: this is called 30x/s.
+        `None` puts both away — before a run there's nothing to be part-way
+        through, and empty bar reads as stalled. Repaints only on change, same
+        reason as `_set_phase`: called 30x/s.
         """
         if fraction is None:
             if self._painted_pct is not None:
@@ -650,11 +638,11 @@ class SettingsPanel(QWidget):
     def _set_phase(self, phase: str, text: str) -> None:
         """Repaint only what changed.
 
-        The adapter calls this every display tick, and `setStyleSheet` repolishes
-        the widget against the window's whole cascade — measured at 26 us a call
-        and **53 % of the shared 30 Hz tick** with eight modules loaded, to
-        re-apply the identical string. The tick was never in trouble (0.05 ms of
-        a 33 ms budget); this half of it was simply free to remove.
+        Adapter calls this every display tick; `setStyleSheet` repolishes
+        widget against window's whole cascade — measured at 26 us/call, 53% of
+        shared 30 Hz tick with eight modules loaded, to reapply identical
+        string. Tick was never in trouble (0.05 ms of 33 ms budget); this half
+        was simply free to remove.
         """
         if phase != self._painted:
             running = phase == Phase.RUNNING
@@ -663,24 +651,23 @@ class SettingsPanel(QWidget):
             paused = phase == Phase.PAUSED
             held = running or armed or waiting or paused
             self._btn_start.setEnabled(not held)
-            # Pause is offered while WAITING too: a trigger step can legitimately
-            # sit there for minutes, and the operator must be able to take the
-            # rig back without waiting for an edge that may never come.
+            # Pause offered while WAITING too: a trigger step can sit there
+            # for minutes, and operator must be able to take rig back without
+            # waiting for an edge that may never come.
             self._btn_pause.setEnabled(running or waiting)
             for b in (self._btn_resume, self._btn_skip):
                 b.setEnabled(paused)
             self._btn_abort.setEnabled(held)
-            # The step list must not be edited out from under a running engine:
-            # it holds an index into it. Armed counts too — the recording it
-            # opened is already running, one TTL pulse from step 1.
+            # Step list must not be edited out from under running engine: it
+            # holds an index into it. Armed counts too — recording it opened
+            # is already running, one TTL pulse from step 1.
             self._tbl.setEnabled(not held)
             self._lbl_state.setStyleSheet(
                 "color:#d08770;" if paused else
                 (f"color:{style.HEX['routines']};"
                  if (running or armed or waiting) else ""))
             self._painted = phase
-        # The text moves within a phase (progress, step number); the styling
-        # does not.
+        # Text moves within a phase (progress, step number); styling doesn't.
         if text != self._painted_text:
             self._lbl_state.setText(text or "—")
             self._painted_text = text
@@ -689,13 +676,13 @@ class SettingsPanel(QWidget):
         """Why Start did nothing — every reason, not the first one."""
         self._lbl_state.setText("Cannot start:\n• " + "\n• ".join(problems))
         self._lbl_state.setStyleSheet("color:#d08770;")
-        # Written out of band, so the next _set_phase must repaint even if the
-        # phase has not moved.
+        # Written out of band, so next _set_phase must repaint even if phase
+        # hasn't moved.
         self._painted = self._painted_text = None
 
-    # ── templates ────────────────────────────────────────────────────────────
-    # The four buttons are thin on purpose: the folder, the naming and the
-    # reading back are `routines/templates.py`, which has no Qt in it.
+    # ── templates ────────────────────────────────────────────────────────
+    # Four buttons are thin on purpose: folder, naming, reading back are
+    # `routines/templates.py`, which has no Qt.
     def refresh_templates(self, select: str = "") -> None:
         names = templates.names()
         self._cmb_tpl.blockSignals(True)
@@ -732,8 +719,8 @@ class SettingsPanel(QWidget):
             self.load_template(name)
 
     def load_template(self, name: str) -> None:
-        """Replace the protocol being edited. A template is not a second live
-        routine — there is one, and this is what it now says."""
+        """Replace protocol being edited. A template isn't a second live
+        routine — there's one, and this is what it now says."""
         try:
             loaded = templates.load(name)
         except (OSError, ValueError) as e:
@@ -752,11 +739,11 @@ class SettingsPanel(QWidget):
         self.status_message.emit(f"template {name!r} deleted")
 
     def set_routine(self, r: Routine) -> None:
-        """Adopt a whole routine, keeping the step LIST the table holds.
+        """Adopt whole routine, keeping step LIST table holds.
 
-        The table was handed `self._r.steps` and writes into it, so the list
-        object has to survive — rebinding it would leave the table editing a
-        routine nothing else can see.
+        Table was handed `self._r.steps` and writes into it, so list object
+        must survive — rebinding it leaves table editing a routine nothing
+        else can see.
         """
         self._loading = True
         try:
