@@ -256,6 +256,16 @@ a dark panel, which is what a bad scale or offset produces and is otherwise
 indistinguishable from a projection that worked). `dmd_device` names the ALP or
 says `mock`, so a session that projected can be told from one that didn't.
 
+**Sub-sampling** (`dmd_sub_sampling`, `DmdSettings.sub_sampling`) turns off 1
+of every N pixels — a coarse ND filter made of missing mirrors, cutting total
+light without touching exposure time or geometry. 1 (the default) is off; the
+panel offers 2 ("1 out of 2", half the light) up to 10. It applies uniformly
+to whatever mode is loaded — All ON, an image, or ROIs — via
+`control.subsample_frame`, diagonally striped so the removed fraction is even
+across the panel rather than banded along one axis. `dmd_on_pixels` already
+reflects it; the field is recorded too so a dimmed session doesn't file
+identically to a full-brightness one.
+
 Rotation is clockwise-positive and the offset is measured from the panel's
 centre — the same conventions as the standalone **`dmdGUI_project`** app, which
 is where the optics are normally aligned; its saved scale/rotation seed this

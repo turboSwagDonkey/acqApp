@@ -62,6 +62,7 @@ TESTS = [
     ("subsets",   "test_module_subsets.py"),
     ("hotload",   "test_module_hotload.py"),
     ("rigs",      "test_rigs.py"),
+    ("modes",     "test_modes.py"),
     ("settings",  "test_settings_persistence.py"),
     ("session",   "test_session_recording.py"),
 ]

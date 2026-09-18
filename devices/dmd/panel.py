@@ -18,13 +18,14 @@ from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen, QPixmap,
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QVBoxLayout, QWidget,
+    QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
-                                        MODE_PATTERN, MODE_ROI, DmdSettings)
+                                        MODE_PATTERN, MODE_ROI, DmdSettings,
+                                        subsample_frame)
 
 
 class _DraggablePreview(QLabel):
@@ -260,6 +261,18 @@ class SettingsPanel(QWidget):
         btn_reset_geom.clicked.connect(self._reset_geometry)
         geom_lay.addWidget(btn_reset_geom, 3, 2, 1, 2)
 
+        geom_lay.addWidget(QLabel("Sub-sampling:"), 4, 0)
+        self._spn_subsample = QSpinBox()
+        self._spn_subsample.setRange(1, 10)
+        self._spn_subsample.setValue(self._s.sub_sampling)
+        self._spn_subsample.setSpecialValueText("off")
+        self._spn_subsample.setToolTip(
+            "Turn off 1 of every N pixels to cut total light without "
+            "changing exposure time — a coarse ND filter made of missing "
+            "mirrors. 1 = off (every mirror the pattern would light stays "
+            "on); 2 = half off, up to 10 = 1 in 10 off.")
+        geom_lay.addWidget(self._spn_subsample, 4, 1)
+
         self._chk_nudge = QCheckBox("Enable keyboard nudging")
         self._chk_nudge.setToolTip(
             "Nudge alignment with keys:\n"
@@ -269,7 +282,7 @@ class SettingsPanel(QWidget):
             "Hold Shift for 10x larger steps."
         )
         self._chk_nudge.toggled.connect(self._on_nudge_toggled)
-        geom_lay.addWidget(self._chk_nudge, 4, 0, 1, 4)
+        geom_lay.addWidget(self._chk_nudge, 5, 0, 1, 4)
 
         lay.addRow(geom_grp)
 
@@ -314,7 +327,8 @@ class SettingsPanel(QWidget):
         self._on_mode_changed()
         self._update_preview()
 
-        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
+        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy,
+                  self._spn_subsample):
             w.valueChanged.connect(self._emit)
         for c in (self._chk_fit, self._chk_invert, self._chk_roi_flip_y):
             c.toggled.connect(self._emit)
@@ -445,6 +459,13 @@ class SettingsPanel(QWidget):
             self._rb[MODE_ALL_ON].setChecked(True)   # -> _on_mode_changed -> _emit
         else:
             self._emit()
+
+    def set_sub_sampling(self, n: int) -> None:
+        """Programmatically set the sub-sampling factor (e.g. from a Mode
+        preset). Applies to whatever is already loaded (All ON, an image, or
+        ROIs) — see `control.subsample_frame`. Takes effect at the next
+        Display, or immediately if Live update is on."""
+        self._spn_subsample.setValue(n)
 
     def _show_rois(self) -> None:
         n = len(self._rois)
@@ -625,7 +646,8 @@ class SettingsPanel(QWidget):
         mode = self.mode
         if mode == MODE_ALL_ON:
             self._lbl_pattern.setText("All mirrors ON (Full Illumination)")
-            frame = np.full((h, w), 255, dtype=np.uint8)
+            frame = subsample_frame(np.full((h, w), 255, dtype=np.uint8),
+                                    self._spn_subsample.value())
         elif mode == MODE_ROI:
             # The real mask needs the calibration and the ROI geometry, which
             # `control.roi_frame` already assembles — reuse it rather than
@@ -639,6 +661,7 @@ class SettingsPanel(QWidget):
                     f"{n} ROI(s) — need a calibration to project"
                     if n else "No ROIs drawn yet")
             else:
+                frame = subsample_frame(frame, self._spn_subsample.value())
                 self._lbl_pattern.setText(
                     f"{n} ROI(s) -> {int((frame > 0).sum())} mirrors")
         elif p is None:
@@ -660,9 +683,9 @@ class SettingsPanel(QWidget):
                 # that changed nothing about the pattern was most of that cost
                 # (2026-08-27).
                 key = (self._pattern_cache[0], w, h, s.scale_pct, s.rotation_deg,
-                      s.offset_x, s.offset_y, s.invert, s.fit)
+                      s.offset_x, s.offset_y, s.invert, s.fit, s.sub_sampling)
                 if self._frame_cache is None or self._frame_cache[0] != key:
-                    built = alp.build_frame(
+                    built = subsample_frame(alp.build_frame(
                         arr, w, h,
                         scale_pct=s.scale_pct,
                         rotation_deg=s.rotation_deg,
@@ -670,7 +693,7 @@ class SettingsPanel(QWidget):
                         offset_y=s.offset_y,
                         invert=s.invert,
                         fit=s.fit
-                    )
+                    ), s.sub_sampling)
                     self._frame_cache = (key, built)
                 frame = self._frame_cache[1]
             except Exception as e:
@@ -745,6 +768,7 @@ class SettingsPanel(QWidget):
             offset_x=self._spn_dx.value(),
             offset_y=self._spn_dy.value(),
             invert=self._chk_invert.isChecked(),
+            sub_sampling=self._spn_subsample.value(),
             display_mode=self.mode,
             all_on=self.mode == MODE_ALL_ON,
             fit=self._chk_fit.isChecked(),

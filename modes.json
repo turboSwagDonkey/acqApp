@@ -1,11 +1,18 @@
 {
   "Scan": {
     "dmd_all_on": true,
+    "dmd_sub_sampling": 2,
     "camera_presets": {
       "voltage_cam": "full"
     },
     "camera_exposure_us": {
       "voltage_cam": 33333.0
+    },
+    "camera_binning": {
+      "voltage_cam": 1
+    },
+    "camera_trigger": {
+      "voltage_cam": false
     }
   }
 }

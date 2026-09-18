@@ -66,6 +66,15 @@ class VoltageCamModule(ModuleAdapter):
         panel's existing exposure_changed -> _on_exposure wiring."""
         self.panel.set_exposure(us)
 
+    def binning(self) -> int:
+        return self.panel.get_config().binning
+
+    def set_binning(self, n: int) -> None:
+        """Change the binning factor (e.g. from a Mode preset). Structural —
+        like the operator's own combo click, it only takes effect the next
+        time the session (re)starts."""
+        self.panel.set_binning(n)
+
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = CamSettingsPanel(self._load_config())

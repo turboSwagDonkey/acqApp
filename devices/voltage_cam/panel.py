@@ -314,6 +314,13 @@ class SettingsPanel(QWidget):
         if key in PRESET_KEYS:
             self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(key))
 
+    def set_binning(self, n: int) -> None:
+        """Programmatically select a binning factor (e.g. from a Mode
+        preset). Structural, like `set_preset()`: only takes effect at the
+        next Start."""
+        if n in BINNING_OPTIONS:
+            self._cmb_binning.setCurrentIndex(BINNING_OPTIONS.index(n))
+
     def set_trigger_mode(self, mode: str) -> None:
         """Programmatically select a trigger mode — a routine forces External
         edge before it opens its recording, for a TTL start or for any

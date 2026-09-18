@@ -436,6 +436,24 @@ class MainWindow(QMainWindow):
         m.set_preset(preset)
         return prev
 
+    def camera_binning(self, key: str) -> int | None:
+        """Module `key`'s current binning factor, or None if it is not
+        loaded, or is loaded but has no notion of binning."""
+        m = self._module(key)
+        return m.binning() if m is not None and hasattr(m, "binning") else None
+
+    def set_camera_binning(self, key: str, n: int) -> int | None:
+        """Switch module `key`'s binning factor. Returns the PREVIOUS value,
+        the same "None means not loaded/no such notion" shape as
+        `set_camera_preset`. Structural, like the operator's own combo
+        click — see `set_camera_preset`."""
+        m = self._module(key)
+        if m is None or not hasattr(m, "set_binning"):
+            return None
+        prev = m.binning()
+        m.set_binning(n)
+        return prev
+
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
         """Switch module `key`'s camera into/out of External edge trigger
         mode; returns whether it ended up there, or None if not loaded or
@@ -464,6 +482,13 @@ class MainWindow(QMainWindow):
         rather than being hardcoded here, so a new mode is a JSON edit, not
         a code change. A recipe is a dict of:
           "dmd_all_on": true                     — DmdModule.set_all_on()
+          "dmd_sub_sampling": n                  — DmdModule.set_sub_sampling(n);
+                                                     n is 1-10, "1 out of n" pixels
+                                                     turned off to cut total light
+                                                     without changing exposure (1 =
+                                                     off — the only DMD today, so
+                                                     flat like dmd_all_on, not a
+                                                     per-module dict)
           "camera_presets": {module_key: preset}  — set_camera_preset(), one
                                                      call per entry; a literal
                                                      preset key, or "full" for
@@ -478,30 +503,47 @@ class MainWindow(QMainWindow):
                                                      `set_exposure` (no camera
                                                      concept today besides
                                                      voltage_cam)
+          "camera_binning": {module_key: n}       — set_camera_binning(), one
+                                                     call per entry; n is 1/2/4
+          "camera_trigger": {module_key: bool}    — set_camera_trigger(), one
+                                                     call per entry; True =
+                                                     External edge, False =
+                                                     Internal (free-running)
 
         Same "takes effect at the next Display/Start" contract as
         `set_camera_preset`/`DmdModule.set_all_on` — this does not itself
         start or display anything, UNLESS the DMD panel's own "Live update"
         toggle is on, in which case `dmd_all_on` still re-projects shortly
-        after (see `DmdModule`/`acqApp.devices.dmd.panel`'s Live update). An
-        unloaded module, or a preset key the target module doesn't
-        recognize, is silently skipped (`set_camera_preset` already no-ops
-        on both, including a module with no preset concept at all) — hand-
-        edited modes.json, so a typo'd module key must not crash the app.
+        after (see `DmdModule`/`acqApp.devices.dmd.panel`'s Live update).
+        `camera_trigger` is the one exception: `set_camera_trigger` restarts
+        live view itself if the mode actually needs to change (and refuses,
+        silently, if a recording is already running) — the same behaviour a
+        routine's own TTL-arm sequence already relies on. An unloaded
+        module, or a preset key the target module doesn't recognize, is
+        silently skipped (`set_camera_preset` already no-ops on both,
+        including a module with no preset concept at all) — hand-edited
+        modes.json, so a typo'd module key must not crash the app.
         """
         from acqApp.devices.voltage_cam.presets import resolve_preset_key
 
         recipe = self._modes.get(name, {})
-        if recipe.get("dmd_all_on"):
-            dmd = self._module("dmd")
-            if dmd is not None:
-                dmd.set_all_on()
+        dmd = self._module("dmd")
+        if recipe.get("dmd_all_on") and dmd is not None:
+            dmd.set_all_on()
+        sub_sampling = recipe.get("dmd_sub_sampling")
+        if (sub_sampling is not None and dmd is not None
+                and hasattr(dmd, "set_sub_sampling")):
+            dmd.set_sub_sampling(int(sub_sampling))
         for key, preset in recipe.get("camera_presets", {}).items():
             self.set_camera_preset(key, resolve_preset_key(preset))
         for key, us in recipe.get("camera_exposure_us", {}).items():
             m = self._module(key)
             if m is not None and hasattr(m, "set_exposure"):
                 m.set_exposure(us)
+        for key, n in recipe.get("camera_binning", {}).items():
+            self.set_camera_binning(key, n)
+        for key, on in recipe.get("camera_trigger", {}).items():
+            self.set_camera_trigger(key, on)
         self.status(f"Mode: {name}")
 
     def _save_mode_as(self) -> None:
@@ -515,7 +557,8 @@ class MainWindow(QMainWindow):
         """
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
-        from acqApp.devices.voltage_cam.presets import preset_alias
+        from acqApp.devices.voltage_cam.presets import (TRIGGER_MODES,
+                                                        preset_alias)
 
         name, ok = QInputDialog.getText(self, "Save as preset",
                                         "Preset name:")
@@ -549,6 +592,10 @@ class MainWindow(QMainWindow):
             if dmd.panel.mode == MODE_ALL_ON:
                 recipe["dmd_all_on"] = True
                 captured.append("DMD all-on")
+            n = dmd.panel.settings.sub_sampling
+            if n > 1:
+                recipe["dmd_sub_sampling"] = n
+                captured.append(f"DMD sub-sampling 1 in {n}")
 
         vcam = self._module("voltage_cam")
         if vcam is not None and hasattr(vcam, "preset_key"):
@@ -559,6 +606,14 @@ class MainWindow(QMainWindow):
             us = vcam.panel.exposure_us
             recipe["camera_exposure_us"] = {"voltage_cam": us}
             captured.append(f"voltage_cam exposure {us:g} µs")
+        if vcam is not None and hasattr(vcam, "binning"):
+            n = vcam.binning()
+            recipe["camera_binning"] = {"voltage_cam": n}
+            captured.append(f"voltage_cam binning {n}x{n}")
+        if vcam is not None and vcam.panel is not None:
+            mode = vcam.panel.get_config().trigger_mode
+            recipe["camera_trigger"] = {"voltage_cam": mode == TRIGGER_MODES[1]}
+            captured.append(f"voltage_cam trigger {mode!r}")
 
         if not captured:
             QMessageBox.information(

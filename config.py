@@ -120,12 +120,16 @@ def load_modes() -> dict:
     empty Mode dropdown (just "None"), the same failure mode as a removed
     preset in load_dataclass. Non-dict entries are dropped rather than
     raising, so one bad hand-edit doesn't take out every mode. Also
-    sanitizes each recipe's `camera_presets`/`camera_exposure_us`, the two
-    fields `set_mode()` iterates (`.items()`) rather than merely truth-tests:
-    a natural hand-edit mistake — `null` for "no camera presets", or a list
-    by typo — would otherwise reach `set_mode()` as `None`/a list and raise
-    there, since `dict.get(key, {})` only substitutes the default when the
-    key is *absent*, not when it's present with a non-dict value.
+    sanitizes each recipe's `camera_presets`/`camera_exposure_us`/
+    `camera_trigger`/`camera_binning`, the four fields `set_mode()` iterates
+    (`.items()`) rather than merely truth-tests: a natural hand-edit mistake
+    — `null` for "no camera presets", or a list by typo — would otherwise
+    reach `set_mode()` as `None`/a list and raise there, since
+    `dict.get(key, {})` only substitutes the default when the key is
+    *absent*, not when it's present with a non-dict value. `dmd_sub_sampling`
+    is sanitized too, even though `set_mode()` only reads it (no `.items()`)
+    — it flows into `int(sub_sampling)`, which raises on a str/list where
+    `dmd_all_on`'s plain truth-test never would.
     """
     data = _load_json(_MODES_PATH)
     modes = {}
@@ -152,6 +156,33 @@ def load_modes() -> dict:
                 and not isinstance(v, bool)}
         else:
             recipe.pop("camera_exposure_us")   # wrong type entirely -> drop it
+        triggers = recipe.get("camera_trigger")
+        if triggers is None:
+            recipe.pop("camera_trigger", None)
+        elif isinstance(triggers, dict):
+            recipe["camera_trigger"] = {
+                k: v for k, v in triggers.items()
+                if isinstance(k, str) and isinstance(v, bool)}
+        else:
+            recipe.pop("camera_trigger")   # wrong type entirely -> drop it
+        binnings = recipe.get("camera_binning")
+        if binnings is None:
+            recipe.pop("camera_binning", None)
+        elif isinstance(binnings, dict):
+            recipe["camera_binning"] = {
+                k: v for k, v in binnings.items()
+                if isinstance(k, str) and isinstance(v, int)
+                and not isinstance(v, bool)}
+        else:
+            recipe.pop("camera_binning")   # wrong type entirely -> drop it
+        sub_sampling = recipe.get("dmd_sub_sampling")
+        if sub_sampling is None:
+            recipe.pop("dmd_sub_sampling", None)
+        elif (isinstance(sub_sampling, (int, float))
+              and not isinstance(sub_sampling, bool)):
+            recipe["dmd_sub_sampling"] = sub_sampling
+        else:
+            recipe.pop("dmd_sub_sampling")   # wrong type entirely -> drop it
         modes[name] = recipe
     return modes
 

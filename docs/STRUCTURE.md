@@ -287,6 +287,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
                               settings round-trip, hot-load
   test_encoder_derive.py
   test_encoder_timing.py
+  test_modes.py                modes.json sanitizing/round-trip, and the
+                                shipped Scan mode
   test_module_hotload.py       loading instruments without restarting
   test_module_subsets.py
   test_pupil_eyeloop.py       EyeLoop through the app path; every check has a control

@@ -327,6 +327,7 @@ def main() -> int:
 
     check_roi_wiring(r)
     check_mode_switch_and_cache(r)
+    check_sub_sampling(r)
     return r.finish()
 
 
@@ -448,6 +449,71 @@ def check_mode_switch_and_cache(r) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()
     pump(app, 0.1)
+
+
+def check_sub_sampling(r) -> None:
+    """1-out-of-N: cuts total light without touching illumination time or
+    geometry. n=1 (the default) is a no-op; n=2..10 removes roughly that
+    fraction of the ON pixels, evenly (diagonally striped, not banded on one
+    axis) — see `control.subsample_frame`. Also the point of adding it: the
+    real controller's `apply_settings` decides whether to reload off an
+    explicit field tuple (unlike the mock, which just compares the whole
+    dataclass), so a sub_sampling-only change is the regression this guards —
+    it is easy to add a field to `DmdSettings` and forget it there."""
+    from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
+                                            DmdController, DmdSettings,
+                                            MockDmdController, subsample_frame)
+
+    # check_roi_wiring/check_mode_switch_and_cache called isolate_user_state(),
+    # which re-blocks ALL vendor drivers (including ALP4) with no args — undo
+    # that here, the same fake this file's own `main()` installs up front.
+    install_fake_alp()
+
+    full = np.full((200, 300), 255, dtype=np.uint8)
+    r.check(np.array_equal(subsample_frame(full, 1), full),
+            'n=1 ("1 out of 1") is a no-op')
+
+    for n in (2, 3, 10):
+        out = subsample_frame(full, n)
+        frac_off = 1.0 - int((out > 0).sum()) / full.size
+        r.check(abs(frac_off - 1.0 / n) < 0.02,
+                f"n={n} removes ~1/{n} of the pixels ({frac_off:.3f} off, "
+                f"wanted ~{1.0 / n:.3f})")
+        r.check(set(np.unique(out)) <= {0, 255}, f"…and stays binary (n={n})")
+
+    # A pixel that was already off must stay off, not get toggled back on.
+    half = full.copy()
+    half[:, 150:] = 0
+    masked = subsample_frame(half, 2)
+    r.check(np.array_equal(masked[:, 150:], half[:, 150:]),
+            "an already-off pixel is unaffected either way")
+
+    # End to end, against the FakeALP4 the module fixture already installed:
+    # All ON + 1-in-2 sub-sampling halves the mirrors actually projected.
+    FakeALP4.instances.clear()
+    c = DmdController(DmdSettings(display_mode=MODE_ALL_ON, sub_sampling=2))
+    r.check(abs(c.on_pixels / (DEFAULT_W * DEFAULT_H) - 0.5) < 0.02,
+            f"All ON + 1-in-2 sub-sampling projects ~half the mirrors "
+            f"({c.on_pixels} of {DEFAULT_W * DEFAULT_H})")
+
+    # The regression this exists for: sub_sampling alone must be enough to
+    # trigger a reload — it was added to DmdSettings after geometry_changed's
+    # field tuple already existed, exactly the kind of field a later edit
+    # forgets to add there.
+    before = c.on_pixels
+    c.apply_settings(DmdSettings(display_mode=MODE_ALL_ON, sub_sampling=4))
+    r.check(c.on_pixels != before,
+            f"changing only sub_sampling reloads the frame ({before} -> "
+            f"{c.on_pixels} mirrors)")
+    c.close()
+
+    # The mock must agree — it reloads on ANY settings change (dataclass
+    # equality), so this is the cross-check that the real controller's
+    # explicit tuple isn't quietly narrower.
+    m = MockDmdController(DmdSettings(display_mode=MODE_ALL_ON, sub_sampling=2))
+    m.load_pattern()
+    r.check(abs(m.on_pixels / (DEFAULT_W * DEFAULT_H) - 0.5) < 0.02,
+            f"the mock agrees ({m.on_pixels} of {DEFAULT_W * DEFAULT_H})")
 
 
 if __name__ == "__main__":

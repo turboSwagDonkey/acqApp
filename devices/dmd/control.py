@@ -92,6 +92,20 @@ def roi_frame(settings, width: int, height: int):
     return np.asarray(frame)
 
 
+def subsample_frame(frame: np.ndarray, n: int) -> np.ndarray:
+    """Zero out 1 of every `n` pixels, to cut total light without touching
+    illumination time — a coarse ND filter made of missing mirrors rather
+    than a dimmer. Diagonally striped ((row+col) % n) so the removed
+    fraction is uniform over any neighbourhood instead of banding along one
+    axis; already-off pixels are unaffected either way. n <= 1 ("1 out of
+    1") is a no-op — the default, off."""
+    if n <= 1:
+        return frame
+    yy, xx = np.indices(frame.shape)
+    keep = (yy + xx) % n != 0
+    return np.where(keep, frame, 0).astype(frame.dtype)
+
+
 @dataclass
 class DmdSettings:
     pattern_path:  Path | None = None   # .png / .bmp to upload
@@ -109,6 +123,9 @@ class DmdSettings:
     offset_x:      float       = 0.0    # device px from the panel centre
     offset_y:      float       = 0.0
     invert:        bool        = False  # swap on/off mirrors
+    # Turn off 1 of every N pixels to cut total light — see `subsample_frame`.
+    # 1 = off (every pixel kept); the UI offers 1..10 ("1 out of N").
+    sub_sampling:  int         = 1
     # `all_on` is kept in step because the session metadata and the geometry
     # checks below have always read that field.
     display_mode:  str         = MODE_PATTERN   # pattern | all_on | roi
@@ -169,11 +186,11 @@ class DmdController(QObject):
             (settings.scale_pct, settings.rotation_deg, settings.offset_x,
              settings.offset_y, settings.invert, settings.fit,
              settings.display_mode, settings.rois, settings.calib_path,
-             settings.roi_flip_y)
+             settings.roi_flip_y, settings.sub_sampling)
             != (self._s.scale_pct, self._s.rotation_deg, self._s.offset_x,
                 self._s.offset_y, self._s.invert, self._s.fit,
                 self._s.display_mode, self._s.rois, self._s.calib_path,
-                self._s.roi_flip_y))
+                self._s.roi_flip_y, self._s.sub_sampling))
         self._s = settings
         # Always reload on geometry change, even MODE_PATTERN with no file chosen:
         # load_pattern() already clears _pattern to None in that case, and a
@@ -187,12 +204,14 @@ class DmdController(QObject):
         mode = self._s.display_mode
 
         if mode == MODE_ALL_ON:
-            self._pattern = np.full((h, w), 255, dtype=np.uint8)
+            self._pattern = subsample_frame(
+                np.full((h, w), 255, dtype=np.uint8), self._s.sub_sampling)
             print(f"[DMD] all mirrors ON -> {w}x{h}, {self.on_pixels} mirrors on")
             return
         if mode == MODE_ROI:
             self._pattern = roi_frame(self._s, w, h)
             if self._pattern is not None:
+                self._pattern = subsample_frame(self._pattern, self._s.sub_sampling)
                 print(f"[DMD] ROIs -> {w}x{h}, {self.on_pixels} mirrors on")
             return
 
@@ -202,10 +221,11 @@ class DmdController(QObject):
             self._pattern = None
             return
 
-        self._pattern = alp.build_frame(
+        self._pattern = subsample_frame(alp.build_frame(
             p, w, h, scale_pct=self._s.scale_pct,
             rotation_deg=self._s.rotation_deg, offset_x=self._s.offset_x,
-            offset_y=self._s.offset_y, invert=self._s.invert, fit=self._s.fit)
+            offset_y=self._s.offset_y, invert=self._s.invert, fit=self._s.fit),
+            self._s.sub_sampling)
         print(f"[DMD] {p.name} -> {w}x{h}, {self.on_pixels} mirrors on")
 
     def project_frame(self, frame: np.ndarray) -> None:
@@ -314,26 +334,32 @@ class MockDmdController(QObject):
 
     def load_pattern(self, path: Path | None = None) -> None:
         if self._s.display_mode == MODE_ALL_ON:
-            self._pattern = np.full((DEFAULT_H, DEFAULT_W), 255, dtype=np.uint8)
+            self._pattern = subsample_frame(
+                np.full((DEFAULT_H, DEFAULT_W), 255, dtype=np.uint8),
+                self._s.sub_sampling)
             print(f"[DMD mock] all mirrors ON -> {DEFAULT_W}x{DEFAULT_H}, "
                   f"{self.on_pixels} mirrors on")
             return
         if self._s.display_mode == MODE_ROI:
             self._pattern = roi_frame(self._s, DEFAULT_W, DEFAULT_H)
+            if self._pattern is not None:
+                self._pattern = subsample_frame(self._pattern, self._s.sub_sampling)
             return
 
         p = Path(path or self._s.pattern_path or "")
         if p.is_file():
             try:
-                self._pattern = alp.build_frame(
+                self._pattern = subsample_frame(alp.build_frame(
                     p, DEFAULT_W, DEFAULT_H, scale_pct=self._s.scale_pct,
                     rotation_deg=self._s.rotation_deg,
                     offset_x=self._s.offset_x, offset_y=self._s.offset_y,
-                    invert=self._s.invert, fit=self._s.fit)
+                    invert=self._s.invert, fit=self._s.fit), self._s.sub_sampling)
                 return
             except Exception as e:
                 print(f"[DMD mock] could not render {p.name}: {e}")
 
+        # Placeholder only — reached with no pattern configured at all, not a
+        # real display mode, so it deliberately skips sub-sampling too.
         tile = np.kron([[0, 255] * 8, [255, 0] * 8] * 8,
                        np.ones((4, 4), dtype=np.uint8)).astype(np.uint8)
         reps = (DEFAULT_H // tile.shape[0] + 1, DEFAULT_W // tile.shape[1] + 1)

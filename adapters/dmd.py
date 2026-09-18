@@ -345,6 +345,14 @@ class DmdModule(ModuleAdapter):
         if self.panel is not None:
             self.panel.set_all_on()
 
+    def set_sub_sampling(self, n: int) -> None:
+        """Set how many pixels stay off out of every n (1 = off). Config
+        only, like `set_all_on` — see `DmdSettings.sub_sampling`/
+        `control.subsample_frame`. Reachable from any modes.json recipe's
+        `dmd_sub_sampling` key via MainWindow.set_mode()."""
+        if self.panel is not None:
+            self.panel.set_sub_sampling(n)
+
     def set_light(self, on: bool) -> None:
         """THE call that emits light. `display()` re-applies the panel's
         geometry first, so a routine projects where the panel says it does."""
@@ -386,6 +394,11 @@ class DmdModule(ModuleAdapter):
             # placement that was never used.
             "dmd_all_on":      s.all_on,
             "dmd_fit":         s.fit,
+            # 1 = off. Without this, a session run at reduced light (a
+            # Scan-mode habit, or an operator dimming it by hand) would file
+            # identically to one at full brightness — dmd_on_pixels already
+            # reflects the mask, but not WHY the count is lower.
+            "dmd_sub_sampling": s.sub_sampling,
             # 0 mirrors on is a dark panel — a Display that "worked" and
             # projected nothing looks identical in every other field here.
             "dmd_on_pixels":   c.on_pixels if c is not None else 0,
