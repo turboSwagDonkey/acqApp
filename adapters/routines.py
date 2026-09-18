@@ -407,8 +407,9 @@ class RoutinesModule(ModuleAdapter):
         moving to a different Group/ungrouped region/cycle does not.
 
         Keyed on `run.start_index` alone, which is exactly right when each
-        Group has its OWN Recording bracket (the natural setup, and the one
-        `routines/panel.py`'s per-step "Mark as recording" produces). Edge
+        Group has its OWN Recording bracket (the natural setup, and the only
+        one `routines/panel.py`'s per-step recording sticker can produce —
+        it never spans more than one step). Edge
         case, not fixed here: if ONE Recording spans two step-index-ADJACENT
         Groups, `recording_run_ids` can merge a repeat of the first with the
         first repeat of the second into a single RecordingRun (its own
