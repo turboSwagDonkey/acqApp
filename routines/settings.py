@@ -64,8 +64,8 @@ SAVE_MODES: dict[str, str] = {
 # itself before arming (ModuleHost.set_camera_trigger), so nothing here
 # reads a DAQ line: the camera already IS the TTL input.
 START_TRIGGERS: dict[str, str] = {
-    "manual": "Manual — click Start",
-    "ttl":    "TTL — waits for the camera's externally-triggered frame",
+    "manual": "Manual — Click Start",
+    "ttl":    "TTL — Wait for EXT Cam Frame",
 }
 
 # A settle a routine may ask for. Not a safety limit — an obviously-wrong entry
@@ -96,6 +96,7 @@ class Step:
     """
     kind:     str = "wait"
     label:    str = ""
+    comment:  str = ""                # free-text note; no effect on the run
     # move only
     x_um:     float | None = None
     y_um:     float | None = None
@@ -121,7 +122,7 @@ class Step:
                      ", ".join(f"{a}={v:.0f}um" for a, v in
                                (("x", self.x_um), ("y", self.y_um),
                                 ("z", self.z_um))
-                               if v is not None) or "no change")
+                               if v is not None) or "NA")
             body = f"move to {where}"
         elif self.kind == "display":
             body = (f"show {pattern_label(self.pattern)}" if self.pattern

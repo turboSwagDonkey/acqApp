@@ -5,7 +5,7 @@ composite row bundling all of them — the **Kind** column picks which, and
 the **Details**/**Length**/**Unit**/**Settle** columns render "—" and refuse
 editing on a row whose kind doesn't use them (Length/Unit are Wait-only,
 Settle is Move-only, Details is Move/Display-only) — the same "sentinel, not
-blank" rule the old Stage/Pattern cells already used for "no change." Every
+blank" rule the old Stage/Pattern cells already used for "NA" Every
 editable cell still edits through a widget that can only produce a legal
 value: the value lives in `UserRole` while the text is a rendering of it,
 usually — **Details** renders as something OTHER than its raw value the same
@@ -59,8 +59,8 @@ import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDoubleSpinBox, QHeaderView, QMenu,
-    QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QComboBox, QDoubleSpinBox, QHeaderView, QInputDialog,
+    QMenu, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
 )
 
 from acqApp.routines.settings import (KINDS, UNITS, Group, Recording, Step,
@@ -91,14 +91,16 @@ KIND_LABELS: dict[str, str] = {
 # — what it shows and edits depends on the row's kind, painted in
 # `_paint_details` rather than through the generic `_render`.
 COLS = (
-    ("Step",    "label", "Your name for this step. It goes into the file."),
+    ("Comment", "comment", "A short note for this step, shown as a title "
+                          "here. Double-click to read or write the full "
+                          "text."),
     ("Kind",    "kind",  "What this step does: Move the stage, start "
                          "Displaying a pattern, Wait, Puff, or wait for an "
                          "external Trigger on the camera's line."),
     ("Details", "details", "Move: where to send the stage, as (X, Y, Z). "
                          "Double-click, or right-click -> Set position…, to "
                          "type numbers; Delete clears every axis back to "
-                         "\"no change\". Filled from a saved FOV, the cell "
+                         "\"NA\". Filled from a saved FOV, the cell "
                          "names it in front of the numbers instead.\nDisplay: the "
                          "DMD pattern, shown as a thumbnail once one is set. "
                          "Double-click to choose one, Delete to stop "
@@ -115,7 +117,7 @@ FIELDS = [f for _t, f, _tip in COLS]
 # What an axis a Move step does not send reads as. A word, not a blank cell:
 # blank used to mean both "leave this axis alone" and "I have not typed it
 # yet", and "leave" on its own did not say leave WHAT.
-NO_CHANGE = "no change"
+NO_CHANGE = "NA"
 
 # The row header of the step the engine is on. The row is bold as well; the
 # marker is what survives a table the operator has scrolled.
@@ -220,8 +222,15 @@ class StepTable(QTableWidget):
         self.setDragDropOverwriteMode(False)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.verticalHeader().setSectionsMovable(False)
-        self.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch)
+        # Kind/Length/Unit/Settle are a word or a number — fit to content
+        # instead of an equal Stretch share, which left them mostly empty
+        # space. Comment/Details are the two columns worth the room that
+        # frees up.
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        for f in ("comment", "details"):
+            header.setSectionResizeMode(FIELDS.index(f),
+                                        QHeaderView.ResizeMode.Stretch)
         # One click on a selected cell opens its editor: with combo boxes and
         # spin boxes, needing a double-click to see the choices hides them.
         self.setEditTriggers(
@@ -252,8 +261,13 @@ class StepTable(QTableWidget):
         # The row header IS the recording sticker: click a step's number to
         # toggle a one-step Recording there, no selection required.
         self.verticalHeader().sectionClicked.connect(self._on_header_clicked)
+        # …and its name tag: double-click to set the label that used to be
+        # its own ("Step") column — one that sat empty far more often than not.
+        self.verticalHeader().sectionDoubleClicked.connect(
+            self._on_header_double_clicked)
         self.verticalHeader().setToolTip(
-            "Click a step's number to toggle recording for that step.")
+            "Click a step's number to toggle recording for that step.\n"
+            "Double-click to name it.")
         self.reload()
 
     # ── painting ─────────────────────────────────────────────────────────────
@@ -322,10 +336,11 @@ class StepTable(QTableWidget):
 
     def _paint_numbers(self) -> None:
         """The row header is the step's place in the order, and carries the
-        running marker, a group's repeat count on its FIRST row, and a
-        recording marker on EVERY row it covers (no count to show like a
-        group's ×N) — "which step is this, is it repeated, is it being
-        recorded" answered in one glance."""
+        running marker, a group's repeat count on its FIRST row, a recording
+        marker on EVERY row it covers (no count to show like a group's ×N),
+        and the step's own name if it has one (double-click to set) —
+        "which step is this, is it repeated, is it being recorded, what is
+        it called" answered in one glance."""
         labels = []
         for r in range(self.rowCount()):
             n = RUNNING if r == self._running else str(r + 1)
@@ -334,6 +349,8 @@ class StepTable(QTableWidget):
                 n = f"{n} ×{g.repeats}"
             if self._recording_at(r) is not None:
                 n = f"{n} ⏺"
+            if r < len(self._steps) and self._steps[r].label:
+                n = f"{n}: {self._steps[r].label}"
             labels.append(n)
         self.setVerticalHeaderLabels(labels)
 
@@ -344,10 +361,11 @@ class StepTable(QTableWidget):
             if item is None:
                 item = QTableWidgetItem()
                 self.setItem(row, col, item)
-            if field == "label":
-                item.setData(VALUE, s.label)
-                item.setText(s.label)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            if field == "comment":
+                item.setData(VALUE, s.comment)
+                item.setText(_comment_preview(s.comment))
+                item.setToolTip(s.comment)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             elif field == "kind":
                 item.setData(VALUE, s.kind)
                 item.setText(KIND_LABELS.get(s.kind, s.kind))
@@ -439,9 +457,7 @@ class StepTable(QTableWidget):
             return
         s = self._steps[row]
         field = FIELDS[col]
-        if field == "label":
-            s.label = item.text().strip()
-        elif field == "kind":
+        if field == "kind":
             value = item.data(VALUE)
             if value in KINDS:
                 s.kind = value
@@ -473,7 +489,11 @@ class StepTable(QTableWidget):
             self._loading = False
 
     def _on_double_click(self, row: int, col: int) -> None:
-        if FIELDS[col] != "details":
+        field = FIELDS[col]
+        if field == "comment":
+            self._edit_comment(row)
+            return
+        if field != "details":
             return
         kind = self._steps[row].kind
         if kind not in ("move", "display"):
@@ -485,7 +505,7 @@ class StepTable(QTableWidget):
             self.pattern_requested.emit()
 
     # The one cell with no delegate at all — set through a dialog, so Delete
-    # is the only way to empty it: Move back to "no change" on both axes,
+    # is the only way to empty it: Move back to "NA" on both axes,
     # Display back to "stop displaying".
     _CLEARABLE = ("details",)
 
@@ -503,7 +523,7 @@ class StepTable(QTableWidget):
         super().keyPressEvent(ev)
 
     def clear_cell(self, row: int, field: str) -> None:
-        """Empty the Details cell: Move back to "no change", Display back to
+        """Empty the Details cell: Move back to "NA", Display back to
         "stop displaying"."""
         if not (0 <= row < len(self._steps)):
             return
@@ -559,7 +579,12 @@ class StepTable(QTableWidget):
             return
         src = self.selected_row()
         insert = self._drop_index(ev)
-        ev.setDropAction(Qt.DropAction.MoveAction)
+        # CopyAction, not MoveAction: `move_row` below already does the whole
+        # move (list splice + repaint). Accepting MoveAction here makes Qt's
+        # own startDrag() ALSO delete the source row afterward, on top of the
+        # one move_row already performed — the step then vanishes until the
+        # next full reload() repaints over the damage.
+        ev.setDropAction(Qt.DropAction.CopyAction)
         ev.accept()
         # An insertion point past the source collapses by one once it is lifted.
         self.move_row(src, insert - 1 if insert > src else insert)
@@ -607,6 +632,32 @@ class StepTable(QTableWidget):
         "record just this one step" has to be reachable with no range at all."""
         if 0 <= row < len(self._steps):
             self.recording_toggled.emit(row)
+
+    def _on_header_double_clicked(self, row: int) -> None:
+        """Name a step. Its label used to be its own ("Step") column, which
+        sat empty far more often than not; the header already shows the
+        step's number, so it shows the name too."""
+        if not (0 <= row < len(self._steps)):
+            return
+        text, ok = QInputDialog.getText(
+            self, "Step name", "Label for this step:",
+            text=self._steps[row].label)
+        if ok:
+            self._steps[row].label = text.strip()
+            self._paint_numbers()
+            self.changed.emit()
+
+    def _edit_comment(self, row: int) -> None:
+        """The Comment cell shows a title; double-click opens the full text
+        — the cell itself is too narrow for more than that."""
+        if not (0 <= row < len(self._steps)):
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Comment for this step", "Note:", self._steps[row].comment)
+        if ok:
+            self._steps[row].comment = text.strip()
+            self._repaint_row(row)
+            self.changed.emit()
 
     # ── context menu ─────────────────────────────────────────────────────────
     def contextMenuEvent(self, event) -> None:
@@ -712,6 +763,15 @@ def _roi_icon(path: str) -> QIcon:
     # so the array going out of scope on return does not corrupt the icon.
     img = QImage(bits.tobytes(), n, n, n, QImage.Format.Format_Grayscale8)
     return QIcon(QPixmap.fromImage(img.copy()))
+
+
+def _comment_preview(text: str, limit: int = 40) -> str:
+    """The Comment cell's text — a title, not the note; the full thing is
+    one double-click away."""
+    if not text:
+        return "—"
+    first = text.splitlines()[0]
+    return first if len(first) <= limit else first[:limit - 1] + "…"
 
 
 def _render(field: str, value) -> str:

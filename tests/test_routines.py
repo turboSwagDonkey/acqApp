@@ -1492,8 +1492,7 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     edits: list = []
     panel.settings_changed.connect(edits.append)
 
-    from PyQt6.QtWidgets import (QComboBox, QDoubleSpinBox, QLineEdit,
-                                 QStyleOptionViewItem)
+    from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QStyleOptionViewItem
 
     def editor(row: int, field: str):
         c = col[field]
@@ -1520,11 +1519,46 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             f"the Settle delegate opens a spin box in seconds regardless of "
             f"the row's kind — editability is a separate gate "
             f"({type(ed).__name__})")
-    idx = tbl.model().index(0, col["label"])
-    ed = tbl.itemDelegateForIndex(idx).createEditor(
-        tbl, QStyleOptionViewItem(), idx)
-    r.check(isinstance(ed, QLineEdit),
-            f"control: the Step name is still typed ({type(ed).__name__})")
+    # The old "Step" column is gone — its label now lives on the row header
+    # (double-click to set), and the freed column is a Comment: dialog-set
+    # like Details, a title in the cell and the full text one double-click
+    # away.
+    r.check(not (tbl.item(0, col["comment"]).flags()
+                & Qt.ItemFlag.ItemIsEditable),
+            "control: Comment is dialog-set, not typed into directly")
+    r.check(tbl.item(0, col["comment"]).text() == "—",
+            "…and reads as a dash with nothing set yet")
+
+    from PyQt6.QtWidgets import QInputDialog
+
+    real_get_multiline = QInputDialog.getMultiLineText
+    QInputDialog.getMultiLineText = staticmethod(
+        lambda *a, **k: ("first line\nsecond line", True))
+    try:
+        tbl._on_double_click(0, col["comment"])
+    finally:
+        QInputDialog.getMultiLineText = real_get_multiline
+    r.check(routine.steps[0].comment == "first line\nsecond line",
+            "double-click on Comment writes the full text back")
+    r.check(tbl.item(0, col["comment"]).text() == "first line",
+            f"…and the cell shows only its first line as a title "
+            f"({tbl.item(0, col['comment']).text()!r})")
+    r.check(tbl.item(0, col["comment"]).toolTip() == "first line\nsecond line",
+            "…with the full text in the tooltip")
+
+    real_get_text = QInputDialog.getText
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("renamed", True))
+    try:
+        tbl._on_header_double_clicked(0)
+    finally:
+        QInputDialog.getText = real_get_text
+    r.check(routine.steps[0].label == "renamed",
+            "double-click on the row header sets the step's name")
+    r.check(tbl.verticalHeaderItem(0).text().endswith(": renamed"),
+            f"…and the header shows it "
+            f"({tbl.verticalHeaderItem(0).text()!r})")
+    routine.steps[0].label = "one"     # restore for what follows below
+    tbl._paint_numbers()
 
     # ── kind-gating: Length/Unit are Wait-only, Settle is Move-only ──
     r.check(bool(tbl.item(0, col["length"]).flags() & Qt.ItemFlag.ItemIsEditable),
@@ -2148,11 +2182,11 @@ def check_panel_tracker(r: Report, app) -> None:
 
     panel.set_state(Phase.RUNNING, "step 2/3", 1)
     heads = [tbl.verticalHeaderItem(i).text() for i in range(tbl.rowCount())]
-    r.check(heads == ["1", RUNNING, "3"],
+    r.check(heads == ["1: one", f"{RUNNING}: two", "3: three"],
             f"the running step is marked in the row header ({heads})")
     panel.set_state(Phase.DONE, "finished", None)
     heads = [tbl.verticalHeaderItem(i).text() for i in range(tbl.rowCount())]
-    r.check(heads == ["1", "2", "3"],
+    r.check(heads == ["1: one", "2: two", "3: three"],
             f"…and the headers are the step order again once it is over "
             f"({heads})")
 
