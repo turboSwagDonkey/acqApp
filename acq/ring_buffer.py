@@ -5,11 +5,11 @@ Producer (acquisition thread) puts, consumer (writer thread) gets. On overflow
 the oldest goes and `drop_count` rises, which the GUI polls for a warning.
 
 Two bounds: `maxlen` (items) and `maxbytes` (payload, so a handful of 20 MB
-frames cannot balloon RAM inside any sane item count).
+frames can't balloon RAM inside any sane item count).
 
 Under either, it sheds the oldest *sized* item — a frame — before a zero-byte
 one: frames are plentiful and redundant with the preview, a sparse
-stimulus/behaviour event is not. One item is always kept, so an item larger
+stimulus/behaviour event isn't. One item is always kept, so an item larger
 than `maxbytes` is buffered rather than dropped.
 """
 from __future__ import annotations

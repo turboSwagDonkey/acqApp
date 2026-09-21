@@ -6,7 +6,7 @@ and the DMD adapter can host it without the two modules importing each other.
 
 The reachable field is outlined — not clamped: an ROI can be dragged outside
 it, and the only feedback is `_refresh_status()` naming it below the list.
-An ROI outside it is not a small error, it is a stimulus that never arrives.
+An ROI outside it is not a small error, it's a stimulus that never arrives.
 """
 from __future__ import annotations
 
@@ -43,13 +43,13 @@ class _DrawViewBox(pg.ViewBox):
     somewhere nobody asked for. Dragging where you want it is one.
 
     Gated on a toggle rather than a modifier key: panning and zooming a 4432 px
-    frame is how you find the target in the first place, so the two cannot both
+    frame is how you find the target in the first place, so the two can't both
     own an unqualified left-drag.
 
     The rubber band is not decoration. Without it the drag produced nothing
     until release, so there was no way to tell whether the mode was even armed
-    until after committing an ROI — and it is drawn in the SAME shape the
-    release will create, so what is dragged is what appears.
+    until after committing an ROI — and it's drawn in the SAME shape the
+    release will create, so what's dragged is what appears.
     """
 
     drawn = pyqtSignal(object, object)      # (x0, y0), (x1, y1) in image px
@@ -202,7 +202,7 @@ class RoiEditor(QWidget):
         self._list.setMaximumHeight(110)
         root.addWidget(self._list)
 
-        self._status = QLabel("no calibration — ROIs cannot be projected")
+        self._status = QLabel("no calibration — ROIs can't be projected")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{style.muted()};")
         root.addWidget(self._status)
@@ -215,12 +215,12 @@ class RoiEditor(QWidget):
         Contrast from the 1st/99th percentile, NOT pyqtgraph's autoLevels,
         which stretches to min/max: on a real ORCA frame the signal lives in
         ~800 counts of 65535, so two hot pixels at 65000 collapse the image to
-        black. That is why the editor looked far worse than the view it was
+        black. That's why the editor looked far worse than the view it was
         opened from.
         """
         self._image = np.asarray(frame)
         # Strided, not the whole frame: np.percentile sorts, and at full
-        # frame that is 87 ms for a contrast estimate. 1/16 of 10.5 Mpx is
+        # frame that's 87 ms for a contrast estimate. 1/16 of 10.5 Mpx is
         # still 650k samples, and the live preview does the same.
         lo, hi = np.percentile(self._image[::4, ::4], (1, 99))
         if hi <= lo:                    # a flat frame — fall back to the range
@@ -253,7 +253,7 @@ class RoiEditor(QWidget):
     # ── add / remove ─────────────────────────────────────────────────────────
     def _default_centre(self) -> tuple[float, float, float]:
         """Place a new ROI in the middle of the reachable field, not the image:
-        dropping it where it cannot be projected is never what was meant."""
+        dropping it where it can't be projected is never what was meant."""
         if self._calib is not None:
             c = self._calib.accessible_corners()
             span = float(min(np.ptp(c[:, 0]), np.ptp(c[:, 1])))

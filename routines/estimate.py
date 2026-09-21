@@ -1,12 +1,12 @@
 """How long a routine will take. No Qt.
 
 A step's length is frames OR seconds and the two are never interconverted
-(`settings.py`) — that is a *recording* rule. An estimate is not a recording,
+(`settings.py`) — that's a *recording* rule. An estimate isn't a recording,
 so here frames do become seconds, at a frame rate the caller supplies and the
 result names. With no frame rate the frames stay frames and are reported
 beside the seconds rather than folded into a number that would be wrong.
 
-What is NOT counted: stage travel. Nothing knows how long a move takes until
+What's NOT counted: stage travel. Nothing knows how long a move takes until
 `RoutineHooks.moving` is filled (PLAN §6), so every estimate is a floor and
 says so.
 """
@@ -19,7 +19,7 @@ from acqApp.routines.settings import Routine, Step, play_order
 
 @dataclass(frozen=True)
 class Estimate:
-    """A routine's cost, split into what is known and what is not."""
+    """A routine's cost, split into what's known and what's not."""
     seconds: float = 0.0        # settle + seconds-steps + converted frames
     frames:  float = 0.0        # frames left unconverted (no frame rate)
     moves:   int = 0            # steps that move the stage — travel is untimed
@@ -32,7 +32,7 @@ class Estimate:
         return self.frames <= 0
 
     def text(self) -> str:
-        """The duration as one phrase. "about" because moves are not counted."""
+        """The duration as one phrase. "about" because moves aren't counted."""
         head = "about " if self.complete else "at least "
         out = head + clock(self.seconds)
         if self.frames:
@@ -47,8 +47,8 @@ def step_seconds(step: Step, hz: float | None) -> tuple[float, float]:
     - `wait`: `length`/`unit`, converted to seconds at `hz` if given.
     - `display`/`puff`: instant — nothing to time, the same way a puffer's
       own fire duration was never timed either.
-    - `trigger`: **counted as zero**, though it is the one kind that can take
-      arbitrarily long. How soon an external source sends its edge is not ours
+    - `trigger`: **counted as zero**, though it's the one kind that can take
+      arbitrarily long. How soon an external source sends its edge isn't ours
       to know, and guessing would be worse than plainly excluding it — so a
       routine built on trigger steps estimates only the capturing it does
       between them, and always finishes later than the figure shown.
@@ -89,14 +89,14 @@ def estimate(routine: Routine, hz: float | None = None) -> Estimate:
 
 def remaining(routine: Routine, hz: float | None, order_pos: int, cycle: int,
               progress: float = 0.0) -> Estimate:
-    """What is left from part-way through `play_order(routine)[order_pos]` of
+    """What's left from part-way through `play_order(routine)[order_pos]` of
     `cycle`.
 
     `order_pos` indexes the EXPANDED play order (a repeated group's range
     appears once per repeat), not `routine.steps` directly — so time still
     left in a repeat is counted, not just steps still left on the page.
     `progress` is 0..1 through the current step's capture (`RoutineEngine`),
-    so the readout does not jump a whole step at a time.
+    so the readout doesn't jump a whole step at a time.
     """
     order = play_order(routine)
     if not order:
@@ -106,7 +106,7 @@ def remaining(routine: Routine, hz: float | None, order_pos: int, cycle: int,
     cycle = max(0, min(cycle, cycles - 1))
 
     secs = frames = 0.0
-    # The rest of this cycle, the current step counted by what is left of it.
+    # The rest of this cycle, the current step counted by what's left of it.
     for pos in range(order_pos, len(order)):
         a, b = step_seconds(routine.steps[order[pos]], hz)
         share = 1.0 - max(0.0, min(1.0, progress)) if pos == order_pos else 1.0
@@ -122,10 +122,10 @@ def remaining(routine: Routine, hz: float | None, order_pos: int, cycle: int,
 
 
 def clock(seconds: float) -> str:
-    """Seconds as the operator reads a duration. 124 s is not a duration.
+    """Seconds as the operator reads a duration. 124 s isn't a duration.
 
     Rounded, because these are estimates: "23.3208 s" claims a precision the
-    number does not have — no stage move is in it.
+    number doesn't have — no stage move is in it.
     """
     seconds = max(0.0, seconds)
     if seconds < 10:

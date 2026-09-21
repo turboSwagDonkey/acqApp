@@ -1,9 +1,9 @@
 """
 The stage's UI: the settings panel and the calibration dialog.
 
-Split from `settings.py`, which keeps the model and the persistence — the axis
+Split from `settings.py`, which keeps the model and persistence — the axis
 calibration, soft limits and origin **shared with the standalone
-`stage_control` app**. That half has no Qt in it and is the half worth reading
+`stage_control` app**. That half has no Qt and is the one worth reading
 when the question is "where does 0,0 come from"; this half is widgets.
 
 `CalibrationDialog` runs `establish_frame()` on a `_FrameWorker` thread.
@@ -28,13 +28,13 @@ from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
 
 def _available_ports(current: str) -> list[str]:
     """Serial ports present on this machine, `current` first so the saved
-    setting is never dropped just because the device is unplugged right now.
+    setting is never dropped because the device is unplugged right now.
     Enumeration failing must not stop the panel from being built."""
     ports = []
     try:
         from serial.tools import list_ports
         ports = [p.device for p in list_ports.comports()]
-    except Exception:                       # noqa: BLE001 — a combo box is not worth a crash
+    except Exception:                       # noqa: BLE001 — a combo box isn't worth a crash
         pass
     ordered = [current] if current else []
     ordered += [p for p in sorted(ports) if p != current]
@@ -69,7 +69,7 @@ class _FrameWorker(PullWorker):
 class CalibrationDialog(QDialog):
     """Everything that rewrites the saved calibration, kept off the main panel.
 
-    These two actions are rare, are hard to undo, and one of them drives into the
+    These two actions are rare, hard to undo, and one of them drives into the
     hard limits — they don't belong next to the buttons used all day. The session
     home is NOT here: it's a bookmark, not calibration.
     """
@@ -97,11 +97,11 @@ class CalibrationDialog(QDialog):
         self._btn_set_zero = QPushButton("Set 0,0 = center (here)")
         self._btn_set_zero.setToolTip(
             "Declare the CURRENT position as 0,0 and put soft limits at ±½ inch "
-            "around it. Does not move the stage — centre it first.")
+            "around it. Doesn't move the stage — centre it first.")
         self._btn_set_zero.clicked.connect(self._set_zero_here)
         zl.addWidget(self._btn_set_zero)
         zl.addWidget(self._hint(
-            "Centre the stage yourself first — this does not move it. "
+            "Centre the stage yourself first — this doesn't move it. "
             "Saved to the config; survives restarts."))
         lay.addWidget(zero)
 
@@ -137,9 +137,9 @@ class CalibrationDialog(QDialog):
         self._lbl_cfg = self._hint(f"config: {config_path()}")
         lay.addWidget(self._lbl_cfg)
 
-        # This dialog is modal, so the panel's STOP ALL is unreachable while it
-        # is up — and the frame re-establish drives into the hard limits from
-        # right here. The abort has to exist on this window too.
+        # This dialog is modal, so the panel's STOP ALL is unreachable while
+        # it's up — and the frame re-establish drives into the hard limits
+        # from right here. The abort has to exist on this window too.
         self._btn_stop = QPushButton("STOP ALL")
         self._btn_stop.setStyleSheet(style.solid_btn("puffer"))
         self._btn_stop.clicked.connect(self._stop_all)
@@ -246,7 +246,7 @@ class CalibrationDialog(QDialog):
         if QMessageBox.warning(
             self, "Re-establish frame",
             "THIS MOVES THE STAGE.\n\n"
-            "X and then Y will be driven into their REVERSE hard limits and then "
+            "X and then Y will be driven into their REVERSE hard limits, then "
             "probed to re-measure the command→encoder map. Takes a minute or more "
             "per axis.\n\n"
             "Your 0,0 is NOT changed — only slope/offset are rewritten. The stage "
@@ -281,11 +281,11 @@ class CalibrationDialog(QDialog):
         self._btn_set_zero_z = QPushButton(f"Set {z.name} = 0 (here)")
         self._btn_set_zero_z.setToolTip(
             "Declare the CURRENT Z position as its own zero, independent of "
-            "X/Y's 0,0. Does not move the stage.")
+            "X/Y's 0,0. Doesn't move the stage.")
         self._btn_set_zero_z.clicked.connect(self._set_zero_z_here)
         zl.addWidget(self._btn_set_zero_z)
         zl.addWidget(self._hint(
-            "Get the sample in focus yourself first — this does not move "
+            "Get the sample in focus yourself first — this doesn't move "
             "the stage. Soft limits land at ±half the stage's rated travel "
             "around this point. Saved to the config; survives restarts."))
         lay.addWidget(zero)
@@ -378,7 +378,7 @@ class CalibrationDialog(QDialog):
             return
         # Second, separate warning: a deliberate re-check, not a repeat of the
         # first — this is the "multiple warnings" gate, not one dialog with a
-        # lot of text in it.
+        # lot of text.
         if QMessageBox.warning(
             self, "Confirm: stage is clear",
             "Second confirmation — please re-check, right now:\n\n"
@@ -433,7 +433,7 @@ class CalibrationDialog(QDialog):
 
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)   # emits StageSettings
-    # The adapter handles this one: it is the only side that can reach the
+    # The adapter handles this one: it's the only side that can reach the
     # voltage camera's frame (`ModuleHost.latest_frame`), the same split
     # `devices/dmd/panel.py`'s `rois_edit_requested` uses.
     save_fov_requested = pyqtSignal()
@@ -446,9 +446,9 @@ class SettingsPanel(QWidget):
         self._last_z = 0.0      # meaningless (and unused) unless self._s.has_z
         self._last_map_xy: tuple[float, float] | None = None
         self._last_gauge_z: float | None = None
-        # The FOV a goto_fov() last actually issued a move to, cleared the
-        # moment the live position drifts off it again (set_readout) — the
-        # Save panel's "append active FOV name" option (see active_fov_name).
+        # The FOV a goto_fov() last issued a move to, cleared the moment the
+        # live position drifts off it again (set_readout) — the Save panel's
+        # "append active FOV name" option (see active_fov_name).
         self._active_fov = None
         self._axis_widgets: dict[str, dict] = {}
         self._cal_dialog: CalibrationDialog | None = None
@@ -465,8 +465,8 @@ class SettingsPanel(QWidget):
 
         self._cmb_port = QComboBox()
         self._cmb_port.setEditable(True)
-        # Offer the ports that actually exist right now, not a list of numbers
-        # that were true for the hardware of the day. Windows renumbers these
+        # Offer the ports that exist right now, not a list of numbers that
+        # were true for the hardware of the day. Windows renumbers these
         # freely — a stale suggestion is how you end up pointed at the port
         # some other device took over.
         self._cmb_port.addItems(_available_ports(self._s.port))
@@ -529,9 +529,9 @@ class SettingsPanel(QWidget):
         # Z is depth, not a second position on the table — its own gauge
         # beside the map rather than a third axis squeezed into it. A caption
         # under it, the same row the map's legend occupies, since the colours
-        # are the map's own legend already (position/origin/home/soft limits
-        # share _C_CUR/_C_ORIGIN/_C_HOME/_C_SOFT) — this only needs to say
-        # WHICH axis the bar is.
+        # are the map's own legend (position/origin/home/soft limits share
+        # _C_CUR/_C_ORIGIN/_C_HOME/_C_SOFT) — this only needs to say WHICH
+        # axis the bar is.
         self._z_gauge: ZGauge | None = None
         if self._s.has_z:
             zcol = QVBoxLayout()
@@ -565,7 +565,7 @@ class SettingsPanel(QWidget):
         # block below it. (Z's *calibration* — CalibrationDialog's "Focus
         # (Z)" section — stays separate; that risk profile is genuinely
         # different, drives into the objective, and needs its own warnings.
-        # The jog/goto shape here does not.)
+        # The jog/goto shape here doesn't.)
         axis_rows = [("x", self._s.x), ("y", self._s.y)]
         if self._s.has_z:
             axis_rows.append(("z", self._s.z))
@@ -606,7 +606,7 @@ class SettingsPanel(QWidget):
         self._btn_set_home = QPushButton("Set home here")
         self._btn_set_home.setToolTip(
             "Bookmark the current position as this session's working home. "
-            "Does not move the stage, and is not saved — it is cleared when the "
+            "Doesn't move the stage, and isn't saved — it's cleared when the "
             "session ends and never touches the calibrated 0,0.")
         self._btn_set_home.clicked.connect(self._set_home_here)
         nrow.addWidget(self._btn_set_home)
@@ -733,7 +733,7 @@ class SettingsPanel(QWidget):
         """Show whether absolute go-to can be trusted, and gate the buttons."""
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
         ok = not missing
-        if ok:  # absolute targets are meaningless without a frame; jog is not
+        if ok:  # absolute targets are meaningless without a frame; jog isn't
             self._lbl_frame.setText("Frame OK — absolute go-to calibrated.")
             self._lbl_frame.setStyleSheet("color: gray; font-size: 10px;")
         else:
@@ -840,7 +840,7 @@ class SettingsPanel(QWidget):
         both the FOV and this rig have one — the FOV's Z goes through the
         same confirm distance check as X/Y even though it isn't part of the
         max() below, so a saved focus far from the current one doesn't sneak
-        through silently just because X/Y happened to be close."""
+        through silently because X/Y happened to be close."""
         if self._ctrl is None:
             return
         cur_x, cur_y = self._last_xy
@@ -876,7 +876,7 @@ class SettingsPanel(QWidget):
             self._active_fov = fov
 
     # The panic path (Esc, app-wide), so guarded hardest: a dead link is exactly
-    # when it is pressed, and an escaping slot exception aborts the process.
+    # when it's pressed, and an escaping slot exception aborts the process.
     def _stop(self, key: str) -> None:
         self._call("Stop failed", lambda c: c.stop(key))
 
@@ -886,15 +886,15 @@ class SettingsPanel(QWidget):
     # ── live readout from the poll worker ───────────────────────────────────
     # Below this, a move isn't visually distinguishable on the map or the Z
     # gauge (a few mm of travel drawn into ~300 px) — both widgets' set_
-    # position always repaints unconditionally, so guard here like wheel.py's
-    # _axis/_title do for the analogous reason: a stationary stage otherwise
-    # repaints every poll tick.
+    # position always repaints, so guard here like wheel.py's _axis/_title
+    # do for the analogous reason: a stationary stage otherwise repaints
+    # every poll tick.
     _MAP_EPS_UM = 0.5
 
     def _off_active_fov(self, x_um: float, y_um: float,
                        z_um: float | None) -> bool:
         """Has the live position drifted off `self._active_fov`'s spot? Same
-        epsilon as the map/gauge repaint guard — noise below it is not a
+        epsilon as the map/gauge repaint guard — noise below it isn't a
         move."""
         fov = self._active_fov
         if abs(x_um - fov.x_um) >= self._MAP_EPS_UM \

@@ -2,7 +2,7 @@
 camera snapshot, so the operator can recognize a saved spot later by eye. No
 Qt — the picker is `fov_picker.py`.
 
-Modeled directly on `devices/dmd/roi_store.py`: the same `session/`/`archive/`
+Modeled on `devices/dmd/roi_store.py`: the same `session/`/`archive/`
 split and per-process rotation (see that file's docstring for why). New here:
 each save also writes a sibling PNG thumbnail, moved alongside its JSON by
 the same rotation step.

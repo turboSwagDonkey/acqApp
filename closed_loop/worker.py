@@ -18,7 +18,7 @@ class ClosedLoopWorker(PullWorker):
     the GUI thread with every other one.
 
     Disarmed, the rule still evaluates and the panel still shows whether the
-    condition is met — it just does not fire, which is what makes a threshold
+    condition is met — it just doesn't fire, which is what makes a threshold
     settable against a live animal without actuating anything.
     """
 
@@ -55,7 +55,7 @@ class ClosedLoopWorker(PullWorker):
     @property
     def n_fires(self) -> int:
         """Fires this SESSION — the loop runs under Live view too, so this can
-        exceed what is in the file."""
+        exceed what's in the file."""
         return self._rule.n_fires
 
     @property
@@ -69,7 +69,7 @@ class ClosedLoopWorker(PullWorker):
         "Should be": this counts the handover, and `Recorder.put` can still shed
         it (ring overflow, or a straggler arriving after the file closed). Those
         are counted in the file's own `recorder_*` attributes, so a mismatch is
-        explainable — but do not read this as a guarantee of `len(/closed_loop)`.
+        explainable — but don't read this as a guarantee of `len(/closed_loop)`.
         """
         return self._recorded
 

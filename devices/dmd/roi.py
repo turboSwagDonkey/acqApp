@@ -1,8 +1,8 @@
 """Stimulation ROIs — the model. No Qt (the editor is in `roi_panel.py`).
 
-ROIs are held in **camera pixels**, because that is the space the operator draws
+ROIs are held in **camera pixels**, because that's the space the operator draws
 in: they are placed on a snapshot of the sample. Turning a set into mirrors is
-`RoiSet.dmd_frame()`, which needs a `DmdCalibration` — without one there is no
+`RoiSet.dmd_frame()`, which needs a `DmdCalibration` — without one there's no
 answer, and guessing would aim light at the wrong place.
 
 Two shapes, because those are what an operator asks for: a rectangle (with
@@ -73,7 +73,7 @@ def _to_local(dx: np.ndarray, dy: np.ndarray, angle_deg: float) -> tuple:
 class RectRoi(_Roi):
     """Axis-aligned unless `angle_deg` says otherwise; (x, y) is the centre.
 
-    Centre rather than a corner so rotation does not move it, which is what an
+    Centre rather than a corner so rotation doesn't move it, which is what an
     operator dragging a handle expects.
     """
     x: float = 0.0
@@ -139,7 +139,7 @@ class CircleRoi(_Roi):
 
     def boundary(self, n: int = 64) -> np.ndarray:
         """`n` points around the rim. Sampled, not exact: a circle's image under
-        a projective map is a conic, so there is no finite exact set — but the
+        a projective map is a conic, so there's no finite exact set — but the
         rim is what can leave the field, and 64 points resolve it to 0.1 % of r."""
         t = np.linspace(0.0, 2.0 * np.pi, max(8, n), endpoint=False)
         return np.column_stack((self.x + self.r * np.cos(t),

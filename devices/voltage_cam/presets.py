@@ -62,8 +62,8 @@ def _band(label: str, rows: int) -> ResolutionPreset:
 #
 # WHICH LINK IS LIVE MATTERS: the ORCA-Fire has both, and this rig is cabled
 # over **CoaXPress** (Active Silicon FireBird 4xCXP6-2PE8) — full frame ~8.7 ms,
-# 115 Hz. The 2026-07-29 figure of 15.8 Hz was USB3 and does not apply.
-# Software cannot pick the link; DCAM enumerates it, and DEFAULT_LINK only
+# 115 Hz. The 2026-07-29 figure of 15.8 Hz was USB3 and doesn't apply.
+# Software can't pick the link; DCAM enumerates it, and DEFAULT_LINK only
 # chooses the column the label shows.
 #
 # ESTIMATES, for UI and buffer sizing. get_frame_timings() is authoritative at

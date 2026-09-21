@@ -38,7 +38,7 @@ _THEME = {
 # looked wrong the moment the operator switched to light.
 _ACTIVE = "dark"
 
-WARN = "#cc8866"        # amber: "this will not do what you expect"
+WARN = "#cc8866"        # amber: "this won't do what you expect"
 
 
 def muted() -> str:
@@ -61,7 +61,7 @@ def _tint(c: str) -> str:
 def toggle_btn(key: str) -> str:
     """Checkable button: a pale accent tint when off, full accent when checked.
 
-    The disabled rule is not optional, for the reason `solid_btn` spells out: a
+    The disabled rule isn't optional, for the reason `solid_btn` spells out: a
     stylesheet background overrides the palette, so a greyed-out button without
     one still reads as the thing to press. Emulate is disabled for the whole
     of a session, which is exactly when it matters.
@@ -98,9 +98,9 @@ def record_btn(key: str) -> str:
 def solid_btn(key: str) -> str:
     """Accent-coloured button for a panel's primary action.
 
-    The disabled rule is not optional: a stylesheet background overrides the
+    The disabled rule isn't optional: a stylesheet background overrides the
     palette, so without it a greyed-out button still reads as the thing to
-    press — which on a rig means reaching for an action that will not fire.
+    press — which on a rig means reaching for an action that won't fire.
     """
     c = HEX[key]
     return (

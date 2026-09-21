@@ -22,7 +22,7 @@ from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
 from acqApp.devices.voltage_cam.panel import SettingsPanel as CamSettingsPanel
 
 # TRIGGER_MODES[i] rather than a second literal, so this and the panel's
-# combo cannot say different things about how the two modes are spelled.
+# combo can't say different things about how the two modes are spelled.
 _INT_TRIGGER, _EXT_TRIGGER = TRIGGER_MODES[0], TRIGGER_MODES[1]
 
 
@@ -94,7 +94,7 @@ class VoltageCamModule(ModuleAdapter):
         self._auto_levels = cfg.auto_levels
         self._preview_buf = deque(maxlen=max(1, cfg.preview_avg))
         # Startup builds the central widget BEFORE the settings tab (so
-        # central_widget() cannot read the panel yet); a hot-load builds this
+        # central_widget() can't read the panel yet); a hot-load builds this
         # panel first instead. Whichever runs second is what makes the saved
         # preference actually reach a `self._hist` that may already exist.
         if self._hist is not None:
@@ -237,8 +237,8 @@ class VoltageCamModule(ModuleAdapter):
 
     def rearm_trigger(self) -> bool:
         """Re-gate the external trigger so the next edge is detectable, for a
-        routine taking one recording per edge. False if there is no running
-        worker to ask (nothing is capturing, so there is nothing to re-arm).
+        routine taking one recording per edge. False if there's no running
+        worker to ask (nothing is capturing, so there's nothing to re-arm).
 
         Unlike `set_external_trigger` this is cheap and hot: it restarts only
         the camera's acquisition, inside the capture thread, leaving the
@@ -320,7 +320,7 @@ class VoltageCamModule(ModuleAdapter):
             # explicitly — pyqtgraph only reliably re-renders the mapping
             # onto NEW frame data when setLevels() is actually called;
             # omitting `levels=` here (as if "leave it alone" were enough)
-            # left the display stuck on stale contrast until the operator
+            # left the display stuck on stale contrast until operator
             # dragged the LUT themselves, which is what really called it.
             levels = self._hist.item.getLevels() if self._hist is not None else None
             self._img.setImage(disp, autoLevels=False, levels=levels)
@@ -342,7 +342,7 @@ class VoltageCamModule(ModuleAdapter):
             """The worker sends (frame, acquired_at, index).
 
             `acquired_at` is when the CAMERA says it was taken, not when the
-            batch reached us — that is what keeps recorded frame times at the
+            batch reached us — that's what keeps recorded frame times at the
             true rate. The index is the camera's own counter, its own stream so
             a dropped frame shows as a jump rather than closing the gap.
             """

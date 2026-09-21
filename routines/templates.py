@@ -1,8 +1,8 @@
 """Saved routines, as files. No Qt.
 
 A protocol worth running twice is worth keeping. One JSON file per template in
-`routine_templates/`, named after the routine — a folder the operator can copy
-to the rig machine, not a blob inside `acqapp_local.json`.
+`routine_templates/`, named after the routine — a folder operator can copy
+to rig machine, not a blob inside `acqapp_local.json`.
 
 `Routine.from_dict` already drops anything that no longer fits, so a stale
 template loads as much of itself as still makes sense and `validate()` refuses

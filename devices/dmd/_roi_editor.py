@@ -8,10 +8,10 @@
 tested (`tests/test_dmd_roi.py`); this is a way to look at it against a
 synthetic or saved frame with no rig and no light attached.
 
-Without `--calib` there is no measured DMD↔camera transform, so a plausible
+Without `--calib` there's no measured DMD↔camera transform, so a plausible
 stand-in is invented to draw the reachable field with: **the outline is then
 made up, and an ROI inside it proves nothing about where light would land.**
-The window title says so.
+Window title says so.
 """
 from __future__ import annotations
 
@@ -39,8 +39,8 @@ def demo_frame(w: int = CAM_W, h: int = CAM_H) -> np.ndarray:
 def stand_in_calibration(cam_size, dmd_size):
     """A *made-up* registration: the DMD covering the middle ~60 % of the frame.
 
-    Only so the reachable-field outline has something to draw. Not a
-    measurement — `run_calibration()` in `calibration.py` is.
+    Only so the reachable-field outline has something to draw — not a
+    measurement. `run_calibration()` in `calibration.py` is.
     """
     from acqApp.devices.dmd.calibration import DmdCalibration
     cw, ch = cam_size
@@ -98,7 +98,7 @@ def main() -> int:
     ed.resize(1100, 800)
     ed.setWindowTitle("DMD ROI editor — "
                       + ("real calibration" if real
-                         else "STAND-IN calibration, positions are not real"))
+                         else "STAND-IN calibration, positions aren't real"))
     ed.rois_changed.connect(
         lambda s: print(f"{len(s)} ROI(s): "
                         + ", ".join(r.name for r in s)))

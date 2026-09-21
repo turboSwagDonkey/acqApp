@@ -187,7 +187,7 @@ class HDF5Writer(Writer):
             frame_bytes = data.dtype.itemsize * int(np.prod(shape))
             chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // max(frame_bytes, 1)))
             chunk_bytes = chunk_frames * frame_bytes
-            # A multi-frame chunk is touched once per frame before it is
+            # A multi-frame chunk is touched once per frame before it's
             # complete, so hold a few or every write evicts and re-reads it.
             # Unused on the direct path, which never enters the cache.
             dset = g.create_dataset(

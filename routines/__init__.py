@@ -6,10 +6,10 @@ bracket captures them, puff, repeat." `settings.py` is the protocol
 `engine.py` the executor over callables (Qt-free), `panel.py` and `table.py`
 the widgets — `adapters/routines.py` owns the QTimer that ticks it.
 
-**It is the first feature whose whole purpose is to actuate**, so the split is
+**It's the first feature whose whole purpose is to actuate**, so the split is
 the point: everything that decides is in the two Qt-free halves and is driven
-against fakes by `tests/test_routines.py`, and the only code that touches a
-real stage or projector is the adapter's hooks.
+against fakes by `tests/test_routines.py`; only the adapter's hooks touch a
+real stage or projector.
 
 Re-exported lazily (PEP 562), as in `closed_loop/`: an eager re-export would
 pull PyQt6 in through the parent package and cost the Qt-free halves their

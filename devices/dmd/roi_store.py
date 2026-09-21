@@ -4,7 +4,7 @@
 Two folders under `rois/`: `session/` holds sets saved during THIS run of
 acqApp, for the quick list in the editor's Load dialog; `archive/` holds
 every earlier run's sets, still loadable but reached only through Browse.
-Rotation is per PROCESS, not per "close the app" — there is no reliable hook
+Rotation is per PROCESS, not per "close the app" — there's no reliable hook
 for the latter (Task Manager, a crash), so whatever `session/` holds is moved
 into `archive/` once, the first time this module is touched in a run.
 """
@@ -68,7 +68,7 @@ def load(path: str | Path) -> RoiSet:
 
 
 def load_named(path: str | Path) -> tuple[str, RoiSet]:
-    """Like `load`, plus the name it was actually SAVED under.
+    """Like `load`, plus the name it was SAVED under.
 
     Not the filename stem: `save()` sanitizes and de-duplicates the stem
     (spaces/punctuation stripped, `_2` on a collision), so a set named

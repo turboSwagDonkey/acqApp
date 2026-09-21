@@ -36,7 +36,7 @@ def list_drives() -> list[tuple[str, int, int]]:
     """[(root, free_bytes, total_bytes)] for every readable fixed drive.
 
     Sorted by free space descending — the drive with room is the one you want,
-    and it is rarely the system drive.
+    and it's rarely the system drive.
     """
     roots: list[str] = []
     if os.name == "nt":
@@ -119,7 +119,7 @@ DEFAULT_TEMPLATE = "{mouse_id}_{date}_{time}"
 
 @dataclass
 class SaveConfig:
-    """Where a recording goes and what it is named."""
+    """Where a recording goes and what it's named."""
     folder:    str  = ""       # blank -> default_folder()
     mouse_id:  str  = ""
     project:   str  = ""
@@ -171,7 +171,7 @@ class SaveConfig:
         """`_001`, `_002`, … until `build(base, stem)` doesn't exist. Shared by
         every resolve*() below — a template without `{time}`, or two trials
         that land on the same FOV/repeat, would otherwise resolve to one
-        path; the writer refuses that (mode "x"), so this is not about
+        path; the writer refuses that (mode "x"), so this isn't about
         truncation — auto-numbering keeps the Record button working with an
         animal on the rig.
         """
@@ -183,7 +183,7 @@ class SaveConfig:
                 return path
             path = build(base, f"{stem}_{n:03d}")
         # 999 collisions means the stem is degenerate. Fall back to one that
-        # cannot collide rather than handing back an occupied path.
+        # can't collide rather than handing back an occupied path.
         return build(base, f"{stem}_{datetime.now():%H%M%S_%f}")
 
     def _resolve(self, build: Callable[[Path, str], Path],
@@ -195,7 +195,7 @@ class SaveConfig:
                 unique: bool = False, fov: str = "") -> Path:
         """Full path of the .h5 file for a recording starting now.
 
-        With `unique=True` the returned path does not exist — see
+        With `unique=True` the returned path doesn't exist — see
         `_resolve()`. `fov` (the active FOV's name, if any) is appended to
         the stem — see `stem()`.
         """
@@ -240,7 +240,7 @@ class SaveConfig:
 
 
 def default_folder() -> Path:
-    """Largest-free-space fixed drive, so the default is not the system drive."""
+    """Largest-free-space fixed drive, so the default isn't the system drive."""
     drives = list_drives()
     if drives:
         return Path(drives[0][0]) / _DEFAULT_SUBDIR

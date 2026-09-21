@@ -7,9 +7,9 @@ this rig has no such line, so this adapter feeds the controller the shared
 session clock's own tick instead (`self.win.sync.tick` — `acq/sync.py`,
 10 Hz by default), the same timing sequence every other module already uses.
 That tick only runs while the session is live, so Run puts live view on
-itself if it is not already (mirrors adapters/routines.py's `_open_recording`
+itself if it isn't already (mirrors adapters/routines.py's `_open_recording`
 doing the same for the record button) and only turns it back off once the run
-finishes if it is the one that turned it on.
+finishes if it's the one that turned it on.
 
 Otherwise unlike a camera or encoder module, vis_stim owns no per-session
 acquisition worker: the run state machine is always-on, built in
@@ -40,7 +40,7 @@ from acqApp.devices.vis_stim.settings import VisStimSettings
 class VisStimModule(ModuleAdapter):
     key = "vis_stim"
     tab_label = "Visual stim"
-    # The run/progress status should stay visible while the operator is on a
+    # The run/progress status should stay visible while operator is on a
     # camera's settings page — the same reasoning RoutinesModule documents
     # for its own window.
     own_window = True
@@ -152,7 +152,7 @@ class VisStimModule(ModuleAdapter):
             "vis_stim_screen_index":      d["screen_index"],
             "vis_stim_stretch_to_screen": d["stretch_to_screen"],
             # The protocol as configured, in full — "which orientation was
-            # trial 4" cannot be recovered from the file any other way.
+            # trial 4" can't be recovered from the file any other way.
             "vis_stim_params":            json.dumps(d["params"]),
             "vis_stim_loops":             json.dumps(d["loops"]),
             "vis_stim_started":           False,

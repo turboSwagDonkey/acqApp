@@ -99,7 +99,7 @@ class StageController:
     @property
     def supports_reframe(self) -> bool:
         """Whether the connected backend can drive a hard-limit frame
-        re-establish at all (see establish_frame below) -- False on the
+        re-establish (see establish_frame below) -- False on the
         MCM301, whose position readout is already a stable encoder count and
         never drifts. CalibrationDialog checks this for the Z button only
         (the X/Y "Re-establish frame…" button always shows; on a backend
@@ -113,7 +113,7 @@ class StageController:
         Only meaningful on a backend whose command origin can actually drift
         on a limit hit (`supports_reframe` — the MCM301's readout never does,
         see its own docstring); checking here regardless would be harmless
-        but misleading, flagging a staleness that backend cannot have.
+        but misleading, flagging a staleness that backend can't have.
         Sticky on purpose — the corruption started the instant the limit was
         touched and persists after backing off it, so this must not clear
         itself just because the bit reads False again next poll. Only a fresh
@@ -152,7 +152,7 @@ class StageController:
             raise StageControllerError(
                 f"{ax.name}: no valid frame (never calibrated, or invalidated "
                 f"by a hard-limit hit since) — absolute moves are refused "
-                f"until it is re-established. Jog instead, or use "
+                f"until it's re-established. Jog instead, or use "
                 f"Calibrate… -> Re-establish frame.")
         counts = ax.clamp_counts(ax.um_to_counts(target_um))
         self._dev.move_to_readout(ax.index, counts)
@@ -161,7 +161,7 @@ class StageController:
         if self._dev is None:
             raise StageControllerError("not connected")
         if which == "z":
-            # Focus is not part of the camera-aligned XY plane, so
+            # Focus isn't part of the camera-aligned XY plane, so
             # frame_rotation_deg (an X/Y-only display setting) never applies —
             # the same single-axis move _rotate_jog degenerates to at deg==0.
             ax = self._axis("z")
@@ -212,7 +212,7 @@ class StageController:
     #   establish_frame()  — MOTION: drives to the reverse limit and re-measures.
 
     def read_xy_counts(self) -> tuple[int, int]:
-        """Raw encoder counts (no origin applied) — the calibration works here."""
+        """Raw encoder counts (no origin applied) — calibration works here."""
         if self._dev is None:
             raise StageControllerError("not connected")
         return (self._dev.get_status(self._s.x.index).position,
@@ -257,7 +257,7 @@ class StageController:
         judgment call belongs entirely to the caller). Requesting "z" on a rig
         with none configured raises before anything moves.
 
-        Never invents an origin: the driver's geometric centre is not where
+        Never invents an origin: the driver's geometric centre isn't where
         anyone wants 0,0 here, and overwriting a user-set one silently moves the
         coordinate system. 0,0 comes from `set_center_here()`/`set_z_zero_here()`
         only.

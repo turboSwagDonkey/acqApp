@@ -38,7 +38,7 @@ class SettingsPanel(QWidget):
 
         self._cmb_source = QComboBox()
         self._cmb_source.setToolTip(
-            "Live signals offered by the modules loaded this session.")
+            "Live signals offered by modules loaded this session.")
         lay.addRow("Watch:", self._cmb_source)
 
         self._cmb_cmp = QComboBox()
@@ -59,7 +59,7 @@ class SettingsPanel(QWidget):
         self._spn_hold.setSuffix(" s")
         self._spn_hold.setValue(self._s.hold_s)
         self._spn_hold.setToolTip(
-            "The condition must hold this long before it counts as an event. "
+            "Condition must hold this long before it counts as an event. "
             "0 fires on any single sample that crosses, including noise.")
         lay.addRow("…and holds for:", self._spn_hold)
 
@@ -76,7 +76,7 @@ class SettingsPanel(QWidget):
         self._chk_retrig = QCheckBox("Repeat while the condition holds")
         self._chk_retrig.setChecked(self._s.retrigger)
         self._chk_retrig.setToolTip(
-            "Off: the signal must fall back past the threshold before the rule "
+            "Off: signal must fall back past threshold before rule "
             "can fire again — one event per bout.")
         lay.addRow(self._chk_retrig)
 
@@ -106,8 +106,8 @@ class SettingsPanel(QWidget):
         self._spn_dur.setSuffix(" s")
         self._spn_dur.setValue(self._s.duration_s)
         self._spn_dur.setToolTip(
-            "Puffer: how long the valve stays open. DMD: how long the pattern "
-            "is held before it is stopped (0 = until Stop is pressed).")
+            "Puffer: how long valve stays open. DMD: how long pattern "
+            "is held before it's stopped (0 = until Stop is pressed).")
         olay.addRow("For:", self._spn_dur)
         root.addWidget(ogrp)
 
@@ -122,7 +122,7 @@ class SettingsPanel(QWidget):
         self._btn_arm.toggled.connect(self._on_arm_toggled)
         alay.addWidget(self._btn_arm)
 
-        note = QLabel("Arming is never remembered between launches, and the "
+        note = QLabel("Arming is never remembered between launches, and "
                       "rule only runs while a session does.")
         note.setWordWrap(True)
         note.setStyleSheet("color:#9aa0a6;")
@@ -150,10 +150,10 @@ class SettingsPanel(QWidget):
 
     # ── sources ──────────────────────────────────────────────────────────────
     def set_sources(self, sources: list[SignalSource]) -> None:
-        """Fill the source list from what the loaded modules offer.
+        """Fill source list from what loaded modules offer.
 
-        Keeps the selected key if it is still on offer. The combo is rebuilt
-        whenever a session starts (the units follow the wheel's scaling), and
+        Keeps selected key if it's still on offer. Combo is rebuilt
+        whenever a session starts (units follow wheel's scaling), and
         falling back to index 0 there would silently repoint a configured rule
         at a different signal.
         """
@@ -172,7 +172,7 @@ class SettingsPanel(QWidget):
         return self._cmb_source.currentData() or ""
 
     def set_targets(self, keys) -> None:
-        """Restrict the output list to the modules actually loaded.
+        """Restrict output list to modules actually loaded.
 
         A rule pointed at an unloaded module fires onto the trigger bus and
         nothing listens — it would look armed and working and do nothing.
@@ -207,8 +207,8 @@ class SettingsPanel(QWidget):
         return self._btn_arm.isChecked()
 
     def _on_arm_toggled(self, on: bool) -> None:
-        self._btn_arm.setText("ARMED — the rule will fire" if on
-                              else "Disarmed — the rule will not fire")
+        self._btn_arm.setText("ARMED — rule will fire" if on
+                              else "Disarmed — rule won't fire")
         self.armed_changed.emit(on)
 
     # ── readout ──────────────────────────────────────────────────────────────

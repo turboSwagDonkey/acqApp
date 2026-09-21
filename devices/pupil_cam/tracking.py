@@ -1,7 +1,7 @@
 """Settings + a frame in, a `PupilFit` out. No Qt, no EyeLoop imports.
 
 The join between `PupilSettings` (what the operator set) and
-`eyeloop_tracker.py` (what EyeLoop needs). It exists so the panel does not have
+`eyeloop_tracker.py` (what EyeLoop needs). It exists so the panel doesn't have
 to know that the tracker is stateful, that it wants a crop rather than a frame,
 or that re-arming is what a resized eye region requires.
 
@@ -24,7 +24,7 @@ class PupilTracking:
     its walk corners once from the frame size it was given. The fit model
     (ellipse/circle) is the same story: EyeLoop bakes it into the `Shape` it
     builds in `arm()` (`config.arguments.model`, read once at construction), so
-    it is not one of `apply_settings`'s live knobs either — switching it has to
+    it's not one of `apply_settings`'s live knobs either — switching it has to
     re-arm, or the operator keeps fitting the old shape until something else
     (moving the region, restarting the session) happens to force a re-arm.
     """
@@ -45,7 +45,7 @@ class PupilTracking:
 
     @property
     def available(self) -> bool:
-        """False when there is no EyeLoop clone. The error says where to get one."""
+        """False when there's no EyeLoop clone. The error says where to get one."""
         return self._error is None
 
     @property
@@ -56,7 +56,7 @@ class PupilTracking:
         """Track one full frame. Returns a `PupilFit` in FULL-FRAME pixels, or None.
 
         None is genuine: the wrapper nulls EyeLoop's `params` before each frame,
-        so a failed frame cannot return the previous one's answer.
+        so a failed frame can't return the previous one's answer.
         """
         self.last_fit = None
         self.last_mask = None
@@ -92,7 +92,7 @@ class PupilTracking:
             ring=st.cr_ring,
             search_scale=st.cr_reach,
             # Pins are stored in full-frame pixels so that moving the eye
-            # region does not walk them off the reflections they mark.
+            # region doesn't walk them off the reflections they mark.
             pins=tuple(Pin(px - x0, py - y0, pr) for px, py, pr in st.cr_pins),
         )
 

@@ -167,7 +167,7 @@ class _EncoderBase(PullWorker):
     def _emit_sample(self, v: float, t: float, mono: float | None = None) -> None:
         speed, dist = self._derive(v, t)
         # Watchers get the acquisition instant, not `t` (elapsed-since-start),
-        # which is not the domain Recorder.put(at=) stamps in.
+        # which isn't the domain Recorder.put(at=) stamps in.
         with self._lock:
             self._snap = (v, speed, self._live_speed(),
                           time.perf_counter() if mono is None else mono)
@@ -218,7 +218,7 @@ class EncoderWorker(_EncoderBase):
         """Acquire on the board's sample clock. False if it wouldn't configure.
 
         A fresh Task per path rather than reconfiguring a failed one: a half-set
-        task is not worth reasoning about.
+        task isn't worth reasoning about.
         """
         from nidaqmx import Task
         from nidaqmx.constants import AcquisitionType

@@ -54,8 +54,8 @@ class FovPicker(QDialog):
         row = QHBoxLayout()
         btn_browse = QPushButton("Browse older…")
         btn_browse.setToolTip(
-            "FOVs from earlier runs of the app live here, not in the quick "
-            "list above, so a long history never slows finding today's spot.")
+            "FOVs from earlier runs live here, not in the quick list above, "
+            "so a long history never slows finding today's spot.")
         btn_browse.clicked.connect(self._browse)
         row.addWidget(btn_browse)
         row.addStretch(1)

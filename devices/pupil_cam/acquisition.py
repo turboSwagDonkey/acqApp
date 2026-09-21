@@ -4,11 +4,11 @@ A **Basler acA1920-40umMED — USB3 Vision**, not GigE, and it *must* be on a
 USB 3.0 port: pylon refuses otherwise, with no reduced-speed fallback. Watch
 for USB2 cables — a USB3 Micro-B socket accepts one carrying only USB2 pins.
 
-Open the camera BEFORE importing PyQt6/pyqtgraph, against Windows DLL-path
+Open camera BEFORE importing PyQt6/pyqtgraph, against Windows DLL-path
 conflicts (as with DCAM in voltage_cam).
 
 Both workers share `acq.worker.PullWorker`: `get_latest()` is the newest frame,
-the recording sink receives every frame.
+recording sink receives every frame.
 """
 
 from __future__ import annotations
@@ -73,8 +73,8 @@ def _set_enum(cam, value: str, *names, label: str = "") -> bool:
 
 
 def open_camera(index: int = 0):
-    """Open the first Basler camera -> InstantCamera, or None if there is none
-    or it won't open. Call BEFORE importing PyQt6/pyqtgraph. Never raises: the
+    """Open the first Basler camera -> InstantCamera, or None if there's none
+    or it won't open. Call BEFORE importing PyQt6/pyqtgraph. Never raises:
     caller falls back to the mock worker."""
     try:
         from pypylon import pylon
@@ -108,7 +108,7 @@ class PupilCameraWorker(PullWorker):
 
     Normally handed an already-open InstantCamera so the caller can pre-init
     before Qt imports; it then never opens or closes that handle. `cam=None`
-    makes the worker own one, simpler where import order doesn't bite.
+    makes worker own one, simpler where import order doesn't bite.
     """
     hz_update = pyqtSignal(int, float)   # (total_frames, Hz over recent window)
 
@@ -128,9 +128,9 @@ class PupilCameraWorker(PullWorker):
         self._frame_shape: tuple[int, int] | None = None
 
     def set_exposure(self, us: float) -> None:
-        """Queue an exposure change, applied on the next grab-loop tick —
-        queued because the camera is opened on the GUI thread and grabbed on
-        this one (see PUPIL_CAMERA_TRANSFER.md)."""
+        """Queue an exposure change, applied on next grab-loop tick — queued
+        because camera is opened on the GUI thread and grabbed on this one
+        (see PUPIL_CAMERA_TRANSFER.md)."""
         self._exposure_us = us
         with self._exp_lock:
             self._pending_exp = us
@@ -141,7 +141,7 @@ class PupilCameraWorker(PullWorker):
         return self._frame_shape
 
     def _configure(self, cam) -> None:
-        """Put the camera into free-running Mono8 at the requested exposure/rate."""
+        """Put camera into free-running Mono8 at the requested exposure/rate."""
         # Mono8 explicitly: a persisted Mono12 from a previous session would
         # hand us uint16 and silently break the tracker's threshold units and
         # the (0, 255) display levels.
@@ -165,8 +165,8 @@ class PupilCameraWorker(PullWorker):
         exp = _set_clamped(cam, self._exposure_us,
                            "ExposureTime", "ExposureTimeAbs", label="exposure")
 
-        # Only honoured with the enable node on; otherwise the camera free-runs
-        # as fast as exposure and bandwidth allow.
+        # Only honoured with enable node on; otherwise camera free-runs as
+        # fast as exposure and bandwidth allow.
         rate_on = _node(cam, "AcquisitionFrameRateEnable")
         if rate_on is not None:
             try:
@@ -266,8 +266,8 @@ class MockPupilCameraWorker(PullWorker):
     settings-panel rate actually takes effect on the mock.
 
     Includes a bright specular dot standing in for the IR corneal glint, since
-    that is the artefact the tracker's outlier rejection exists to handle —
-    a perfectly clean disc would not exercise it.
+    that's the artefact the tracker's outlier rejection exists to handle —
+    a perfectly clean disc wouldn't exercise it.
     """
     hz_update = pyqtSignal(int, float)
     H, W = 240, 320

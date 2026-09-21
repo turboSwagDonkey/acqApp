@@ -25,7 +25,7 @@ class AbstractClock(ABC):
         """Seconds since session start for a `time.perf_counter()` reading.
 
         Devices that carry their own hardware timestamps (the camera, and later
-        the DAQ) know when a sample was really acquired, which is not when it
+        the DAQ) know when a sample was really acquired, which isn't when it
         reached us. They convert that to the perf_counter domain and pass it
         here, so their samples land on the shared timebase at their true
         acquisition time rather than at their arrival time.

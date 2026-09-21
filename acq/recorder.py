@@ -82,7 +82,7 @@ class Recorder:
         timeout was hit (0 on a clean drain), so the caller can surface it.
 
         `final_metadata()` runs after the drain and before the close: its counts
-        are only final once the writer thread stopped, and there is no way to
+        are only final once the writer thread stopped, and there's no way to
         write them afterwards.
         """
         self._stop_event.set()
@@ -102,10 +102,10 @@ class Recorder:
     def offered(self, stream: str) -> int:
         """Samples of `stream` handed to this file so far.
 
-        "Offered", not written: the ring can still shed one, and that is counted
+        "Offered", not written: the ring can still shed one, and that's counted
         in `drop_count`, not here. An experiment routine measures a "100 frames"
         step by this — frames that reached the file, not frames the camera
-        produced, which differ exactly when the write path is what is behind.
+        produced, which differ exactly when the write path is what's behind.
 
         **Read without the gate**, deliberately. One dict lookup of an int is
         atomic under the GIL; taking the gate would buy a count that never leads

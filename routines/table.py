@@ -5,7 +5,7 @@ composite row bundling all of them — the **Kind** column picks which, and
 the **Details**/**Length**/**Unit**/**Settle** columns render "—" and refuse
 editing on a row whose kind doesn't use them (Length/Unit are Wait-only,
 Settle is Move-only, Details is Move/Display-only) — the same "sentinel, not
-blank" rule the old Stage/Pattern cells already used for "NA" Every
+blank" rule the old Stage/Pattern cells already used for "NA". Every
 editable cell still edits through a widget that can only produce a legal
 value: the value lives in `UserRole` while the text is a rendering of it,
 usually — **Details** renders as something OTHER than its raw value the same
@@ -22,7 +22,7 @@ two ways Stage/Pattern always have:
 
 Both are non-editable cells (no delegate) rather than something typed
 directly into — Move takes a small dialog for the same reason Display takes
-a file dialog: the value is not free text.
+a file dialog: the value isn't free text.
 
 Rows are **dragged to reorder**, Ctrl+Up/Down do the same, both through
 `move_row` — one implementation of "what reordering means." Reordering does
@@ -114,9 +114,9 @@ COLS = (
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
-# What an axis a Move step does not send reads as. A word, not a blank cell:
-# blank used to mean both "leave this axis alone" and "I have not typed it
-# yet", and "leave" on its own did not say leave WHAT.
+# What an axis a Move step doesn't send reads as. A word, not a blank cell:
+# blank used to mean both "leave this axis alone" and "I haven't typed it
+# yet", and "leave" on its own didn't say leave WHAT.
 NO_CHANGE = "NA"
 
 # The row header of the step the engine is on. The row is bold as well; the
@@ -181,7 +181,7 @@ class StepTable(QTableWidget):
     """The routine's steps, edited in place. Emits `changed` on any edit.
 
     Holds a reference to the caller's list of `Step`s and writes into it — the
-    panel owns the routine, this owns how it is edited.
+    panel owns the routine, this owns how it's edited.
     """
 
     changed = pyqtSignal()
@@ -239,7 +239,7 @@ class StepTable(QTableWidget):
             | QAbstractItemView.EditTrigger.EditKeyPressed
             | QAbstractItemView.EditTrigger.AnyKeyPressed)
 
-        # Details has no delegate — like before this redesign, it is set
+        # Details has no delegate — like before this redesign, it's set
         # through a dialog (Set position…/Fill from FOV…, or a pattern/ROI
         # file dialog), not typed into a cell.
         self.setItemDelegateForColumn(
@@ -285,7 +285,7 @@ class StepTable(QTableWidget):
 
     def set_groups(self, groups: list[Group]) -> None:
         """The routine's repeat groups, so the table can show which rows are
-        in one — a separate list below the table is not "at a glance" once
+        in one — a separate list below the table isn't "at a glance" once
         you're scrolled past it. Repaints; call after any group edit."""
         self._groups = list(groups)
         self._repaint_all()
@@ -320,7 +320,7 @@ class StepTable(QTableWidget):
         return None
 
     def _tint_for(self, row: int) -> QColor | None:
-        """The row's background: blended if it is both grouped AND inside a
+        """The row's background: blended if it's both grouped AND inside a
         recording, so neither reads as the other's plain tint."""
         g, r = self._group_at(row) is not None, self._recording_at(row) is not None
         if g and r:
@@ -391,7 +391,7 @@ class StepTable(QTableWidget):
             item.setText(_xyz_text(s.x_um, s.y_um, s.z_um, s.fov))
             z_part = f", {s.z_um:g} um" if s.z_um is not None else ""
             item.setToolTip(
-                f"{s.x_um:g} um, {s.y_um:g} um{z_part} — from the saved FOV "
+                f"{s.x_um:g} um, {s.y_um:g} um{z_part} — from saved FOV "
                 f"{s.fov!r}. Double-click to type new numbers, which "
                 f"detaches the name." if s.fov else
                 "Double-click to set a position, or right-click -> Fill "
@@ -541,7 +541,7 @@ class StepTable(QTableWidget):
     def move_row(self, src: int, dest: int) -> bool:
         """Move one step to `dest`, its FINAL index. The one implementation.
 
-        The arrows, Ctrl+Up/Down and a drop all land here, so reordering cannot
+        The arrows, Ctrl+Up/Down and a drop all land here, so reordering can't
         mean two different things depending on how it was asked for.
         """
         n = len(self._steps)
@@ -552,7 +552,7 @@ class StepTable(QTableWidget):
             return False
         self._steps.insert(dest, self._steps.pop(src))
         # Only src..dest actually shifted — a full reload() repainted every
-        # row for what is always a contiguous shift of the rows between them;
+        # row for what's always a contiguous shift of the rows between them;
         # drag-drop and Ctrl+Up/Down both land here.
         lo, hi = min(src, dest), max(src, dest)
         self._loading = True
@@ -586,7 +586,7 @@ class StepTable(QTableWidget):
         # next full reload() repaints over the damage.
         ev.setDropAction(Qt.DropAction.CopyAction)
         ev.accept()
-        # An insertion point past the source collapses by one once it is lifted.
+        # An insertion point past the source collapses by one once it's lifted.
         self.move_row(src, insert - 1 if insert > src else insert)
 
     def _drop_index(self, ev) -> int:
@@ -667,7 +667,7 @@ class StepTable(QTableWidget):
         row. Right-click on a row already part of a multi-row selection keeps
         that selection (so "Group selected" is on offer); right-click
         elsewhere collapses to just that row, like any other list. Recording
-        is not here at all — click the row header instead."""
+        isn't here at all — click the row header instead."""
         idx = self.indexAt(event.pos())
         if idx.isValid() and idx.row() not in self._selected_rows():
             self.select_row(idx.row())
@@ -710,7 +710,7 @@ def _xyz_text(x: float | None, y: float | None, z: float | None,
              fov: str) -> str:
     """Move's Details as one fact: "(x, y)", or "(x, y, z)" once a step has a
     Z target (most rigs and most steps never do — Z only joins the text when
-    it is actually set), or the saved FOV's name in front of it once one is
+    it's actually set), or the saved FOV's name in front of it once one is
     filled — a recognised spot is read by name, not by the numbers that
     happen to describe it."""
     def part(v: float | None) -> str:
@@ -736,7 +736,7 @@ def _pattern_icon(pattern: str) -> QIcon:
 
 def _roi_icon(path: str) -> QIcon:
     """An ROI set has no image of its own — its shapes are rasterised over
-    their own bounding box instead, in camera px (the space they are drawn
+    their own bounding box instead, in camera px (the space they're drawn
     in). No DMD calibration involved: this answers "what shapes", not "where
     on the DMD" — `RoiSet.dmd_frame` is the one that needs a calibration."""
     from acqApp.devices.dmd import roi_store
@@ -760,7 +760,7 @@ def _roi_icon(path: str) -> QIcon:
         mask |= r.mask_at(xs, ys)
     bits = np.where(mask, np.uint8(255), np.uint8(0))
     # QImage can reference the buffer it's built from — .copy() detaches it,
-    # so the array going out of scope on return does not corrupt the icon.
+    # so the array going out of scope on return doesn't corrupt the icon.
     img = QImage(bits.tobytes(), n, n, n, QImage.Format.Format_Grayscale8)
     return QIcon(QPixmap.fromImage(img.copy()))
 

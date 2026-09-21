@@ -40,10 +40,10 @@ class DragRectViewBox(pg.ViewBox):
 
     A real override, not a monkeypatch: earlier the pupil eye-region tool
     swapped `vb.mouseDragEvent` for a bound method and swapped it back on
-    disarm, which works but depends on nobody else touching that attribute
-    between the two calls. Subclassing needs no restoring — `set_draw_mode`
-    just falls through to `super().mouseDragEvent()` when off, or for any
-    button but Left, so panning and zooming are never something to remember.
+    disarm — works, but depends on nobody else touching that attribute
+    between calls. Subclassing needs no restoring — `set_draw_mode` just
+    falls through to `super().mouseDragEvent()` when off, or for any button
+    but Left, so panning and zooming are never something to remember.
     """
 
     dragged = pyqtSignal(float, float, float, float, bool)  # x0,y0,x1,y1,finished
@@ -78,7 +78,7 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     a caller that needs more than pan/zoom from it.
 
     `chk_auto` sits right above the LUT bar it controls, not off in the
-    settings tab — the operator is already looking at it. The caller wires
+    settings tab — operator is already looking at it. The caller wires
     it to the same auto-contrast path as the settings panel's own checkbox
     and keeps the two in sync (see voltage_cam/pupil_cam's central_widget).
     """
@@ -123,8 +123,8 @@ class ModuleAdapter:
         self.win = win
         self.panel: QWidget | None = None
         # Declared, not duck-typed (devices.py). Subclasses narrow these to the
-        # protocol they need, so metadata reads off the object instead of
-        # through a getattr default that invents a value.
+        # protocol they need, so metadata reads off the object instead of a
+        # getattr default that invents a value.
         self.worker: DeviceWorker | None = None
         self.controller: OutputController | None = None
         # The "Auto" checkbox _image_view() builds into the LUT bar, for a
@@ -136,7 +136,7 @@ class ModuleAdapter:
     # A panel that belongs in a window of its own rather than as a page of the
     # shared settings window. For a module that is *used* while another
     # module's page is open — a routine is driven while the camera it drives is
-    # being adjusted, and a tab cannot be in two places. The window reads this;
+    # being adjusted, and a tab can't be in two places. The window reads this;
     # it never learns which module set it.
     own_window: bool = False
 
@@ -266,7 +266,7 @@ class ModuleAdapter:
         return []
 
     def stage_target(self) -> StageTarget | None:
-        """If this module can be sent to an XY position, itself. Declaring it is
+        """If this module can be sent to an XY position, itself. Declaring it's
         the whole cost of letting an experiment routine drive it."""
         return None
 
@@ -286,7 +286,7 @@ class ModuleAdapter:
         """The rate this module's camera is configured to run at, or None.
 
         For *estimating* only — a step measured in frames is still never
-        converted where it is recorded (`routines/settings.py`).
+        converted where it's recorded (`routines/settings.py`).
         """
         return None
 

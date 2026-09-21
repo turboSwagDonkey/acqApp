@@ -8,13 +8,13 @@ machine has BOTH cabled (Active Silicon FireBird 4xCXP6-2PE8 grabber + USB).
 Nothing in the app selects the link — DCAM enumerates whichever it finds, and
 on 2026-07-29 that was USB3, costing a factor of ~7.3 in frame rate.
 
-The frame period at full frame is decided by the link, so it is a reliable
+The frame period at full frame is decided by the link, so it's a reliable
 fingerprint:
 
     USB3.1 Gen1 16-bit   ~63.3 ms   (15.8 Hz,   316 MB/s)
     CoaXPress             ~8.7 ms   ( 115 Hz,  2300 MB/s)
 
-Run this after any cabling change, with the camera free — DCAM will not hand
+Run this after any cabling change, with the camera free — DCAM won't hand
 out the device twice, so close the app first.
 """
 from pylablib.devices import DCAM

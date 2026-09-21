@@ -38,7 +38,7 @@ _TRIGGER_MODE: dict[str, str] = {
 #
 # Enums must be written as NUMERIC codes — DCAMAttribute.set_value passes the
 # value straight to the C library, so a string raises ValueError, and
-# `enum_as_str` is read-only (set_attribute_value does not accept it).
+# `enum_as_str` is read-only (set_attribute_value doesn't accept it).
 _TRIG_SRC_PROP        = "TRIGGER SOURCE"            # 1 INT 2 EXT 3 SW 4 MASTER
 _TRIG_POLARITY_PROP   = "TRIGGER POLARITY"          # 1 NEGATIVE 2 POSITIVE
 _MP_TRIG_SRC_PROP     = "MASTER PULSE TRIGGER SOURCE"   # 1 EXTERNAL 2 SOFTWARE
@@ -177,7 +177,7 @@ class OrcaFireWorker(PullWorker):
 
         What resets the latch is writing `MASTER PULSE MODE` itself: away
         from START to CONTINUOUS, then back to START, around the stop/start.
-        It is the property WRITE that clears it, not the acquisition state —
+        It's the property WRITE that clears it, not the acquisition state —
         tested by cycling the mode with acquisition already stopped and
         restarted, and confirmed gated (zero frames) until a real external
         edge arrived. Only `MASTER PULSE MODE` needs rewriting; `TRIGGER
@@ -199,7 +199,7 @@ class OrcaFireWorker(PullWorker):
 
         Queued, not done here: this is called from the Qt thread, and the DCAM
         calls belong to the capture thread that owns the handle. So the caller
-        cannot treat it as complete on return — the loop acts on it when its
+        can't treat it as complete on return — the loop acts on it when its
         own frame wait next expires, and residual frames keep arriving for a
         while after that, which is what `routines/engine.py`'s
         `TRIGGER_SETTLE_S` accounts for.
@@ -334,7 +334,7 @@ class OrcaFireWorker(PullWorker):
             print(f"[voltage_cam] using the camera's own frame timestamps "
                   f"(offset {self._t_offset:.3f} s)")
         t = t_cam + self._t_offset
-        # A frame cannot have been acquired after we read it — if the clock
+        # A frame can't have been acquired after we read it — if the clock
         # drifts or wraps, trust arrival rather than write nonsense.
         if t > now + 1.0:
             self._fallback("camera frame timestamps are inconsistent")
@@ -454,10 +454,10 @@ class OrcaFireWorker(PullWorker):
                 cam.set_trigger_mode(mode)
                 if mode == "master_pulse":
                     # invert=True is TRIGGER POLARITY=POSITIVE, i.e. start on
-                    # the RISING edge — when the trigger goes on. pylablib's
-                    # default (invert=False) is POLARITY=NEGATIVE, which starts
-                    # on the falling edge instead, so the recording only began
-                    # when the trigger was switched OFF.
+                    # the RISING edge. pylablib's default (invert=False) is
+                    # POLARITY=NEGATIVE, which starts on the falling edge
+                    # instead, so the recording only began when the trigger
+                    # was switched OFF.
                     cam.setup_ext_trigger(invert=True)
                     cam.set_attribute_value(
                         _MP_TRIG_SRC_PROP, _MP_TRIG_SRC_EXTERNAL,
@@ -469,7 +469,7 @@ class OrcaFireWorker(PullWorker):
                     # be read: in START mode its INTERVAL caps the frame rate,
                     # and the camera's own default (0.1 s) would pin the whole
                     # recording to 10 Hz regardless of the preset. Too short is
-                    # safe — the camera simply captures as fast as it can.
+                    # safe — the camera captures as fast as it can.
                     cam.set_attribute_value(
                         _MP_INTERVAL_PROP, cam.get_frame_period(),
                         error_on_missing=False)
@@ -619,7 +619,7 @@ class OrcaFireWorker(PullWorker):
                         status_t0 = now
                         try:
                             st = cam.get_frames_status()
-                            # From the camera's own counter, so it is the true
+                            # From the camera's own counter, so it's the true
                             # acquisition rate whether or not we read every frame.
                             self.hz_update.emit(
                                 st.acquired, (st.acquired - n_acquired) / dt)

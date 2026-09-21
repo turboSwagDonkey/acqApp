@@ -17,17 +17,17 @@ Every backend driver exposes the same axis-indexed surface:
     stop(axis) / stop_all(axes)            # MOTION
     set_linear_map(axis, slope, offset) / linear_map(axis)
 `axis` is whatever address that backend's own driver expects (0/1/2 for the
-MCM6101's dest-offset scheme, 4/5/6 for the MCM301's fixed slots) -- it is
+MCM6101's dest-offset scheme, 4/5/6 for the MCM301's fixed slots) -- it's
 carried through opaquely from StageAxis.index in the calibration config, so
-the two backends' configs simply use different index values for the same
-logical X/Y/Z.
+the two backends' configs use different index values for the same logical
+X/Y/Z.
 
 `establish_frame` (the MCM6101's command-origin recalibration) is NOT part
-of the common surface: it exists to work around that controller's specific
-quirk of re-referencing its origin on every hard-limit hit. A backend
-without that quirk (the MCM301: position is already a stable encoder count)
-just doesn't implement it, and StageController.establish_frame() reports
-that clearly instead of AttributeError-ing.
+of the common surface: it exists to work around that controller's quirk of
+re-referencing its origin on every hard-limit hit. A backend without that
+quirk (the MCM301: position is already a stable encoder count) doesn't
+implement it, and StageController.establish_frame() reports that clearly
+instead of AttributeError-ing.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -53,9 +53,9 @@ def _open_mcm6101(port: str):
 
 
 def _probe_mcm6101(port: str) -> bool:
-    """The MCM6101 only identifies itself by actually answering APT's
-    HW_REQ_INFO over the open serial port -- there is no OS-level way to
-    tell it apart from any other USB-CDC device without talking to it."""
+    """The MCM6101 only identifies itself by answering APT's HW_REQ_INFO over
+    the open serial port -- there's no OS-level way to tell it apart from any
+    other USB-CDC device without talking to it."""
     from .driver import MCM6101
     dev = MCM6101(port)
     try:
@@ -84,7 +84,7 @@ def _probe_mcm301(port: str) -> bool:
 
     A single connected MCM301 counts as a match even when it isn't on the
     configured port: Windows renumbers COM ports whenever it feels like it,
-    and this enumeration lists ONLY MCM301-family devices, so there is nothing
+    and this enumeration lists ONLY MCM301-family devices, so there's nothing
     else it could be confused with."""
     from .mcm301_driver import com_name, list_devices
     try:

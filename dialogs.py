@@ -34,7 +34,7 @@ class ModuleSelectDialog(QDialog):
     caller supplies the wording — "this session" is a lie mid-session.
 
     `config.ALWAYS_ON` gets no checkbox and is added back by `selected()`: a
-    box that must stay ticked is not a choice, it is a trap.
+    box that must stay ticked isn't a choice, it's a trap.
     """
 
     def __init__(self, enabled: list[str], parent=None, *,
@@ -69,7 +69,7 @@ class ModuleSelectDialog(QDialog):
         ok.setEnabled(any(cb.isChecked() for cb in self._boxes.values()))
 
     def selected(self) -> list[str]:
-        """The ticked modules, plus the ones that are never untickable."""
+        """Ticked modules, plus the ones that are never untickable."""
         return config.order_modules(
             k for k, cb in self._boxes.items() if cb.isChecked())
 
@@ -111,19 +111,19 @@ class PanelWindow(QDialog):
 
     For a module that is *used* rather than configured: an experiment routine
     is driven from its panel while the settings window is showing the camera it
-    is driving, and a tab cannot be in two places at once. Which modules get
+    is driving, and a tab can't be in two places at once. Which modules get
     one is `ModuleAdapter.own_window` — the window never learns what a routine
     is.
 
     Hidden, never destroyed, exactly as `SettingsDialog` is: the panel inside is
     a live object wired to a running controller. Its geometry is remembered per
-    module key, so two of these do not fight over one saved rectangle.
+    module key, so two of these don't fight over one saved rectangle.
     """
 
     visibility_changed = pyqtSignal(bool)
 
     # The same width floor as `SettingsDialog`: these are the same panels, and
-    # one should not open narrower for having moved out of the tabs.
+    # one shouldn't open narrower for having moved out of the tabs.
     _MIN_DEFAULT = (900, 700)
     _PAD = 16
 
@@ -145,7 +145,7 @@ class PanelWindow(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._scroll)
 
-        # The same dressing a settings page gets, so a panel does not change
+        # The same dressing a settings page gets, so a panel doesn't change
         # appearance depending on which window it landed in.
         panel.setStyleSheet(style.accent_panel(key))
         widgets.collapsible_groups(panel, key)
@@ -289,7 +289,7 @@ class SettingsDialog(QDialog):
         return self.tabs.indexOf(panel)
 
     def show_panel(self, panel: QWidget) -> bool:
-        """Bring `panel`'s page to the front. False if it is not in here."""
+        """Bring `panel`'s page to the front. False if it isn't in here."""
         idx = self.tabs.indexOf(panel)
         if idx < 0:
             return False
@@ -374,8 +374,8 @@ class ConnectionMonitor(QDialog):
 
         `probe_all` in one go left every row on "…" until the last probe
         returned, because the GUI thread was inside it the whole time — and a
-        driver enumeration is not fast. Refresh is disabled meanwhile: these
-        touch hardware, and re-entering through a second click is not something
+        driver enumeration isn't fast. Refresh is disabled meanwhile: these
+        touch hardware, and re-entering through a second click isn't something
         to find out about on a rig.
         """
         kwargs = self._probe_kwargs()

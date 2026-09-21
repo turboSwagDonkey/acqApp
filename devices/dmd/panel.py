@@ -32,9 +32,9 @@ class _DraggablePreview(QLabel):
     """The preview label — click-drag nudges the pattern's offset (device
     px), the mouse-driven twin of the arrow-key nudge. `dragged` carries the
     delta in PREVIEW px; the panel converts to device px (it alone knows the
-    current preview-to-device scale) and only when dragging is actually
-    meaningful (Image mode, Fit off) — see `SettingsPanel._on_preview_dragged`
-    and `set_draggable`.
+    current preview-to-device scale) and only when dragging is meaningful
+    (Image mode, Fit off) — see `SettingsPanel._on_preview_dragged` and
+    `set_draggable`.
     """
     dragged = pyqtSignal(float, float)   # (dx, dy) in PREVIEW px
 
@@ -80,7 +80,7 @@ class SettingsPanel(QWidget):
     load_requested   = pyqtSignal(object)   # emits Path
     display_requested = pyqtSignal()
     stop_requested    = pyqtSignal()
-    # The adapter opens both: it is the only side that can reach the voltage
+    # The adapter opens both: it's the only side that can reach the voltage
     # camera's frame (`ModuleHost.latest_frame`) and the live controller.
     rois_edit_requested = pyqtSignal()
     calibrate_requested = pyqtSignal()
@@ -163,8 +163,8 @@ class SettingsPanel(QWidget):
 
         # ── what to display ──────────────────────────────────────────────────
         # Three exclusive sources, shown together rather than hidden in a combo:
-        # which one is live decides what the Display button emits, and that is
-        # worth being able to read at a glance on a rig.
+        # which one is live decides what Display emits — worth reading at a
+        # glance on a rig.
         mode_w = QWidget()
         mode_lay = QHBoxLayout(mode_w)
         mode_lay.setContentsMargins(0, 0, 0, 0)
@@ -301,7 +301,7 @@ class SettingsPanel(QWidget):
             "While on, every change here re-projects onto the DMD a moment "
             "after you pause (debounced, not on every keystroke/drag tick) "
             "— no need to press Display. This actually emits light; leave "
-            "it off unless you are actively aligning. Turning it off "
+            "it off unless you're actively aligning. Turning it off "
             "cancels a pending re-project immediately.")
         self._chk_live.toggled.connect(self.live_toggled.emit)
         lay.addRow(self._chk_live)
@@ -339,11 +339,11 @@ class SettingsPanel(QWidget):
         """Draw ROIs on a camera frame and project only those mirrors.
 
         The editor is a separate window (`roi_panel.RoiEditor`) rather than a
-        row here: it is an image view, and this tab lives in a scroll area.
+        row here: it's an image view, and this tab lives in a scroll area.
         """
         box = QGroupBox("Photostimulation ROIs")
         box.setToolTip(
-            "Draw regions on a snapshot from the VOLTAGE camera — that is the "
+            "Draw regions on a snapshot from the VOLTAGE camera — that's the "
             "imaging path the DMD projects into — and turn them into a mirror "
             "mask.\nTurning them into a mask needs a measured camera↔DMD "
             "registration; without one they can still be drawn and saved.")
@@ -537,7 +537,7 @@ class SettingsPanel(QWidget):
         """Only the image mode uses the pattern file and the alignment.
 
         Greyed rather than hidden: an operator who set a 104 % scale wants to
-        see it is still there when they switch to ROIs and back.
+        see it's still there when they switch to ROIs and back.
 
         Each radio's `toggled` is wired here, so a mode switch fires it twice
         — False for the outgoing button, True for the incoming one. Without

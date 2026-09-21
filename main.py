@@ -50,7 +50,7 @@ def _bootstrap() -> None:
 
     # (1) importable, then stdout hardened FIRST, so every print below can use
     # arrows and symbols without the UnicodeEncodeError that kills device
-    # threads (console.py). That module imports only `sys`, so it is safe here.
+    # threads (console.py). That module imports only `sys`, so it's safe here.
     parent = str(here.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
@@ -70,7 +70,7 @@ def _bootstrap() -> None:
             try:
                 subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
             except (subprocess.CalledProcessError, OSError) as e:
-                sys.exit(f"[bootstrap] could not create venv ({e}); create it "
+                sys.exit(f"[bootstrap] couldn't create venv ({e}); create it "
                          f"manually:\n    python -m venv {venv_dir}")
         os.environ["ACQAPP_NO_REEXEC"] = "1"          # guard against re-exec loops
         print(f"[bootstrap] launching under {venv_py}")
@@ -120,7 +120,7 @@ def _open_camera() -> None:
         from acqApp.devices.voltage_cam.acquisition import open_camera
         # Open OPTIMISTICALLY: `get_cameras_number()` re-enumerates on EVERY
         # call, not once (measured 6.5/5.3/5.3 s), so asking first added ~5.3 s
-        # to every launch. Ask only if the open fails, where it is free.
+        # to every launch. Ask only if the open fails, where it's free.
         # open_camera() (not a bare DCAMCamera(idx=0)) retries past a
         # transient DCAMERR_NOCAMERA — the same driver quirk the worker's own-
         # open fallback in acquisition.py hits, handled in the one place.
@@ -208,7 +208,7 @@ def _sample_nbytes(item) -> int:
 
 
 # The sidebar's Mode dropdown. "None" is a no-op — manual control, whatever
-# the operator already has set — and is not in modes.json; every other entry
+# the operator already has set — and isn't in modes.json; every other entry
 # comes from config.load_modes(), so adding a mode is editing that file, not
 # this code. See MainWindow.set_mode() for what a recipe's keys mean.
 MODE_NONE = "None"
@@ -219,7 +219,7 @@ class MainWindow(QMainWindow):
 
     Per-instrument behaviour is NOT here — each subsystem is an
     `adapters.ModuleAdapter` owning its own panel, worker, display tick, sink
-    and metadata, and this window only iterates. That is why adding an
+    and metadata, and this window only iterates. That's why adding an
     instrument is a new adapter class, not a new branch in four methods.
     """
 
@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
 
         Pooled here for the same reason `signal_sources` is: the routine has to
         reach the stage without importing its adapter, and the stage stays
-        ignorant that routines exist. First one wins — there is one stage.
+        ignorant that routines exist. First one wins — there's one stage.
         """
         return self._first(lambda m: m.stage_target())
 
@@ -387,9 +387,9 @@ class MainWindow(QMainWindow):
         making the operator find the Record button in another part of the
         window — then come back and press Start — is a worse design than
         letting the panel do it. Returns the PREVIOUS state, so a caller that
-        started the recording can stop it again and leave one it did not start
+        started the recording can stop it again and leave one it didn't start
         alone. Goes through the button, so the UI and the status line stay in
-        step with reality; the toggle already starts the session if it is not
+        step with reality; the toggle already starts the session if it isn't
         running.
         """
         was = self._btn_rec.isChecked()
@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
         return None
 
     def camera_preset(self, key: str) -> str | None:
-        """Module `key`'s current resolution preset, or None if it is not
+        """Module `key`'s current resolution preset, or None if it isn't
         loaded, or is loaded but has no notion of a preset."""
         m = self._module(key)
         return m.preset_key() if m is not None and hasattr(m, "preset_key") else None
@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
     def set_camera_preset(self, key: str, preset: str) -> str | None:
         """Switch module `key`'s resolution preset. Returns the PREVIOUS key
         so a caller (the DMD calibration, forcing full frame on the voltage
-        camera) can restore it, or None if that module is not loaded, or is
+        camera) can restore it, or None if that module isn't loaded, or is
         loaded but has no notion of a preset (no `set_preset`) — the same
         ambiguity `camera_preset()` already carries, and needed here too:
         `set_mode()`'s recipes come from hand-edited JSON, and a typo'd
@@ -431,7 +431,7 @@ class MainWindow(QMainWindow):
         Structural, like the operator's own combo click: it only takes effect
         the next time the session (re)starts, so a caller after a LIVE change
         must stop and restart live view itself (`set_live`) for it to matter —
-        this does not touch whether the camera is running.
+        this doesn't touch whether the camera is running.
         """
         m = self._module(key)
         if m is None or not hasattr(m, "set_preset"):
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
         return prev
 
     def camera_binning(self, key: str) -> int | None:
-        """Module `key`'s current binning factor, or None if it is not
+        """Module `key`'s current binning factor, or None if it isn't
         loaded, or is loaded but has no notion of binning."""
         m = self._module(key)
         return m.binning() if m is not None and hasattr(m, "binning") else None
@@ -515,7 +515,7 @@ class MainWindow(QMainWindow):
                                                      Internal (free-running)
 
         Same "takes effect at the next Display/Start" contract as
-        `set_camera_preset`/`DmdModule.set_all_on` — this does not itself
+        `set_camera_preset`/`DmdModule.set_all_on` — this doesn't itself
         start or display anything, UNLESS the DMD panel's own "Live update"
         toggle is on, in which case `dmd_all_on` still re-projects shortly
         after (see `DmdModule`/`acqApp.devices.dmd.panel`'s Live update).
@@ -623,7 +623,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "Nothing to capture",
                 "Neither the DMD (in All ON) nor the voltage camera is "
-                "loaded, so there is no current state to save. Load them "
+                "loaded, so there's no current state to save. Load them "
                 "(or set the DMD to All ON) and try again, or write the "
                 "entry into modes.json by hand.")
             return
@@ -642,7 +642,7 @@ class MainWindow(QMainWindow):
         `devices.ModuleHost`. Why it reads the cache: `ModuleAdapter.last_frame`.
 
         Never commands the camera. Grabbing on demand would mean deciding when
-        the DMD is all-on, and that is the operator's call, not this method's.
+        the DMD is all-on, and that's the operator's call, not this method's.
         """
         m = self._module(key)
         return m.last_frame() if m is not None else None
@@ -712,7 +712,7 @@ class MainWindow(QMainWindow):
     def _central_claimant(self):
         """The first loaded module that wants the centre pane, or None.
 
-        `central_title` is the claim, not `central_widget()`, which cannot be
+        `central_title` is the claim, not `central_widget()`, which can't be
         asked without building one. `_build_central` is its only caller.
         """
         for m in self._modules:
@@ -846,7 +846,7 @@ class MainWindow(QMainWindow):
         self._btn_run.toggled.connect(self._on_run_toggled)
 
         # Auto-starts live view if needed. Deliberately the largest control
-        # here — it is the only one whose wrong state costs an experiment,
+        # here — it's the only one whose wrong state costs an experiment,
         # and it used to be the same size as Emulate.
         self._btn_rec = QPushButton("● Record")
         self._btn_rec.setCheckable(True)
@@ -854,7 +854,7 @@ class MainWindow(QMainWindow):
         self._btn_rec.setToolTip("Live view and save every stream to disk")
         self._btn_rec.toggled.connect(self._on_record_toggled)
 
-        # Elapsed, size on disk, drops. Not in the status message: that is
+        # Elapsed, size on disk, drops. Not in the status message: that's
         # transient, and any module calling `status()` wipes it.
         self._lbl_rec = QLabel("")
         self._lbl_rec.setStyleSheet("color:#9aa0a6;")
@@ -911,7 +911,7 @@ class MainWindow(QMainWindow):
         # Cross-module preset, defined in modes.json (config.load_modes) —
         # hand-edited and portable between sessions, not hardcoded here. Config
         # only — like the operator's own settings edits, a mode takes effect
-        # at the next Display/Start, it does not itself start anything.
+        # at the next Display/Start, it doesn't itself start anything.
         self._modes = config.load_modes()
         self._sidebar.addWidget(QLabel("  Mode:"))
         self._mode_combo = QComboBox()
@@ -1023,7 +1023,7 @@ class MainWindow(QMainWindow):
     def _stretch_sidebar(self) -> None:
         """All buttons one width, so the left edges line up.
 
-        A size policy will not do it — `QToolBarLayout` sizes each button to its
+        A size policy won't do it — `QToolBarLayout` sizes each button to its
         own content and centres it, whatever the child asks for. Setting the
         same minimum width on all of them is what actually aligns the labels.
         """
@@ -1045,7 +1045,7 @@ class MainWindow(QMainWindow):
     def _check_page(self, key: str | None) -> None:
         """Exactly one settings page item checked — or none, with it shut.
 
-        A module with its own window is skipped: it is lit by whether THAT
+        A module with its own window is skipped: it's lit by whether THAT
         window is open, which is independent of what page the settings window
         is showing.
         """
@@ -1080,7 +1080,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _toggle_own_window(win: PanelWindow) -> None:
-        """Show it, or shut it if it is already the window in front."""
+        """Show it, or shut it if it's already the window in front."""
         if win.isVisible() and win.isActiveWindow():
             win.close()
             return
@@ -1197,7 +1197,7 @@ class MainWindow(QMainWindow):
 
         Refused while RECORDING: the file's `modules` attribute is written once
         at record start, and a stream that appears or vanishes part-way through
-        is not describable by it. Between sessions and during a live/free run
+        isn't describable by it. Between sessions and during a live/free run
         are both fine — a module loaded into a running session builds its worker
         and starts it against the clock already at t=0, which is safe because
         workers stamp in `perf_counter` and only the Recorder converts.
@@ -1536,7 +1536,7 @@ class MainWindow(QMainWindow):
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 
     def _on_tick(self, elapsed: float) -> None:
-        # A permanent label, not `status()`: that is transient, and clobbering
+        # A permanent label, not `status()`: that's transient, and clobbering
         # it 10x/second (this fires every 100 ms) made a worker-error or any
         # other status() call unreadable for the whole time a session runs.
         self._lbl_time.setText(f"t = {elapsed:.1f} s")
@@ -1548,7 +1548,7 @@ class MainWindow(QMainWindow):
         """Elapsed / size on disk / drops, while recording.
 
         The size comes from the file itself rather than from a running total of
-        what was enqueued: those differ exactly when it matters — a ring that is
+        what was enqueued: those differ exactly when it matters — a ring that's
         shedding, or a writer that has fallen behind — and the number worth
         trusting is the one on the disk. HDF5 grows in blocks, so it steps.
         """
@@ -1659,7 +1659,7 @@ def main() -> None:
     if not mirror_result.ok:
         win.status(f"Mirror check skipped: {mirror_result.error}")
     elif mirror_result.corrected:
-        win.status("Mirror was not on CAMERA/epi — corrected at launch.")
+        win.status("Mirror wasn't on CAMERA/epi — corrected at launch.")
 
     sys.exit(app.exec())
 

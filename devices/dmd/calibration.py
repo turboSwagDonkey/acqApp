@@ -5,7 +5,7 @@ them. A narrow stripe at a set of signed mirror offsets per axis, a line fit to
 where each lands, and the two lines are the transform. Signed offsets carry
 direction, so a mirror flip cannot pass.
 
-**Coarse patterns only, and that is measured.** On this rig (2026-08-24) a solid
+**Coarse patterns only, and that's measured.** On this rig (2026-08-24) a solid
 bar images cleanly, a 280 px checkerboard modulates 13 % of the frame and a
 70 px stripe pattern 9 % — scattering erases fine structure at any pitch, and
 Gray coding down to 16 mirrors per code still decoded 0.0 %. Nothing here is
@@ -27,7 +27,7 @@ import numpy as np
 
 ON, OFF = np.uint8(255), np.uint8(0)
 
-# Modulation below this counts as "the projector does not reach this pixel".
+# Modulation below this counts as "the projector doesn't reach this pixel".
 # Well under a real lit/unlit contrast, well over sensor noise.
 MIN_MODULATION = 0.15
 
@@ -41,7 +41,7 @@ STRIPE_CROSS = 0.05         # its length across the other axis
 
 
 class CalibrationError(RuntimeError):
-    """The sweep could not be registered — with a reason worth reading."""
+    """The sweep couldn't be registered — with a reason worth reading."""
 
 
 # ── patterns ──────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ def offset_stripe(width: int, height: int, axis: int, offset: float, *,
 # ── measuring ─────────────────────────────────────────────────────────────────
 
 def modulation(on: np.ndarray, off: np.ndarray) -> np.ndarray:
-    """(on - off) / (on + off): the sample cancels, the projector does not."""
+    """(on - off) / (on + off): the sample cancels, the projector doesn't."""
     a = np.asarray(on, dtype=np.float64)
     b = np.asarray(off, dtype=np.float64)
     if a.shape != b.shape:
@@ -94,18 +94,18 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
                  log: Callable[[str], None] = print) -> dict:
     """Step a stripe across each axis → {axis: [(offset, cam_x, cam_y), …]}.
 
-    A stripe, not a growing bar: a centred bar should hold still as it grows and
-    on the rig it drifted 527 px, the frame clipping one side while vignetting
-    ate the other, so its centroid measured the lopsidedness. A stripe's is
-    local, and one off the frame is dropped.
+    A stripe, not a growing bar: a centred bar should hold still as it grows,
+    but on the rig it drifted 527 px — the frame clipping one side while
+    vignetting ate the other — so its centroid measured the lopsidedness.
+    A stripe's is local, and one off the frame is dropped.
 
     `cross_frac` (the stripe's length across the other axis) is exposed rather
     than fixed: a camera viewing the panel at a steep tilt magnifies the
     near-field end of that length far more than the far-field end, and on a
     rig tilted enough even the default (5%, lowered from an original 25% that
     blew past the frame edge at nearly every offset) can still be too much.
-    Shrinking it keeps the footprint inside the frame; it does not change
-    what is being measured, only how much of it is imaged at once.
+    Shrinking it keeps the footprint inside the frame without changing what's
+    measured, only how much of it is imaged at once.
     """
     w, h = int(dmd_size[0]), int(dmd_size[1])
     half = (w / 2.0, h / 2.0)
@@ -174,7 +174,7 @@ def fit_axes(seen: dict) -> tuple | None:
     #
     # And once, not iterated: on clean data the scale collapses after the first
     # trim, so a second pass starts rejecting perfectly good stripes. With ten
-    # stripes there is no budget to hunt outliers one at a time anyway.
+    # stripes there's no budget to hunt outliers one at a time anyway.
     sigma = 1.4826 * float(np.median(err))
     if sigma > 0:
         wild = err > 3.0 * sigma
@@ -209,7 +209,7 @@ def _solve(pts, keep):
 def holdout_error(seen: dict) -> float | None:
     """Refit without one stripe per axis, then predict it.
 
-    The residual cannot tell you this: least squares sits closest to the points
+    The residual can't tell you this: least squares sits closest to the points
     it was handed, so its rms is optimistic by construction. Free — the stripes
     are already measured.
     """
@@ -238,8 +238,8 @@ def deshear(vx: np.ndarray, vy: np.ndarray,
     """Force the axes perpendicular, keeping both scales and the handedness.
 
     A relay is a rotation plus a per-axis magnification; shear comes only from
-    tilt, which is keystone — a term an affine cannot hold anyway. What shear
-    can do is soak up measurement error, so it is off unless asked.
+    tilt, which is keystone — a term an affine can't hold anyway. What shear
+    can do is soak up measurement error, so it's off unless asked.
 
     The two rotation estimates are averaged **by evidence** (lever arm
     `sqrt(sum(d^2))`): one axis routinely keeps far fewer stripes, and an even
@@ -253,7 +253,7 @@ def deshear(vx: np.ndarray, vy: np.ndarray,
     if wx <= 0 and wy <= 0:
         wx = wy = 1.0
     # Weighted circular mean: the two estimates straddle the wrap at ±pi, so
-    # they cannot simply be averaged as numbers.
+    # they can't simply be averaged as numbers.
     th = float(np.arctan2(wx * np.sin(ax) + wy * np.sin(ay),
                           wx * np.cos(ax) + wy * np.cos(ay)))
     return (kx * np.array([np.cos(th), np.sin(th)]),
@@ -265,14 +265,14 @@ def deshear(vx: np.ndarray, vy: np.ndarray,
 #
 # `fit_axes`/`deshear` above model a RELAY: a rotation, a per-axis scale, and
 # an offset (6 DOF) — correct when the camera looks at the DMD close to
-# straight-on. A camera tilted enough to matter cannot be described that way
+# straight-on. A camera tilted enough to matter can't be described that way
 # at all: distance from the camera varies across the panel, so equal steps on
 # the DMD land at UNEQUAL spacing in the image (compressed on the far side,
 # stretched on the near side) — the textbook signature of this on the rig it
 # was found on was a stripe sweep that measured a handful of near-invisible
 # points on one side and multi-million-pixel, frame-clipping ones on the
 # other, with the "clipping" side switching only past a well-defined offset.
-# An affine fit cannot represent that no matter how it's weighted; the
+# An affine fit can't represent that no matter how it's weighted; the
 # textbook model for "camera views a flat panel at an angle" is a full
 # projective homography (8 DOF) instead, fit below by DLT.
 
@@ -356,7 +356,7 @@ def fit_homography(seen: dict, w: int, h: int):
 def holdout_error_homography(seen: dict, w: int, h: int) -> float | None:
     """Same idea as `holdout_error`: refit without one stripe per axis, then
     ask the fit to predict it — the residual above is optimistic by
-    construction, this is not."""
+    construction, this isn't."""
     trial = {a: list(seen[a]) for a in (0, 1)}
     held = []
     for a in (0, 1):
@@ -559,7 +559,7 @@ class DmdCalibration:
     """A measured DMD↔camera registration, and what it took to get it.
 
     Residual and point count travel with the matrix: a transform with no
-    provenance cannot be judged later, and "0.4 px over 18 stripes" is the
+    provenance can't be judged later, and "0.4 px over 18 stripes" is the
     difference between trusting it and re-running it.
     """
     cam_to_dmd: np.ndarray            # 3×3, camera px → DMD mirrors
@@ -592,8 +592,8 @@ class DmdCalibration:
     def visible_mirrors(self) -> tuple[int, int, int, int]:
         """(x0, y0, x1, y1) of the mirrors inside the camera's view.
 
-        The question this module exists to answer. Clipped to the panel, so it
-        is the usable region rather than an extrapolation.
+        The question this module exists to answer. Clipped to the panel, so
+        it's the usable region rather than an extrapolation.
         """
         cw, ch = self.cam_size
         d = apply_transform(self.cam_to_dmd,

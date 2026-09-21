@@ -19,7 +19,7 @@ def _arrow(box: QGroupBox, on: bool) -> None:
 
     Qt's own indicator is a tick box, which reads as "enable this section"
     rather than "expand it"; `style.accent_panel` hides it. The base title is
-    remembered on the box, so toggling twice cannot accumulate arrows.
+    remembered on the box, so toggling twice can't accumulate arrows.
     """
     base = getattr(box, "_base_title", None)
     if base is None:
@@ -31,8 +31,8 @@ def _arrow(box: QGroupBox, on: bool) -> None:
 def collapsible(box: QGroupBox, expanded: bool = True) -> QGroupBox:
     """Fold `box`'s contents away behind the disclosure arrow in its title.
 
-    Hiding the direct children is the whole implementation — the box shrinks to
-    its title on its own (measured: 141 px → 43), so there is no height to
+    Hiding the direct children is the whole implementation — box shrinks to
+    its title on its own (measured: 141 px → 43), so there's no height to
     juggle. Qt also disables them while unticked, and restores each child's
     *own* enabled state on the way back, so a control the panel had deliberately
     greyed out is still greyed out afterwards.
@@ -59,7 +59,7 @@ def collapsible_groups(panel: QWidget, key: str) -> list[QGroupBox]:
     Applied centrally rather than in each panel, so a new instrument gets it
     without doing anything — and so the panels stay about their instrument.
 
-    **A box that is already checkable keeps its own wiring.** A tick there means
+    **A box that's already checkable keeps its own wiring.** A tick there means
     something to the panel (the pupil tab's "Advanced tracking" folds itself and
     renames its own title), so it gets the arrow for consistency and nothing
     else — taking its toggle over would fight it.

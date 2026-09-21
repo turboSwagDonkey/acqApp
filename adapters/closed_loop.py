@@ -25,7 +25,7 @@ class ClosedLoopModule(ModuleAdapter):
     asks what is on offer.
 
     It reaches its neighbours only through `signal_sources`/`module_keys` on the
-    window and the shared trigger bus — never into another adapter. That is what
+    window and the shared trigger bus — never into another adapter. That's what
     keeps the wheel ignorant of the loop and the loop ignorant of the puffer.
     """
     key = "closed_loop"
@@ -96,9 +96,9 @@ class ClosedLoopModule(ModuleAdapter):
     def _on_fired(self, target: str, duration: float, value: float) -> None:
         """The rule fired. Runs on the GUI thread — but keep it to one emit.
 
-        `fired` comes from the loop's thread and a `ModuleAdapter` is not a
+        `fired` comes from the loop's thread and a `ModuleAdapter` isn't a
         QObject, so this LOOKS like a direct call on the emitting thread.
-        Measured on PyQt6 it is not: a slot that is not a QObject bound method
+        Measured on PyQt6 it isn't: a slot that isn't a QObject bound method
         runs on the thread `connect()` was called from — `build_session`, on the
         GUI thread — so it arrives queued.
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 
 class LedController:
-    MAX_VOLTS = 5.0   # the driver's full-scale MOD input, 0..1 intensity below
+    MAX_VOLTS = 5.0   # driver's full-scale MOD input, 0..1 intensity below
 
     def __init__(self, chan: str = "Dev3/ao0"):
         from nidaqmx import Task

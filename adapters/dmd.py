@@ -88,7 +88,7 @@ class DmdModule(ModuleAdapter):
             QMessageBox.information(
                 self.panel, "No voltage camera",
                 "The sweep images each pattern with the voltage camera, and "
-                "that module is not loaded.\n\n"
+                "that module isn't loaded.\n\n"
                 "Restart and tick Voltage camera in the startup picker.")
             return
 
@@ -106,7 +106,7 @@ class DmdModule(ModuleAdapter):
             if self.win.is_recording():
                 QMessageBox.warning(
                     self.panel, "Recording in progress",
-                    "The voltage camera is not on its full-frame capture "
+                    "The voltage camera isn't on its full-frame capture "
                     "area, and calibration needs it — but a recording is "
                     "running, and changing the capture area needs a "
                     "restart.\n\nStop recording first, then calibrate.")
@@ -150,7 +150,7 @@ class DmdModule(ModuleAdapter):
 
         Draws on the frame that already exists — nothing here commands a camera
         or the projector. Putting the DMD all-on first is the operator's step,
-        and it is the one that emits light.
+        and it's the one that emits light.
         """
         from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
                                      QVBoxLayout)
@@ -172,7 +172,7 @@ class DmdModule(ModuleAdapter):
         calib, why = self._calibration()
         # The calibration is always fit against full-frame sensor coordinates
         # (calibrate() forces that) — if the camera is cropped to a preset with
-        # a non-zero (hpos, vpos), the frame's own pixel (0, 0) is not the
+        # a non-zero (hpos, vpos), the frame's own pixel (0, 0) isn't the
         # sensor's, and a click drawn on it must be shifted before it means
         # what the calibration thinks it means.
         preset = PRESETS.get(self.win.camera_preset("voltage_cam"))
@@ -181,7 +181,7 @@ class DmdModule(ModuleAdapter):
         dlg.setWindowTitle("Photostimulation ROIs")
         dlg.resize(1000, 760)
         # Same accent the settings tab wears (`dialogs.add_panel`), so the DMD's
-        # own windows are not the only untinted surfaces in the app.
+        # own windows aren't the only untinted surfaces in the app.
         from acqApp import style
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
@@ -205,7 +205,7 @@ class DmdModule(ModuleAdapter):
     def _calibration(self):
         """The saved registration -> (calib | None, complaint).
 
-        Missing is not fatal — ROIs can still be drawn. But it must not be
+        Missing isn't fatal — ROIs can still be drawn. But it must not be
         SILENT: the field outline would just not be drawn, and all would look
         well.
         """
@@ -378,7 +378,7 @@ class DmdModule(ModuleAdapter):
             "dmd_trigger":     s.trigger_mode,
             "dmd_repeats":     s.n_repeats,
             # What was projected, and where: without the geometry a recorded
-            # stimulus cannot be located in the FOV afterwards, and without the
+            # stimulus can't be located in the FOV afterwards, and without the
             # name a real session is indistinguishable from a mock one.
             "dmd_device":      c.device_name if c is not None else "none",
             "dmd_width":       w,
@@ -403,7 +403,7 @@ class DmdModule(ModuleAdapter):
             # projected nothing looks identical in every other field here.
             "dmd_on_pixels":   c.on_pixels if c is not None else 0,
             # Photostimulation targets. Recorded as a count plus the JSON,
-            # because "where was the light aimed" cannot be recovered later
+            # because "where was the light aimed" can't be recovered later
             # from anything else in the file.
             "dmd_n_rois":      len(s.rois or ()),
             "dmd_rois":        json.dumps(list(s.rois or ())),

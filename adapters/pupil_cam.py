@@ -47,7 +47,7 @@ class PupilCamModule(ModuleAdapter):
         # Empty until build_views: the module can be loaded without ever
         # building its dock, and _on_settings fires from the panel before then.
         self._limit_curve = None        # the box in force
-        self._limit_ghost = None        # rubber band while it is being dragged
+        self._limit_ghost = None        # rubber band while it's being dragged
         self._vb = None
         self._gv = None
         self._btn_limit = None
@@ -73,7 +73,7 @@ class PupilCamModule(ModuleAdapter):
         self._blink_regions: list = []  # pooled LinearRegionItems, shown/hidden
         self._plot_widget = None
         self._last_frame = None         # newest displayed frame, for sizing a pin
-        self._said: str | None = None   # last tracker complaint, so it is said once
+        self._said: str | None = None   # last tracker complaint, so it's said once
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -138,9 +138,9 @@ class PupilCamModule(ModuleAdapter):
             pen=pg.mkPen("#00e5ff", width=2, style=Qt.PenStyle.DashLine))
         self._limit_ghost = pg.PlotCurveItem(
             pen=pg.mkPen("#00e5ff", width=1, style=Qt.PenStyle.DotLine))
-        # The fit, in the module's own colour so it cannot be read as the
+        # The fit, in the module's own colour so it can't be read as the
         # region. `connect="finite"` lets one curve carry several closed
-        # outlines separated by NaN — that is how the pins are drawn.
+        # outlines separated by NaN — that's how the pins are drawn.
         self._fit_curve = pg.PlotCurveItem(
             pen=pg.mkPen("#7fff6a", width=2), connect="finite")
         self._pin_curve = pg.PlotCurveItem(
@@ -186,7 +186,7 @@ class PupilCamModule(ModuleAdapter):
 
     # ── the eye region ──
     # Placed by a press-drag from one corner to the other, with the box
-    # following the cursor as it is dragged — `DragRectViewBox` owns the
+    # following the cursor as it's dragged — `DragRectViewBox` owns the
     # armed/unarmed drag-vs-pan split, so wheel-zoom is untouched either way.
     def _build_limit_bar(self) -> QWidget:
         bar = QWidget()
@@ -226,7 +226,7 @@ class PupilCamModule(ModuleAdapter):
             self._cmb_view.addItem(label, key)
         self._cmb_view.setToolTip(
             "How the preview shows the frame — the region itself is unchanged "
-            "by this, only how it is displayed.")
+            "by this, only how it's displayed.")
         self._cmb_view.currentIndexChanged.connect(self._on_view_mode_changed)
 
         lay.addWidget(QLabel("Eye:"))
@@ -317,7 +317,7 @@ class PupilCamModule(ModuleAdapter):
         for cx, cy, r in s.cr_pins:
             xs.extend(cx + r * np.cos(th))
             ys.extend(cy + r * np.sin(th))
-            xs.append(np.nan)           # break, so the circles are not joined
+            xs.append(np.nan)           # break, so the circles aren't joined
             ys.append(np.nan)
         self._pin_curve.setData(np.array(xs, float), np.array(ys, float))
 
@@ -353,7 +353,7 @@ class PupilCamModule(ModuleAdapter):
             self._vb.autoRange()
 
     def _draw_limit(self, s) -> None:
-        """Outline the region in force, or clear it when there is none."""
+        """Outline the region in force, or clear it when there's none."""
         if self._limit_curve is None:
             return
         lim = s.search_limit()
@@ -442,7 +442,7 @@ class PupilCamModule(ModuleAdapter):
 
     def start(self) -> None:
         super().start()                 # the camera first; the tracker idles
-        if self._track is not None:     # until there is something to track
+        if self._track is not None:     # until there's something to track
             self._track.start()
         if self.panel.settings.led_follow_live:
             self._apply_led_follow(True)
@@ -468,7 +468,7 @@ class PupilCamModule(ModuleAdapter):
 
         The frames come from the tracker, not from the camera: `get_latest()`
         consumes, so two readers would take turns and the ellipse would be
-        drawn over a frame it was not fitted to.
+        drawn over a frame it wasn't fitted to.
         """
         if self._track is None:
             return
@@ -496,7 +496,7 @@ class PupilCamModule(ModuleAdapter):
             # explicitly — pyqtgraph only reliably re-renders the mapping
             # onto NEW frame data when setLevels() is actually called;
             # omitting `levels=` here (as if "leave it alone" were enough)
-            # left the display stuck on stale contrast until the operator
+            # left the display stuck on stale contrast until operator
             # dragged the LUT themselves, which is what really called it.
             levels = self._hist.item.getLevels() if self._hist is not None else None
             self._img.setImage(shown, autoLevels=False, levels=levels)
@@ -579,7 +579,7 @@ class PupilCamModule(ModuleAdapter):
 
     def _draw_fit(self, fit) -> None:
         """The fitted ellipse, or nothing. Cleared on every failed frame, so a
-        stale outline can never stand in for a fit that did not happen."""
+        stale outline can never stand in for a fit that didn't happen."""
         if self._fit_curve is None:
             return
         if fit is None:
@@ -625,7 +625,7 @@ class PupilCamModule(ModuleAdapter):
     FIT_STREAMS = ("pupil_x", "pupil_y", "pupil_major", "pupil_minor",
                    "pupil_angle")
     # A sixth, alongside them: 1.0/0.0 flagged/not, NaN where there was no fit
-    # at all — a blink cannot be judged without a radius to judge it against.
+    # at all — a blink can't be judged without a radius to judge it against.
     BLINK_STREAM = "pupil_blink"
 
     def attach_sink(self, rec) -> None:
@@ -660,19 +660,19 @@ class PupilCamModule(ModuleAdapter):
         s = self.panel.settings
         return {"pupil_exposure_us": s.exposure_us,
                 "pupil_rate_hz":     s.rate_hz,
-                # All 0 = no region. Recorded because it is operator-set
+                # All 0 = no region. Recorded because it's operator-set
                 # geometry that nothing else in the file would show.
                 "pupil_limit_x0":    s.limit_x0,
                 "pupil_limit_y0":    s.limit_y0,
                 "pupil_limit_x1":    s.limit_x1,
                 "pupil_limit_y1":    s.limit_y1,
                 # "" for the camera. Recorded because frames replayed from a
-                # clip are not this session's data.
+                # clip aren't this session's data.
                 "pupil_video":       s.video_path,
                 # The tracking settings travel with the trace. Threshold above
                 # all: it SETS the radius (a 60 % swing over 25-60 on the rig
                 # clips) at an unchanged fit rate, so a pupil trace without the
-                # threshold behind it is not reproducible.
+                # threshold behind it isn't reproducible.
                 "pupil_track":           s.track,
                 "pupil_tracker":         "eyeloop" if s.track else "",
                 "pupil_track_threshold": s.track_threshold,

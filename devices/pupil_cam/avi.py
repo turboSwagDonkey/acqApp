@@ -7,8 +7,8 @@ of which store raw pixels per frame, so the "decode" is a reshape:
     Y800 / GREY / Y8     8-bit luma, already what the tracker wants
     BI_RGB 8/24/32       uncompressed DIB, bottom-up, BGR → luma
 
-Anything genuinely compressed (MJPG, H.264, …) raises with the FourCC named:
-on 3.14 cv2 has no wheels and imageio/av are absent, so there is nothing to
+Anything genuinely compressed (MJPG, H.264, …) raises with FourCC named:
+on 3.14 cv2 has no wheels and imageio/av are absent, so there's nothing to
 hand it to.
 
 numpy memmap, so a 500 MB clip costs nothing to open and frames are views.
@@ -62,10 +62,10 @@ class AviReader:
                                  f"is not supported")
             self._kind = "dib"
             self._px = bits // 8
-            # DIB rows are padded up to a 4-byte boundary, so the stride equals
-            # width*px only when that is already aligned. Assuming it always is
-            # shears the image progressively — invisible at a width like 96,
-            # wrong at 97.
+            # DIB rows pad up to a 4-byte boundary, so stride equals width*px
+            # only when that's already aligned. Assuming it always is shears
+            # the image progressively — invisible at a width like 96, wrong
+            # at 97.
             self._stride = ((self.width * self._px + 3) // 4) * 4
             self._need = self._stride * self.height
         else:
@@ -102,7 +102,7 @@ class AviReader:
         pos, stop = movi
         while pos + 8 <= stop:
             sz = self._u32(pos + 4)
-            # `##db`/`##dc` = a stream's data chunk; skip the index and any junk.
+            # `##db`/`##dc` = a stream's data chunk; skip index and any junk.
             if self._tag(pos)[2:] in (b"db", b"dc") and sz >= need:
                 offs.append(pos + 8)
             pos += 8 + sz + (sz & 1)

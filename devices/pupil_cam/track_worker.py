@@ -7,7 +7,7 @@ tick with the voltage camera's. Same shape the retired tracker arrived at
 
 **Sole consumer** of the camera's `get_latest()`, republishing each frame *with*
 its fit so the ellipse always belongs to the frame under it. Built whether or
-not tracking is on; with `track=False` it is a pass-through.
+not tracking is on; with `track=False` it's a pass-through.
 
 Frames arriving during a fit are dropped, so the trace is sparser than the
 recording (which goes through the camera's own sink). `frames_seen` vs `fits`
@@ -35,9 +35,9 @@ class _FitSmoother:
 
     A lost frame clears the buffer rather than being skipped over: averaging
     a stale fit into a fresh run would smear the outline toward where the
-    pupil used to be, which is worse than one un-smoothed point at the seam.
-    Never imports the fit type — `type(fit)` builds the next one, so this
-    stays usable with no EyeLoop clone installed (a fit just never arrives).
+    pupil used to be, worse than one un-smoothed point at the seam. Never
+    imports the fit type — `type(fit)` builds the next one, so this stays
+    usable with no EyeLoop clone installed (a fit just never arrives).
     """
 
     def __init__(self) -> None:
@@ -87,10 +87,10 @@ class _BlinkDetector:
     or delay the very thing this is meant to catch.
 
     The baseline only ever absorbs non-blink radii, so a run of blink frames
-    cannot drag it down and quietly raise its own bar for what counts as one.
+    can't drag it down and quietly raise its own bar for what counts as one.
     """
 
-    _WARMUP = 3      # do not judge a session before there is a baseline at all
+    _WARMUP = 3      # don't judge a session before there's a baseline at all
 
     def __init__(self) -> None:
         self._baseline: deque = deque()
@@ -167,7 +167,7 @@ class PupilTrackWorker(PullWorker):
 
         Not `PullWorker.set_sink` — that one is the camera's, for the frames.
         `at` is when the frame was pulled: these frames carry no camera
-        timestamp, so it is the closest thing to an acquisition time there is.
+        timestamp, so it's the closest thing to an acquisition time there is.
         """
         self._fit_sink = sink
 
@@ -182,14 +182,14 @@ class PupilTrackWorker(PullWorker):
 
     @property
     def available(self) -> bool:
-        """False when tracking was asked for and EyeLoop is not there."""
+        """False when tracking was asked for and EyeLoop isn't there."""
         return self._tracking.available
 
     @property
     def track_error(self) -> str | None:
-        """Why tracking is not running, or None.
+        """Why tracking isn't running, or None.
 
-        NOT named `error`: that is `PullWorker`'s Qt signal, and shadowing it
+        NOT named `error`: that's `PullWorker`'s Qt signal, and shadowing it
         breaks the guard that keeps an exception in `run()` from killing the
         process.
         """

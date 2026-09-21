@@ -7,10 +7,10 @@
 - **Its own thread**, because a rule on the 30 Hz display tick inherits every
   preview stall. It polls a non-consuming snapshot — `get_latest()` hands each
   sample out once, and the display is already that consumer.
-- **The actuation is not on this thread**: the worker emits `fired`, the adapter
+- **The actuation isn't on this thread**: the worker emits `fired`, the adapter
   re-emits it on the trigger bus, so a rule-driven puff takes the same path as a
   scheduled one.
-- **Arming is deliberately not in `LoopSettings`**, so it cannot be persisted —
+- **Arming is deliberately not in `LoopSettings`**, so it can't be persisted —
   as with the LED in audit #4, a restored "armed" fires the puffer at launch.
 
 Re-exported lazily (PEP 562) so `acqApp.closed_loop.settings` stays importable

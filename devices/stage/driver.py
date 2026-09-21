@@ -185,7 +185,7 @@ class MCM6101:
 
     def _write(self, pkt: bytes):
         if not self.is_open:
-            raise MCM6101Error("Port is not open.")
+            raise MCM6101Error("Port isn't open.")
         self._ser.write(pkt)
         self._ser.flush()
 
@@ -308,7 +308,7 @@ class MCM6101:
 
     def set_enabled(self, axis: int, enable: bool):
         """Enable (energize) or disable (de-energize) an axis. A disabled axis
-        ignores move commands and its motor is not held - it may drift/back-drive."""
+        ignores move commands and its motor isn't held - it may drift/back-drive."""
         self._send(MGMSG_MOD_SET_CHANENABLESTATE, axis, p1=axis,
                    p2=CHAN_ENABLE if enable else CHAN_DISABLE)
 
@@ -371,7 +371,7 @@ class MCM6101:
 
     def wait_stopped(self, axis: int, timeout: float = 20.0, tol: int = 20) -> int:
         """Block until the axis stops moving and its position is stable; return it."""
-        time.sleep(0.3)  # let the move actually start
+        time.sleep(0.3)  # let the move start
         t0 = time.time()
         last = None
         stable = 0

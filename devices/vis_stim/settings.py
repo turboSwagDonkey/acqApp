@@ -15,7 +15,7 @@ rather than carried over unrendered — nothing in this codebase ever read
 them, and a saved config's stale values for them are just ignored by
 `from_dict` like any other unknown key.
 
-`VisStimSettings` nests `StimParams`/`LoopVar`, so it does not go through
+`VisStimSettings` nests `StimParams`/`LoopVar`, so it doesn't go through
 config.load_dataclass (that helper only handles flat dataclasses — see
 adapters/dmd.py's DmdSettings for the flat convention). It gets its own
 to_dict/from_dict instead, the same shape as routines/settings.py's Routine.
@@ -106,7 +106,7 @@ class StimParams:
     # regardless of locomotion, useful as an open-loop control condition.
     # Blank/stim gating is still tick-counted (TriggersBlank/TriggersStim,
     # shared with Grating); trial length is this instead of PeriodsToShow,
-    # since there is no fixed temporal frequency to count cycles of.
+    # since there's no fixed temporal frequency to count cycles of.
     VisuomotorGain: float = 1.0
     VisuomotorDurationTicks: float = 100.0
 

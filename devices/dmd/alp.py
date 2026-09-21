@@ -10,7 +10,7 @@ The maths is a port of `dmdGUI_project`'s `dmdCommandLine.buildFrame`, the path
 the optics are aligned with; keeping the two identical is the point.
 
 **One process at a time**: whoever opened the ALP holds it over USB, so acqApp
-and `dmdGUI_project` cannot both connect. `open()` raises rather than waiting.
+and `dmdGUI_project` can't both connect. `open()` raises rather than waiting.
 """
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ class AlpDevice:
         return self._dev is not None
 
     def open(self) -> tuple[int, int]:
-        """Connect and return (width, height). Raises if the ALP is not free."""
+        """Connect and return (width, height). Raises if the ALP isn't free."""
         from ALP4 import ALP4
         dev = ALP4(version=self._version, libDir=self._lib_dir)
         dev.Initialize()

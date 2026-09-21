@@ -43,7 +43,7 @@ class SettingsPanel(QWidget):
     led_toggled       = pyqtSignal(bool)    # primary illumination on/off
     led_follow_changed = pyqtSignal(bool)   # the Follow Live view MODE, not the LED state
     # Any parameter edit. The LED's own ON/OFF is deliberately NOT one of
-    # these: it is runtime state, and restoring it at launch would turn the
+    # these: it's runtime state, and restoring it at launch would turn the
     # illumination on in an empty rig (devices/pupil_cam/panel.py's same
     # rule). `led_follow_live` is a MODE, not that state, so it persists
     # like show_lut/auto_levels — it only ever fires the LED from an
@@ -90,7 +90,7 @@ class SettingsPanel(QWidget):
         self._spn_exposure.valueChanged.connect(self.exposure_changed)
         lay.addRow("Exposure:", self._spn_exposure)
 
-        # A frame period cannot be shorter than the exposure inside it, so Rate
+        # A frame period can't be shorter than the exposure inside it, so Rate
         # always caps Exposure's maximum to 1/rate — independent of Link, which
         # only decides whether moving one *also* moves the other.
         self._spn_hz = QDoubleSpinBox()
@@ -246,8 +246,8 @@ class SettingsPanel(QWidget):
         """Say whether a recording of this configuration fits the writer.
 
         `WRITER_MBPS` is the whole path (worker → Recorder → HDF5Writer →
-        NVMe), not a disk benchmark, and it is deliberately pessimistic — see
-        presets.py for what it is and is not. Binning is the lever: on this
+        NVMe), not a disk benchmark, and it's deliberately pessimistic — see
+        presets.py for what it is and isn't. Binning is the lever: on this
         camera it cuts bytes, not time, so 2×2 keeps the full frame rate at a
         quarter of the data.
         """

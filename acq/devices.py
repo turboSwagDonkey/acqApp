@@ -2,13 +2,13 @@
 
 Every instrument is a real/mock pair and the adapters are written against
 whichever Emulate built. These replace nine `getattr`/`hasattr` probes, whose
-cost was not tidiness: `getattr(c, "device_name", "none")` files a session that
+cost wasn't tidiness: `getattr(c, "device_name", "none")` files a session that
 really projected as one that didn't.
 
 Structural `Protocol`s — nothing inherits, nothing happens at import, and this
 project ships no type checker, so `tests/test_device_contracts.py` is what makes
 them bite. Split rather than fat: the eye-tracking LED has no `set_sink`, so it
-is not a `RecordingOutput`.
+isn't a `RecordingOutput`.
 """
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ class ProjectorController(RecordingOutput, Protocol):
 # module as it is loaded — its soft limits, mock or real — and adding one of
 # these to an instrument is the whole cost of making it routine-drivable, the
 # way declaring a SignalSource is the whole cost of making a quantity
-# triggerable. Split in two because the stage is not a projector.
+# triggerable. Split in two because the stage isn't a projector.
 
 @runtime_checkable
 class StageTarget(Protocol):
@@ -195,7 +195,7 @@ class ModuleHost(Protocol):
     """What an adapter may ask of the window — reaching past it into
     `win._save_panel` makes `adapters/` and `main.py` one file again.
 
-    A Protocol cannot see that, so the test also scans the adapters' source:
+    A Protocol can't see that, so the test also scans the adapters' source:
     adding a service is a line here. `Any` at the Qt boundary keeps this
     importable without PyQt6.
     """
@@ -230,7 +230,7 @@ class ModuleHost(Protocol):
 
         Raises RuntimeError while recording: the file's `modules` attribute is
         written at record start, and a stream that appears or vanishes mid-file
-        is not describable by it.
+        isn't describable by it.
         """
         ...
 
@@ -258,7 +258,7 @@ class ModuleHost(Protocol):
         """Start/stop recording; returns its PREVIOUS state.
 
         The twin of `set_live`, and the same argument: an experiment routine
-        cannot run a step without a file open, and the panel that starts the
+        can't run a step without a file open, and the panel that starts the
         routine is the right place to open one. The return value is what lets a
         caller stop only a recording it started itself.
         """
@@ -273,17 +273,17 @@ class ModuleHost(Protocol):
         ...
 
     def camera_preset(self, key: str) -> str | None:
-        """Module `key`'s current resolution preset, or None if it is not
+        """Module `key`'s current resolution preset, or None if it isn't
         loaded (or has no such notion of a preset)."""
         ...
 
     def set_camera_preset(self, key: str, preset: str) -> str | None:
         """Switch module `key`'s resolution preset; returns the PREVIOUS key,
-        or None if the module is not loaded.
+        or None if the module isn't loaded.
 
         Added for the DMD calibration, which forces the voltage camera to full
         frame before measuring (§ PLAN — a calibration measured against a
-        cropped capture area does not describe a different one, since the
+        cropped capture area doesn't describe a different one, since the
         sensor ROI shifts the frame's own pixel origin, not just its size).
         Structural, like the operator's own combo click: it only takes effect
         at the next session start, so a caller changing it while live has to
@@ -296,7 +296,7 @@ class ModuleHost(Protocol):
         External edge trigger mode, restarting live view itself if that
         requires it. Returns whether it ended up in that mode (`False`
         means a restart was needed but a recording is already running —
-        refused, unattempted); `None` only if the module is not loaded or
+        refused, unattempted); `None` only if the module isn't loaded or
         has no such notion at all, which a caller needs to tell apart from
         a live refusal.
 
@@ -310,8 +310,8 @@ class ModuleHost(Protocol):
 
     def rearm_camera_trigger(self, key: str) -> bool | None:
         """Re-gate module `key`'s external trigger so the NEXT edge is
-        detectable. True if asked for, False if there is no running worker
-        to ask, None if the module is not loaded or has no such notion.
+        detectable. True if asked for, False if there's no running worker
+        to ask, None if the module isn't loaded or has no such notion.
 
         For a routine taking one recording per edge (`routines/settings.py`'s
         `trigger` step): the camera latches, so without this only the first

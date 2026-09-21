@@ -2,7 +2,7 @@
 
 A third frame source beside the real camera and the mock, for tuning the tracker
 against real footage with no animal and no hardware — the mock's clean disc
-cannot show whether a setting survives fur, lashes and a corneal glint.
+can't show whether a setting survives fur, lashes and a corneal glint.
 
 Same surface as `PupilCameraWorker`, so the adapter, `PupilTrackWorker` and the
 overlay are unchanged. A session recorded from one of these is NOT rig data; the

@@ -3,7 +3,7 @@ mcm301_driver.py - Minimal, safe driver for a Thorlabs MCM301 3-channel
 stepper-motor stage controller: the replacement for the MCM6101 this app
 previously drove (see driver.py / docs/STAGE_TRANSFER.md for that hardware).
 
-Unlike the MCM6101, the MCM301 does not speak APT over a raw USB-CDC serial
+Unlike the MCM6101, the MCM301 doesn't speak APT over a raw USB-CDC serial
 port. Thorlabs drives it through a vendor DLL (MCM301Lib_x64.dll) that owns
 the serial framing internally, and that DLL is the only documented
 interface -- so this driver wraps it via ctypes rather than reimplementing
@@ -93,8 +93,8 @@ class AxisStatus:
 class _StageParamsInfoStruct(ctypes.Structure):
     # minimum/maximum_position are declared DWORD (unsigned) in Thorlabs'
     # header, but the values observed on this hardware are two's-complement
-    # negative numbers (e.g. a homed stage centered at 0 reports a minimum a
-    # large unsigned value just under 2**32) -- so these are read as signed.
+    # negative numbers (e.g. a homed stage centered at 0 reports a minimum as
+    # a large unsigned value just under 2**32) -- so these are read as signed.
     _fields_ = [("counts_per_unit", c_uint), ("nm_per_count", ctypes.c_float),
                 ("minimum_position", c_int), ("maximum_position", c_int),
                 ("maximum_speed", ctypes.c_double), ("maximum_acc", ctypes.c_double)]
@@ -262,8 +262,8 @@ class MCM301:
         A wedged MCM301 still enumerates and still opens cleanly, but then
         answers nothing -- and the vendor DLL does NOT honour its own open
         timeout there, it blocks forever. Observed after a host process was
-        killed while holding the port. Left undetected that hangs the position
-        poll worker mid-session, which is far worse than refusing to start.
+        killed while holding the port. Left undetected, this hangs the
+        position poll worker mid-session -- far worse than refusing to start.
         """
         done = threading.Event()
 
@@ -279,11 +279,11 @@ class MCM301:
         if done.wait(budget_s):
             return
         # Deliberately NOT Close()d: that thread is still blocked inside the
-        # DLL, and closing the handle out from under it is not safe. The
+        # DLL, and closing the handle out from under it isn't safe. The
         # controller needs a power-cycle regardless.
         self._hdl = -1
         raise MCM301Error(
-            f"The MCM301 on {self.port_name} opened but is not responding "
+            f"The MCM301 on {self.port_name} opened but isn't responding "
             f"(no reply within {budget_s:.0f}s). Power-cycle the controller "
             "- switch it off and on, not just the USB cable - then retry.")
 
@@ -304,7 +304,7 @@ class MCM301:
 
     def _check_open(self):
         if not self.is_open:
-            raise MCM301Error("Port is not open.")
+            raise MCM301Error("Port isn't open.")
 
     # ---- device info (read-only) -------------------------------------------
     def get_info(self) -> DeviceInfo:
@@ -375,7 +375,7 @@ class MCM301:
 
     def move_to_readout(self, slot: int, target_readout: int):
         """MOTION: alias for move_absolute(). Unlike the MCM6101, this
-        controller's move target IS the encoder count directly -- there is no
+        controller's move target IS the encoder count directly -- there's no
         coarser command-unit scale to convert through first."""
         self.move_absolute(slot, target_readout)
 

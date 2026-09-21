@@ -3,7 +3,7 @@ Persistent app config: the loaded modules, the theme, and every panel's saved
 parameters.
 
 JSON next to the package (`acqapp_local.json`, gitignored via `*_local.json`).
-It is the operator's whole working setup, and it is rewritten **on every
+It's the operator's whole working setup, and it's rewritten **on every
 spinbox step**, so `save_config` writes atomically and `load_config` refuses to
 throw a damaged one away — see both.
 """
@@ -33,7 +33,7 @@ MODULES: dict[str, str] = {
     "closed_loop": "Closed loop",
 }
 
-# Modules that are not the operator's to switch off, so they carry no
+# Modules that aren't the operator's to switch off, so they carry no
 # checkbox in the picker and `set_modules` puts them back if a caller drops
 # them. `routines` is here because it owns no device: it *drives* the
 # instruments that are optional, and an operator who unticked it would lose
@@ -43,7 +43,7 @@ ALWAYS_ON: frozenset[str] = frozenset({"routines"})
 _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")
 # Unlike acqapp_local.json (gitignored, the operator's own live working
 # state), this one is meant to be hand-edited and carried between sessions
-# or machines — so it is tracked, not gitignored. The sidebar's "Save as
+# or machines — so it's tracked, not gitignored. The sidebar's "Save as
 # preset" button does write it (`save_modes`, from main.py's
 # `_save_mode_as` — which re-reads the file first, so a hand-edit made
 # since startup isn't clobbered) — everywhere else treats it as read-only,
@@ -77,7 +77,7 @@ def _load_json(path: Path) -> dict:
 
 
 def load_config() -> dict:
-    """The saved config, or {} if there is none. See `_load_json`."""
+    """The saved config, or {} if there's none. See `_load_json`."""
     return _load_json(_CONFIG_PATH)
 
 
@@ -325,7 +325,7 @@ def rig_has(key: str) -> bool:
 
     Unset/unknown is True, so a profile that lists no flags — or no profile at
     all — behaves exactly as the app did before rigs.json existed. Only False
-    is a claim, and it is the operator's claim, not a probe: it suppresses the
+    is a claim, and it's the operator's claim, not a probe: it suppresses the
     DAQ attempt entirely, which is the point (an absent device otherwise
     surfaces as a multi-line nidaqmx traceback at every startup).
     """
@@ -347,7 +347,7 @@ def rig_dmd_calibration() -> dict:
 def order_modules(keys) -> list[str]:
     """`keys` restricted to known modules, in MODULES order, dropping anything
     unknown/removed, and with ALWAYS_ON modules always included — a config
-    written before a module became always-on would not name it."""
+    written before a module became always-on wouldn't name it."""
     keys = set(keys)
     return [k for k in MODULES if k in keys or k in ALWAYS_ON]
 

@@ -2,8 +2,8 @@
 PullWorker — shared scaffolding for pull-based acquisition workers.
 
 Each worker runs on its own QThread, keeps the newest sample for a ~30 Hz GUI
-preview, and optionally feeds every sample to a recording sink. The snapshot,
-the sink handle and stop()/wait() live here; a worker implements only _run().
+preview, and optionally feeds every sample to a recording sink. Snapshot,
+sink handle and stop()/wait() live here; a worker implements only _run().
 
 Subclass contract:
     class FooWorker(PullWorker):
@@ -47,7 +47,7 @@ def paced(period: float, t0: float) -> Iterator[int]:
             ...do one iteration's work...
 
     *** NOT YET VALIDATED ON REAL HARDWARE ***
-    This is verified equivalent to the old per-callsite inline idiom by a
+    Verified equivalent to the old per-callsite inline idiom by a
     deterministic replay test (byte-identical sleep durations and elapsed
     time vs. the old code, across randomized work/overrun patterns on a
     simulated clock) and by empirical jitter measurement on a dev machine —
@@ -68,7 +68,7 @@ def paced(period: float, t0: float) -> Iterator[int]:
 
 class PullWorker(QThread):
     # "TypeName: message" if _run() raises. An exception escaping QThread.run()
-    # makes PyQt6 qFatal() and take the WHOLE process down, so catch everything
+    # makes PyQt6 qFatal() and takes the WHOLE process down, so catch everything
     # here and surface it as a signal the GUI can show.
     error = pyqtSignal(str)
 
@@ -108,7 +108,7 @@ class PullWorker(QThread):
         new one. It does **not** stop a worker already inside `sink(value)`:
         that call runs to completion and can land after the file closed, which
         is why `Recorder` counts those rather than dropping them silently
-        (`late_count`). Detaching is not a barrier.
+        (`late_count`). Detaching isn't a barrier.
         """
         self._sink = sink
 

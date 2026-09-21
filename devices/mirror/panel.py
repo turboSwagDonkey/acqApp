@@ -2,7 +2,7 @@
 
 Manual only (PLAN.md S6): two switches in ThorImage move together (the
 galvo in/out, the visualizer path camera/PMT), driven by ThorImage and held
-on a serial port acqApp cannot share, so there is nothing here to read
+on a serial port acqApp can't share, so there's nothing here to read
 live — one button for both, and the operator tells acqApp which way they
 set them, logged to `/mirror` like `/dmd`'s boundaries — a record of what
 was asserted, not a measurement.

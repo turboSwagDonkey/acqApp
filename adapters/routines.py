@@ -5,7 +5,7 @@ stage or a real projector.
 Everything that decides lives in `routines/`, Qt-free. This builds the
 `RoutineHooks` pointing that engine at the loaded modules, reaching them
 through `ModuleHost` (`stage_target`/`pattern_target`) rather than by importing
-their adapters — the stage does not know routines exist.
+their adapters — the stage doesn't know routines exist.
 
 **The tick runs on the GUI thread**, on a QTimer, not in a worker. It is
 non-blocking, and the closed loop already goes out of its way to get actuation
@@ -14,7 +14,7 @@ stage move is a short serial write; the position poller does the polling, on
 its own thread.
 
 **Start opens the recording itself** (`ModuleHost.set_recording`, the twin of
-the DMD calibration's `set_live`): a routine cannot run a step without a file
+the DMD calibration's `set_live`): a routine can't run a step without a file
 open. A recording this adapter started, it stops at the end; one the operator
 started, it leaves alone.
 
@@ -22,7 +22,7 @@ started, it leaves alone.
 recording** (`ModuleHost.set_camera_trigger`) — rather than trusting the
 operator to have already set the voltage camera's own External edge mode on
 its own tab, which can silently drift back to Internal between being set
-and the routine actually arming. The camera reports a frame it did not have
+and the routine actually arming. The camera reports a frame it didn't have
 at arm time (`routines/engine.py`'s ARMED phase watches the frame count);
 nothing here reads a DAQ line.
 
@@ -100,9 +100,9 @@ class RoutinesModule(ModuleAdapter):
     """
     key = "routines"
     tab_label = "Routines"
-    # Its own window: a routine is *run* from this panel, and the operator is
+    # Its own window: a routine is *run* from this panel, and operator is
     # watching the camera's page while it runs. Always loaded too
-    # (`config.ALWAYS_ON`) — it owns no device, so there is nothing to unload.
+    # (`config.ALWAYS_ON`) — it owns no device, so there's nothing to unload.
     own_window = True
 
     def __init__(self, win) -> None:
@@ -213,7 +213,7 @@ class RoutinesModule(ModuleAdapter):
             # Put the camera back into its waiting state so the NEXT edge is
             # detectable; it latches otherwise (see
             # `ModuleHost.rearm_camera_trigger`). Raising here is right: the
-            # engine turns it into a pause, and a `trigger` step that cannot
+            # engine turns it into a pause, and a `trigger` step that can't
             # re-arm would otherwise wait on an edge nothing can deliver.
             if self.win.rearm_camera_trigger(FRAME_STREAM) is not True:
                 raise RuntimeError("the camera could not be re-armed for the "
@@ -239,7 +239,7 @@ class RoutinesModule(ModuleAdapter):
 
     # ── run control ──
     def _start(self) -> None:
-        """Validate, open the recording if there is none, then run.
+        """Validate, open the recording if there's none, then run.
 
         In that order: a refused routine must not leave a file open behind it.
         """
@@ -288,9 +288,9 @@ class RoutinesModule(ModuleAdapter):
 
     def _arm_camera_trigger(self) -> bool:
         """Put the voltage camera in External edge mode before the routine's
-        own recording opens — so the operator does not have to have already
+        own recording opens — so operator doesn't have to have already
         set it on the Voltage cam tab, and a mode that quietly drifted back
-        to Internal since then does not leave the routine waiting forever.
+        to Internal since then doesn't leave the routine waiting forever.
         False (with a problem shown) if that isn't possible right now.
 
         For a TTL start AND for any `trigger` step, which wait on the same
@@ -419,7 +419,7 @@ class RoutinesModule(ModuleAdapter):
         group) the already-open file covers — nothing to roll FROM yet.
         A later run whose save mode calls for a fresh file defers the
         actual roll to `_tick` instead of writing the boundary now — see
-        the module docstring for why this cannot happen inline."""
+        the module docstring for why this can't happen inline."""
         if self._file_group_key is None:
             self._file_group_key = self._group_key_for(run)
         elif self._needs_roll(run):
@@ -444,7 +444,7 @@ class RoutinesModule(ModuleAdapter):
     def _group_key_for(self, run) -> tuple[int, int | None]:
         """(cycle, group-or-None) — what "the same file" means for
         save_mode="per_group": repeats of the same Group share a key,
-        moving to a different Group/ungrouped region/cycle does not.
+        moving to a different Group/ungrouped region/cycle doesn't.
 
         Keyed on `run.start_index` alone, which is exactly right when each
         Group has its OWN Recording bracket (the natural setup, and the only
@@ -536,7 +536,7 @@ class RoutinesModule(ModuleAdapter):
         self.win.set_routine_save_context(None, None)
 
     def stop(self) -> None:
-        """Session teardown. The routine cannot outlive the clock it times by."""
+        """Session teardown. The routine can't outlive the clock it times by."""
         if self._engine is not None and self._engine.running:
             self._engine.abort()
         self._stop_ticking()
@@ -653,7 +653,7 @@ class RoutinesModule(ModuleAdapter):
         r = self.panel.settings
         meta = {
             # The protocol as configured, in full: "which stage position was
-            # step 4" cannot be recovered from the file any other way.
+            # step 4" can't be recovered from the file any other way.
             "routine_name":          r.name,
             "routine_cycles":        r.cycles,
             "routine_save_mode":     r.save_mode,

@@ -54,7 +54,7 @@ class StageAxis:
     # A bookmark, NOT calibration: never loaded from or written to the config,
     # so a convenience marker can't be mistaken for the true zero next session.
     home_counts:    int | None = None
-    # Runtime-only, never loaded from or written to the config (there is no
+    # Runtime-only, never loaded from or written to the config (there's no
     # way to know from a file alone whether a limit was hit since it was last
     # saved) — set live by StageController the moment a hard-limit status bit
     # is observed on THIS axis. A limit hit re-references the controller's
@@ -133,7 +133,7 @@ class StageAxis:
         `set_center_here()` needs before it can create one).
 
         The one case this DOES refuse: `origin_set` True with no soft limits
-        — a contradiction normal app code cannot produce (`center_updates()`
+        — a contradiction normal app code can't produce (`center_updates()`
         always sets both together), but a hand-edited config file could.
         `move_to_um`/`jog_um`/`go_home` already refuse earlier for the two
         real dangers (uncalibrated axis reaching an absolute-move call;

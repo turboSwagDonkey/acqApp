@@ -2,7 +2,7 @@
 
 Everything that moves, lights up or writes a file arrives as a **callable**
 (`RoutineHooks`), the way `devices/dmd/calibration.py` takes `project`/`grab`.
-That is what lets all of it be driven against fakes before anything on the rig
+That's what lets all of it be driven against fakes before anything on the rig
 actuates — §2's requirement, and the whole difficulty of this feature.
 
 `tick()`, not a loop with sleeps: a state machine over `now()` and `frames()`,
@@ -18,12 +18,12 @@ Recorder: it emits `begin_recording`/`end_recording`, and whether that
 rolls a file (`save_mode="per_repeat"`/`"per_group"`) or marks a boundary
 is the adapter's business.
 
-**A device failure PAUSES; it does not abort** (operator, PLAN §6 (4)): motion
+**A device failure PAUSES; it doesn't abort** (operator, PLAN §6 (4)): motion
 stopped, light off, capture untouched, the operator decides. Two consequences
 the plan left open, decided here:
 
 - **The interrupted recording's data is kept and marked**, never discarded —
-  with an animal on the rig, recorded frames are not ours to throw away.
+  with an animal on the rig, recorded frames aren't ours to throw away.
   `RecordingRun` carries `interrupted` and `fault` into the file.
 - **Resume repeats the interrupted step**, as a new `attempt`, and — if that
   step is still inside a Recording — opens a **fresh** recording run rather
@@ -54,8 +54,8 @@ TRIGGER_TIMEOUT_S = 600.0
 # for a moment. Must exceed that loop's frame-wait timeout
 # (`devices/voltage_cam/acquisition.py`'s `_WAIT_TIMEOUT`, 0.5 s).
 #
-# This is a floor, NOT the whole guard: a fixed window was tried first and is
-# not sufficient, because how long the re-arm actually takes is not knowable
+# This is a floor, NOT the whole guard: a fixed window was tried first and
+# isn't sufficient, because how long the re-arm actually takes isn't knowable
 # here (buffer reallocation alone can outlast any guess). Rig symptom it
 # produced: a recording ended, the routine paused for exactly this long, then
 # started the next one with no edge — the first still-in-flight frame after
@@ -94,7 +94,7 @@ def _noop(*_a, **_k) -> None:
 
 
 def _ratio(got: float, total: float) -> float:
-    """`got/total`, clamped to 0..1; 1.0 if `total` is not positive."""
+    """`got/total`, clamped to 0..1; 1.0 if `total` isn't positive."""
     return max(0.0, min(1.0, got / total)) if total > 0 else 1.0
 
 
@@ -170,7 +170,7 @@ class RecordingRun:
 
 
 class RoutineError(RuntimeError):
-    """The engine was asked for a transition it cannot make."""
+    """The engine was asked for a transition it can't make."""
 
 
 class RoutineEngine:
@@ -247,11 +247,11 @@ class RoutineEngine:
     def order_position(self) -> int:
         """0-based position within `play_order(routine)` for this cycle —
         what `progress`/`remaining` need to account for a repeat group,
-        since a table row number alone cannot say which repeat this is."""
+        since a table row number alone can't say which repeat this is."""
         return self._pos
 
     def steps_done(self) -> int:
-        """Atomic steps completed normally — a skipped/paused one is not
+        """Atomic steps completed normally — a skipped/paused one isn't
         counted, the same way a repeated attempt was never counted twice."""
         return self._steps_completed
 
@@ -283,7 +283,7 @@ class RoutineEngine:
     def overall_progress(self) -> float:
         """0..1 through the WHOLE routine, the current step's fraction included.
 
-        Position-based, not `steps_done()`: a repeated attempt is not backwards
+        Position-based, not `steps_done()`: a repeated attempt isn't backwards
         progress, and a bar that goes back would read as a fault.
         """
         total = self.total_runs()
@@ -306,13 +306,13 @@ class RoutineEngine:
         """Begin the routine. `trigger="ttl"` ARMS it instead of moving right
         away: the caller has already opened the recording, so the camera (in
         its own External-edge mode) is sitting there waiting for a pulse, and
-        step 1 does not begin until a frame the camera did not have at arm
+        step 1 doesn't begin until a frame the camera didn't have at arm
         time actually arrives — see `_tick_armed`.
         """
         if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.PAUSED):
             raise RoutineError("already running")
         if not self._r.steps:
-            raise RoutineError("the routine has no steps")
+            raise RoutineError("routine has no steps")
         self.runs = []
         self.fault = ""
         self._order = play_order(self._r)
@@ -332,7 +332,7 @@ class RoutineEngine:
         else:
             self._enter_step()
 
-    def pause(self, reason: str = "paused by the operator") -> None:
+    def pause(self, reason: str = "paused by operator") -> None:
         # WAITING counts: a `trigger` step can sit there for minutes, and the
         # operator must be able to take the rig back rather than be held by an
         # edge that may never arrive.
@@ -344,7 +344,7 @@ class RoutineEngine:
         """Repeat the paused step from its start, as a fresh attempt. A
         Recording the step is still inside gets a fresh run too — `_halt`
         already closed the old one, and clearing `self._open_key` here means
-        `_update_recording` cannot mistake this for "still the same run"."""
+        `_update_recording` can't mistake this for "still the same run"."""
         if self._phase != Phase.PAUSED:
             raise RoutineError("not paused")
         self.fault = ""
@@ -390,13 +390,13 @@ class RoutineEngine:
             # reach here.
 
     def _tick_armed(self) -> None:
-        """Waiting for the TTL pulse: a frame the camera did not have when we
+        """Waiting for the TTL pulse: a frame the camera didn't have when we
         armed. Not `> 0` — the camera may already have been mid-stream on some
         other trigger mode, and this must fire on ITS NEXT frame, not on one
         that arrived before the operator pressed Start."""
         n = self._frames()
         if n is None or self._arm_frame0 is None:
-            self._halt("no frame count to detect the TTL trigger by")
+            self._halt("no frame count to detect TTL trigger by")
             return
         if n > self._arm_frame0:
             self._enter_step()
@@ -405,18 +405,18 @@ class RoutineEngine:
         """Inside a `trigger` step, in two stages: first wait for the camera to
         actually go quiet, and only then treat a new frame as its edge.
 
-        The second stage alone is not enough, and assuming it was is what let a
+        The second stage alone isn't enough, and assuming it was is what let a
         rig run start its next recording with no trigger at all. `arm_trigger`
         is asynchronous and its true latency is unknowable here, so frames keep
         arriving for a while after the step begins; any fixed window can expire
-        while they are still coming, and the next one then reads as an edge.
+        while they're still coming, and the next one then reads as an edge.
 
         So the baseline is only frozen once the count has held still for
         `TRIGGER_SETTLE_S` — proof the camera really stopped, rather than a
         guess that it must have by now. A count that never settles is a camera
-        that is not re-arming, and faults saying exactly that instead of
+        that isn't re-arming, and faults saying exactly that instead of
         fabricating a trigger. `TRIGGER_DRAIN_S` survives only as a floor, so
-        a camera that happens to be momentarily idle cannot look settled before
+        a camera that happens to be momentarily idle can't look settled before
         the re-arm has even been picked up.
         """
         n = self._frames()
@@ -433,8 +433,8 @@ class RoutineEngine:
                     and t - self._trig_t0 >= self._trig_drain):
                 self._trig_gated = True
             if not self._trig_gated and t - self._trig_t0 > self._trig_timeout:
-                self._halt("the camera never stopped producing frames after "
-                           "the trigger re-arm — it is not re-arming")
+                self._halt("camera never stopped producing frames after "
+                           "the trigger re-arm — it isn't re-arming")
             return
 
         if n > self._trig_frame0:
@@ -451,7 +451,7 @@ class RoutineEngine:
             if self._arrived_at is None:
                 if self._h.moving():
                     if t - self._issued_at > self._timeout:
-                        self._halt(f"stage did not arrive within "
+                        self._halt(f"stage didn't arrive within "
                                    f"{self._timeout:g} s")
                     return
                 self._arrived_at = t     # settle counts from arrival, not issue
@@ -470,7 +470,7 @@ class RoutineEngine:
         if step.unit == "frames":
             n = self._frames()
             if n is None or self._wait_frame0 is None:
-                self._halt("the frame count went away mid-step")
+                self._halt("frame count went away mid-step")
                 return
             done = (n - self._wait_frame0) >= step.length
         else:
@@ -492,12 +492,12 @@ class RoutineEngine:
         opens nothing, same as always.
         """
         if not self._update_recording():
-            # A recording could not open, and `_update_recording` already
+            # A recording couldn't open, and `_update_recording` already
             # halted us — the step's own action must not run on top of that
             # pause, or the stage/DMD would move after the operator was just
             # told to decide. NOT a `self._phase == Phase.PAUSED` check: this
             # is also how `resume()` reaches here, with the phase already
-            # PAUSED from the halt it is resuming FROM — that check could not
+            # PAUSED from the halt it's resuming FROM — that check couldn't
             # tell "just failed" from "already was", and would refuse to ever
             # leave PAUSED again once the routine had paused once (any pause,
             # not just this one).
@@ -534,7 +534,7 @@ class RoutineEngine:
             elif step.kind == "trigger":
                 # Ask for the re-arm, then hand `_tick_trigger` a baseline it
                 # will keep moving until the count actually goes still — the
-                # camera has almost certainly not stopped yet at this point.
+                # camera almost certainly hasn't stopped yet at this point.
                 self._h.arm_trigger()
                 self._trig_t0 = self._trig_still_since = self._h.now()
                 self._trig_gated = False
@@ -550,7 +550,7 @@ class RoutineEngine:
         self._phase = (Phase.WAITING if step.kind == "trigger"
                        else Phase.RUNNING)
         # Position in the EXPANDED order, not the table row alone — inside a
-        # repeat group "step 3" on its own does not say which repeat this is.
+        # repeat group "step 3" on its own doesn't say which repeat this is.
         self._h.log(f"step {self._i + 1} ({self._pos + 1}/{len(self._order)} "
                     f"this cycle, cycle {self._cycle + 1}/"
                     f"{max(1, self._r.cycles)}): {step.describe()}")
@@ -627,7 +627,7 @@ class RoutineEngine:
             self._open_run = run
             return True
         except Exception as e:           # noqa: BLE001
-            self._halt(f"recording could not start "
+            self._halt(f"recording couldn't start "
                        f"({type(e).__name__}: {e})")
             return False
 

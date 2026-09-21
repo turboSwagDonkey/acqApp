@@ -56,7 +56,7 @@ class WheelModule(ModuleAdapter):
         """Push live V/rev and wheel-diameter changes to a running worker.
 
         They scale every wheel number in the session file. V/rev is a measured
-        4.912; the diameter is still unmeasured, so until it is set the file
+        4.912; the diameter is still unmeasured, so until it's set the file
         carries rev/s rather than mm/s.
         """
         config.save_settings(self.key, asdict(st))
@@ -86,7 +86,7 @@ class WheelModule(ModuleAdapter):
 
     def _show(self, v: float, speed: float, dist: float) -> float:
         """Pick units/labels for the current scaling, update the live readout,
-        and return the value to plot. With no V/rev set there is nothing to
+        and return the value to plot. With no V/rev set there's nothing to
         derive, so it plots the raw voltage instead."""
         cfg = self._cfg
         if not cfg.volts_per_rev:
@@ -126,7 +126,7 @@ class WheelModule(ModuleAdapter):
         Guarded like `_axis`, and for the same reason it was: a pyqtgraph title
         goes through `LabelItem.setText` -> `setHtml` -> a QTextDocument
         relayout. The digits usually move, so this mostly buys nothing — but a
-        stationary wheel formats identically tick after tick, and that is what
+        stationary wheel formats identically tick after tick, and that's what
         the rig sits at between runs.
         """
         if speed is None:
@@ -140,7 +140,7 @@ class WheelModule(ModuleAdapter):
 
     # ── closed loop ──
     def signal_sources(self) -> list[SignalSource]:
-        """Both wheel speeds, because they are not interchangeable.
+        """Both wheel speeds, because they aren't interchangeable.
 
         `wheel_speed` is the recorded one — a slope centred a second in the past
         (`_EncoderBase._report`), so a rule on it agrees with the trace in the

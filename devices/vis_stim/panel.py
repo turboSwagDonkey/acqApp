@@ -7,11 +7,11 @@ its own labeled spinbox, matching every other module's panel (see
 devices/dmd/panel.py). Loop variables stay a QListWidget + Add/Delete, since
 that part of the .m UI is inherently dynamic. Group boxes are made
 collapsible centrally by dialogs.py (widgets.collapsible_groups), same as
-every other panel — this file does not call it itself.
+every other panel — this file doesn't call it itself.
 
 No DAQ channel/status here: unlike the .m code, blank/stim gating rides the
 shared session clock's own tick (control.py's `on_tick`), not a hardware line
-this module reads itself — so there is no per-module connection state to show.
+this module reads itself — so there's no per-module connection state to show.
 
 The Trial type combo picks the paradigm for the whole run; entries not yet
 built (settings.IMPLEMENTED_TRIAL_TYPES) are listed but disabled, so the

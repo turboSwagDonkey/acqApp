@@ -9,7 +9,7 @@ operator does before ever pressing Live view, unlike a camera's frame stream,
 which only means anything once a session's shared clock exists; the stage's
 own poll loop needs no clock at all (`StagePollWorker` times itself off
 `time.perf_counter()`). Opening the port is safe on its own — CLAUDE.md's
-line is "device open/config is safe", it is COMMANDING motion that needs an
+line is "device open/config is safe", it's COMMANDING motion that needs an
 explicit button press, and that gate (`SettingsPanel._call`) is unchanged.
 Live/Record only adds recording the position that was already being read.
 """
@@ -32,13 +32,13 @@ from acqApp.devices.stage.settings import load_settings as load_stage_settings
 class StageModule(ModuleAdapter):
     key = "stage"
     tab_label = "Stage"
-    # No plot: live position is the X/Y(/Z) readout in the Stage tab, and it
-    # is recorded as stage_x_um / stage_y_um (+ stage_z_um on a rig with a Z
+    # No plot: live position is the X/Y(/Z) readout in the Stage tab, and it's
+    # recorded as stage_x_um / stage_y_um (+ stage_z_um on a rig with a Z
     # stage — see StagePollWorker's docstring).
 
     # Only what the panel itself owns. Calibration, soft limits and the origin
     # must keep coming from the shared stage_control config: StageSettings nests
-    # two StageAxis objects, which do not survive this config's flat JSON.
+    # two StageAxis objects, which don't survive this config's flat JSON.
     _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg")
 
     def __init__(self, win: ModuleHost) -> None:
@@ -118,7 +118,7 @@ class StageModule(ModuleAdapter):
 
     def start(self) -> None:
         pass    # already running since build_controller — a session adds
-                # recording (attach_sink), it does not own the connection
+                # recording (attach_sink), it doesn't own the connection
 
     def stop(self) -> None:
         pass    # the connection outlives the session; see close_controller
@@ -227,8 +227,8 @@ class StageModule(ModuleAdapter):
     def stop_motion(self) -> None:
         """Stop both axes. Guarded, because `StageTarget` says it must be and
         because this runs when the stage has ALREADY failed — a dead serial
-        link is exactly when it is called. The routine engine catches it too,
-        but a contract the implementation leans on its caller to keep is not
+        link is exactly when it's called. The routine engine catches it too,
+        but a contract the implementation leans on its caller to keep isn't
         one."""
         if self.controller is not None:
             try:

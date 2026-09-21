@@ -2,12 +2,12 @@
 
 **EyeLoop is GPL-3.0 and none of it is vendored here.** This module imports it
 from a clone beside the repo, which is why the licence boundary is exactly one
-file wide: nothing in acqApp is a derived work, and vendoring later — if that
-is ever decided — is a change to this file alone. Credit belongs to Arvin et
-al. regardless of licensing; cite doi:10.1101/2020.07.03.186387.
+file wide: nothing in acqApp is a derived work, and vendoring later — if that's
+ever decided — is a change to this file alone. Credit belongs to Arvin et al.
+regardless of licensing; cite doi:10.1101/2020.07.03.186387.
 
 Set `ACQAPP_EYELOOP_DIR` to point somewhere else. Without a clone the tracker
-raises `EyeLoopUnavailable` and the rest of the pupil camera is unaffected.
+raises `EyeLoopUnavailable` and rest of the pupil camera is unaffected.
 
 Three things it fixes about driving `Shape` directly, all documented in
 `acqApp/docs/EYELOOP.md`:
@@ -73,8 +73,8 @@ class EyeLoopUnavailable(RuntimeError):
 class Pin:
     """A reflection the operator marked. Crop coordinates, like everything here.
 
-    Pinned because it is *stationary*: with the head fixed, the big reflections
-    off the optics do not move, and a fixed thing does not need the guards the
+    Pinned because it's *stationary*: with the head fixed, the big reflections
+    off the optics don't move, and a fixed thing doesn't need the guards the
     automatic pass uses to protect itself from unknown bright objects.
     """
 
@@ -88,7 +88,7 @@ class GlintRemoval:
     """Corneal-reflection removal, done here because EyeLoop's own is dead code.
 
     Upstream has the machinery — `Shape.artefact_` paints a filled circle over
-    the CR — but it is disabled in three places at once: `fit()`'s call is
+    the CR — but it's disabled in three places at once: `fit()`'s call is
     commented out, `Shape.__init__` binds `artefact` to a no-op for *both*
     types, and `artefact_` writes into `config.engine.pup_source`, which
     `engine.py` never creates. It has never run.
@@ -96,12 +96,12 @@ class GlintRemoval:
     What it has to beat, measured on frame 0 of both clips: the pupil interior
     sits at median 22–23 with p95 ≈ 42, and the glints are saturated at 235 —
     about 1.3 % of the pupil's pixels. Any threshold in 100–180 selects the
-    same pixels, so this is not a delicate number.
+    same pixels, so this isn't a delicate number.
     """
 
     enabled: bool = True
     threshold: int = 120
-    pad: int = 4            # the diffraction spikes are wider than the core
+    pad: int = 4            # diffraction spikes are wider than the core
     max_area: int = 600     # bigger than this is eyelid or fur, not a glint
     ring: int = 6           # width of the annulus each blob is filled from
     search_scale: float = 0.95   # how far out to look, as a fraction of radius
@@ -114,7 +114,7 @@ _ARMED: list[str] = []          # process-wide, because eyeloop.config is
 class EyeLoopTracker:
     """Stateful — it walks out from the previous frame's centre.
 
-    Not a pure `detect(frame)`: the old stub's signature cannot express this.
+    Not a pure `detect(frame)`: the old stub's signature can't express this.
     Whoever owns one must hold it across frames and `reset()` when the seed,
     the frame size or the operator's patience changes.
     """
@@ -145,7 +145,7 @@ class EyeLoopTracker:
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def arm(self, width: int, height: int, seed: tuple[float, float]) -> None:
-        """Build the processor for a frame size. Call again if the size changes.
+        """Build the processor for a frame size. Call again if size changes.
 
         `config.engine.width/height` are read when `reset()` builds the walkout
         corners, so they must be set before it — not after.
@@ -194,7 +194,7 @@ class EyeLoopTracker:
         """Re-seed without rebuilding. Cheap; call it whenever the fit is lost."""
         if self._shape is None:
             raise RuntimeError("arm() first")
-        self._last_radius = None       # the old shape describes the old place
+        self._last_radius = None       # old shape describes the old place
         self._last_shape = None
         self._shape.reset((float(seed[0]), float(seed[1])))
 
@@ -210,7 +210,7 @@ class EyeLoopTracker:
 
     def apply_settings(self, threshold: int | None = None,
                        blur: int | None = None) -> None:
-        """Live knobs. Changing these does not invalidate the walk."""
+        """Live knobs. Changing these doesn't invalidate the walk."""
         if threshold is not None:
             self.threshold = int(threshold)
             if self._shape is not None:
@@ -223,7 +223,7 @@ class EyeLoopTracker:
     def track(self, gray: np.ndarray) -> PupilFit | None:
         """One grayscale uint8 frame in, a fit or None out.
 
-        None is genuine: `params` is nulled first, so a stale answer cannot be
+        None is genuine: `params` is nulled first, so a stale answer can't be
         mistaken for a fresh one.
         """
         if self._shape is None:
@@ -256,7 +256,7 @@ class EyeLoopTracker:
         """Blank the corneal reflections before the walk sees them.
 
         Uses the *previous* frame's centre and radius — the walk is already
-        built on that assumption, and a glint does not move far in 1/15 s. The
+        built on that assumption, and a glint doesn't move far in 1/15 s. The
         first frame falls back to the seed and the walk's own max radius.
         """
         self.last_glint_mask, self.last_glint_px = None, 0
@@ -289,7 +289,7 @@ class EyeLoopTracker:
         r = (vals[2] + vals[3]) / 2.0
         lo, hi = self.accept_radius
         if not (lo <= r <= hi):
-            return None     # a fit far outside the plausible band is not one
+            return None     # a fit far outside the plausible band isn't one
         return PupilFit(*vals)
 
 
@@ -329,8 +329,8 @@ def remove_glints(gray: np.ndarray, center: tuple[float, float], radius: float,
     off the frame-spanning background component.
 
     **Pinned** — reflections the operator has marked. A pin says "this is a
-    reflection, it is here, and it stays here", so **neither guard applies**:
-    no reach limit, no area limit. That is the point of pinning. The big
+    reflection, it's here, and it stays here", so **neither guard applies**:
+    no reach limit, no area limit. That's the point of pinning. The big
     stationary reflections are exactly the ones the automatic pass has to be
     too timid to touch, because from the inside they look like the eyelash
     line that must not be touched.

@@ -10,7 +10,7 @@ refuses a run *before* it starts.
 **One recording per external edge** is a `trigger` step inside a repeat
 group, with the Recording bracket on the steps AFTER it: each repeat
 re-arms the camera, waits for its edge, and only then opens the file. With
-`save_mode="per_repeat"` that is a folder of one file per edge. The bracket
+`save_mode="per_repeat"` that's a folder of one file per edge. The bracket
 must not cover the trigger step itself — `validate()` refuses that, since
 the file would be open while waiting, and re-arming restarts the camera's
 acquisition underneath it.
@@ -59,7 +59,7 @@ SAVE_MODES: dict[str, str] = {
 }
 
 # key -> label. `manual` is the button; `ttl` arms the routine on Start and
-# holds it there until the voltage camera reports a frame it did not have at
+# holds it there until the voltage camera reports a frame it didn't have at
 # arm time — `adapters/routines.py` puts the camera in External edge mode
 # itself before arming (ModuleHost.set_camera_trigger), so nothing here
 # reads a DAQ line: the camera already IS the TTL input.
@@ -109,7 +109,7 @@ class Step:
     settle_s: float = 0.25            # after arrival, before the step ends
     # display only — "" means STOP displaying (light off), not "leave alone":
     # unlike the old composite Step, a Display step is a stated action, so
-    # there is no "did not say" state left for it to mean.
+    # there's no "didn't say" state left for it to mean.
     pattern:  str = ""
     # wait only — never converted between the two, see the module docstring.
     length:   float = 100.0
@@ -142,7 +142,7 @@ class Group:
 
     `start`/`end` are 0-based indices into `Routine.steps`, inclusive — a
     range, not a list of steps of its own, so reordering/inserting steps
-    elsewhere in the table does not have to rewrite a membership list.
+    elsewhere in the table doesn't have to rewrite a membership list.
     """
     start:   int = 0
     end:     int = 0
@@ -156,7 +156,7 @@ class Recording:
 
     Same shape as `Group` and for the same reason: `start`/`end` are 0-based,
     inclusive indices rather than a membership list, so reordering steps
-    elsewhere does not have to rewrite one. Unlike a `Group` there is no
+    elsewhere doesn't have to rewrite one. Unlike a `Group` there's no
     repeat count — a Recording that happens to sit inside a repeated `Group`
     is simply re-entered on every repeat (`recording_run_ids` below is what
     tells those repeats apart as separate recording runs).
@@ -454,7 +454,7 @@ class RigLimits:
     """What the loaded rig can actually do, as validation sees it.
 
     Built by the adapter from its neighbours, so a routine that projects is
-    refused when the DMD is not loaded rather than half-running without light.
+    refused when the DMD isn't loaded rather than half-running without light.
     """
     x_um:            tuple[float, float] | None = None    # stage soft limits
     y_um:            tuple[float, float] | None = None
@@ -469,10 +469,10 @@ class RigLimits:
 def _limit_problem(axis: str, value: float,
                    limits: tuple[float, float] | None) -> str | None:
     if limits is None:
-        return f"{axis} = {value:g} um but the stage has no soft limits"
+        return f"{axis} = {value:g} um but stage has no soft limits"
     lo, hi = min(limits), max(limits)
     if not (lo <= value <= hi):
-        return f"{axis} = {value:g} um is outside the soft limits [{lo:g}, {hi:g}]"
+        return f"{axis} = {value:g} um is outside soft limits [{lo:g}, {hi:g}]"
     return None
 
 
@@ -484,7 +484,7 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
     """
     out: list[str] = []
     if not routine.steps:
-        out.append("the routine has no steps")
+        out.append("routine has no steps")
     if routine.cycles < 1:
         out.append(f"cycles = {routine.cycles}; must be at least 1")
     if routine.save_mode not in SAVE_MODES:
@@ -503,7 +503,7 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         if s.kind == "move":
             if s.x_um is not None or s.y_um is not None or s.z_um is not None:
                 if not rig.has_stage:
-                    out.append(f"{at}: moves the stage, which is not loaded")
+                    out.append(f"{at}: moves the stage, which isn't loaded")
                 else:
                     for axis, v, lim in (("x", s.x_um, rig.x_um),
                                          ("y", s.y_um, rig.y_um)):
@@ -529,10 +529,10 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         elif s.kind == "display":
             if s.pattern:
                 if not rig.has_dmd:
-                    out.append(f"{at}: uses the DMD, which is not loaded")
+                    out.append(f"{at}: uses the DMD, which isn't loaded")
                 p = Path(s.pattern)
                 if not p.is_file():
-                    out.append(f"{at}: pattern {p.name!r} is not a file")
+                    out.append(f"{at}: pattern {p.name!r} isn't a file")
         elif s.kind == "wait":
             if s.unit not in UNITS:
                 out.append(f"{at}: unknown unit {s.unit!r}")
@@ -542,14 +542,14 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
             if not (s.length > 0):
                 out.append(f"{at}: length = {s.length:g}; must be above zero")
             if s.unit == "frames" and s.length != int(s.length):
-                out.append(f"{at}: {s.length:g} frames is not a whole number")
+                out.append(f"{at}: {s.length:g} frames isn't a whole number")
         elif s.kind == "puff":
             if not rig.has_puffer:
-                out.append(f"{at}: uses the puffer, which is not loaded")
+                out.append(f"{at}: uses the puffer, which isn't loaded")
         elif s.kind == "trigger":
             if not rig.has_frames:
                 # The edge is only ever observable as frames appearing, so
-                # with no camera there is nothing that could end this step.
+                # with no camera there's nothing that could end this step.
                 out.append(f"{at}: waits for the camera's trigger, but no "
                            f"camera is loaded")
             if recording_region_at(routine, i - 1) is not None:

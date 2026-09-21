@@ -44,7 +44,7 @@ class PufferController(QObject):
         self._s    = settings or PufferSettings()
         self._task = None
         # The pulse runs on its own thread and the channel can be re-pointed (or
-        # the app closed) while it is mid-pulse, so every touch of _task is
+        # the app closed) while it's mid-pulse, so every touch of _task is
         # guarded and the pulse re-checks that its task is still the live one.
         self._task_lock = threading.Lock()
         self._sink: Callable[[float], None] | None = None
@@ -256,7 +256,7 @@ class SettingsPanel(QWidget):
         """Confirm before an immediate, manually-triggered puff — matching
         the stage's confirm-before-move pattern for physical actuation.
         Scheduled puffs (`_schedule`) are a deliberate act of their own and
-        fire later, mid-session; they are not gated here."""
+        fire later, mid-session; they aren't gated here."""
         dur = self._spn_dur.value()
         if QMessageBox.question(
             self, "Test puff",

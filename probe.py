@@ -33,7 +33,7 @@ class ProbeResult:
 def _voltage_cam(cam_open: bool = False) -> ProbeResult:
     """`cam_open` short-circuits the enumeration when the app already holds the
     camera — faster and truer. `DCAM.get_cameras_number()` costs ~6.5 s on
-    *every* call (it re-enumerates, it is not one-time DLL init) and this runs
+    *every* call (it re-enumerates, it isn't one-time DLL init) and this runs
     on the GUI thread; the handle we hold is the one a session will use.
     """
     if cam_open:
@@ -98,7 +98,7 @@ def _dmd() -> ProbeResult:
     Opening the ALP is the only way to know a DMD is there, and it takes the USB
     from whoever holds it — a running session, or dmdGUI_project. So this
     reports what can be checked without connecting; the DMD tab answers "is a
-    real one attached", because it is the code that opened it.
+    real one attached", because it's the code that opened it.
     """
     try:
         import ALP4  # noqa: F401     (import only — the DLL loads on construction)

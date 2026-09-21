@@ -40,7 +40,7 @@ drifting grating above, or:
            classic locomotion/optic-flow closed-loop coupling. Blank/stim
            gating is still tick-counted exactly like Grating
            (`_grating_gate_tick`); trial length is VisuomotorDurationTicks
-           instead of PeriodsToShow, since there is no fixed temporal
+           instead of PeriodsToShow, since there's no fixed temporal
            frequency to count cycles of.
 Priming (`WaitTrigger`) is shared by every trial type; `_begin_trial`/
 `_gate_tick`/`_on_frame` each branch to a trial-type-specific half.

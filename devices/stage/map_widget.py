@@ -1,7 +1,7 @@
 """
 Stage travel visualizations: `StageMap` for X/Y, `ZGauge` for Z (focus).
 
-Both are a read-only picture of where the stage is inside its own travel: the
+Both are a read-only picture of where the stage is inside its travel: the
 hard travel extent, the soft-limit extent inside it, the origin, the session
 home, and the current position. Display only — nothing here commands motion.
 
@@ -47,7 +47,7 @@ class StageMap(QWidget):
         self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip("Stage position within its travel. Display only — "
-                        "clicking here does not move the stage.")
+                        "clicking here doesn't move the stage.")
 
     # ── inputs ──────────────────────────────────────────────────────────────
     def set_axes(self, x_axis, y_axis, invert_y: bool = True) -> None:
@@ -235,7 +235,7 @@ class ZGauge(QWidget):
                             220)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setToolTip("Z (focus) position within its travel. Display "
-                        "only — clicking here does not move the stage.")
+                        "only — clicking here doesn't move the stage.")
 
     # ── inputs ──────────────────────────────────────────────────────────────
     def set_axis(self, z_axis) -> None:

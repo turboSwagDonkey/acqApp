@@ -51,8 +51,8 @@ class FreshGrabber:
     cheap insurance at ~100 ms a plane.
 
     **It fails the safe way round.** The adapter reassigns `_last_frame` only
-    when the display tick actually consumed a new frame (`get_latest()` returns
-    None otherwise), so identity cannot change without a real exposure. If a
+    when the display tick consumed a new frame (`get_latest()` returns
+    None otherwise), so identity can't change without a real exposure. If a
     driver ever handed back one reused array object per frame, this would time
     out with the message below rather than quietly registering stale frames —
     a stopped sweep, not a wrong calibration.
@@ -93,7 +93,7 @@ class FreshGrabber:
 
 def sweep_exposures(_dmd_size: tuple[int, int] = (0, 0)) -> int:
     """One dark reference plus a stripe per offset per axis. A test pins this —
-    it is the number the operator is shown before any light is emitted."""
+    it's the number the operator is shown before any light is emitted."""
     return 1 + 2 * len(STRIPE_OFFSETS)
 
 
@@ -137,7 +137,7 @@ class CalibrationDialog(QDialog):
             f"this relay scatters enough to erase fine patterns, so coarse "
             f"ones are all that survive.<br><br>"
             f"The camera is started for the run and put back afterwards, and "
-            f"the DMD does not need Display pressed — this drives both. "
+            f"the DMD doesn't need Display pressed — this drives both. "
             f"<b>dmdGUI_project must be closed</b>, though: one process owns "
             f"the USB.")
         head.setWordWrap(True)
@@ -167,7 +167,7 @@ class CalibrationDialog(QDialog):
             1 if seed["model"] == "homography" else 0)
         self._cmb_model.setToolTip(
             "Homography is the correct model for a camera that views the DMD "
-            "at a steep angle: an affine fit cannot represent the resulting "
+            "at a steep angle: an affine fit can't represent the resulting "
             "perspective (keystone) at all, however it's rotated or sheared.")
         gform.addRow("Model:", self._cmb_model)
 
@@ -232,7 +232,7 @@ class CalibrationDialog(QDialog):
         """Keep the event loop turning while the sweep blocks on a frame.
 
         The camera delivers into the GUI thread, so a sweep that blocked it
-        would wait forever for the frame it is blocking. Cancellation is checked
+        would wait forever for the frame it's blocking. Cancellation is checked
         here because this is the one place that runs on every exposure.
         """
         QApplication.processEvents()
@@ -257,7 +257,7 @@ class CalibrationDialog(QDialog):
         model = self._cmb_model.currentData()
         cross_frac = self._spn_cross.value() / 100.0
 
-        # Start the camera if it is not already running; remember whether we
+        # Start the camera if it isn't already running; remember whether we
         # did, so the finally block can put it back.
         was_live = True
         if self._set_live is not None:

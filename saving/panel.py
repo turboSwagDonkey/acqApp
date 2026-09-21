@@ -57,7 +57,7 @@ class SavePanel(QWidget):
         self._btn_scan = QPushButton("Scan drives")
         self._btn_scan.setToolTip(
             "Write ~1 GiB to each drive to measure its real sustained write "
-            "speed, and flag any that would drop frames at the current "
+            "speed, and flag any that would drop frames at current "
             "acquisition rate.")
         self._btn_scan.clicked.connect(self._on_scan_drives)
         drive_row = QHBoxLayout()
@@ -119,7 +119,7 @@ class SavePanel(QWidget):
             "Split into per-device files (instead of one composite .h5)")
         self._chk_split.setChecked(self._cfg.split)
         self._chk_split.setToolTip(
-            "Each device in its own file — TIFF image stacks for the "
+            "Each device in its own file — TIFF image stacks for "
             "cameras, one combined CSV for wheel/puffer/pupil-fit/routine "
             "step, one JSON for settings — instead of everything bundled "
             "into one .h5. Always gets its own session folder.")
@@ -308,8 +308,8 @@ class SavePanel(QWidget):
         """Data rate of the current acquisition config, for the capacity estimate.
 
         `writer_mbps` is what the write path can actually sustain. Passed in
-        rather than imported: it is a camera-side measurement, and `saving/`
-        does not depend on `devices/` (see docs/STRUCTURE.md). 0 means unknown,
+        rather than imported: it's a camera-side measurement, and `saving/`
+        doesn't depend on `devices/` (see docs/STRUCTURE.md). 0 means unknown,
         and the estimate then assumes everything offered is written.
         """
         self._rate_mbps = max(0.0, float(mbps))
@@ -317,14 +317,14 @@ class SavePanel(QWidget):
         self._refresh()
 
     def writable_error(self) -> str | None:
-        """Human-readable reason the target is unusable, or None if it is fine."""
+        """Human-readable reason the target is unusable, or None if it's fine."""
         folder = self._cfg.resolved_folder()
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            return f"cannot create {folder}: {e}"
+            return f"can't create {folder}: {e}"
         if not os.access(str(folder), os.W_OK):
-            return f"{folder} is not writable"
+            return f"{folder} isn't writable"
         return None
 
     # ── Readouts ─────────────────────────────────────────────────────────────
@@ -338,19 +338,19 @@ class SavePanel(QWidget):
         unique = resolve(unique=True)
         self._lbl_preview.setText(str(unique))
         self._lbl_preview.setToolTip(
-            f"{plain.name} exists — the next recording is auto-numbered."
+            f"{plain.name} exists — next recording is auto-numbered."
             if unique != plain else "")
 
         free = free_bytes(self._cfg.folder or str(default_folder()))
         if free is None:
-            self._lbl_space.setText("Target folder does not exist yet.")
+            self._lbl_space.setText("Target folder doesn't exist yet.")
             self._lbl_space.setStyleSheet("color:#c47f00;")
             return
 
         txt = f"{_gb(free)} free"
-        warn = free < (10 << 30)          # under 10 GB is not a usable target
+        warn = free < (10 << 30)          # under 10 GB isn't a usable target
         if self._rate_mbps > 0:
-            # The disk fills at what is WRITTEN, not what the camera offers, and
+            # The disk fills at what's WRITTEN, not what the camera offers, and
             # those differ: full frame at bin 1 acquires ~2200 MB/s against a
             # writer that sustains ~1000. Estimating from the offered rate both
             # halved the time and — worse — showed a configuration that sheds
@@ -362,7 +362,7 @@ class SavePanel(QWidget):
             if self._rate_mbps > cap:
                 txt += (f"; the camera offers {self._rate_mbps:.0f} MB/s, so "
                         f"~{100 * (1 - written / self._rate_mbps):.0f}% of "
-                        f"frames cannot be written — see the Voltage cam tab")
+                        f"frames can't be written — see the Voltage cam tab")
                 warn = True
             warn = warn or secs < 120     # under 2 minutes of headroom
         self._lbl_space.setText(txt)

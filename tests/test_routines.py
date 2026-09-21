@@ -246,7 +246,7 @@ def check_validation(r: Report, tmp: Path) -> None:
          "negative"),
         ("a pattern file that is not there",
          Routine(steps=[Step(kind="display", pattern=str(tmp / "gone.png"))]),
-         FULL_RIG, "not a file"),
+         FULL_RIG, "isn't a file"),
         ("an empty routine", Routine(steps=[]), FULL_RIG, "no steps"),
         ("an unrecognised kind",
          Routine(steps=[Step(kind="teleport")]), FULL_RIG, "unknown kind"),
@@ -632,7 +632,7 @@ def check_move_timeout(r: Report) -> None:
                         rig.hooks(), move_timeout_s=2.0)
     eng.start()
     drive(eng, rig, limit_s=10.0)
-    r.check(eng.phase == Phase.PAUSED and "did not arrive" in eng.fault,
+    r.check(eng.phase == Phase.PAUSED and "didn't arrive" in eng.fault,
             f"a stage that never arrives pauses the routine ({eng.fault!r})")
     r.check(("stop_motion",) in rig.log, "…and motion is stopped")
     r.check(not rig.lit, "…and the light is off")
@@ -781,7 +781,7 @@ def check_setup_failure(r: Report, tmp: Path) -> None:
                        rig3.hooks())
     e3.start()
     r.check(e3.phase == Phase.PAUSED
-            and "recording could not start" in e3.fault,
+            and "recording couldn't start" in e3.fault,
             f"a recording that fails to OPEN pauses with its own message "
             f"({e3.fault!r})")
     r.check(("move", 10.0, None, None) not in rig3.log and e3.runs == [],
@@ -1060,7 +1060,7 @@ def check_trigger_step(r: Report) -> None:
     r.check(eng_free.phase == Phase.PAUSED,
             f"a camera that ignores the re-arm pauses the routine rather than "
             f"inventing an edge ({eng_free.phase})")
-    r.check("not re-arming" in eng_free.fault,
+    r.check("isn't re-arming" in eng_free.fault,
             f"…and the fault says what is actually wrong ({eng_free.fault!r})")
     r.check(rig_free.begun == [],
             f"…with no recording ever opened for the trigger that never "

@@ -59,15 +59,15 @@ def _load_calibration(path):
 def roi_frame(settings, width: int, height: int):
     """The ROI mask as a device-sized frame, or None with the reason printed.
 
-    Here rather than in the adapter because the controller is what owns "what
-    is currently loaded", and the mock has to answer `on_pixels` truthfully for
+    Here rather than in the adapter because the controller owns "what is
+    currently loaded", and the mock has to answer `on_pixels` truthfully for
     the same reason the real one does.
     """
     if not settings.rois:
         print("[DMD] ROI mode: no ROIs drawn — nothing to project")
         return None
     if not settings.calib_path:
-        print("[DMD] ROI mode: no calibration loaded, so camera ROIs cannot be "
+        print("[DMD] ROI mode: no calibration loaded, so camera ROIs can't be "
               "turned into mirrors. Run Calibrate… first.")
         return None
     try:
@@ -78,16 +78,16 @@ def roi_frame(settings, width: int, height: int):
             calib = flip_y(calib)
         frame = RoiSet.from_list(list(settings.rois)).dmd_frame(calib)
     except Exception as e:                        # noqa: BLE001
-        print(f"[DMD] ROI mode: could not build the mask ({type(e).__name__}: "
+        print(f"[DMD] ROI mode: couldn't build the mask ({type(e).__name__}: "
               f"{e})")
         return None
     if frame.shape != (height, width):
-        print(f"[DMD] ROI mode: the calibration is for a "
-              f"{frame.shape[1]}x{frame.shape[0]} panel, this device is "
+        print(f"[DMD] ROI mode: calibration is for a "
+              f"{frame.shape[1]}x{frame.shape[0]} panel, device is "
               f"{width}x{height} — re-run the calibration")
         return None
     if not int((frame > 0).sum()):
-        print("[DMD] ROI mode: the ROIs map to no mirrors at all — they may be "
+        print("[DMD] ROI mode: ROIs map to no mirrors at all — they may be "
               "outside the DMD's reachable field")
     return np.asarray(frame)
 
@@ -113,7 +113,7 @@ class DmdSettings:
     # Hardcoded True by the panel: the DMD holds one image until Stop.
     # `on_time_ms` / `n_repeats` are read only on the cycling path, reachable
     # from code and the tests but not the UI — kept because the ALP timing
-    # rules it encodes were expensive to establish, not because it is used.
+    # rules it encodes were expensive to establish, not because it's used.
     static_hold:   bool        = True   # True = project one image, held
     trigger_mode:  str         = "Internal"   # Internal | External | Software
     n_repeats:     int         = 0      # 0 = loop forever
@@ -140,7 +140,7 @@ class DmdSettings:
     calib_path:    str         = ""
     # A manual correction for a rig whose measured registration is right in X
     # but backwards in Y (operator-confirmed) — mirrors the mapping in
-    # `calibration.flip_y` wherever it is loaded, rather than re-fitting.
+    # `calibration.flip_y` wherever it's loaded, rather than re-fitting.
     roi_flip_y:    bool        = False
 
 
@@ -250,8 +250,8 @@ class DmdController(QObject):
             return
         if self.on_pixels == 0:
             # Every mirror off is a legal frame and a projector showing nothing.
-            # It is also what a bad scale/offset produces, so say it out loud.
-            print("[DMD] display: the frame is entirely dark — check scale, "
+            # It's also what a bad scale/offset produces, so say it out loud.
+            print("[DMD] display: frame is entirely dark — check scale, "
                   "offset and invert")
 
         if self._s.static_hold:
@@ -356,7 +356,7 @@ class MockDmdController(QObject):
                     invert=self._s.invert, fit=self._s.fit), self._s.sub_sampling)
                 return
             except Exception as e:
-                print(f"[DMD mock] could not render {p.name}: {e}")
+                print(f"[DMD mock] couldn't render {p.name}: {e}")
 
         # Placeholder only — reached with no pattern configured at all, not a
         # real display mode, so it deliberately skips sub-sampling too.

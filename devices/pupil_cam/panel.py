@@ -4,7 +4,7 @@ Camera, frame source, eye region, tracking, blink detection, corneal
 reflection and LED.
 
 Every control here writes into `settings`, and `settings` is what the adapter
-persists — so a knob that is not read back in that property is a knob the
+persists — so a knob that isn't read back in that property is a knob the
 operator loses at the next launch. That has happened; keep them in step.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ class SettingsPanel(QWidget):
     exposure_changed = pyqtSignal(float)   # hot-applied to the worker while running
     led_toggled      = pyqtSignal(bool)    # eye-tracking illumination on/off
     led_intensity_changed = pyqtSignal(float)  # 0..1, hot-applied like exposure_changed
-    # Any parameter edit. The LED is deliberately NOT one of these: it is
+    # Any parameter edit. The LED is deliberately NOT one of these: it's
     # runtime state, and restoring it at launch would turn the illumination on
     # in an empty rig.
     settings_changed = pyqtSignal(object)  # emits PupilSettings
@@ -39,10 +39,10 @@ class SettingsPanel(QWidget):
         # pattern (devices/voltage_cam/panel.py).
         self._measured: tuple[float, bool] | None = None
         self._video = self._s.video_path     # held as state, shown by basename
-        # Placed on the preview, so held here rather than in a widget — the
-        # label and the Clear button are only a readout of this list.
+        # Placed on the preview, so held here rather than in a widget — label
+        # and Clear button are only a readout of this list.
         self._pins = list(self._s.cr_pins)
-        # Widgets emit as they are built, and `settings` reads all of them —
+        # Widgets emit as they're built, and `settings` reads all of them —
         # so nothing is emitted until every group exists.
         self._ready = False
         self._build()
@@ -64,7 +64,7 @@ class SettingsPanel(QWidget):
         self._spn_exp.valueChanged.connect(self.exposure_changed)
         cl.addRow("Exposure:", self._spn_exp)
 
-        # A frame period cannot be shorter than the exposure inside it, so Rate
+        # A frame period can't be shorter than the exposure inside it, so Rate
         # always caps Exposure's maximum to 1/rate — independent of Link, which
         # only decides whether moving one *also* moves the other. Matches
         # devices/voltage_cam/panel.py's Rate/Exposure pair.
@@ -101,7 +101,7 @@ class SettingsPanel(QWidget):
         self._chk_video.setToolTip(
             "Replay a recorded clip instead of the camera.\nUncompressed AVI "
             "only (IYUV/I420/YV12, Y800 or BI_RGB) — this venv has no decoder.\n"
-            "Takes effect on the next Live view; a session recorded from a clip "
+            "Takes effect on next Live view; a session recorded from a clip "
             "is flagged in the file's metadata.")
         self._chk_video.toggled.connect(self._on_video_toggled)
         cl.addRow("Source:", self._chk_video)
@@ -232,7 +232,7 @@ class SettingsPanel(QWidget):
     def _build_limit(self) -> QGroupBox:
         """The rectangle the eye sits in — the numbers only.
 
-        **It is placed on the preview, not here**: a region of the frame is
+        **It's placed on the preview, not here**: a region of the frame is
         picked by looking at the frame. These four exist for typing an exact
         box and for reading back the one in force, and are what persists and
         what the session file records.
@@ -253,7 +253,7 @@ class SettingsPanel(QWidget):
         self._spn_lx0, self._spn_ly0, self._spn_lx1, self._spn_ly1 = (
             self._px_spin(v) for v in
             (self._s.limit_x0, self._s.limit_y0, self._s.limit_x1, self._s.limit_y1))
-        # One row, not four form rows: it is a single box, and four labelled
+        # One row, not four form rows: it's a single box, and four labelled
         # rows made a numeric-entry form out of something spatial.
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -278,7 +278,7 @@ class SettingsPanel(QWidget):
 
         Threshold is the one that matters: it sets the reported radius (a 60 %
         swing over 25-60 on the rig clips) at an unchanged 151/151 fit rate, so
-        no fit-rate readout will tell the operator it is wrong. It is
+        no fit-rate readout will tell the operator it's wrong. It's
         illumination-dependent and belongs to a session, not to the rig.
         """
         box = QGroupBox("Pupil tracking")
@@ -398,7 +398,7 @@ class SettingsPanel(QWidget):
         runs (disabled upstream in three places at once).
 
         The gain is real but clip-dependent — it tightened radius scatter by
-        0.9 px on one rig clip and could not safely reach the reflection on the
+        0.9 px on one rig clip and couldn't safely reach the reflection on the
         other. The defaults are chosen not to inflate the radius.
         """
         box = QGroupBox("Corneal reflection")
@@ -448,8 +448,8 @@ class SettingsPanel(QWidget):
         vb.addWidget(self._chk_cr_mask)
 
         # Pins are placed on the preview, like the eye region and for the same
-        # reason: they are positions in the frame. Said here too — this group
-        # has no button of its own, and that read as "pins cannot be added".
+        # reason: they're positions in the frame. Said here too — this group
+        # has no button of its own, and that read as "pins can't be added".
         pin_hint = QLabel("Add one with Pin reflection, above the pupil preview.")
         pin_hint.setWordWrap(True)
         pin_hint.setStyleSheet("color:#9aa0a6;")

@@ -13,7 +13,7 @@ class PupilSettings:
     rate_hz:     float = 20.0
     # ── eye region ──
     # The animal is head-fixed, so the eye occupies one fixed part of the frame.
-    # Kept through the tracker's removal: it is drawn by hand on the preview and
+    # Kept through the tracker's removal: it's drawn by hand on the preview and
     # is the one piece of eye geometry the operator has already set.
     # A rectangle, x0<x1 and y0<y1; anything else (including the shipped
     # 0,0,0,0) = no region.
@@ -31,7 +31,7 @@ class PupilSettings:
     track:            bool = False
     # THE consequential number. Threshold sets the reported radius — a 60 %
     # swing across 25-60 on the test clips, at a clean 151/151 fit rate the
-    # whole way. It is illumination-dependent; expect to set it per session,
+    # whole way. It's illumination-dependent; expect to set it per session,
     # and see docs/EYELOOP.md before trusting a radius.
     track_threshold:  int = 45
     track_blur:       int = 3
@@ -48,7 +48,7 @@ class PupilSettings:
 
     # ── blink detection ──
     # A blink reads as a sudden, large drop in the fitted radius — the pupil
-    # itself does not shrink 30%+ frame to frame, a closing eyelid does. Runs
+    # itself doesn't shrink 30%+ frame to frame, a closing eyelid does. Runs
     # on the RAW fit regardless of `smooth`: averaging is built to blur
     # exactly this kind of sudden change, and must not be able to hide a
     # blink from the detector meant to flag it.
@@ -74,14 +74,14 @@ class PupilSettings:
     # land, so they belong with the eye region and must be cleared when the
     # optics move.
     cr_pins:          list[tuple[float, float, float]] = field(default_factory=list)
-    # Persisted, though it is a view preference: it is how cr_threshold gets
+    # Persisted, though it's a view preference: it's how cr_threshold gets
     # tuned, and re-ticking it every launch is friction that stops it being used.
     cr_show_mask:     bool = False
 
     # ── preview ── cosmetic only; persisted for the same reason as
     # cr_show_mask just above — a display preference nobody wants to redo
     # every launch.
-    show_lut:     bool = True     # the histogram/contrast bar beside the image
+    show_lut:     bool = True     # histogram/contrast bar beside the image
     # On by default (2026-09-10, matching voltage_cam — off used to mean
     # "stuck on stale contrast until the operator drags the LUT", a display
     # bug fixed alongside this default, not a mode worth defaulting to).
