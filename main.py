@@ -358,6 +358,24 @@ class MainWindow(QMainWindow):
         stage = self.stage_target()
         return stage.active_fov_name() if stage is not None else ""
 
+    def dcimg_enabled(self) -> bool:
+        """Whether the ORCA should record through DCAM's own recorder.
+
+        Split mode only: a .dcimg cannot live inside a composite .h5, and the
+        dropdown is disabled without it. The policy lives here because the
+        Save panel owns the choice; adapters only ask.
+        """
+        sc = self._save_panel.settings
+        return bool(sc.split and sc.orca_format == "dcimg")
+
+    def dcimg_target(self, stream: str) -> Path | None:
+        """Where `stream` writes its .dcimg for the OPEN recording, or None to
+        record through the normal sink. Named to match SplitWriter's other
+        per-stream files."""
+        if not self.dcimg_enabled() or self._rec_path is None:
+            return None
+        return self._rec_path / f"{self._rec_path.name}_{stream}.dcimg"
+
     def _first(self, ask):
         """The first loaded module that answers `ask` with something."""
         for m in self._modules:

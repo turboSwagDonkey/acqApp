@@ -12,6 +12,7 @@ pylablib's DCAM wrapper; `MockCameraWorker` synthesises them. Both share
 from __future__ import annotations
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -123,6 +124,13 @@ class OrcaFireWorker(PullWorker):
         self._exp_lock     = threading.Lock()
         self._pending_exp: float | None = None
         self._pending_rearm = False     # see rearm_trigger()
+        # DCAM's own recorder (set_record_file). The swap needs a capture
+        # stop/start, so the loop performs it; this only requests one.
+        self._rec_want: Path | None = None
+        self._rec_change = False
+        self._dcimg = None              # the live DcimgRecorder, while recording
+        self._dcimg_total = 0           # frames it reported at the last stop
+        self._dcimg_missing = 0
         self._achievable_hz: float = 0.0
         self._skipped: int = 0
         self._last_exp_error: str | None = None
@@ -189,6 +197,69 @@ class OrcaFireWorker(PullWorker):
         cam.set_attribute_value(
             _MP_MODE_PROP, _MP_MODE_START, error_on_missing=False)
         cam.start_acquisition(nframes=nframes)
+
+    supports_dcimg = True
+
+    def set_record_file(self, path: Path | None) -> None:
+        """Record straight to `path` as a .dcimg (None stops). The driver
+        writes the frames, so none reach the sink — preview still works, but
+        `read_multiple_images` yields nothing while a recorder is attached.
+
+        Takes effect on the next loop pass, which stops and restarts capture:
+        DCAM binds a recorder only to a camera whose capture is stopped.
+        """
+        with self._exp_lock:
+            self._rec_want = path
+            self._rec_change = True
+
+    @property
+    def dcimg_frames(self) -> int:
+        """Frames the recorder wrote — the count no Python sink ever saw."""
+        return self._dcimg_total
+
+    @property
+    def dcimg_missing(self) -> int:
+        """Frames the recorder never received. Real data loss."""
+        return self._dcimg_missing
+
+    def _close_dcimg(self) -> None:
+        """Latch the final counts before the handle goes away."""
+        if self._dcimg is None:
+            return
+        try:
+            st = self._dcimg.status()
+            self._dcimg_total, self._dcimg_missing = st.total, st.missing
+        except Exception as e:                       # noqa: BLE001
+            print(f"[voltage_cam] dcimg status at close failed: {e}")
+        self._dcimg.close()
+        self._dcimg = None
+
+    def _swap_dcimg(self, cam, path: Path | None) -> None:
+        """Stop capture, change recorder, start again. Raises only if the NEW
+        recording can't open; the old one is closed either way."""
+        from .dcimg import DcimgRecorder
+
+        cam.stop_acquisition()
+        self._close_dcimg()
+        try:
+            if path is not None:
+                w, h = self._frame_shape(cam)
+                rec = DcimgRecorder.for_frames(path, w * h * 2)   # 16-bit
+                rec.open()
+                rec.attach(cam.handle)
+                self._dcimg = rec
+                self._dcimg_total = self._dcimg_missing = 0
+                print(f"[voltage_cam] recording to {rec.path.name} "
+                      f"(cap {rec.max_frames:,} frames)")
+        finally:
+            # Capture restarts either way: a camera left stopped is a frozen
+            # preview and no error anywhere the operator is looking.
+            cam.start_acquisition()
+
+    @staticmethod
+    def _frame_shape(cam) -> tuple[int, int]:
+        hstart, hend, vstart, vend, hbin, vbin = cam.get_roi()
+        return ((hend - hstart) // hbin, (vend - vstart) // vbin)
 
     def rearm_trigger(self) -> None:
         """Queue a re-arm, so the NEXT external edge is detectable again — in
@@ -510,6 +581,19 @@ class OrcaFireWorker(PullWorker):
                         self._pending_exp = None
                         rearm = self._pending_rearm
                         self._pending_rearm = False
+                        rec_change = self._rec_change
+                        rec_path = self._rec_want
+                        self._rec_change = False
+                    if rec_change:
+                        try:
+                            self._swap_dcimg(cam, rec_path)
+                        except Exception as e:      # noqa: BLE001
+                            # Report and carry on, like the re-arm below: the
+                            # capture thread dying takes the session with it,
+                            # and the operator sees an empty file either way.
+                            print(f"[voltage_cam] .dcimg recording failed "
+                                  f"({type(e).__name__}: {e})")
+                            self.error.emit(f"DCIMG recording failed: {e}")
                     if rearm:
                         try:
                             self._do_rearm(cam, nframes)
@@ -617,6 +701,17 @@ class OrcaFireWorker(PullWorker):
                     if now - status_t0 >= 1.0:
                         dt = now - status_t0
                         status_t0 = now
+                        if self._dcimg is not None:
+                            # Kept fresh here because `set_record_file(None)`
+                            # is asynchronous: the adapter's final_metadata()
+                            # can be read before the loop closes the file, and
+                            # a count of 0 would file as "wrote nothing".
+                            try:
+                                st_rec = self._dcimg.status()
+                                self._dcimg_total = st_rec.total
+                                self._dcimg_missing = st_rec.missing
+                            except Exception:       # noqa: BLE001
+                                pass
                         try:
                             st = cam.get_frames_status()
                             # From the camera's own counter, so it's the true
@@ -625,8 +720,10 @@ class OrcaFireWorker(PullWorker):
                                 st.acquired, (st.acquired - n_acquired) / dt)
                             n_acquired = st.acquired
                             # Only a shortfall while RECORDING is data loss —
-                            # preview skips on purpose.
-                            if sink is not None and st.skipped != self._skipped:
+                            # preview skips on purpose. A .dcimg recording has
+                            # no sink and still counts.
+                            recording = sink is not None or self._dcimg is not None
+                            if recording and st.skipped != self._skipped:
                                 self._skipped = st.skipped
                                 print(self._skip_report(st))
                                 self.drops_update.emit(st.skipped, st.buffer_size)
@@ -638,6 +735,9 @@ class OrcaFireWorker(PullWorker):
                     cam.stop_acquisition()
                 except Exception:
                     pass
+                # After the stop, never before: closing the file while the
+                # driver is still writing to it truncates the recording.
+                self._close_dcimg()
 
         finally:
             if own_cam:                # only close a camera we opened ourselves
@@ -674,6 +774,24 @@ class MockCameraWorker(PullWorker):
         `cam_dropped_frames` reads off the worker instead of a `getattr(…, 0)`
         default that would keep filing 0 if the real property were renamed
         (§5b A1)."""
+        return 0
+
+    # ── the .dcimg path, which only a real DCAM camera has ──
+    # Declared, not omitted: the adapter branches on `supports_dcimg`, so a
+    # missing attribute here would be a crash in Emulate rather than a
+    # fallback, and `test_device_contracts` holds the two twins to one API.
+    supports_dcimg = False
+
+    def set_record_file(self, path) -> None:
+        """No-op: there is no DCAM recorder behind a synthetic camera, so
+        Emulate records through the normal sink (a TIFF) instead."""
+
+    @property
+    def dcimg_frames(self) -> int:
+        return 0
+
+    @property
+    def dcimg_missing(self) -> int:
         return 0
 
     def set_exposure(self, us: float) -> None:

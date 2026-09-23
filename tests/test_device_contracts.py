@@ -287,6 +287,8 @@ def main() -> int:
         def active_fov_name(self): return ""
         def roll_recording(self): return False
         def set_routine_save_context(self, fov, trial, coords=None): ...
+        def dcimg_enabled(self): return False
+        def dcimg_target(self, stream): return None
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

@@ -252,6 +252,17 @@ class RoutinesModule(ModuleAdapter):
             self._status(f"routine refused: {problems[0]}")
             return
 
+        # DCAM's recorder writes the camera's frames itself, so none reach the
+        # Recorder — `_frames()` below would sit at 0 forever, silently
+        # stalling every frames-unit Wait and every `trigger` step. Refuse
+        # rather than run a routine whose steps can never advance.
+        if self.win.dcimg_enabled():
+            why = ("ORCA format is DCIMG — routines need frames through the "
+                   "recorder. Set Save → ORCA format back to TIFF.")
+            self.panel.show_problems([why])
+            self._status(f"routine refused: {why}")
+            return
+
         # External edge mode is needed by a TTL start AND by any `trigger`
         # step mid-routine — those wait on the same physical line, so a
         # manual-start routine full of trigger steps needs it just as much.

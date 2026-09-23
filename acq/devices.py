@@ -211,6 +211,13 @@ class ModuleHost(Protocol):
         """The DCAM handle opened once at startup, or None. Re-opening a
         just-closed DCAM device crashes the driver natively."""
 
+    def dcimg_enabled(self) -> bool:
+        """Whether the camera records through DCAM's own recorder. The Save
+        panel owns the choice; adapters only ask."""
+
+    def dcimg_target(self, stream: str) -> Any:
+        """Path `stream` records its .dcimg to, or None for the normal sink."""
+
     def status(self, message: str) -> None: ...
     def add_dock(self, title: str, widget: Any, area: Any,
                  accent: str = "sync") -> Any: ...

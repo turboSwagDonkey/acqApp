@@ -227,6 +227,11 @@ devices/                one package per instrument
   voltage_cam/
     _check_link.py      script: CoaXPress or USB3? run after any cabling change
     acquisition.py      ORCA worker + mock twin
+    dcimg.py            DCAM's own recorder (dcamrec_*) by hand-written ctypes
+                        — pylablib has the structs but binds no functions.
+                        The driver writes the .dcimg, so those frames never
+                        reach a Writer: preview survives, per-frame access
+                        doesn't
     led.py              primary illumination LED on Dev3/port0/line2 + mock —
                         same shape as pupil_cam/control.py's LED controller
     panel.py
@@ -318,6 +323,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
   test_writer_chunks.py       the direct-chunk write, and the guard on it
+  test_dcimg.py         the .dcimg path short of the DLL: the frame cap, the
+                        naming, and that a routine refuses to run on it
   test_split_writer.py       TiffFileWriter/LongCsvWriter/SplitWriter —
                               split-mode save (PLAN.md S6)
 main.py                 the shell: window chrome, docks, theme, session start/stop,

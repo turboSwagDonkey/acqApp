@@ -356,6 +356,20 @@ class VoltageCamModule(ModuleAdapter):
         if self.worker is None:
             return
 
+        # DCAM's own recorder writes the frames, so there is no sink to set:
+        # nothing reaches Python to put in one. Preview still works (the
+        # driver keeps filling the ring), and the scalar streams are
+        # unaffected — only this camera's frames leave the .h5/TIFF path.
+        target = self.win.dcimg_target(self.key)
+        if target is not None:
+            if getattr(self.worker, "supports_dcimg", False):
+                self.worker.set_record_file(target)
+                return
+            # Emulate: no DCAM behind the mock, so fall through to the sink
+            # and record a TIFF. Said out loud — a session that silently
+            # ignored the chosen format would be found in the file, later.
+            self.win.status("No DCAM camera — recording TIFF, not DCIMG")
+
         def sink(item) -> None:
             """The worker sends (frame, acquired_at, index).
 
@@ -370,6 +384,13 @@ class VoltageCamModule(ModuleAdapter):
                 rec.put("voltage_cam_index", float(index), at=at)
 
         self.worker.set_sink(sink)
+
+    def detach_sink(self) -> None:
+        # Close the .dcimg too; base only clears the sink, and a recorder left
+        # attached keeps writing into a file the session has moved on from.
+        if self.worker is not None and getattr(self.worker, "supports_dcimg", False):
+            self.worker.set_record_file(None)
+        super().detach_sink()
 
     def metadata(self) -> dict[str, Any]:
         cfg = self.panel.get_config()
@@ -396,7 +417,7 @@ class VoltageCamModule(ModuleAdapter):
     def final_metadata(self) -> dict[str, Any]:
         if self.worker is None:
             return {"cam_timestamp_source": "unknown"}
-        return {
+        out = {
             # "camera" = the camera's own per-frame stamps, "arrival" = the
             # times we read them; decides how far the frame timing is trusted.
             "cam_timestamp_source": self.worker.timestamp_source,
@@ -404,3 +425,9 @@ class VoltageCamModule(ModuleAdapter):
             # file, visible as a gap in voltage_cam_index.
             "cam_dropped_frames": self.worker.skipped_frames,
         }
+        # Only when DCAM wrote the frames: the .dcimg is the only record of
+        # how many there were, since none passed through a sink to be counted.
+        if getattr(self.worker, "dcimg_frames", 0):
+            out["cam_dcimg_frames"] = self.worker.dcimg_frames
+            out["cam_dcimg_missing"] = self.worker.dcimg_missing
+        return out

@@ -49,6 +49,7 @@ TESTS = [
     ("save-paths", "test_save_paths.py"),
     ("writer-chunks", "test_writer_chunks.py"),
     ("split-writer", "test_split_writer.py"),
+    ("dcimg", "test_dcimg.py"),
     ("stage-state", "test_stage_state.py"),
     ("stage-panel", "test_stage_panel.py"),
     ("stage-z",     "test_stage_z.py"),
