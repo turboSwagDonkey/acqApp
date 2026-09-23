@@ -13,12 +13,13 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
+    QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout,
     QWidget,
 )
 
 from acqApp import style
+from acqApp.widgets import spin
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
@@ -473,22 +474,16 @@ class SettingsPanel(QWidget):
         self._cmb_port.setCurrentText(self._s.port)
         lay.addRow("Port:", self._cmb_port)
 
-        self._spn_rate = QDoubleSpinBox()
-        self._spn_rate.setRange(0.5, 50.0)
-        self._spn_rate.setSuffix(" Hz")
-        self._spn_rate.setValue(self._s.poll_hz)
+        self._spn_rate = spin(0.5, 50.0, self._s.poll_hz, decimals=2,
+                              suffix=" Hz")
         lay.addRow("Poll rate:", self._spn_rate)
 
-        self._spn_rotation = QDoubleSpinBox()
-        self._spn_rotation.setRange(-180.0, 180.0)
-        self._spn_rotation.setDecimals(1)
-        self._spn_rotation.setSuffix(" °")
-        self._spn_rotation.setValue(self._s.frame_rotation_deg)
-        self._spn_rotation.setToolTip(
-            "Rotates only the JOG buttons' direction, so 'up' here matches "
-            "'up' on the camera regardless of how the stage is physically "
-            "mounted. Absolute go-to, soft limits and calibration are "
-            "unaffected. 0 = off.")
+        self._spn_rotation = spin(
+            -180.0, 180.0, self._s.frame_rotation_deg, decimals=1, suffix=" °",
+            tooltip="Rotates only the JOG buttons' direction, so 'up' here "
+                    "matches 'up' on the camera regardless of how the stage is "
+                    "physically mounted. Absolute go-to, soft limits and "
+                    "calibration are unaffected. 0 = off.")
         lay.addRow("Frame rotation:", self._spn_rotation)
 
         # Port, poll rate and frame rotation are settings that live in the
@@ -573,19 +568,14 @@ class SettingsPanel(QWidget):
             grid.addWidget(QLabel(ax.name), r, 0)
             btn_minus = _btn("−", 28, r, 1, lambda _, k=key: self._jog(k, -1))
 
-            spn_step = QDoubleSpinBox()
-            spn_step.setRange(0.1, 5000.0)
-            spn_step.setDecimals(1)
-            spn_step.setValue(ax.step_um)
+            spn_step = spin(0.1, 5000.0, ax.step_um, decimals=1)
             spn_step.setMaximumWidth(70)
             grid.addWidget(spn_step, r, 2)
 
             btn_plus = _btn("+", 28, r, 3, lambda _, k=key: self._jog(k, +1))
 
-            spn_goto = QDoubleSpinBox()
-            spn_goto.setRange(*ax.soft_limits_um())
-            spn_goto.setDecimals(1)
-            spn_goto.setSuffix(" µm")
+            # No starting value: the operator types the destination.
+            spn_goto = spin(*ax.soft_limits_um(), decimals=1, suffix=" µm")
             spn_goto.setMaximumWidth(90)
             grid.addWidget(spn_goto, r, 4)
 

@@ -21,12 +21,13 @@ from typing import Callable
 
 import numpy as np
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QApplication, QComboBox, QDialog, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar, QPushButton,
     QVBoxLayout,
 )
 
 from acqApp import config, style
+from acqApp.widgets import spin
 
 from acqApp.devices.dmd.calibration import (ON, STRIPE_CROSS, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
@@ -171,16 +172,14 @@ class CalibrationDialog(QDialog):
             "perspective (keystone) at all, however it's rotated or sheared.")
         gform.addRow("Model:", self._cmb_model)
 
-        self._spn_cross = QDoubleSpinBox()
-        self._spn_cross.setRange(1.0, 50.0)
-        self._spn_cross.setSuffix(" %")
-        self._spn_cross.setDecimals(1)
-        self._spn_cross.setValue(100.0 * (seed["cross_frac"] or STRIPE_CROSS))
-        self._spn_cross.setToolTip(
-            "The stripe's length across the OTHER axis, as a fraction of the "
-            "panel. A steep tilt magnifies one end of that length far more "
-            "than the other; if the sweep log below shows most stripes "
-            "'dropped: off the frame edge', shrink this until they fit.")
+        self._spn_cross = spin(
+            1.0, 50.0, 100.0 * (seed["cross_frac"] or STRIPE_CROSS),
+            decimals=1, suffix=" %",
+            tooltip="The stripe's length across the OTHER axis, as a fraction "
+                    "of the panel. A steep tilt magnifies one end of that "
+                    "length far more than the other; if the sweep log below "
+                    "shows most stripes 'dropped: off the frame edge', shrink "
+                    "this until they fit.")
         gform.addRow("Stripe cross-length:", self._spn_cross)
         root.addWidget(geom)
 

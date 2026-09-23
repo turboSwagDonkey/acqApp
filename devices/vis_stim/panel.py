@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from acqApp import style
+from acqApp.widgets import spin
 from acqApp.acq.sync import DEFAULT_TICK_MS
 from .settings import (IMPLEMENTED_TRIAL_TYPES, REGION_TRIAL_TYPES,
                        TRIAL_CONTRAST, TRIAL_GRATING, TRIAL_MAP, TRIAL_SIZE,
@@ -254,21 +255,16 @@ class SettingsPanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
         for name, label, lo, hi, step, dec in fields:
-            spin = QDoubleSpinBox()
-            if name in _TICK_FIELDS:
-                spin.setRange(lo / _TICK_HZ, hi / _TICK_HZ)
-                spin.setSingleStep(max(step / _TICK_HZ, 0.1 / _TICK_HZ))
-                spin.setDecimals(max(dec, 2))
-                spin.setSuffix(" s")
-                spin.setValue(getattr(self._s.params, name) / _TICK_HZ)
+            value = getattr(self._s.params, name)
+            if name in _TICK_FIELDS:    # stored in ticks, shown in seconds
+                box = spin(lo / _TICK_HZ, hi / _TICK_HZ, value / _TICK_HZ,
+                           decimals=max(dec, 2), suffix=" s",
+                           step=max(step / _TICK_HZ, 0.1 / _TICK_HZ))
             else:
-                spin.setRange(lo, hi)
-                spin.setSingleStep(step)
-                spin.setDecimals(dec)
-                spin.setValue(getattr(self._s.params, name))
-            spin.valueChanged.connect(self._emit)
-            self._spins[name] = spin
-            lay.addRow(f"{label}:", spin)
+                box = spin(lo, hi, value, decimals=dec, step=step)
+            box.valueChanged.connect(self._emit)
+            self._spins[name] = box
+            lay.addRow(f"{label}:", box)
         return grp
 
     # ── loop variables ───────────────────────────────────────────────────
@@ -440,9 +436,9 @@ class SettingsPanel(QWidget):
     @property
     def settings(self) -> VisStimSettings:
         p = StimParams(**{
-            name: (round(spin.value() * _TICK_HZ) if name in _TICK_FIELDS
-                  else spin.value())
-            for name, spin in self._spins.items()})
+            name: (round(box.value() * _TICK_HZ) if name in _TICK_FIELDS
+                  else box.value())
+            for name, box in self._spins.items()})
         return VisStimSettings(
             trial_type=self._cmb_trial.currentData() or TRIAL_GRATING,
             screen_index=max(0, self._cmb_screen.currentIndex()),

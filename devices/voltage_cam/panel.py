@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QSpinBox, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QWidget,
 )
 
+from acqApp.widgets import spin
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
@@ -81,23 +81,18 @@ class SettingsPanel(QWidget):
         )
         lay.addRow("Binning:", self._cmb_binning)
 
-        self._spn_exposure = QDoubleSpinBox()
-        self._spn_exposure.setRange(0.01, 1_000_000.0)
-        self._spn_exposure.setSingleStep(500.0)
-        self._spn_exposure.setDecimals(1)
-        self._spn_exposure.setSuffix(" µs")
-        self._spn_exposure.setValue(self._cfg.exposure_us)
+        self._spn_exposure = spin(0.01, 1_000_000.0, self._cfg.exposure_us,
+                                  decimals=1, step=500.0, suffix=" µs")
         self._spn_exposure.valueChanged.connect(self.exposure_changed)
         lay.addRow("Exposure:", self._spn_exposure)
 
         # A frame period can't be shorter than the exposure inside it, so Rate
         # always caps Exposure's maximum to 1/rate — independent of Link, which
         # only decides whether moving one *also* moves the other.
-        self._spn_hz = QDoubleSpinBox()
-        self._spn_hz.setRange(0.001, 100_000.0)
-        self._spn_hz.setDecimals(3)
-        self._spn_hz.setSuffix(" Hz")
-        self._spn_hz.setValue(1e6 / self._cfg.exposure_us if self._cfg.exposure_us > 0 else 100.0)
+        self._spn_hz = spin(
+            0.001, 100_000.0,
+            1e6 / self._cfg.exposure_us if self._cfg.exposure_us > 0 else 100.0,
+            decimals=3, suffix=" Hz")
         self._chk_hz_link = QCheckBox("Link")
         self._chk_hz_link.setToolTip(
             "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
@@ -149,13 +144,10 @@ class SettingsPanel(QWidget):
             "app leaves them exactly where you put them.")
         self._chk_auto.toggled.connect(self.auto_levels_changed)
 
-        self._spn_preview_avg = QSpinBox()
-        self._spn_preview_avg.setRange(1, 8)
-        self._spn_preview_avg.setValue(self._cfg.preview_avg)
-        self._spn_preview_avg.setPrefix("avg ")
-        self._spn_preview_avg.setToolTip(
-            "Average this many recent preview frames before display.\n"
-            "1 = off. The recorded file still gets every raw frame.")
+        self._spn_preview_avg = spin(
+            1, 8, self._cfg.preview_avg, prefix="avg ",
+            tooltip="Average this many recent preview frames before display.\n"
+                    "1 = off. The recorded file still gets every raw frame.")
         self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
 
         disp_row = QWidget()

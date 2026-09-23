@@ -14,10 +14,11 @@ from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from acqApp import style
+from acqApp.widgets import spin
 
 
 @dataclass
@@ -202,12 +203,8 @@ class SettingsPanel(QWidget):
         self._cmb_chan.setCurrentText(self._s.channel)
         lay.addRow("DO channel:", self._cmb_chan)
 
-        self._spn_dur = QDoubleSpinBox()
-        self._spn_dur.setRange(0.010, 5.0)
-        self._spn_dur.setSingleStep(0.010)
-        self._spn_dur.setDecimals(3)
-        self._spn_dur.setSuffix(" s")
-        self._spn_dur.setValue(self._s.duration_s)
+        self._spn_dur = spin(0.010, 5.0, self._s.duration_s,
+                             decimals=3, step=0.010, suffix=" s")
         lay.addRow("Duration:", self._spn_dur)
 
         # Push edits straight to the controller: without this the panel is
@@ -228,11 +225,7 @@ class SettingsPanel(QWidget):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Puff at t ="))
-        self._spn_at = QDoubleSpinBox()
-        self._spn_at.setRange(0.0, 86_400.0)
-        self._spn_at.setDecimals(1)
-        self._spn_at.setSuffix(" s")
-        self._spn_at.setValue(5.0)
+        self._spn_at = spin(0.0, 86_400.0, 5.0, decimals=1, suffix=" s")
         row.addWidget(self._spn_at)
         btn_add = QPushButton("Schedule")
         btn_add.clicked.connect(self._schedule)

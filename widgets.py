@@ -7,11 +7,46 @@ panel can use it without pulling in the shell.
 from __future__ import annotations
 
 from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QGroupBox, QWidget
+from PyQt6.QtWidgets import QDoubleSpinBox, QGroupBox, QSpinBox, QWidget
 
 _GEOM_ORG, _GEOM_APP = "acqApp", "acqApp"
 
 OPEN, SHUT = "▾", "▸"
+
+
+def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
+         suffix: str = "", prefix: str = "", tooltip: str = "",
+         track: bool = True) -> QSpinBox | QDoubleSpinBox:
+    """A configured spin box: `QSpinBox` by default, `QDoubleSpinBox` once
+    `decimals` is given.
+
+    Range is always applied BEFORE the value — the other order silently
+    clamps to Qt's default 0–99. Omit `value` to keep Qt's own starting
+    point (0, clamped into range), which is what a box the operator is
+    expected to fill in wants.
+
+    `track=False` turns off keyboard tracking, so typing "150" emits once
+    instead of at 1, 15 and 150. Worth it wherever the signal is expensive
+    (a save, or a box that jumps across the frame); the default stays on,
+    which is Qt's, so a control only opts out deliberately.
+    """
+    s = QDoubleSpinBox() if decimals is not None else QSpinBox()
+    s.setRange(lo, hi)
+    if decimals is not None:
+        s.setDecimals(decimals)
+    if step is not None:
+        s.setSingleStep(step)
+    if suffix:
+        s.setSuffix(suffix)
+    if prefix:
+        s.setPrefix(prefix)
+    if not track:
+        s.setKeyboardTracking(False)
+    if value is not None:
+        s.setValue(value if decimals is not None else int(value))
+    if tooltip:
+        s.setToolTip(tooltip)
+    return s
 
 
 def _arrow(box: QGroupBox, on: bool) -> None:

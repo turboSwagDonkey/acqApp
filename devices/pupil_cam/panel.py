@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from acqApp.widgets import spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 _VIDEO_FILTER = "Uncompressed AVI (*.avi);;All files (*)"
@@ -56,11 +57,8 @@ class SettingsPanel(QWidget):
         cam = QGroupBox("Camera")
         cl = QFormLayout(cam)
         cl.setSpacing(4)
-        self._spn_exp = QDoubleSpinBox()
-        self._spn_exp.setRange(50.0, 100_000.0)
-        self._spn_exp.setDecimals(0)
-        self._spn_exp.setSuffix(" µs")
-        self._spn_exp.setValue(self._s.exposure_us)
+        self._spn_exp = spin(50.0, 100_000.0, self._s.exposure_us,
+                             decimals=0, suffix=" µs")
         self._spn_exp.valueChanged.connect(self.exposure_changed)
         cl.addRow("Exposure:", self._spn_exp)
 
@@ -68,10 +66,8 @@ class SettingsPanel(QWidget):
         # always caps Exposure's maximum to 1/rate — independent of Link, which
         # only decides whether moving one *also* moves the other. Matches
         # devices/voltage_cam/panel.py's Rate/Exposure pair.
-        self._spn_hz = QDoubleSpinBox()
-        self._spn_hz.setRange(1.0, 200.0)
-        self._spn_hz.setSuffix(" Hz")
-        self._spn_hz.setValue(self._s.rate_hz)
+        self._spn_hz = spin(1.0, 200.0, self._s.rate_hz,
+                            decimals=2, suffix=" Hz")   # 2 = Qt's own default
         self._chk_hz_link = QCheckBox("Link")
         self._chk_hz_link.setToolTip(
             "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
@@ -153,14 +149,11 @@ class SettingsPanel(QWidget):
         il = QHBoxLayout(intensity_row)
         il.setContentsMargins(0, 0, 0, 0)
         il.addWidget(QLabel("Intensity:"))
-        self._spn_intensity = QDoubleSpinBox()
-        self._spn_intensity.setRange(0.0, 100.0)
-        self._spn_intensity.setDecimals(0)
-        self._spn_intensity.setSuffix(" %")
-        self._spn_intensity.setValue(self._s.led_intensity * 100.0)
-        self._spn_intensity.setToolTip(
-            "0-100% of the LEDD1B's MOD full-scale. Applied live while the "
-            "LED is on; otherwise just the level the next on() will use.")
+        self._spn_intensity = spin(
+            0.0, 100.0, self._s.led_intensity * 100.0, decimals=0, suffix=" %",
+            tooltip="0-100% of the LEDD1B's MOD full-scale. Applied live while "
+                    "the LED is on; otherwise just the level the next on() "
+                    "will use.")
         self._spn_intensity.valueChanged.connect(
             lambda pct: self.led_intensity_changed.emit(pct / 100.0))
         self._spn_intensity.valueChanged.connect(self._emit)
@@ -366,16 +359,12 @@ class SettingsPanel(QWidget):
 
         form = QFormLayout()
         form.setSpacing(4)
-        self._spn_blink_drop = QDoubleSpinBox()
-        self._spn_blink_drop.setRange(0.05, 0.90)
-        self._spn_blink_drop.setSingleStep(0.05)
-        self._spn_blink_drop.setDecimals(2)
-        self._spn_blink_drop.setKeyboardTracking(False)
-        self._spn_blink_drop.setValue(self._s.blink_drop_frac)
-        self._spn_blink_drop.setToolTip(
-            "Fraction the radius must drop below its recent baseline to "
-            "count as a blink. Lower catches more (and more false positives); "
-            "higher misses partial/quick blinks.")
+        self._spn_blink_drop = spin(
+            0.05, 0.90, self._s.blink_drop_frac, decimals=2, step=0.05,
+            track=False,
+            tooltip="Fraction the radius must drop below its recent baseline "
+                    "to count as a blink. Lower catches more (and more false "
+                    "positives); higher misses partial/quick blinks.")
         form.addRow("Drop threshold:", self._spn_blink_drop)
 
         self._spn_blink_win = self._int_spin(self._s.blink_baseline_window, 3, 60)
@@ -427,16 +416,12 @@ class SettingsPanel(QWidget):
             "Width of the annulus each blob is filled from.")
         form.addRow("Ring:", self._spn_cr_ring)
 
-        self._spn_cr_reach = QDoubleSpinBox()
-        self._spn_cr_reach.setRange(0.10, 1.20)
-        self._spn_cr_reach.setSingleStep(0.05)
-        self._spn_cr_reach.setDecimals(2)
-        self._spn_cr_reach.setKeyboardTracking(False)
-        self._spn_cr_reach.setValue(self._s.cr_reach)
-        self._spn_cr_reach.setToolTip(
-            "How far out to look, as a fraction of the fitted ellipse. Past "
-            "~0.85 it masks the rim, which erases the pupil boundary and "
-            "INFLATES the radius — the failure looks like a good fit.")
+        self._spn_cr_reach = spin(
+            0.10, 1.20, self._s.cr_reach, decimals=2, step=0.05, track=False,
+            tooltip="How far out to look, as a fraction of the fitted ellipse. "
+                    "Past ~0.85 it masks the rim, which erases the pupil "
+                    "boundary and INFLATES the radius — the failure looks "
+                    "like a good fit.")
         form.addRow("Reach:", self._spn_cr_reach)
         vb.addLayout(form)
 
@@ -495,25 +480,14 @@ class SettingsPanel(QWidget):
 
     @staticmethod
     def _int_spin(value: int, lo: int, hi: int, step: int = 1) -> QSpinBox:
-        s = QSpinBox()
-        s.setRange(lo, hi)
-        s.setSingleStep(step)
-        # As in _px_spin: typing "120" would otherwise save at 1, 12 and 120.
-        s.setKeyboardTracking(False)
-        s.setValue(int(value))
-        return s
+        return spin(lo, hi, value, step=step, track=False)
 
     @staticmethod
     def _px_spin(value: float) -> QDoubleSpinBox:
-        s = QDoubleSpinBox()
-        s.setRange(0.0, 20_000.0)       # any sensor; 0 is a valid edge
-        s.setDecimals(0)
-        s.setSuffix(" px")
-        # Typing "150" would otherwise emit at 1, 15 and 150 — three saves for
+        # 0-20,000 px covers any sensor, and 0 is a valid edge. Untracked:
+        # typing "150" would otherwise emit at 1, 15 and 150 — three saves for
         # one edit, with the box jumping across the frame on the way.
-        s.setKeyboardTracking(False)
-        s.setValue(value)
-        return s
+        return spin(0.0, 20_000.0, value, decimals=0, suffix=" px", track=False)
 
     def _limit_edited(self, *_a) -> None:
         self._btn_limit_clear.setEnabled(

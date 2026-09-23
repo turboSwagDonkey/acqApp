@@ -47,10 +47,13 @@ flowchart TD
     devices --> console
     devices --> style
     devices --> config
+    devices --> widgets
     closed_loop --> acq
     closed_loop --> style
+    closed_loop --> widgets
     routines --> style
     routines --> devices
+    routines --> widgets
     dialogs --> config
     dialogs --> probe
     dialogs --> style
@@ -59,7 +62,11 @@ flowchart TD
     probe --> config
 ```
 
-Six edges surprise people, so they are drawn rather than explained away:
+Seven edges surprise people, so they are drawn rather than explained away:
+`devices → widgets`, and `closed_loop`/`routines → widgets` with it
+(`widgets.spin()` builds the configured spin boxes every settings panel wants
+— range-before-value, suffix, keyboard tracking; that is what `widgets.py` is
+for, and the alternative was the same six lines a hundred times over),
 `probe.py → devices` (the DMD probe resolves the ALP path through
 `devices/dmd/alp.py`), `probe.py → config` (which NI device to look for is
 the active rig's, from `rigs.json` — imported inside the function, not at

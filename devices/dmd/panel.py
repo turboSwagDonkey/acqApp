@@ -18,10 +18,11 @@ from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen, QPixmap,
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QSpinBox, QVBoxLayout, QWidget,
+    QRadioButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
+from acqApp.widgets import spin
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
@@ -215,41 +216,25 @@ class SettingsPanel(QWidget):
         geom_lay.addWidget(self._chk_fit, 0, 0, 1, 4)
 
         geom_lay.addWidget(QLabel("Scale:"), 1, 0)
-        self._spn_scale = QDoubleSpinBox()
-        self._spn_scale.setRange(1.0, 1000.0)
-        self._spn_scale.setDecimals(1)
-        self._spn_scale.setSingleStep(1.0)
-        self._spn_scale.setSuffix(" %")
-        self._spn_scale.setValue(self._s.scale_pct)
+        self._spn_scale = spin(1.0, 1000.0, self._s.scale_pct,
+                               decimals=1, step=1.0, suffix=" %")
         geom_lay.addWidget(self._spn_scale, 1, 1)
 
         geom_lay.addWidget(QLabel("Rot:"), 1, 2)
-        self._spn_rot = QDoubleSpinBox()
-        self._spn_rot.setRange(-360.0, 360.0)
-        self._spn_rot.setDecimals(1)
-        self._spn_rot.setSingleStep(0.5)
-        self._spn_rot.setSuffix(" °")
-        self._spn_rot.setValue(self._s.rotation_deg)
-        self._spn_rot.setToolTip("Clockwise-positive rotation.")
+        self._spn_rot = spin(-360.0, 360.0, self._s.rotation_deg,
+                             decimals=1, step=0.5, suffix=" °",
+                             tooltip="Clockwise-positive rotation.")
         geom_lay.addWidget(self._spn_rot, 1, 3)
 
         geom_lay.addWidget(QLabel("Offset X:"), 2, 0)
-        self._spn_dx = QDoubleSpinBox()
-        self._spn_dx.setRange(-4000.0, 4000.0)
-        self._spn_dx.setDecimals(0)
-        self._spn_dx.setSingleStep(1.0)
-        self._spn_dx.setSuffix(" px")
-        self._spn_dx.setValue(self._s.offset_x)
+        self._spn_dx = spin(-4000.0, 4000.0, self._s.offset_x,
+                            decimals=0, step=1.0, suffix=" px")
         geom_lay.addWidget(self._spn_dx, 2, 1)
 
         geom_lay.addWidget(QLabel("Offset Y:"), 2, 2)
-        self._spn_dy = QDoubleSpinBox()
-        self._spn_dy.setRange(-4000.0, 4000.0)
-        self._spn_dy.setDecimals(0)
-        self._spn_dy.setSingleStep(1.0)
-        self._spn_dy.setSuffix(" px")
-        self._spn_dy.setValue(self._s.offset_y)
-        self._spn_dy.setToolTip("Offset from center in device pixels.")
+        self._spn_dy = spin(-4000.0, 4000.0, self._s.offset_y,
+                            decimals=0, step=1.0, suffix=" px",
+                            tooltip="Offset from center in device pixels.")
         geom_lay.addWidget(self._spn_dy, 2, 3)
 
         self._chk_invert = QCheckBox("Invert mirrors")
@@ -262,15 +247,13 @@ class SettingsPanel(QWidget):
         geom_lay.addWidget(btn_reset_geom, 3, 2, 1, 2)
 
         geom_lay.addWidget(QLabel("Sub-sampling:"), 4, 0)
-        self._spn_subsample = QSpinBox()
-        self._spn_subsample.setRange(1, 10)
-        self._spn_subsample.setValue(self._s.sub_sampling)
+        self._spn_subsample = spin(
+            1, 10, self._s.sub_sampling,
+            tooltip="Turn off 1 of every N pixels to cut total light without "
+                    "changing exposure time — a coarse ND filter made of "
+                    "missing mirrors. 1 = off (every mirror the pattern would "
+                    "light stays on); 2 = half off, up to 10 = 1 in 10 off.")
         self._spn_subsample.setSpecialValueText("off")
-        self._spn_subsample.setToolTip(
-            "Turn off 1 of every N pixels to cut total light without "
-            "changing exposure time — a coarse ND filter made of missing "
-            "mirrors. 1 = off (every mirror the pattern would light stays "
-            "on); 2 = half off, up to 10 = 1 in 10 off.")
         geom_lay.addWidget(self._spn_subsample, 4, 1)
 
         self._chk_nudge = QCheckBox("Enable keyboard nudging")

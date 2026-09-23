@@ -51,10 +51,11 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QListWidget, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
+from acqApp.widgets import spin
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
@@ -128,10 +129,9 @@ class SettingsPanel(QWidget):
         self._txt_name = QLineEdit(self._r.name)
         form.addRow("Name:", self._txt_name)
 
-        self._spn_cycles = QSpinBox()
-        self._spn_cycles.setRange(1, 9999)
-        self._spn_cycles.setValue(max(1, self._r.cycles))
-        self._spn_cycles.setToolTip("How many times the whole step list runs.")
+        self._spn_cycles = spin(
+            1, 9999, max(1, self._r.cycles),
+            tooltip="How many times the whole step list runs.")
         form.addRow("Repeat the list:", self._spn_cycles)
 
         self._cmb_save = QComboBox()
@@ -233,11 +233,9 @@ class SettingsPanel(QWidget):
         self._lbl_g_selection.setWordWrap(True)
         grow.addWidget(self._lbl_g_selection, 1)
         grow.addWidget(QLabel("×"))
-        self._spn_g_repeats = QSpinBox()
-        self._spn_g_repeats.setRange(2, 999)
-        self._spn_g_repeats.setValue(2)
-        self._spn_g_repeats.setToolTip("How many times the selected steps "
-                                       "repeat before the routine moves on.")
+        self._spn_g_repeats = spin(
+            2, 999, 2, tooltip="How many times the selected steps repeat "
+                               "before the routine moves on.")
         grow.addWidget(self._spn_g_repeats)
         self._btn_g_add = QPushButton("Group selected")
         self._btn_g_add.setEnabled(False)
@@ -511,14 +509,12 @@ class SettingsPanel(QWidget):
     _POS_LO, _POS_HI, _POS_STEP = -1e5, 1e5, 100.0
 
     def _position_spin(self, value: float | None) -> QDoubleSpinBox:
-        sb = QDoubleSpinBox()
-        sb.setDecimals(0)
-        sb.setSuffix(" um")
-        sb.setRange(self._POS_LO - self._POS_STEP, self._POS_HI)
-        sb.setSingleStep(self._POS_STEP)
+        # One step BELOW the real low bound is the "leave this axis alone"
+        # slot, shown as NO_CHANGE rather than a position.
+        blank = self._POS_LO - self._POS_STEP
+        sb = spin(blank, self._POS_HI, blank if value is None else value,
+                  decimals=0, step=self._POS_STEP, suffix=" um", track=False)
         sb.setSpecialValueText(NO_CHANGE)
-        sb.setKeyboardTracking(False)
-        sb.setValue(self._POS_LO - self._POS_STEP if value is None else value)
         return sb
 
     def _set_position(self) -> None:

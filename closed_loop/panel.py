@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
+from acqApp.widgets import spin
 from acqApp.closed_loop.settings import (COMPARISONS, TARGETS, LoopSettings,
                                          SignalSource)
 
@@ -46,31 +47,20 @@ class SettingsPanel(QWidget):
         self._cmb_cmp.setCurrentText(self._s.comparison)
         lay.addRow("Fire when it goes:", self._cmb_cmp)
 
-        self._spn_thr = QDoubleSpinBox()
-        self._spn_thr.setRange(-1e6, 1e6)
-        self._spn_thr.setDecimals(2)
-        self._spn_thr.setValue(self._s.threshold)
+        self._spn_thr = spin(-1e6, 1e6, self._s.threshold, decimals=2)
         lay.addRow("Threshold:", self._spn_thr)
 
-        self._spn_hold = QDoubleSpinBox()
-        self._spn_hold.setRange(0.0, 60.0)
-        self._spn_hold.setDecimals(2)
-        self._spn_hold.setSingleStep(0.05)
-        self._spn_hold.setSuffix(" s")
-        self._spn_hold.setValue(self._s.hold_s)
-        self._spn_hold.setToolTip(
-            "Condition must hold this long before it counts as an event. "
-            "0 fires on any single sample that crosses, including noise.")
+        self._spn_hold = spin(
+            0.0, 60.0, self._s.hold_s, decimals=2, step=0.05, suffix=" s",
+            tooltip="Condition must hold this long before it counts as an "
+                    "event. 0 fires on any single sample that crosses, "
+                    "including noise.")
         lay.addRow("…and holds for:", self._spn_hold)
 
-        self._spn_refr = QDoubleSpinBox()
-        self._spn_refr.setRange(0.0, 3600.0)
-        self._spn_refr.setDecimals(2)
-        self._spn_refr.setSuffix(" s")
-        self._spn_refr.setValue(self._s.refractory_s)
-        self._spn_refr.setToolTip(
-            "Minimum gap between two fires. At 0 a condition that stays true "
-            "fires on every evaluation — 200 a second.")
+        self._spn_refr = spin(
+            0.0, 3600.0, self._s.refractory_s, decimals=2, suffix=" s",
+            tooltip="Minimum gap between two fires. At 0 a condition that "
+                    "stays true fires on every evaluation — 200 a second.")
         lay.addRow("Minimum gap:", self._spn_refr)
 
         self._chk_retrig = QCheckBox("Repeat while the condition holds")
@@ -80,10 +70,8 @@ class SettingsPanel(QWidget):
             "can fire again — one event per bout.")
         lay.addRow(self._chk_retrig)
 
-        self._spn_max = QSpinBox()
-        self._spn_max.setRange(0, 9999)
+        self._spn_max = spin(0, 9999, self._s.max_fires)
         self._spn_max.setSpecialValueText("∞  no limit")
-        self._spn_max.setValue(self._s.max_fires)
         lay.addRow("Stop after:", self._spn_max)
         root.addWidget(grp)
 
@@ -99,15 +87,10 @@ class SettingsPanel(QWidget):
         self._cmb_target.setCurrentIndex(max(0, idx))
         olay.addRow("Fires the:", self._cmb_target)
 
-        self._spn_dur = QDoubleSpinBox()
-        self._spn_dur.setRange(0.0, 10.0)
-        self._spn_dur.setDecimals(3)
-        self._spn_dur.setSingleStep(0.010)
-        self._spn_dur.setSuffix(" s")
-        self._spn_dur.setValue(self._s.duration_s)
-        self._spn_dur.setToolTip(
-            "Puffer: how long valve stays open. DMD: how long pattern "
-            "is held before it's stopped (0 = until Stop is pressed).")
+        self._spn_dur = spin(
+            0.0, 10.0, self._s.duration_s, decimals=3, step=0.010, suffix=" s",
+            tooltip="Puffer: how long valve stays open. DMD: how long pattern "
+                    "is held before it's stopped (0 = until Stop is pressed).")
         olay.addRow("For:", self._spn_dur)
         root.addWidget(ogrp)
 

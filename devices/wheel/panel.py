@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QLabel, QWidget,
-)
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox, QLabel, QWidget
+
+from acqApp.widgets import spin
 
 from acqApp.devices.wheel.settings import EncoderSettings
 
@@ -30,25 +29,20 @@ class SettingsPanel(QWidget):
         self._edt_chan.setCurrentText(self._s.channel)
         lay.addRow("Channel:", self._edt_chan)
 
-        self._spn_rate = QDoubleSpinBox()
-        self._spn_rate.setRange(1.0, 1000.0)
-        self._spn_rate.setSuffix(" Hz")
-        self._spn_rate.setValue(self._s.rate)
+        self._spn_rate = spin(1.0, 1000.0, self._s.rate, decimals=2,
+                              suffix=" Hz")
         lay.addRow("Sample rate:", self._spn_rate)
 
-        self._spn_vpr = QDoubleSpinBox()
-        self._spn_vpr.setRange(0.0, 20.0)
-        self._spn_vpr.setDecimals(3)
-        self._spn_vpr.setSuffix(" V/rev")
+        # Both of these read 0 as "not calibrated", which is what the special
+        # value text says in place of a meaningless 0.000.
+        self._spn_vpr = spin(0.0, 20.0, self._s.volts_per_rev or 0.0,
+                             decimals=3, suffix=" V/rev")
         self._spn_vpr.setSpecialValueText("— (raw V)")
-        self._spn_vpr.setValue(self._s.volts_per_rev or 0.0)
         lay.addRow("V / rev:", self._spn_vpr)
 
-        self._spn_dia = QDoubleSpinBox()
-        self._spn_dia.setRange(0.0, 500.0)
-        self._spn_dia.setSuffix(" mm")
+        self._spn_dia = spin(0.0, 500.0, self._s.wheel_dia_mm or 0.0,
+                             decimals=2, suffix=" mm")
         self._spn_dia.setSpecialValueText("— (no linear)")
-        self._spn_dia.setValue(self._s.wheel_dia_mm or 0.0)
         lay.addRow("Wheel dia:", self._spn_dia)
 
         # valueChanged, not editingFinished: the spin arrows don't count as
