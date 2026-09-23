@@ -218,6 +218,17 @@ class ModuleHost(Protocol):
     def dcimg_target(self, stream: str) -> Any:
         """Path `stream` records its .dcimg to, or None for the normal sink."""
 
+    def camera_ready(self, stream: str) -> bool:
+        """Whether `stream`'s capture is running for what was last asked of
+        it — False while a .dcimg roll has the camera stopped. True when the
+        module has no such notion, so nothing waits on a TIFF run."""
+
+    def dcimg_frames(self, stream: str) -> Any:
+        """Frames DCAM's recorder has written for `stream`, or None when it
+        isn't writing one. The routine engine counts this instead of
+        `Recorder.offered()` when a .dcimg is open — nothing reaches the
+        Recorder to be offered."""
+
     def status(self, message: str) -> None: ...
     def add_dock(self, title: str, widget: Any, area: Any,
                  accent: str = "sync") -> Any: ...

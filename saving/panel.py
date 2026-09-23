@@ -127,17 +127,19 @@ class SavePanel(QWidget):
         lay.addRow("", self._chk_split)
 
         self._cmb_orca_format = QComboBox()
-        self._cmb_orca_format.addItem("TIFF — works with routines", "tiff")
-        self._cmb_orca_format.addItem("DCIMG — native, no routines", "dcimg")
+        self._cmb_orca_format.addItem("TIFF — per-frame timestamps", "tiff")
+        self._cmb_orca_format.addItem("DCIMG — native, faster", "dcimg")
         # Preview DOES survive a .dcimg recording (measured 2026-09-23): the
         # driver keeps filling the ring, so read_newest_image still answers.
         # What stops is per-frame access — read_multiple_images returns
-        # nothing, so there is no _timestamps.csv and the routine engine's
-        # frame count would never move. Hence "no routines".
+        # nothing, so there is no _timestamps.csv. Routines DO run on it:
+        # they count the recorder's own frame total instead.
         self._cmb_orca_format.setToolTip(
-            "TIFF: frames go through acqApp, stamped on the shared clock.\n"
-            "DCIMG: the camera driver writes the file itself — faster, but "
-            "no per-frame timestamps, and routines are refused.")
+            "TIFF: frames go through acqApp, each stamped on the shared "
+            "clock.\n"
+            "DCIMG: the camera driver writes the file itself — faster, and "
+            "routines still run, but the only times recorded are when the "
+            "file opened and closed (cam_dcimg_t0_s/t1_s), not per frame.")
         idx = self._cmb_orca_format.findData(self._cfg.orca_format)
         self._cmb_orca_format.setCurrentIndex(max(0, idx))
         self._cmb_orca_format.currentIndexChanged.connect(self._on_edited)

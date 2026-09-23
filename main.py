@@ -496,6 +496,27 @@ class MainWindow(QMainWindow):
                if m is not None and hasattr(m, "rearm_trigger")
                else None)
 
+    def dcimg_frames(self, key: str) -> int | None:
+        """Frames DCAM's own recorder has written for module `key` so far, or
+        None when it isn't writing one — which is also "count them the normal
+        way" to the routine engine. Refreshed once per captured frame, so it
+        can be counted against the way `Recorder.offered()` is."""
+        m = self._module(key)
+        return (m.dcimg_frames()
+               if m is not None and hasattr(m, "dcimg_frames")
+               else None)
+
+    def camera_ready(self, key: str) -> bool:
+        """Whether module `key`'s capture is actually running for whatever
+        was last asked of it. False only while a `.dcimg` file roll has the
+        camera stopped (~0.9 s) — a routine holds here rather than counting a
+        Wait down against a camera producing nothing. True for anything with
+        no such notion, so a TIFF run never waits."""
+        m = self._module(key)
+        return (m.dcimg_ready()
+               if m is not None and hasattr(m, "dcimg_ready")
+               else True)
+
     def set_mode(self, name: str) -> None:
         """Apply the sidebar's named cross-module preset (the Mode dropdown).
 

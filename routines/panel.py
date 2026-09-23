@@ -49,7 +49,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
@@ -152,6 +152,17 @@ class SettingsPanel(QWidget):
             "and arms the routine, then waits for a frame the camera did "
             "not have yet — which only happens on a real pulse.")
         form.addRow("Start trigger:", self._cmb_trigger)
+
+        self._chk_wait_cam = QCheckBox("Hold at a file roll until frames resume")
+        self._chk_wait_cam.setChecked(self._r.wait_for_camera)
+        self._chk_wait_cam.setToolTip(
+            "Only bites when ORCA format is DCIMG and the save mode rolls "
+            "files.\nDCAM rebinds its recorder to a STOPPED camera, so a roll "
+            "costs about\n0.9 s with no frames. On: the routine waits it out "
+            "and restarts the\nstep's clock, so a 5 s step records 5 s of "
+            "frames and the trial just\ntakes longer. Off: the step counts "
+            "down through the gap and the\ntrial comes up short.")
+        form.addRow("", self._chk_wait_cam)
         # Long item text must not set the panel's width.
         for cmb in (self._cmb_save, self._cmb_trigger, self._cmb_tpl):
             cmb.setSizeAdjustPolicy(
@@ -333,6 +344,7 @@ class SettingsPanel(QWidget):
         self._spn_cycles.valueChanged.connect(self._emit)
         self._cmb_save.currentIndexChanged.connect(self._emit)
         self._cmb_trigger.currentIndexChanged.connect(self._emit)
+        self._chk_wait_cam.toggled.connect(self._emit)
 
     # ── step list ────────────────────────────────────────────────────────
     # Table edits `self._r.steps` in place; these are operations on list
@@ -757,6 +769,7 @@ class SettingsPanel(QWidget):
             self._r.name, self._r.cycles = r.name, max(1, r.cycles)
             self._r.save_mode = r.save_mode
             self._r.start_trigger = r.start_trigger
+            self._r.wait_for_camera = r.wait_for_camera
             self._r.steps[:] = r.steps
             self._r.groups[:] = r.groups
             self._r.recordings[:] = r.recordings
@@ -766,6 +779,7 @@ class SettingsPanel(QWidget):
                 max(0, self._cmb_save.findData(self._r.save_mode)))
             self._cmb_trigger.setCurrentIndex(
                 max(0, self._cmb_trigger.findData(self._r.start_trigger)))
+            self._chk_wait_cam.setChecked(self._r.wait_for_camera)
         finally:
             self._loading = False
         self._reload_table()
@@ -785,5 +799,6 @@ class SettingsPanel(QWidget):
         self._r.cycles = self._spn_cycles.value()
         self._r.save_mode = self._cmb_save.currentData() or "single"
         self._r.start_trigger = self._cmb_trigger.currentData() or "manual"
+        self._r.wait_for_camera = self._chk_wait_cam.isChecked()
         return self._r
 

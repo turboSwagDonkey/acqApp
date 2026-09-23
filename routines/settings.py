@@ -294,6 +294,13 @@ class Routine:
     cycles:        int = 1
     save_mode:     str = "single"
     start_trigger: str = "manual"
+    # Hold the routine at a file roll until the camera is capturing again,
+    # then restart the step's clock. Only a .dcimg roll is slow enough to
+    # matter (DCAM rebinds its recorder to a STOPPED camera, ~0.9 s); a TIFF
+    # roll never stops capture, so this costs nothing and changes nothing.
+    # Without it a seconds-unit Wait spends that gap counting down against a
+    # camera that isn't running, and the trial comes up short.
+    wait_for_camera: bool = True
 
     def total_steps(self) -> int:
         return len(play_order(self)) * max(1, self.cycles)
@@ -305,6 +312,7 @@ class Routine:
         return {"name": self.name, "cycles": self.cycles,
                 "save_mode": self.save_mode,
                 "start_trigger": self.start_trigger,
+                "wait_for_camera": self.wait_for_camera,
                 "steps": [vars(s).copy() for s in self.steps],
                 "groups": [vars(g).copy() for g in self.groups],
                 "recordings": [vars(r).copy() for r in self.recordings]}
@@ -370,7 +378,10 @@ class Routine:
                    groups=groups, recordings=recordings, cycles=cycles,
                    save_mode=mode if mode in SAVE_MODES else "single",
                    start_trigger=trigger if trigger in START_TRIGGERS
-                                 else "manual")
+                                 else "manual",
+                   # Absent in a file written before this existed: default ON,
+                   # which is a no-op for the TIFF routines those files ran.
+                   wait_for_camera=bool(d.get("wait_for_camera", True)))
 
 
 def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list:

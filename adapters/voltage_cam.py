@@ -385,6 +385,21 @@ class VoltageCamModule(ModuleAdapter):
 
         self.worker.set_sink(sink)
 
+    def dcimg_ready(self) -> bool:
+        """See `ModuleHost.camera_ready` — False while a .dcimg swap has the
+        camera stopped. A worker that predates this is treated as ready."""
+        w = self.worker
+        return True if w is None else bool(getattr(w, "dcimg_ready", True))
+
+    def dcimg_frames(self) -> int | None:
+        """Frames the .dcimg holds so far, or None if one isn't open — what
+        the routine engine counts in place of `Recorder.offered()`, which
+        nothing increments while DCAM is writing the frames itself."""
+        w = self.worker
+        if w is None or not getattr(w, "dcimg_active", False):
+            return None
+        return w.dcimg_frames
+
     def detach_sink(self) -> None:
         # Close the .dcimg too; base only clears the sink, and a recorder left
         # attached keeps writing into a file the session has moved on from.
@@ -430,4 +445,30 @@ class VoltageCamModule(ModuleAdapter):
         if getattr(self.worker, "dcimg_frames", 0):
             out["cam_dcimg_frames"] = self.worker.dcimg_frames
             out["cam_dcimg_missing"] = self.worker.dcimg_missing
+            out.update(self._dcimg_clock_span())
         return out
+
+    def _dcimg_clock_span(self) -> dict[str, Any]:
+        """When the .dcimg opened and closed, on the SESSION clock.
+
+        Without this the file is unalignable: its frames carry DCAM's own
+        timebase, and the routine boundaries in the CSV carry the shared
+        one, with nothing in common. The worker stamps both ends on
+        `perf_counter`, which is the timebase `Recorder.put(at=…)` already
+        converts from, so the same `clock.at()` puts them on the same axis as
+        every other stream. Frame n is then t0 + n/rate, to within the
+        camera's own jitter — exact per-frame stamps would mean
+        `dcamrec_copymetadata`, which is a bigger piece of work.
+        """
+        span = getattr(self.worker, "dcimg_span", None)
+        if not span:
+            return {}
+        t0, t1 = span
+        try:
+            clock = self.win.sync.clock
+            out = {"cam_dcimg_t0_s": round(clock.at(t0), 6)}
+            if t1:
+                out["cam_dcimg_t1_s"] = round(clock.at(t1), 6)
+            return out
+        except Exception:       # noqa: BLE001 — clock never started; no axis
+            return {}

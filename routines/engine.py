@@ -555,6 +555,30 @@ class RoutineEngine:
                     f"this cycle, cycle {self._cycle + 1}/"
                     f"{max(1, self._r.cycles)}): {step.describe()}")
 
+    def rearm_step(self) -> bool:
+        """Restart the CURRENT Wait step's clock without re-issuing anything.
+
+        For a caller that had to stop the camera AFTER the step began — a
+        `.dcimg` file roll rebinds DCAM's recorder to a stopped camera, so
+        ~0.9 s passes in which no frame exists. The step's own clock started
+        before that (`_enter_step` arms it, the roll is deferred to after
+        `tick()` returns), so without this a "wait 5 seconds" step spends the
+        gap counting down and the trial lands short.
+
+        Wait steps only, and deliberately: a move must not be re-issued, a
+        display/puff is already done, and a `trigger` step's baseline is the
+        frame count it is watching — resetting that would re-swallow the
+        edge it is there to catch. Returns whether it re-armed anything.
+        """
+        if not self._order:
+            return False
+        step = self._r.steps[self._i]
+        if step.kind != "wait":
+            return False
+        self._wait_t0 = self._h.now()
+        self._wait_frame0 = self._frames()
+        return True
+
     def _advance(self) -> None:
         self._attempt = 1
         self._pos += 1

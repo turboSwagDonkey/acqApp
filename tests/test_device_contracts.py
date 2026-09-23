@@ -289,6 +289,8 @@ def main() -> int:
         def set_routine_save_context(self, fov, trial, coords=None): ...
         def dcimg_enabled(self): return False
         def dcimg_target(self, stream): return None
+        def dcimg_frames(self, stream): return None
+        def camera_ready(self, stream): return True
         # signal_sources deliberately absent
 
     r.check(has_all(AlmostAHost, ModuleHost) == ["signal_sources"],

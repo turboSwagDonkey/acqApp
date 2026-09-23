@@ -65,6 +65,7 @@ class RecStatus:
     index: int          # newest frame's index
     missing: int        # frames the recorder never got — real data loss
     recording: bool
+    session: int = 0    # which session within the file; see MAX_FRAMES
 
 
 def _err_name(code: int) -> str:
@@ -180,7 +181,8 @@ class DcimgRecorder:
         return RecStatus(total=int(st.totalframecount),
                          index=int(st.currentframe_index),
                          missing=int(st.missingframe_count),
-                         recording=bool(st.flags & FLAG_RECORDING))
+                         recording=bool(st.flags & FLAG_RECORDING),
+                         session=int(st.currentsession_index))
 
     def close(self) -> None:
         """Idempotent, and never raises: it runs on the failure path too."""

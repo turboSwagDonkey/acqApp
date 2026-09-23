@@ -63,6 +63,7 @@ number actually changes.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from PyQt6.QtCore import QTimer
@@ -89,6 +90,12 @@ FRAME_STREAM = "voltage_cam"
 # The estimate has to follow an exposure changed in another tab, but not at
 # 30 Hz — the number is rebuilt from that panel's widgets each time.
 RATE_EVERY = 30
+
+# Longest a routine will hold at a file roll waiting for capture to resume.
+# A .dcimg roll measured ~0.9 s; an order of magnitude past that is a camera
+# that isn't coming back, and the operator should be told rather than left
+# watching a routine that looks alive.
+HOLD_TIMEOUT_S = 10.0
 
 
 class RoutinesModule(ModuleAdapter):
@@ -130,6 +137,9 @@ class RoutinesModule(ModuleAdapter):
         self._pending_scope: dict[str, Any] = {}   # for the NEXT metadata() call
         self._rolling = False           # guards detach_sink()'s abort-on-stop
         self._routine_origin = 0.0      # session-clock t when Start was pressed
+        # monotonic() when a file roll left the camera stopped, else None —
+        # see _holding_for_camera.
+        self._hold_t0: float | None = None
         # How many files THIS run has opened for each Recording bracket
         # (`routine.recordings` index) — the routine's own file-naming's
         # trial number, see `_trial_for`.
@@ -207,6 +217,15 @@ class RoutinesModule(ModuleAdapter):
             # was current at Start would freeze at the first roll — leaving a
             # frames-unit Wait, or a `trigger` step, watching a count that can
             # no longer move.
+            #
+            # A .dcimg is the same question asked of a different counter: DCAM
+            # writes those frames itself, so `offered()` stays at 0 and every
+            # frames-unit Wait and `trigger` step would stall on it. The
+            # recorder's own count is the same quantity — frames in the file —
+            # and rolls the same way, because a roll reopens it too.
+            n = self.win.dcimg_frames(FRAME_STREAM)
+            if n is not None:
+                return n
             rec = self._rec
             return None if rec is None else rec.offered(FRAME_STREAM)
 
@@ -252,16 +271,6 @@ class RoutinesModule(ModuleAdapter):
             self._status(f"routine refused: {problems[0]}")
             return
 
-        # DCAM's recorder writes the camera's frames itself, so none reach the
-        # Recorder — `_frames()` below would sit at 0 forever, silently
-        # stalling every frames-unit Wait and every `trigger` step. Refuse
-        # rather than run a routine whose steps can never advance.
-        if self.win.dcimg_enabled():
-            why = ("ORCA format is DCIMG — routines need frames through the "
-                   "recorder. Set Save → ORCA format back to TIFF.")
-            self.panel.show_problems([why])
-            self._status(f"routine refused: {why}")
-            return
 
         # External edge mode is needed by a TTL start AND by any `trigger`
         # step mid-routine — those wait on the same physical line, so a
@@ -283,6 +292,7 @@ class RoutinesModule(ModuleAdapter):
                 return
         self._filed = 0
         self._pending_roll_run = None
+        self._hold_t0 = None
         self._file_group_key = None
         self._filed_from = 0
         self._pending_scope = {}
@@ -393,6 +403,33 @@ class RoutinesModule(ModuleAdapter):
         if self._timer is not None:
             self._timer.stop()
 
+    def _holding_for_camera(self, eng) -> bool:
+        """Whether the routine is held at a file roll waiting for capture.
+
+        A `.dcimg` roll rebinds DCAM's recorder, which it will only do to a
+        STOPPED camera — ~0.9 s in which no frame exists. The step that roll
+        belongs to has already armed its clock, so ticking through the gap
+        files a trial that is short by exactly that much. Hold instead, then
+        restart the step's clock so it measures only time the camera was
+        running. `Routine.wait_for_camera` turns this off; a TIFF roll never
+        stops capture, so it never reaches here either way.
+        """
+        if self._hold_t0 is None:
+            return False
+        held = time.monotonic() - self._hold_t0
+        if self.win.camera_ready(FRAME_STREAM):
+            self._hold_t0 = None
+            if eng.rearm_step():
+                self._status(f"camera back after {held:.1f} s — the step's "
+                             f"clock restarts from here")
+            return False
+        if held > HOLD_TIMEOUT_S:
+            self._hold_t0 = None
+            eng.pause(f"the camera did not come back within "
+                      f"{HOLD_TIMEOUT_S:g} s of the file roll")
+            return False
+        return True
+
     def _tick(self) -> None:
         """The engine's heartbeat. Guarded: an exception out of a Qt slot
         aborts the process, and this one drives the stage.
@@ -405,6 +442,8 @@ class RoutinesModule(ModuleAdapter):
         if eng is None:
             self._stop_ticking()
             return
+        if self._holding_for_camera(eng):
+            return
         try:
             eng.tick()
         except Exception as e:           # noqa: BLE001
@@ -415,6 +454,14 @@ class RoutinesModule(ModuleAdapter):
             run, self._pending_roll_run = self._pending_roll_run, None
             if self._roll_for(run):
                 self._put(run, opening=True)
+                # A .dcimg roll left the camera stopped for ~0.9 s. The step
+                # this run belongs to armed its clock before the roll (see
+                # the docstring above), so from here the engine must not tick
+                # until frames exist again.
+                if (self._routine is not None
+                        and self._routine.wait_for_camera
+                        and not self.win.camera_ready(FRAME_STREAM)):
+                    self._hold_t0 = time.monotonic()
             else:
                 eng.pause("could not open the next output file")
         if eng.phase == Phase.DONE:

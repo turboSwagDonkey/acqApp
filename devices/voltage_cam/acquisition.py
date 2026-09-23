@@ -128,9 +128,15 @@ class OrcaFireWorker(PullWorker):
         # stop/start, so the loop performs it; this only requests one.
         self._rec_want: Path | None = None
         self._rec_change = False
+        self._rec_busy = False          # a swap is underway — see dcimg_ready
         self._dcimg = None              # the live DcimgRecorder, while recording
         self._dcimg_total = 0           # frames it reported at the last stop
         self._dcimg_missing = 0
+        # perf_counter at attach/close — the .dcimg's only tie to the shared
+        # clock, see dcimg_span.
+        self._dcimg_t0: float | None = None
+        self._dcimg_t1: float | None = None
+        self._dcimg_full = False        # hit the frame cap — see the loop
         self._achievable_hz: float = 0.0
         self._skipped: int = 0
         self._last_exp_error: str | None = None
@@ -213,14 +219,51 @@ class OrcaFireWorker(PullWorker):
             self._rec_change = True
 
     @property
+    def dcimg_ready(self) -> bool:
+        """Whether capture is actually running for whatever was last asked
+        for. False between `set_record_file()` and the frame that proves the
+        camera came back — a `.dcimg` swap stops capture for ~0.9 s, and a
+        routine that kept counting through that would file a short trial.
+
+        True when nothing is pending and either no recorder is attached or
+        the attached one has produced a frame.
+        """
+        with self._exp_lock:
+            if self._rec_change or self._rec_busy:
+                return False
+        return self._dcimg is None or self._dcimg_total > 0
+
+    @property
+    def dcimg_active(self) -> bool:
+        """Whether a recorder is attached RIGHT NOW. Distinguishes "not
+        recording a .dcimg" from "recording one that has 0 frames so far" —
+        the routine engine needs to tell those apart."""
+        return self._dcimg is not None
+
+    @property
     def dcimg_frames(self) -> int:
-        """Frames the recorder wrote — the count no Python sink ever saw."""
+        """Frames the recorder wrote — the count no Python sink ever saw.
+        Refreshed once per captured frame, so a routine can count on it."""
         return self._dcimg_total
 
     @property
     def dcimg_missing(self) -> int:
         """Frames the recorder never received. Real data loss."""
         return self._dcimg_missing
+
+    @property
+    def dcimg_span(self) -> tuple[float, float] | None:
+        """(attached_at, closed_at) as `perf_counter` readings, or None.
+
+        The ONLY bridge between a .dcimg and the rest of the session: its
+        frames carry DCAM's own timebase, and nothing in the file ties them
+        to the shared clock. `Recorder.put(at=…)` already takes readings on
+        this timebase, so the adapter can hand both ends to `clock.at()` and
+        file real session times. `closed_at` is 0.0 while still recording.
+        """
+        if self._dcimg_t0 is None:
+            return None
+        return (self._dcimg_t0, self._dcimg_t1 or 0.0)
 
     def _close_dcimg(self) -> None:
         """Latch the final counts before the handle goes away."""
@@ -231,6 +274,7 @@ class OrcaFireWorker(PullWorker):
             self._dcimg_total, self._dcimg_missing = st.total, st.missing
         except Exception as e:                       # noqa: BLE001
             print(f"[voltage_cam] dcimg status at close failed: {e}")
+        self._dcimg_t1 = time.perf_counter()
         self._dcimg.close()
         self._dcimg = None
 
@@ -249,6 +293,10 @@ class OrcaFireWorker(PullWorker):
                 rec.attach(cam.handle)
                 self._dcimg = rec
                 self._dcimg_total = self._dcimg_missing = 0
+                self._dcimg_full = False
+                # Stamped after attach, before capture restarts: the first
+                # frame cannot precede this.
+                self._dcimg_t0, self._dcimg_t1 = time.perf_counter(), None
                 print(f"[voltage_cam] recording to {rec.path.name} "
                       f"(cap {rec.max_frames:,} frames)")
         finally:
@@ -584,6 +632,12 @@ class OrcaFireWorker(PullWorker):
                         rec_change = self._rec_change
                         rec_path = self._rec_want
                         self._rec_change = False
+                        # Hand the "not ready" baton over INSIDE the lock.
+                        # Clearing _rec_change first and only then swapping
+                        # left a ~900 ms window reading ready — measured on
+                        # real hardware as a 3 ms blip, which would release a
+                        # waiting routine before a single frame existed.
+                        self._rec_busy = rec_change
                     if rec_change:
                         try:
                             self._swap_dcimg(cam, rec_path)
@@ -594,6 +648,12 @@ class OrcaFireWorker(PullWorker):
                             print(f"[voltage_cam] .dcimg recording failed "
                                   f"({type(e).__name__}: {e})")
                             self.error.emit(f"DCIMG recording failed: {e}")
+                        finally:
+                            # Ready is still False past here until the new
+                            # recorder's own first frame lands — see
+                            # dcimg_ready. A failed swap clears it too, or a
+                            # held routine would wait out its whole timeout.
+                            self._rec_busy = False
                     if rearm:
                         try:
                             self._do_rearm(cam, nframes)
@@ -697,21 +757,39 @@ class OrcaFireWorker(PullWorker):
                             if last is not None:
                                 self._set_latest(last)   # newest, for preview
 
+                    # EVERY pass, not on the 1 s status tick: this is what a
+                    # routine's frames-unit Wait counts, and at 115 Hz a
+                    # once-a-second count would quantise "wait 100 frames" to
+                    # the nearest second. One ctypes call per frame is nothing.
+                    # It also keeps the number fresh for final_metadata(),
+                    # which can be read before the loop closes the file.
+                    if self._dcimg is not None:
+                        try:
+                            st_rec = self._dcimg.status()
+                            self._dcimg_total = st_rec.total
+                            self._dcimg_missing = st_rec.missing
+                            # The frame cap is a HARD ceiling and hitting it is
+                            # SILENT: the recorder just stops, `missing` stays
+                            # 0, and every later frame is discarded with no
+                            # error anywhere (measured 2026-09-23). This flag
+                            # going False is the only evidence, so say it once
+                            # and loudly rather than file a short recording
+                            # that looks complete.
+                            if not st_rec.recording and not self._dcimg_full:
+                                self._dcimg_full = True
+                                why = (f"the .dcimg stopped at its "
+                                       f"{self._dcimg.max_frames:,}-frame cap "
+                                       f"— every later frame is being "
+                                       f"discarded")
+                                print(f"[voltage_cam] {why}")
+                                self.error.emit(why)
+                        except Exception:           # noqa: BLE001
+                            pass
+
                     now = time.perf_counter()
                     if now - status_t0 >= 1.0:
                         dt = now - status_t0
                         status_t0 = now
-                        if self._dcimg is not None:
-                            # Kept fresh here because `set_record_file(None)`
-                            # is asynchronous: the adapter's final_metadata()
-                            # can be read before the loop closes the file, and
-                            # a count of 0 would file as "wrote nothing".
-                            try:
-                                st_rec = self._dcimg.status()
-                                self._dcimg_total = st_rec.total
-                                self._dcimg_missing = st_rec.missing
-                            except Exception:       # noqa: BLE001
-                                pass
                         try:
                             st = cam.get_frames_status()
                             # From the camera's own counter, so it's the true
@@ -787,12 +865,25 @@ class MockCameraWorker(PullWorker):
         Emulate records through the normal sink (a TIFF) instead."""
 
     @property
+    def dcimg_ready(self) -> bool:
+        """Always: nothing here ever stops capture to change a file."""
+        return True
+
+    @property
+    def dcimg_active(self) -> bool:
+        return False
+
+    @property
     def dcimg_frames(self) -> int:
         return 0
 
     @property
     def dcimg_missing(self) -> int:
         return 0
+
+    @property
+    def dcimg_span(self) -> tuple[float, float] | None:
+        return None
 
     def set_exposure(self, us: float) -> None:
         """No-op on the mock worker (kept for API parity with OrcaFireWorker)."""
