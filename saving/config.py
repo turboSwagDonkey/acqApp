@@ -215,10 +215,13 @@ class SaveConfig:
         """`<folder>/<project>/<mouse_id>/<date>` — the day's folder a
         routine's trials sort into. One level per field, not filename
         tokens: `resolve()`'s free-text template is for a manual recording,
-        this is a fixed hierarchy for one started by a routine."""
+        this is a fixed hierarchy for one started by a routine. No project
+        set means no project level."""
         when = when or datetime.now()
-        return (self.resolved_folder() / sanitize(self.project, "project")
-               / sanitize(self.mouse_id, "mouse_id") / when.strftime("%Y%m%d"))
+        base = self.resolved_folder()
+        if self.project.strip():
+            base /= sanitize(self.project)
+        return base / sanitize(self.mouse_id, "mouse_id") / when.strftime("%Y%m%d")
 
     def resolve_routine(self, fov: str, trial: int,
                         when: datetime | None = None, *,
@@ -226,7 +229,7 @@ class SaveConfig:
         """A routine trial's `.h5`: `<routine_base>/FOV<fov>_T<trial>.h5`.
         Same auto-numbering as `resolve()` if that exact name is taken."""
         return self._resolve_at(self.routine_base(when),
-                                sanitize(f"FOV{fov}_T{trial}"),
+                                _routine_stem(fov, trial),
                                 self._path_for, unique=unique)
 
     def resolve_routine_dir(self, fov: str, trial: int,
@@ -235,8 +238,15 @@ class SaveConfig:
         """`resolve_routine()`'s split-mode twin — a session folder instead
         of one `.h5`, same as `resolve_dir()` is to `resolve()`."""
         return self._resolve_at(self.routine_base(when),
-                                sanitize(f"FOV{fov}_T{trial}"),
+                                _routine_stem(fov, trial),
                                 self._dir_for, unique=unique)
+
+
+def _routine_stem(fov: str, trial: int) -> str:
+    """`FOV<fov>_T<trial>`, without doubling the prefix on a FOV already
+    named "fov…"."""
+    prefix = "" if fov.lower().startswith("fov") else "FOV"
+    return sanitize(f"{prefix}{fov}_T{trial}")
 
 
 def default_folder() -> Path:

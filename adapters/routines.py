@@ -104,6 +104,7 @@ class RoutinesModule(ModuleAdapter):
     # watching the camera's page while it runs. Always loaded too
     # (`config.ALWAYS_ON`) — it owns no device, so there's nothing to unload.
     own_window = True
+    own_window_size = (728, 936)
 
     def __init__(self, win) -> None:
         super().__init__(win)
@@ -226,6 +227,7 @@ class RoutinesModule(ModuleAdapter):
             now=clock.now,
             frames=frames,
             move=stage.move_to if stage is not None else noop_move,
+            moving=stage.is_moving if stage is not None else (lambda: False),
             stop_motion=stage.stop_motion if stage is not None else (lambda: None),
             set_pattern=dmd.set_pattern if dmd is not None else (lambda _p: None),
             light=dmd.set_light if dmd is not None else (lambda _on: None),

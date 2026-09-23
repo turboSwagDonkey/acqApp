@@ -7,7 +7,7 @@ Recorder streams the lot into a single HDF5 session file.
 
 This file owns only what is session-wide — the clock, the sync/trigger bus, the
 recorder, the save destination, the docks and the theme. Anything specific to
-one instrument is a `ModuleAdapter` in `adapters/`; this window iterates.
+one instrument is a `ModuleAdapter` in `adapters/`; thowhis window iterates.
 
 Run it any of these ways — the bootstrap below makes them all work:
   acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py          (run the file)
@@ -812,7 +812,8 @@ class MainWindow(QMainWindow):
             self._settings_dialog.add_panel(m.panel, m.tab_label, m.key,
                                             index=index)
             return
-        win = PanelWindow(m.panel, m.tab_label, m.key, parent=self)
+        win = PanelWindow(m.panel, m.tab_label, m.key, parent=self,
+                          size=m.own_window_size)
         win.visibility_changed.connect(
             lambda vis, k=m.key: self._on_panel_window(k, vis))
         self._panel_windows[m.key] = win

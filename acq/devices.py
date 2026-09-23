@@ -139,15 +139,16 @@ class ProjectorController(RecordingOutput, Protocol):
 class StageTarget(Protocol):
     """A module a routine can send to an XY position.
 
-    No "is it moving?": the MCM6101 answers only over the serial link the
-    position poller already shares, and a routine ticking at 20 Hz would flood
-    it. Arrival is the operator's `settle_s` (PLAN §6 (3)) until a cheap arrival
-    signal exists — `RoutineHooks.moving` is the seam it plugs into.
+    A move returns at once; `is_moving` is how a routine waits for arrival
+    (`RoutineHooks.moving`), with `settle_s` counted from then.
     """
 
     def move_to(self, x_um: float | None, y_um: float | None,
                z_um: float | None = None) -> None:
         """Move; None leaves that axis where it is."""
+
+    def is_moving(self) -> bool:
+        """Whether any axis is still travelling."""
 
     def stop_motion(self) -> None:
         """Stop both axes. Called on any fault, so it must not raise blindly."""

@@ -15,6 +15,7 @@ Live/Record only adds recording the position that was already being read.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from PyQt6.QtCore import QTimer
@@ -29,9 +30,13 @@ from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
 from acqApp.devices.stage.settings import load_settings as load_stage_settings
 
 
+MOVE_GRACE_S = 0.1
+
+
 class StageModule(ModuleAdapter):
     key = "stage"
     tab_label = "Stage"
+    _move_issued_at = float("-inf")
     # No plot: live position is the X/Y(/Z) readout in the Stage tab, and it's
     # recorded as stage_x_um / stage_y_um (+ stage_z_um on a rig with a Z
     # stage — see StagePollWorker's docstring).
@@ -223,6 +228,16 @@ class StageModule(ModuleAdapter):
         for which, um in (("x", x_um), ("y", y_um), ("z", z_um)):
             if um is not None:
                 self.controller.move_to_um(which, float(um))
+        self._move_issued_at = time.monotonic()
+
+    def is_moving(self) -> bool:
+        """Still travelling? Reads as moving for a short grace after a command,
+        since the status bit can lag the command by a few ms."""
+        if self.controller is None:
+            raise RuntimeError("stage not connected")
+        if time.monotonic() - self._move_issued_at < MOVE_GRACE_S:
+            return True
+        return self.controller.is_moving()
 
     def stop_motion(self) -> None:
         """Stop both axes. Guarded, because `StageTarget` says it must be and

@@ -139,6 +139,9 @@ class ModuleAdapter:
     # being adjusted, and a tab can't be in two places. The window reads this;
     # it never learns which module set it.
     own_window: bool = False
+    # (w, h) that window opens at until the operator resizes it; None sizes it
+    # from the panel.
+    own_window_size: tuple[int, int] | None = None
 
     def build_panel(self) -> QWidget | None:
         """The settings tab for this module, or None."""

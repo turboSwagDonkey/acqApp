@@ -143,6 +143,13 @@ class StageController:
         self._note_limit(self._s.z, sz)
         return self._s.z.to_um(sz.position)
 
+    def is_moving(self) -> bool:
+        """Whether any active axis reports a move in progress."""
+        if self._dev is None:
+            raise StageControllerError("not connected")
+        axes = (self._s.x, self._s.y, self._s.z) if self._s.z else (self._s.x, self._s.y)
+        return any(self._dev.get_status(ax.index).moving for ax in axes)
+
     # ── motion (physically moves the stage) ─────────────────────────────────
     def move_to_um(self, which: str, target_um: float) -> None:
         if self._dev is None:
@@ -419,6 +426,11 @@ class MockStageController:
             raise StageControllerError("this rig has no Z stage")
         self._ease("z")
         return self._pos["z"]
+
+    def is_moving(self) -> bool:
+        for k in self._pos:
+            self._ease(k)
+        return any(self._pos[k] != self._target[k] for k in self._pos)
 
     def move_to_um(self, which: str, target_um: float) -> None:
         ax = self._axis(which)

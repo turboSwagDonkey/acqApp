@@ -63,6 +63,22 @@ def check_stem(r: Report) -> None:
             == "m17_a_b",
             f"the FOV name is sanitised too (got {cfg.stem(WHEN, fov='a/b')!r})")
 
+    # A routine trial is FOV<name>_T<n>, but a FOV already named "fov…" must
+    # not read "FOVfov1".
+    for fov, want in (("1", "FOV1_T2"), ("fov1", "fov1_T2"),
+                      ("FOV3", "FOV3_T2"), ("custom", "FOVcustom_T2")):
+        got = cfg.resolve_routine(fov, 2, WHEN).stem
+        r.check(got == want, f"routine stem for FOV {fov!r} (got {got!r})")
+
+    # No project means no project folder level.
+    p = SaveConfig(mouse_id="m17", project="").routine_base(WHEN)
+    r.check(p.parent.name == "m17"
+            and p.parent.parent == SaveConfig(mouse_id="m17").resolved_folder(),
+            f"empty project adds no level (got {p})")
+    p = SaveConfig(mouse_id="m17", project="pX").routine_base(WHEN)
+    r.check(p.parent.name == "m17" and p.parent.parent.name == "pX",
+            f"a set project is still a level (got {p})")
+
 
 def check_unique(r: Report, tmp: Path) -> None:
     """resolve(unique=True) must never name a file that already exists."""

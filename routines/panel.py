@@ -152,6 +152,11 @@ class SettingsPanel(QWidget):
             "and arms the routine, then waits for a frame the camera did "
             "not have yet — which only happens on a real pulse.")
         form.addRow("Start trigger:", self._cmb_trigger)
+        # Long item text must not set the panel's width.
+        for cmb in (self._cmb_save, self._cmb_trigger, self._cmb_tpl):
+            cmb.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            cmb.setMinimumContentsLength(16)
         lay.addLayout(form)
 
         self._tbl = StepTable(self._r.steps)
@@ -197,8 +202,9 @@ class SettingsPanel(QWidget):
                       "ROI set, Position, and Group selected. Click a step's "
                       "number to toggle recording for it.")
         hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
-        btns.addWidget(hint)
+        hint.setWordWrap(True)
         lay.addLayout(btns)
+        lay.addWidget(hint)
 
         # ── repeat groups ────────────────────────────────────────────────
         # A contiguous range, repeated as unit, nested inside `cycles` (which
@@ -213,6 +219,7 @@ class SettingsPanel(QWidget):
         grow = QHBoxLayout()
         self._lbl_g_selection = QLabel("Select 2+ steps in the table to group them")
         self._lbl_g_selection.setStyleSheet("color:#9aa0a6;")
+        self._lbl_g_selection.setWordWrap(True)
         grow.addWidget(self._lbl_g_selection, 1)
         grow.addWidget(QLabel("×"))
         self._spn_g_repeats = QSpinBox()

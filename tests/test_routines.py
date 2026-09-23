@@ -2350,6 +2350,17 @@ def check_app(r: Report, app, tmp) -> None:
     inside = lo_x + (hi_x - lo_x) * 0.37
     inside_y = lo_y + (hi_y - lo_y) * 0.62
 
+    # ── the stage reports arrival, so a move step waits for it ──
+    st = win.stage_target()
+    r.check(not st.is_moving(), "is_moving: false before any move")
+    st.move_to(inside, inside_y)
+    r.check(st.is_moving(), "is_moving: true right after a move is issued")
+    for _ in range(200):
+        if not st.is_moving():
+            break
+        pump(app, 0.01)
+    r.check(not st.is_moving(), "is_moving: false once the stage has arrived")
+
     # ── the atomic protocol: two "old composite step"-sized recordings ──
     app_pattern = tmp / "app.png"
     app_pattern.write_bytes(b"x")

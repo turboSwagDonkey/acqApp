@@ -57,7 +57,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QImage, QPixmap
+from PyQt6.QtGui import QColor, QDrag, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QHeaderView, QInputDialog,
     QMenu, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
@@ -566,6 +566,18 @@ class StepTable(QTableWidget):
         self.reordered.emit(dest)
         self.changed.emit()
         return True
+
+    def startDrag(self, supported_actions) -> None:
+        """Offer Copy only. Qt's own startDrag deletes the source rows
+        whenever the drag ends as a Move — wherever it lands, including a
+        drop outside this table — and `move_row` already does the whole move
+        itself, so a Move outcome can only lose the step."""
+        indexes = self.selectedIndexes()
+        if not indexes:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(self.model().mimeData(indexes))
+        drag.exec(Qt.DropAction.CopyAction, Qt.DropAction.CopyAction)
 
     def dropEvent(self, ev) -> None:
         """A dropped row moves the Step, not the cells.

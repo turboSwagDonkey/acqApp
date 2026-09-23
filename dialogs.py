@@ -127,9 +127,11 @@ class PanelWindow(QDialog):
     _MIN_DEFAULT = (900, 700)
     _PAD = 16
 
-    def __init__(self, panel: QWidget, label: str, key: str, parent=None):
+    def __init__(self, panel: QWidget, label: str, key: str, parent=None,
+                 size: tuple[int, int] | None = None):
         super().__init__(parent)
         self._key = key
+        self._size = size
         self._geom_key = f"panelGeometry/{key}"
         self.setWindowTitle(label)
         # A real window (minimise/maximise), not a fixed dialog frame.
@@ -155,6 +157,8 @@ class PanelWindow(QDialog):
         self._sized = False
 
     def default_size(self) -> QSize:
+        if self._size is not None:
+            return _fits_on_screen(QSize(*self._size), (0, 0), 0, self.screen())
         return _fits_on_screen(self._panel.sizeHint(), self._MIN_DEFAULT,
                                self._PAD, self.screen())
 
@@ -163,7 +167,8 @@ class PanelWindow(QDialog):
             self._sized = True
             restored = (self._saved_geom is not None
                        and self.restoreGeometry(self._saved_geom))
-            if not restored or not _looks_sane(self.size(), self._MIN_DEFAULT):
+            floor = (0, 0) if self._size else self._MIN_DEFAULT
+            if not restored or not _looks_sane(self.size(), floor):
                 self.resize(self.default_size())
         super().showEvent(event)
         self.visibility_changed.emit(True)
