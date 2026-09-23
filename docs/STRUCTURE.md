@@ -144,6 +144,9 @@ devices/                one package per instrument
                         enough that affine measurably mis-registers it. Pure,
                         so it is testable before any light is emitted
     control.py          panel-facing controller + mock twin
+    corner_editor.py    drag the auto fit's 4 corners onto an all-on frame;
+                        Apply refits an exact homography through them, the
+                        same way with_corners does — sweep.py's post-fit knob
     panel.py
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
     roi_panel.py        draw and edit ROIs over a snapshot

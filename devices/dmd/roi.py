@@ -266,6 +266,14 @@ class RoiSet:
         return [r.name for r in self.rois
                 if r.enabled and not calib.accessible(r.boundary()).all()]
 
+    def dim(self, calib: DmdCalibration) -> list[str]:
+        """Names of ROIs at least partly outside the marked vignette circle —
+        reachable, but where the optics dim the image enough that they may
+        need more power or a smaller footprint. Advisory, like `outside()`;
+        always empty if no vignette has been marked on `calib`."""
+        return [r.name for r in self.rois
+                if r.enabled and not calib.well_lit(r.boundary()).all()]
+
     def contains(self, px: np.ndarray, py: np.ndarray, *,
                  enabled_only: bool = True) -> np.ndarray:
         """Union of the ROIs at scattered camera points."""

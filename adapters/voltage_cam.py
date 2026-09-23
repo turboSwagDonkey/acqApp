@@ -45,10 +45,27 @@ class VoltageCamModule(ModuleAdapter):
         self._level_ctr = 0
         self._auto_levels = True         # AcqConfig's default, until build_panel says otherwise
         self._last_frame = None         # full-res, for the DMD's ROI editor
+        # The preset actually behind `_last_frame` — set once per session, at
+        # build_session(), not read live off the panel: `preset_key()` mirrors
+        # the combo and can already name NEXT session's preset (structural,
+        # only takes effect at the next Start), so it can name a different
+        # capture area than the frame currently buffered was captured under.
+        self._last_frame_preset: str | None = None
         self._preview_buf: deque = deque(maxlen=1)   # recent preview frames, for averaging
 
     def last_frame(self):
         return self._last_frame
+
+    def last_frame_preset(self) -> str | None:
+        """The resolution preset `last_frame()` was actually captured under.
+
+        For the DMD's ROI editor (`adapters/dmd.py.edit_rois`), which must
+        shift a click by the SAME (hpos, vpos) the buffered frame's pixel
+        (0, 0) sits at — using `preset_key()` there instead would silently
+        mismatch a frame still queued under the old preset right after the
+        operator changes the combo but before the next Start applies it.
+        """
+        return self._last_frame_preset
 
     # ── the sensor's capture area ──
     def preset_key(self) -> str:
@@ -256,6 +273,7 @@ class VoltageCamModule(ModuleAdapter):
     # ── session ──
     def build_session(self, emulate: bool) -> None:
         cfg = self.panel.get_config()
+        self._last_frame_preset = cfg.preset_key    # the area THIS worker captures
         # Reuse the handle opened once at startup: re-opening a just-closed DCAM
         # device crashes the driver natively, and a fresh open costs ~7 s.
         worker = (MockCameraWorker(cfg) if emulate

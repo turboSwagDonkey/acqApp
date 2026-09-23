@@ -24,9 +24,11 @@ from _harness import Report
 from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
-                                            deshear, fit_axes, flip_y,
+                                            deshear, fit_axes, flip_x, flip_y,
                                             holdout_error,
-                                            offset_stripe, stripe_sweep)
+                                            offset_stripe, stripe_sweep,
+                                            with_corners, with_vignette,
+                                            without_vignette)
 
 DW, DH = 256, 192          # a small DMD
 CW, CH = 320, 240          # the "ORCA"
@@ -155,6 +157,24 @@ def main() -> int:
     r.check(float(np.abs(flip_y(cf).cam_to_dmd - c.cam_to_dmd).max()) < 1e-9,
             "control: flipping twice is the identity — a pure mirror, not a "
             "shift hiding as one")
+
+    # ── 2c. flip_x is flip_y's twin, across columns instead of rows ─────────
+    cx = flip_x(c)
+    r.check(cx.dmd_size == c.dmd_size and cx.cam_size == c.cam_size,
+            "flip_x keeps both recorded sizes too")
+    mirrored_x = probe.copy()
+    mirrored_x[:, 0] = (DW - 1) - probe[:, 0]
+    got_x = apply_transform(cx.dmd_to_cam, probe)
+    want_x = apply_transform(c.dmd_to_cam, mirrored_x)
+    r.check(float(np.abs(got_x - want_x).max()) < 1e-6,
+            "flip_x(calib) at DMD column x lands where calib itself lands at "
+            "column (w-1-x)")
+    r.check(float(np.abs(flip_x(cx).cam_to_dmd - c.cam_to_dmd).max()) < 1e-9,
+            "control: flipping X twice is the identity too")
+    r.check(float(np.abs(flip_x(cf).cam_to_dmd
+                        - flip_y(cx).cam_to_dmd).max()) < 1e-9,
+            "flip_x and flip_y commute — each mirrors its own axis "
+            "independently of the other")
 
     # CONTROL: vignetting must not move the answer. It ate the previous method.
     c_flat = run(make_camera(M, rng, vignette=False))
@@ -381,6 +401,85 @@ def main() -> int:
             and back.stripes == c.stripes,
             "a calibration survives save/load with its provenance and its "
             "raw stripes")
+    r.check(back.vignette is None,
+            "…and a calibration with no vignette marked stays that way "
+            "(also: old JSON on disk with no \"vignette\" key at all loads "
+            "fine, since from_dict defaults it)")
+
+    # ── 7. manual corner adjustment (with_corners) ───────────────────────────
+    # A wrong starting calibration — only dmd_size/cam_size have to be right,
+    # since with_corners replaces the mapping outright rather than nudging it.
+    wrong = DmdCalibration(
+        cam_to_dmd=np.linalg.inv(np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                                           [0.0, 0.0, 1.0]])),
+        dmd_size=(DW, DH), cam_size=(CW, CH), model="affine-noshear",
+        notes="a starting point with the wrong scale entirely")
+    dmd_corners = np.array([[0, 0], [DW - 1, 0], [DW - 1, DH - 1],
+                            [0, DH - 1]], float)
+    true_cam_corners = apply_transform(M, dmd_corners)
+    fixed = with_corners(wrong, true_cam_corners)
+    r.check(np.allclose(fixed.accessible_corners(), true_cam_corners, atol=1e-6),
+            "with_corners lands the panel's own corners exactly on the ones "
+            "handed to it")
+    probe2 = np.array([[DW / 2, DH / 2], [DW / 3, 2 * DH / 3]], float)
+    err2 = float(np.abs(apply_transform(fixed.dmd_to_cam, probe2)
+                        - apply_transform(M, probe2)).max())
+    r.check(err2 < 1e-4,
+            f"…and since the true relay IS affine (a homography's special "
+            f"case), the 4 corners alone reconstruct it everywhere else too "
+            f"(max {err2:.2e} px)")
+    r.check(fixed.rms_px == 0.0 and fixed.holdout_px == 0.0,
+            "an exact 4-point fit has no residual left to report")
+    r.check(fixed.model == "affine-noshear+corners"
+            and "corners manually adjusted" in fixed.notes,
+            f"the correction is recorded, not silent ({fixed.model!r})")
+    twice = with_corners(fixed, true_cam_corners)
+    r.check(twice.model == "affine-noshear+corners",
+            f"…and adjusting twice doesn't pile up the same tag "
+            f"({twice.model!r})")
+    r.check(fixed.dmd_size == wrong.dmd_size and fixed.cam_size == wrong.cam_size,
+            "the sizes travel through unchanged — only the mapping is replaced")
+
+    # CONTROL: four corners too close to collinear can't determine a
+    # homography, and must say so rather than handing back garbage.
+    try:
+        with_corners(wrong, np.array([[0, 0], [10, 0.001], [20, 0.002],
+                                      [30, 0.003]], float))
+        r.check(False, "near-collinear corners are refused")
+    except CalibrationError as e:
+        r.check("collinear" in str(e), f"…naming why ({e})")
+
+    # ── 8. marking the optical vignette (with_vignette / well_lit) ──────────
+    r.check(np.all(fixed.well_lit(probe2)),
+            "well_lit says everything is fine when no vignette was ever marked")
+    vig = with_vignette(fixed, 100.0, 80.0, 50.0)
+    r.check(vig.vignette == (100.0, 80.0, 50.0),
+            f"with_vignette records the circle as given ({vig.vignette})")
+    r.check(np.array_equal(vig.cam_to_dmd, fixed.cam_to_dmd),
+            "…and touches nothing about the geometric mapping — vignette and "
+            "registration are independent corrections")
+    inside = np.array([[100.0, 80.0], [130.0, 80.0]])       # centre, +30 (< r)
+    outside = np.array([[100.0, 200.0], [400.0, 400.0]])    # well past r=50
+    r.check(bool(vig.well_lit(inside).all()) and not vig.well_lit(outside).any(),
+            "well_lit tells inside the marked circle from outside it")
+    r.check(vig.well_lit(np.array([[150.0, 80.0]]))[0]
+            and not vig.well_lit(np.array([[150.01, 80.0]]))[0],
+            "…right at the boundary (r=50 from (100, 80))")
+    back_vig = without_vignette(vig)
+    r.check(back_vig.vignette is None and np.all(back_vig.well_lit(outside)),
+            "without_vignette un-marks it — the points outside the old "
+            "circle read as fine again")
+    try:
+        with_vignette(fixed, 0.0, 0.0, 0.0)
+        r.check(False, "a non-positive radius is refused")
+    except ValueError as e:
+        r.check("radius" in str(e), f"…naming why ({e})")
+
+    p2 = Path(tempfile.mkdtemp()) / "calib_vig.json"
+    vig.save(p2)
+    back2 = DmdCalibration.load(p2)
+    r.check(back2.vignette == vig.vignette,
+            "a marked vignette survives save/load too")
 
     return r.finish()
 

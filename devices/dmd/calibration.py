@@ -576,6 +576,14 @@ class DmdCalibration:
     # The raw stripe measurements: [axis, offset_mirrors, cam_x, cam_y]. Kept
     # so a fit can be reconsidered without going back to the rig.
     stripes:    list = None
+    # Optical vignetting: (cx, cy, r) in camera px, the circle outside which
+    # the projector's own optics dim the image well below what the fit's
+    # geometry alone would suggest (an all-on frame shows this directly — the
+    # lit field looks like a circle, not the panel's own rectangle). None if
+    # never measured. Advisory only — see `well_lit()` — it never clips the
+    # real projection mask, since dim isn't dark and how much power an
+    # experiment needs isn't something to guess on the operator's behalf.
+    vignette:   tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.stripes is None:
@@ -615,6 +623,20 @@ class DmdCalibration:
         w, h = self.dmd_size
         return ((d[:, 0] >= 0) & (d[:, 0] <= w - 1)
                 & (d[:, 1] >= 0) & (d[:, 1] <= h - 1))
+
+    def well_lit(self, pts: np.ndarray) -> np.ndarray:
+        """Which camera points fall inside the measured vignette circle.
+
+        Geometrically reachable and well-lit are different questions —
+        `accessible()` answers the first, this the second. True for every
+        point when no vignette has ever been measured: nothing to warn about
+        yet, not an all-clear.
+        """
+        p = np.atleast_2d(pts)
+        if self.vignette is None:
+            return np.ones(p.shape[0], dtype=bool)
+        cx, cy, r = self.vignette
+        return (p[:, 0] - cx) ** 2 + (p[:, 1] - cy) ** 2 <= r * r
 
     _MASK_ROWS = 256            # rows per band; caps the transform's temporaries
 
@@ -661,10 +683,12 @@ class DmdCalibration:
                 "model": self.model, "rms_px": float(self.rms_px),
                 "n_points": int(self.n_points),
                 "holdout_px": float(self.holdout_px), "created": self.created,
-                "notes": self.notes, "stripes": list(self.stripes or [])}
+                "notes": self.notes, "stripes": list(self.stripes or []),
+                "vignette": list(self.vignette) if self.vignette else None}
 
     @classmethod
     def from_dict(cls, d: dict) -> "DmdCalibration":
+        vignette = d.get("vignette")
         return cls(cam_to_dmd=np.array(d["cam_to_dmd"], float),
                    dmd_size=tuple(d["dmd_size"]), cam_size=tuple(d["cam_size"]),
                    model=d.get("model", "affine"),
@@ -672,7 +696,8 @@ class DmdCalibration:
                    n_points=int(d.get("n_points", 0)),
                    holdout_px=float(d.get("holdout_px", 0.0)),
                    created=d.get("created", ""), notes=d.get("notes", ""),
-                   stripes=d.get("stripes") or [])
+                   stripes=d.get("stripes") or [],
+                   vignette=tuple(vignette) if vignette else None)
 
     def save(self, path: str | Path) -> Path:
         p = Path(path)
@@ -710,3 +735,73 @@ def flip_y(calib: DmdCalibration) -> DmdCalibration:
     flip = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, h - 1.0], [0.0, 0.0, 1.0]])
     M = flip @ np.asarray(calib.cam_to_dmd, dtype=np.float64)
     return replace(calib, cam_to_dmd=M)
+
+
+def flip_x(calib: DmdCalibration) -> DmdCalibration:
+    """`flip_y`'s twin, mirrored across the panel's own X axis instead
+    (mirror column `c` becomes `dmd_size[0] - 1 - c`). Same knob
+    (`DmdSettings.roi_flip_x`), same reasoning — see `flip_y`.
+    """
+    w = float(calib.dmd_size[0])
+    flip = np.array([[-1.0, 0.0, w - 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    M = flip @ np.asarray(calib.cam_to_dmd, dtype=np.float64)
+    return replace(calib, cam_to_dmd=M)
+
+
+def with_corners(calib: DmdCalibration, corners_cam) -> DmdCalibration:
+    """A copy of `calib` whose four panel corners land exactly on
+    `corners_cam` (camera px, same order as `accessible_corners()`: the DMD's
+    own (0,0), (w-1,0), (w-1,h-1), (0,h-1)).
+
+    An operator's manual correction to an auto fit, not a re-fit: a residual
+    few px is often easier for an eye to remove — by dragging the corners onto
+    where the lit field actually lands — than another sweep. Exactly 4
+    correspondences determine a homography's 8 unknowns, so this replaces
+    `cam_to_dmd` outright (same "one manual knob" choice `flip_y` makes)
+    rather than blending with the measured fit. Exact by construction, so
+    there is no residual left to report — `rms_px`/`holdout_px` are zeroed
+    rather than kept from the fit they no longer describe.
+    """
+    w, h = calib.dmd_size
+    dmd_pts = ((0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1))
+    cam_pts = np.asarray(corners_cam, dtype=np.float64)
+    if cam_pts.shape != (4, 2):
+        raise ValueError(f"need 4 (x, y) camera points, got {cam_pts.shape}")
+    pts = [(float(X), float(Y), float(u), float(v))
+          for (X, Y), (u, v) in zip(dmd_pts, cam_pts)]
+    H = _dlt(pts)
+    # np.linalg.inv only raises on an EXACTLY singular matrix, which floating
+    # point arithmetic essentially never produces — four corners dragged
+    # nearly collinear come back "invertible" with a condition number in the
+    # 1e15+ range (a well-posed rectangle sits around 1e3), silently handing
+    # back a garbage registration instead of refusing it. Checked explicitly.
+    if np.linalg.cond(H) > 1e8:
+        raise CalibrationError(
+            "the four corners don't determine a valid registration — they're "
+            "too close to collinear. Drag them further apart.")
+    cam_to_dmd = np.linalg.inv(H)
+    model = calib.model if calib.model.endswith("+corners") else f"{calib.model}+corners"
+    notes = (calib.notes + " — corners manually adjusted" if calib.notes
+             else "corners manually adjusted")
+    return replace(calib, cam_to_dmd=cam_to_dmd, model=model, rms_px=0.0,
+                   holdout_px=0.0, notes=notes,
+                   created=datetime.now().isoformat(timespec="seconds"))
+
+
+def with_vignette(calib: DmdCalibration, cx: float, cy: float,
+                  r: float) -> DmdCalibration:
+    """A copy of `calib` recording the optical vignette's circle (camera px):
+    outside it, the projector's own optics dim the image well below what an
+    otherwise-correct geometric fit would suggest. Marked, not measured —
+    there's no sweep for "how dim is too dim", only an operator's eye on an
+    all-on frame — so this just records the circle they drew; see
+    `well_lit()`/`RoiSet.dim()` for what reads it, both advisory only.
+    """
+    if r <= 0:
+        raise ValueError(f"vignette radius must be positive, got {r!r}")
+    return replace(calib, vignette=(float(cx), float(cy), float(r)))
+
+
+def without_vignette(calib: DmdCalibration) -> DmdCalibration:
+    """A copy of `calib` with no vignette circle recorded — the un-mark."""
+    return replace(calib, vignette=None)

@@ -367,6 +367,16 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def latest_frame_preset(self, key: str) -> str | None:
+        """The resolution preset `latest_frame(key)` was actually captured
+        under, or None. Distinct from `camera_preset(key)`, which mirrors the
+        settings combo: that can already name a preset switch that hasn't
+        taken effect yet (structural, applies at the next Start), while this
+        names whatever produced the frame that's actually buffered — what the
+        DMD's ROI editor needs to shift a click by the right (hpos, vpos).
+        """
+        ...
+
     def active_fov_name(self) -> str:
         """The name of the FOV the stage is currently sitting at, or "" if
         none is active or no stage is loaded.

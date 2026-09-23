@@ -415,6 +415,162 @@ def check_geometry_controls(r: Report) -> None:
         SW.config.rig_dmd_calibration = real_seed
 
 
+def check_corner_adjust(r: Report) -> None:
+    """"Adjust corners…" is disabled until a fit exists, projects ALL-ON (not
+    a stripe) for the operator to align against, and only replaces `_calib`
+    on Apply — never on Cancel."""
+    from _harness import qt_app
+    _app = qt_app()          # kept alive — see check_geometry_controls
+    import acqApp.devices.dmd.sweep as SW
+    from acqApp.devices.dmd.calibration import ON, DmdCalibration
+
+    projected: list = []
+
+    class FakeProjector:
+        resolution = (64, 48)
+
+        def project_frame(self, f):
+            projected.append(np.asarray(f).copy())
+
+        def stop(self):
+            pass
+
+    # A fresh array object every call — FreshGrabber keys on IDENTITY, exactly
+    # as the real display tick does (a new object per frame), so a source
+    # that reused one array would make every grab() wait for the timeout.
+    counter = {"n": 0}
+
+    def source():
+        counter["n"] += 1
+        return np.full((10, 10), counter["n"] % 256, np.uint8)
+
+    dlg = SW.CalibrationDialog(FakeProjector(), source, real=True)
+    r.check(not dlg._btn_adjust.isEnabled(),
+            "corner adjustment is unavailable before any fit exists")
+
+    stub_calib = DmdCalibration(
+        cam_to_dmd=np.eye(3), dmd_size=(64, 48), cam_size=(10, 10))
+    dlg._calib = stub_calib
+    dlg._btn_save.setEnabled(True)
+    dlg._btn_adjust.setEnabled(True)
+
+    # CANCEL: the fake corner-adjust dialog reports Rejected, so _calib and
+    # every button's enabled state must come back exactly as they went in.
+    seen: dict = {"built": 0, "exec": 0}
+    adjusted = DmdCalibration(
+        cam_to_dmd=2 * np.eye(3), dmd_size=(64, 48), cam_size=(10, 10),
+        notes="corners manually adjusted")
+
+    class FakeCornerDialog:
+        result = None
+
+        def __init__(self, calib, frame, *, parent=None):
+            seen["built"] += 1
+            seen["calib_in"] = calib
+            seen["frame_shape"] = np.asarray(frame).shape
+
+        def exec(self):
+            seen["exec"] += 1
+            return SW.QDialog.DialogCode.Accepted if self.result is not None \
+                else SW.QDialog.DialogCode.Rejected
+
+        @property
+        def calibration(self):
+            return self.result
+
+    import acqApp.devices.dmd.corner_editor as CE
+    real_corner_dlg = CE.CornerAdjustDialog
+    CE.CornerAdjustDialog = FakeCornerDialog
+    try:
+        dlg._adjust_corners()
+        r.check(seen["built"] == 1 and seen["exec"] == 1,
+                "the corner-adjust dialog is built AND exec'd on click")
+        r.check(len(projected) == 1 and bool(np.all(projected[0] == ON)),
+                "it projects ALL-ON, not a stripe — that's what the operator "
+                "needs to see to align the corners against")
+        r.check(seen["calib_in"] is stub_calib,
+                "…handed the fit that's currently in force")
+        r.check(seen["frame_shape"] == (10, 10),
+                "…and the frame it just grabbed")
+        r.check(dlg._calib is stub_calib,
+                "Cancel (exec -> Rejected) leaves the calibration untouched")
+        for b in (dlg._btn_run, dlg._btn_adjust, dlg._btn_save, dlg._btn_close):
+            r.check(b.isEnabled(),
+                    "…and every button is left enabled again, not stuck mid-run")
+
+        # APPLY: exec -> Accepted with a result must adopt it.
+        FakeCornerDialog.result = adjusted
+        dlg._adjust_corners()
+        r.check(dlg._calib is adjusted,
+                "Apply (exec -> Accepted) adopts the corner-adjusted calibration")
+    finally:
+        CE.CornerAdjustDialog = real_corner_dlg
+
+
+def check_corner_editor(r: Report) -> None:
+    """The real `CornerAdjustDialog`: corners AND the vignette circle reach
+    Apply's result, independently of each other, and Cancel discards both."""
+    from _harness import qt_app
+    _app = qt_app()          # kept alive — see check_geometry_controls
+    from acqApp.devices.dmd.calibration import DmdCalibration
+    from acqApp.devices.dmd.corner_editor import CornerAdjustDialog
+
+    calib = DmdCalibration(cam_to_dmd=np.linalg.inv(
+        np.array([[4.0, 0.0, 100.0], [0.0, 4.0, 60.0], [0.0, 0.0, 1.0]])),
+        dmd_size=(64, 48), cam_size=(400, 300))
+    frame = np.zeros((300, 400), np.uint8)
+
+    dlg = CornerAdjustDialog(calib, frame)
+    r.check(len(dlg._targets) == 4,
+            "one draggable corner per DMD corner")
+    r.check(not dlg._chk_vignette.isChecked() and not dlg._vignette_roi.isVisible(),
+            "the vignette circle starts unmarked and hidden when the "
+            "calibration never had one")
+
+    dlg._chk_vignette.setChecked(True)
+    r.check(dlg._vignette_roi.isVisible(),
+            "checking the box shows it, for dragging")
+    dlg._vignette_roi.setPos([150.0, 110.0])
+    dlg._vignette_roi.setSize([80.0, 80.0])    # r=40, centre (190, 150)
+    dlg._targets[0].setPos(5.0, 5.0)           # move the (0, 0) corner too
+
+    dlg._apply()
+    got = dlg.calibration
+    r.check(got is not None, "Apply with a checked box produces a result")
+    r.check(got.vignette is not None
+            and abs(got.vignette[0] - 190.0) < 1e-6
+            and abs(got.vignette[1] - 150.0) < 1e-6
+            and abs(got.vignette[2] - 40.0) < 1e-6,
+            f"…recording the circle exactly as dragged ({got.vignette})")
+    r.check(np.allclose(got.accessible_corners()[0], [5.0, 5.0]),
+            "…and the dragged corner too — both reach the same result "
+            "independently")
+
+    # CANCEL must discard everything, not just leave the corners alone.
+    dlg2 = CornerAdjustDialog(calib, frame)
+    dlg2.reject()
+    r.check(dlg2.calibration is None, "Cancel produces no result at all")
+
+    # Re-opening on an ALREADY-marked calibration must show it pre-checked
+    # and pre-positioned, not force the operator to remark it from scratch.
+    marked = DmdCalibration(cam_to_dmd=calib.cam_to_dmd, dmd_size=calib.dmd_size,
+                            cam_size=calib.cam_size, vignette=(200.0, 150.0, 90.0))
+    dlg3 = CornerAdjustDialog(marked, frame)
+    r.check(dlg3._chk_vignette.isChecked() and dlg3._vignette_roi.isVisible(),
+            "a previously marked vignette shows pre-checked and visible")
+    pos, size = dlg3._vignette_roi.pos(), dlg3._vignette_roi.size()
+    r.check(abs(float(pos[0]) + float(size[0]) / 2 - 200.0) < 1e-6
+            and abs(float(pos[1]) + float(size[1]) / 2 - 150.0) < 1e-6
+            and abs(float(size[0]) / 2 - 90.0) < 1e-6,
+            "…seeded at the calibration's own circle, not a fresh guess")
+
+    # Unchecking the box on Apply must un-mark it, not just hide the widget.
+    dlg3._chk_vignette.setChecked(False)
+    dlg3._apply()
+    r.check(dlg3.calibration.vignette is None,
+            "unchecking before Apply clears a previously marked vignette")
+
+
 def main() -> int:
     r = Report("dmd-sweep")
     check_fresh_grabber(r)
@@ -423,6 +579,8 @@ def main() -> int:
     check_project_frame(r)
     check_wiring(r)
     check_geometry_controls(r)
+    check_corner_adjust(r)
+    check_corner_editor(r)
     return r.finish()
 
 

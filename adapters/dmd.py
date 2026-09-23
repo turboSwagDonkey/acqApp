@@ -175,7 +175,13 @@ class DmdModule(ModuleAdapter):
         # a non-zero (hpos, vpos), the frame's own pixel (0, 0) isn't the
         # sensor's, and a click drawn on it must be shifted before it means
         # what the calibration thinks it means.
-        preset = PRESETS.get(self.win.camera_preset("voltage_cam"))
+        #
+        # latest_frame_preset(), not camera_preset(): the latter mirrors the
+        # settings combo, which the operator can already have moved on to a
+        # different preset (e.g. full field -> a sub-field band) before the
+        # next Start applies it — using it here shifted ROIs by the NEW
+        # preset's offset while `frame` was still captured under the old one.
+        preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
         offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
@@ -213,10 +219,12 @@ class DmdModule(ModuleAdapter):
         if not path:
             return None, ""
         try:
-            from acqApp.devices.dmd.calibration import DmdCalibration, flip_y
+            from acqApp.devices.dmd.calibration import DmdCalibration, flip_x, flip_y
             calib = DmdCalibration.load(path)
             if self.panel is not None and self.panel.settings.roi_flip_y:
                 calib = flip_y(calib)
+            if self.panel is not None and self.panel.settings.roi_flip_x:
+                calib = flip_x(calib)
             return calib, ""
         except Exception as e:      # noqa: BLE001 — missing, corrupt, or stale
             return None, (f"DMD calibration {Path(path).name} could not be "

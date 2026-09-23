@@ -270,6 +270,7 @@ def main() -> int:
         def on_worker_error(self, m): ...
         def module_keys(self): return []
         def latest_frame(self, key): return None
+        def latest_frame_preset(self, key): return None
         def set_live(self, on): return False
         def set_recording(self, on): return False
         def is_recording(self): return False

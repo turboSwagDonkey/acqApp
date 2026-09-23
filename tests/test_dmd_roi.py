@@ -20,7 +20,8 @@ import numpy as np
 
 from _harness import Report, isolate_user_state, qt_app
 
-from acqApp.devices.dmd.calibration import DmdCalibration, apply_transform
+from acqApp.devices.dmd.calibration import (DmdCalibration, apply_transform,
+                                            with_vignette)
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet, roi_from_dict
 
 DW, DH = 256, 192
@@ -212,6 +213,24 @@ def main() -> int:
     r.check(inn.outside(c) == [],
             f"control: the same circle inside the field is not flagged "
             f"({inn.outside(c)})")
+
+    # dim() is outside()'s twin for the marked vignette, not the DMD field —
+    # both fully reachable geometrically, one of them just past the mark.
+    vcx, vcy = float(corners[:, 0].mean()), float(corners[:, 1].mean())
+    cv = with_vignette(c, vcx, vcy, 25.0)
+    r.check(inn.dim(cv) == ["circle1"],
+            f"an ROI past the marked vignette is reported, even though it's "
+            f"fully reachable by the DMD ({inn.dim(cv)})")
+    r.check(inn.outside(cv) == [],
+            "control: it's still geometrically fine — dim() and outside() "
+            "answer different questions")
+    r.check(inn.dim(c) == [],
+            "…and with no vignette ever marked, dim() has nothing to report")
+    small = RoiSet()
+    small.add(CircleRoi(x=vcx, y=vcy, r=5))
+    r.check(small.dim(cv) == [],
+            f"control: well inside the marked circle is not flagged "
+            f"({small.dim(cv)})")
 
     # The status line's estimate has to track the exact figure it stands in for.
     for st in (far, off, inn):

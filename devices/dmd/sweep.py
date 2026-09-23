@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 
 from acqApp import config, style
 
-from acqApp.devices.dmd.calibration import (STRIPE_CROSS, STRIPE_OFFSETS,
+from acqApp.devices.dmd.calibration import (ON, STRIPE_CROSS, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             calibrate)
 
@@ -207,13 +207,21 @@ class CalibrationDialog(QDialog):
         self._btn_stop = QPushButton("Stop")
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._request_cancel)
+        self._btn_adjust = QPushButton("Adjust corners / vignette…")
+        self._btn_adjust.setEnabled(False)
+        self._btn_adjust.setToolTip(
+            "Projects the DMD all-on and grabs one more frame, then lets you "
+            "drag its four corners onto where the lit field actually lands — "
+            "a manual fine-tune on top of the fit above, not another sweep — "
+            "and mark a circle where the optics dim the image past use.")
+        self._btn_adjust.clicked.connect(self._adjust_corners)
         self._btn_save = QPushButton("Save calibration…")
         self._btn_save.setStyleSheet(style.solid_btn("dmd"))
         self._btn_save.setEnabled(False)
         self._btn_save.clicked.connect(self._save)
         self._btn_close = QPushButton("Close")
         self._btn_close.clicked.connect(self.reject)
-        for b in (self._btn_run, self._btn_stop, self._btn_save):
+        for b in (self._btn_run, self._btn_stop, self._btn_adjust, self._btn_save):
             row.addWidget(b)
         row.addStretch()
         row.addWidget(self._btn_close)
@@ -246,7 +254,7 @@ class CalibrationDialog(QDialog):
         self._running = True
         self._cancel = False
         self._calib = None
-        for b in (self._btn_run, self._btn_save, self._btn_close):
+        for b in (self._btn_run, self._btn_adjust, self._btn_save, self._btn_close):
             b.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._cmb_model.setEnabled(False)
@@ -284,6 +292,7 @@ class CalibrationDialog(QDialog):
             self._calib = calibrate(project, grab, (w, h), model=model,
                                     cross_frac=cross_frac, log=self.log)
             self._btn_save.setEnabled(True)
+            self._btn_adjust.setEnabled(True)
         except SweepCancelled as e:
             self.log(f"[sweep] {e}")
         except CalibrationError as e:
@@ -310,6 +319,54 @@ class CalibrationDialog(QDialog):
             self._spn_cross.setEnabled(True)
             for b in (self._btn_run, self._btn_close):
                 b.setEnabled(True)
+
+    # ── manual corner adjustment ────────────────────────────────────────────
+    def _adjust_corners(self) -> None:
+        """Project all-on, grab one more frame, and let the operator drag the
+        fit's four corners onto where the field actually lands in it.
+
+        A second, explicit actuation — separate from the sweep's, and only on
+        this button's own click (PLAN §2): the sweep's consent covered
+        projecting stripes to MEASURE a registration, not a further frame to
+        review one already measured.
+        """
+        if self._calib is None:
+            return
+        for b in (self._btn_run, self._btn_adjust, self._btn_save, self._btn_close):
+            b.setEnabled(False)
+        was_live = True
+        if self._set_live is not None:
+            was_live = bool(self._set_live(True))
+            if not was_live:
+                self.log("[sweep] started the live view for corner adjustment")
+        self.log("[sweep] projecting all-on to show the field for corner adjustment")
+
+        frame = None
+        w, h = self._proj.resolution
+        try:
+            self._proj.project_frame(np.full((h, w), ON, np.uint8))
+            grabber = FreshGrabber(self._source, timeout_s=8.0, pump=self._pump)
+            frame = grabber.grab()
+        except CalibrationError as e:
+            self.log(f"[sweep] could not get a frame for corner adjustment: {e}")
+        finally:
+            try:
+                self._proj.stop()
+            except Exception as e:                  # noqa: BLE001
+                self.log(f"[sweep] could not stop the projector: {e}")
+            if self._set_live is not None and not was_live:
+                self._set_live(False)
+                self.log("[sweep] live view stopped again")
+            for b in (self._btn_run, self._btn_adjust, self._btn_save, self._btn_close):
+                b.setEnabled(True)
+
+        if frame is None:
+            return
+        from acqApp.devices.dmd.corner_editor import CornerAdjustDialog
+        dlg = CornerAdjustDialog(self._calib, frame, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.calibration is not None:
+            self._calib = dlg.calibration
+            self.log(f"[sweep] corners adjusted -> {self._calib.describe()}")
 
     # ── result ───────────────────────────────────────────────────────────────
     @property

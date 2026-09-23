@@ -647,6 +647,19 @@ class MainWindow(QMainWindow):
         m = self._module(key)
         return m.last_frame() if m is not None else None
 
+    def latest_frame_preset(self, key: str) -> str | None:
+        """The resolution preset `latest_frame(key)` was actually captured
+        under, or None. NOT the same as `camera_preset(key)`: that mirrors
+        the settings combo and can already name a preset switch that hasn't
+        taken effect yet (structural, next-Start-only), while this names
+        whatever produced the frame that's actually buffered right now — the
+        DMD's ROI editor needs this one (`adapters/dmd.py.edit_rois`) to shift
+        a click by the offset the buffered frame's pixel (0, 0) really sits at.
+        """
+        m = self._module(key)
+        return (m.last_frame_preset() if m is not None
+                and hasattr(m, "last_frame_preset") else None)
+
     @contextmanager
     def _attributed_to(self, key: str):
         """Run a block with `self._building_key` set to `key`, so `add_dock`

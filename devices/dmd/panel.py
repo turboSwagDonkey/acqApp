@@ -330,7 +330,8 @@ class SettingsPanel(QWidget):
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy,
                   self._spn_subsample):
             w.valueChanged.connect(self._emit)
-        for c in (self._chk_fit, self._chk_invert, self._chk_roi_flip_y):
+        for c in (self._chk_fit, self._chk_invert, self._chk_roi_flip_y,
+                  self._chk_roi_flip_x):
             c.toggled.connect(self._emit)
         self._cmb_trig.currentTextChanged.connect(self._emit)
 
@@ -361,6 +362,16 @@ class SettingsPanel(QWidget):
         btn.clicked.connect(self.rois_edit_requested)
         v.addWidget(btn)
 
+        flip_row = QHBoxLayout()
+        flip_row.setContentsMargins(0, 0, 0, 0)
+        self._chk_roi_flip_x = QCheckBox("Flip X")
+        self._chk_roi_flip_x.setChecked(self._s.roi_flip_x)
+        self._chk_roi_flip_x.setToolTip(
+            "Mirror the camera→DMD mapping across X before projecting an "
+            "ROI mask — a manual correction for a rig whose measured "
+            "registration is right in Y but backwards in X. Affects the "
+            "editor's field outline and \"outside the field\" checks too, so "
+            "both stay honest about where light will actually land.")
         self._chk_roi_flip_y = QCheckBox("Flip Y")
         self._chk_roi_flip_y.setChecked(self._s.roi_flip_y)
         self._chk_roi_flip_y.setToolTip(
@@ -369,7 +380,10 @@ class SettingsPanel(QWidget):
             "registration is right in X but backwards in Y. Affects the "
             "editor's field outline and \"outside the field\" checks too, so "
             "both stay honest about where light will actually land.")
-        v.addWidget(self._chk_roi_flip_y)
+        flip_row.addWidget(self._chk_roi_flip_x)
+        flip_row.addWidget(self._chk_roi_flip_y)
+        flip_row.addStretch()
+        v.addLayout(flip_row)
 
         self._lbl_calib = QLabel()
         self._lbl_calib.setWordWrap(True)
@@ -776,6 +790,7 @@ class SettingsPanel(QWidget):
             rois=self._rois,
             calib_path=self._calib_path,
             roi_flip_y=self._chk_roi_flip_y.isChecked(),
+            roi_flip_x=self._chk_roi_flip_x.isChecked(),
         )
 
     @property
