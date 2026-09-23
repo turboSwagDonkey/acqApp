@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.acq.devices import CameraWorker
-from acqApp.adapters.base import (DISP_DS, LEVELS_EVERY, PLOT_HISTORY,
-                                 ModuleAdapter, _image_view, _plot)
+from acqApp.adapters.base import (DISP_DS, PLOT_HISTORY, ModuleAdapter,
+                                 _image_view, _plot, led_controller)
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
 from acqApp.devices.voltage_cam.led import LedController, MockLedController
 from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
@@ -36,13 +36,9 @@ class VoltageCamModule(ModuleAdapter):
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        self._img = None
-        self._hist = None                # the histogram/LUT bar, for show/hide
         self._curve = None
         self._y: list[float] = []
         self._f0: float | None = None
-        self._levels: tuple[float, float] | None = None
-        self._level_ctr = 0
         self._auto_levels = True         # AcqConfig's default, until build_panel says otherwise
         self._last_frame = None         # full-res, for the DMD's ROI editor
         # The preset actually behind `_last_frame` — set once per session, at
@@ -128,24 +124,9 @@ class VoltageCamModule(ModuleAdapter):
 
     # ── illumination ──
     def build_controller(self, emulate: bool) -> None:
-        if emulate:
-            self.controller = MockLedController()
-            return
-        # Not fitted is the operator's claim in rigs.json, so don't touch the
-        # DAQ at all: opening a line on a rig that has no primary LED only
-        # ever produced a multi-line nidaqmx traceback at every startup.
-        if not config.rig_has("primary_led"):
-            print(f"[main] primary LED not fitted on rig "
-                  f"{config.active_rig() or '(none set)'} — using mock")
-            self.controller = MockLedController()
-            return
-        chan = config.rig_channel("primary_led")
-        try:
-            self.controller = (LedController(chan) if chan
-                               else LedController())
-        except Exception as e:
-            print(f"[main] primary LED unavailable ({e}) — using mock")
-            self.controller = MockLedController()
+        self.controller = led_controller(
+            emulate, "primary_led", LedController, MockLedController,
+            "primary LED")
 
     def _on_led(self, on: bool) -> None:
         if self.controller is not None:
@@ -165,8 +146,7 @@ class VoltageCamModule(ModuleAdapter):
     def _on_auto_levels(self, on: bool) -> None:
         self._auto_levels = bool(on)
         if on:                          # recompute fresh, not a stale cache
-            self._levels = None
-            self._level_ctr = 0
+            self._reset_levels()
         self._sync_auto_to_lut(on)
 
     def _on_preview_avg(self, n: int) -> None:
@@ -288,8 +268,7 @@ class VoltageCamModule(ModuleAdapter):
         self.panel.set_running(True)
         self._y.clear()
         self._f0 = None
-        self._levels = None
-        self._level_ctr = 0
+        self._reset_levels()
         self._preview_buf.clear()   # don't average across a session boundary
 
     def start(self) -> None:
@@ -325,23 +304,7 @@ class VoltageCamModule(ModuleAdapter):
         else:
             disp = small
 
-        if self._auto_levels:
-            # The percentile is the costly part, so refresh contrast a couple
-            # of times a second rather than every frame.
-            if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
-                lo, hi = np.percentile(disp, (1, 99))
-                self._levels = (float(lo), float(hi))
-            self._level_ctr += 1
-            self._img.setImage(disp, autoLevels=False, levels=self._levels)
-        else:
-            # Read the LUT bar's own current levels back and pass them
-            # explicitly — pyqtgraph only reliably re-renders the mapping
-            # onto NEW frame data when setLevels() is actually called;
-            # omitting `levels=` here (as if "leave it alone" were enough)
-            # left the display stuck on stale contrast until operator
-            # dragged the LUT themselves, which is what really called it.
-            levels = self._hist.item.getLevels() if self._hist is not None else None
-            self._img.setImage(disp, autoLevels=False, levels=levels)
+        self._paint(disp, self._auto_levels)
 
         mean = float(small.mean())
         if self._f0 is None and mean != 0:

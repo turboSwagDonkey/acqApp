@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QVBoxLayout, QWidget
 
-from acqApp import style
+from acqApp import config, style
 from acqApp.closed_loop import SignalSource
 from acqApp.acq.devices import (DeviceWorker, LedTarget, ModuleHost, OutputController,
                             PatternTarget, PufferTarget, RecordingOutput, StageTarget)
@@ -109,6 +110,28 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     return img, hist, chk_auto, gv, vb, row
 
 
+def led_controller(emulate: bool, rig_key: str, real_cls, mock_cls, label: str):
+    """Open a DAQ-backed LED, or its mock twin, saying which and why.
+
+    A rig whose profile says the LED isn't fitted gets the mock with no DAQ
+    attempt at all: opening a line on a rig that has no such LED only ever
+    produced a nidaqmx traceback at every startup. Both cameras' LEDs are
+    wired this way and differ only in the three names.
+    """
+    if emulate:
+        return mock_cls()
+    if not config.rig_has(rig_key):
+        print(f"[main] {label} not fitted on rig "
+              f"{config.active_rig() or '(none set)'} — using mock")
+        return mock_cls()
+    chan = config.rig_channel(rig_key)
+    try:
+        return real_cls(chan) if chan else real_cls()
+    except Exception as e:
+        print(f"[main] {label} unavailable ({e}) — using mock")
+        return mock_cls()
+
+
 # ── base ──────────────────────────────────────────────────────────────────────
 
 class ModuleAdapter:
@@ -131,6 +154,12 @@ class ModuleAdapter:
         # module with a preview — set by whoever calls central_widget()/
         # build_views(). See _sync_auto_to_lut/_sync_auto_from_lut.
         self._chk_auto_lut: QCheckBox | None = None
+        # Preview state, shared by every camera-shaped module; _paint() below
+        # is the only thing that reads them. A non-camera leaves them None.
+        self._img = None                 # the pg.ImageItem being painted
+        self._hist = None                # its LUT bar, for show/hide + levels
+        self._levels: tuple[float, float] | None = None
+        self._level_ctr = 0
 
     # ── construction (once, at startup) ───────────────────────────────────────
     # A panel that belongs in a window of its own rather than as a page of the
@@ -194,6 +223,34 @@ class ModuleAdapter:
         LUT bar's own checkbox (a no-op, not a loop, once agreed)."""
         if self._chk_auto_lut is not None:
             self._chk_auto_lut.setChecked(on)
+
+    def _reset_levels(self) -> None:
+        """Drop the cached contrast so the next paint recomputes it — at a
+        session boundary, or when Auto is switched back on, where reusing
+        last session's percentiles shows the new frames at stale contrast."""
+        self._levels = None
+        self._level_ctr = 0
+
+    def _paint(self, data, auto: bool) -> None:
+        """Show one frame in `self._img` at the right contrast.
+
+        Auto recomputes the percentile every LEVELS_EVERY ticks, not every
+        frame — the percentile is the costly part, and contrast a couple of
+        times a second is enough. Manual re-passes the LUT bar's OWN current
+        levels rather than omitting `levels=`: pyqtgraph only reliably
+        re-renders the mapping onto new frame data when setLevels() is
+        actually called, and leaving it out stuck the display on stale
+        contrast until the operator dragged the bar themselves.
+        """
+        if auto:
+            if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
+                lo, hi = np.percentile(data, (1, 99))
+                self._levels = (float(lo), float(hi))
+            self._level_ctr += 1
+            levels = self._levels
+        else:
+            levels = self._hist.item.getLevels() if self._hist is not None else None
+        self._img.setImage(data, autoLevels=False, levels=levels)
 
     # ── session ───────────────────────────────────────────────────────────────
     def build_session(self, emulate: bool) -> None:

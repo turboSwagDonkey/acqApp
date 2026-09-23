@@ -22,8 +22,8 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
 
 from acqApp import config
 from acqApp.acq.devices import ExposureControl
-from acqApp.adapters.base import (LEVELS_EVERY, PLOT_HISTORY, DragRectViewBox,
-                                  ModuleAdapter, _image_view, _plot)
+from acqApp.adapters.base import (PLOT_HISTORY, DragRectViewBox, ModuleAdapter,
+                                  _image_view, _plot, led_controller)
 from acqApp.devices.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
 from acqApp.devices.pupil_cam.control import LedController, MockLedController
@@ -40,10 +40,6 @@ class PupilCamModule(ModuleAdapter):
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        self._img = None
-        self._hist = None                # the histogram/LUT bar, for show/hide
-        self._levels: tuple[float, float] | None = None   # only used in "auto"
-        self._level_ctr = 0
         # Empty until build_views: the module can be loaded without ever
         # building its dock, and _on_settings fires from the panel before then.
         self._limit_curve = None        # the box in force
@@ -99,8 +95,7 @@ class PupilCamModule(ModuleAdapter):
         if self._hist is not None:
             self._hist.setVisible(s.show_lut)
         if s.auto_levels and not prev_auto:   # just turned on — not a stale cache
-            self._levels = None
-            self._level_ctr = 0
+            self._reset_levels()
         self._sync_auto_to_lut(s.auto_levels)
         self._draw_limit(s)
         self._draw_pins(s)
@@ -364,22 +359,9 @@ class PupilCamModule(ModuleAdapter):
 
     # ── controllers ──
     def build_controller(self, emulate: bool) -> None:
-        if emulate:
-            self.controller = MockLedController()
-        elif not config.rig_has("pupil_led"):
-            # See the primary LED's build_controller: a rig that says it has
-            # no eye LED gets the mock without a DAQ attempt.
-            print(f"[main] eye-tracking LED not fitted on rig "
-                  f"{config.active_rig() or '(none set)'} — using mock")
-            self.controller = MockLedController()
-        else:
-            chan = config.rig_channel("pupil_led")
-            try:
-                self.controller = (LedController(chan) if chan
-                                   else LedController())
-            except Exception as e:
-                print(f"[main] eye-tracking LED unavailable ({e}) — using mock")
-                self.controller = MockLedController()
+        self.controller = led_controller(
+            emulate, "pupil_led", LedController, MockLedController,
+            "eye-tracking LED")
         # A freshly built controller starts at its own default (full scale) —
         # apply what was persisted before anything can turn it on at that.
         self.controller.set_intensity(self.panel.settings.led_intensity)
@@ -416,8 +398,7 @@ class PupilCamModule(ModuleAdapter):
         for reg in self._blink_regions:     # a stale band must not outlive its session
             reg.setVisible(False)
         self._said = None
-        self._levels = None                 # a fresh "auto" recompute, not last session's
-        self._level_ctr = 0
+        self._reset_levels()                # not last session's percentiles
 
     def _build_camera(self, s, emulate: bool):
         if s.video_path:
@@ -485,21 +466,8 @@ class PupilCamModule(ModuleAdapter):
             return
         self._last_frame = tr.frame
         shown, rect = self._display_frame(tr.frame)
-        if self._settings is not None and self._settings.auto_levels:
-            if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
-                lo, hi = np.percentile(shown, (1, 99))
-                self._levels = (float(lo), float(hi))
-            self._level_ctr += 1
-            self._img.setImage(shown, autoLevels=False, levels=self._levels)
-        else:
-            # Read the LUT bar's own current levels back and pass them
-            # explicitly — pyqtgraph only reliably re-renders the mapping
-            # onto NEW frame data when setLevels() is actually called;
-            # omitting `levels=` here (as if "leave it alone" were enough)
-            # left the display stuck on stale contrast until operator
-            # dragged the LUT themselves, which is what really called it.
-            levels = self._hist.item.getLevels() if self._hist is not None else None
-            self._img.setImage(shown, autoLevels=False, levels=levels)
+        self._paint(shown, self._settings is not None
+                    and self._settings.auto_levels)
         # Positions the image at its own full-frame pixel coordinates even when
         # cropped, so the fit/pin/region overlays (still in full-frame pixels)
         # stay aligned instead of drawing over a shifted image. Skipped when
