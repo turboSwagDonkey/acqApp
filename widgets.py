@@ -6,12 +6,20 @@ panel can use it without pulling in the shell.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QDoubleSpinBox, QGroupBox, QSpinBox, QWidget
+from pathlib import Path
+from typing import Any
+
+from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox,
+                             QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+                             QListWidget, QListWidgetItem, QPushButton,
+                             QSpinBox, QVBoxLayout, QWidget)
 
 _GEOM_ORG, _GEOM_APP = "acqApp", "acqApp"
 
 OPEN, SHUT = "▾", "▸"
+
+_PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
 def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
@@ -47,6 +55,92 @@ def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
     if tooltip:
         s.setToolTip(tooltip)
     return s
+
+
+class SessionPicker(QDialog):
+    """Choose one of this session's saved files, older runs behind Browse.
+
+    The shape both `devices/dmd/roi_picker.py` and
+    `devices/stage/fov_picker.py` want: the quick list is only THIS run's
+    saves, so a long history never slows finding today's, and everything
+    earlier is one Browse away in the archive folder.
+
+    `store` is any module exposing `list_session()`, `list_archive()` and
+    `ARCHIVE_DIR` — duck-typed on purpose, so this file still knows nothing
+    about devices. A subclass supplies `row()` and, if it wants more than
+    the path, overrides `chose()`. `self.path` is the chosen file after
+    `exec()`, else None.
+    """
+
+    def __init__(self, parent, store, *, title: str, empty: str,
+                 browse_tip: str, browse_caption: str, browse_filter: str,
+                 icon_size=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.path: Path | None = None
+        self._store = store
+        self._browse_caption, self._browse_filter = browse_caption, browse_filter
+
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("This session:"))
+        self._list = QListWidget()
+        if icon_size is not None:
+            self._list.setIconSize(icon_size)
+        records = list(reversed(store.list_session()))        # newest first
+        for rec in records:
+            text, icon = self.row(rec)
+            it = QListWidgetItem(text)
+            it.setData(_PATH_ROLE, str(rec.path))
+            if icon is not None:
+                it.setIcon(icon)
+            self._list.addItem(it)
+        if records:
+            self._list.setCurrentRow(0)
+        else:
+            self._list.addItem(empty)
+            self._list.setEnabled(False)
+        self._list.itemDoubleClicked.connect(lambda _it: self._accept_selected())
+        v.addWidget(self._list)
+
+        row = QHBoxLayout()
+        btn_browse = QPushButton("Browse older…")
+        btn_browse.setToolTip(browse_tip)
+        btn_browse.clicked.connect(self._browse)
+        row.addWidget(btn_browse)
+        row.addStretch(1)
+        v.addLayout(row)
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                               QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self._accept_selected)
+        box.rejected.connect(self.reject)
+        v.addWidget(box)
+
+    # ── what a subclass fills in ──
+    def row(self, rec) -> tuple[str, Any]:
+        """One list row for `rec`: its label, and an icon or None."""
+        return (f"{rec.name}  ({rec.saved_at})", None)
+
+    def chose(self, path: Path) -> None:
+        """Record the choice and close. Override to also load the file."""
+        self.path = path
+        self.accept()
+
+    # ── the picking itself ──
+    def _accept_selected(self) -> None:
+        if not self._list.isEnabled():
+            return
+        items = self._list.selectedItems()
+        if items:
+            self.chose(Path(items[0].data(_PATH_ROLE)))
+
+    def _browse(self) -> None:
+        self._store.list_archive()    # ensures the folder (+ rotation) exist
+        path, _ = QFileDialog.getOpenFileName(
+            self, self._browse_caption, str(self._store.ARCHIVE_DIR),
+            self._browse_filter)
+        if path:
+            self.chose(Path(path))
 
 
 def _arrow(box: QGroupBox, on: bool) -> None:

@@ -114,6 +114,14 @@ def isolate_user_state() -> Path:
     roi_store.ARCHIVE_DIR = tmp / "rois" / "archive"
     roi_store._rotated = False
 
+    # The FOV library is the same store shape and was NOT redirected here until
+    # a picker test saved two bookmarks straight into the operator's own
+    # fov_library/session and rotated their real ones into archive.
+    from acqApp.devices.stage import fov_store
+    fov_store.SESSION_DIR = tmp / "fovs" / "session"
+    fov_store.ARCHIVE_DIR = tmp / "fovs" / "archive"
+    fov_store._rotated = False
+
     MemorySettings.store = {}
     import PyQt6.QtCore
     PyQt6.QtCore.QSettings = MemorySettings

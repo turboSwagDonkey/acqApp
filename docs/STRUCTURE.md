@@ -296,6 +296,8 @@ tests/                  plain scripts, not pytest; each runs in its own process
   test_dmd_calibration.py
   test_dmd_roi.py
   test_dmd_sweep.py           the wiring: fresh grabs, untransformed patterns
+  test_pickers.py             the saved-ROI and saved-FOV pickers over their
+                              shared widgets.SessionPicker base
   test_vis_stim.py            trial expansion, grating/region/circle
                               geometry, the tick-driven priming/gating state
                               machine (grating, map, tuning, contrast),

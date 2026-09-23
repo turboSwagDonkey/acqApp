@@ -42,6 +42,7 @@ TESTS = [
     ("dmd-calib", "test_dmd_calibration.py"),
     ("dmd-sweep", "test_dmd_sweep.py"),
     ("dmd-roi",   "test_dmd_roi.py"),
+    ("pickers",   "test_pickers.py"),
     ("vis-stim",  "test_vis_stim.py"),
     ("closed-loop", "test_closed_loop.py"),
     ("routines",  "test_routines.py"),
