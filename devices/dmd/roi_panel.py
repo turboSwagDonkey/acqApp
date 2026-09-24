@@ -121,18 +121,23 @@ class RoiEditor(QWidget):
 
     def __init__(self, calib: DmdCalibration | None = None, parent=None, *,
                  offset: tuple[float, float] = (0.0, 0.0),
-                 sensor: tuple[float, float] | None = None):
+                 sensor: tuple[float, float] | None = None,
+                 scale: float = 1.0):
         """`offset` is the active camera preset's (hpos, vpos): the sensor
-        pixel the displayed frame's (0, 0) actually is. The model (and every
-        calibration, which is always measured full-frame) stays in absolute
-        sensor coordinates; only the on-screen frame and pyqtgraph items are
-        in preset-local ones, so this is the one seam that converts between
-        them — get it wrong and every ROI drawn on a cropped preset lands
-        (hpos, vpos) away from where it was clicked.
+        pixel the displayed frame's (0, 0) actually is. `scale` is how many
+        sensor px one frame px covers — the binning factor. The model (and
+        every calibration, which is always measured full-frame) stays in
+        absolute sensor coordinates; only the on-screen frame and pyqtgraph
+        items are in preset-local ones, so this is the one seam that converts
+        between them — get either wrong and an ROI lands (hpos, vpos) away
+        from where it was clicked, or the frame is drawn at a fraction of the
+        sensor area it covers, with the field outline around it looking
+        `scale` times too big.
         """
         super().__init__(parent)
         self._calib = calib
         self._ox, self._oy = offset
+        self._scale = float(scale)
         self._sensor = sensor              # full (w, h), drawn as the outer frame
         self._set = RoiSet()
         self._items: list = []             # pyqtgraph ROI items, index-aligned
@@ -241,6 +246,12 @@ class RoiEditor(QWidget):
             lo, hi = float(self._image.min()), float(self._image.max()) or 1.0
         self._img.setImage(self._image, autoLevels=False,
                            levels=(float(lo), float(hi)))
+        # Drawn at its SENSOR extent, not its own pixel count: a binned frame
+        # is half (or a quarter) the px of the area it covers, and everything
+        # else here — the ROIs, the field outline, the sensor frame — is in
+        # sensor px.
+        h, w = self._image.shape[:2]
+        self._img.setRect(QRectF(0.0, 0.0, w * self._scale, h * self._scale))
         self._hist.setLevels(float(lo), float(hi))
         self._vb.autoRange()
         self._refresh_status()
@@ -281,7 +292,8 @@ class RoiEditor(QWidget):
             span = float(min(np.ptp(c[:, 0]), np.ptp(c[:, 1])))
             return float(c[:, 0].mean()), float(c[:, 1].mean()), max(8.0, span / 8)
         if self._image is not None:
-            h, w = self._image.shape[:2]
+            h = self._image.shape[0] * self._scale
+            w = self._image.shape[1] * self._scale
             return w / 2.0 + self._ox, h / 2.0 + self._oy, max(8.0, min(w, h) / 8)
         return 50.0 + self._ox, 50.0 + self._oy, 20.0
 

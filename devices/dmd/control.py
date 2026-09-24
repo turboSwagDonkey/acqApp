@@ -140,9 +140,10 @@ class DmdSettings:
     # `calib_path` registration they can be drawn and saved, not projected.
     rois:          tuple       = ()
     calib_path:    str         = ""
-    # A manual correction for a rig whose measured registration is right in X
-    # but backwards in Y (operator-confirmed) — mirrors the mapping in
-    # `calibration.flip_y` wherever it's loaded, rather than re-fitting.
+    # A manual correction for a rig that projects backwards in Y
+    # (operator-confirmed): the ROI mask is mirrored on its way to the panel
+    # and nothing else moves — see `calibration.flip_y`. ROI mode only; a
+    # pattern image goes to the panel as-is.
     roi_flip_y:    bool        = False
     roi_flip_x:    bool        = False   # `calibration.flip_x`'s twin knob
 

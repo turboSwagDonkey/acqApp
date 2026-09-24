@@ -725,11 +725,17 @@ def flip_y(calib: DmdCalibration) -> DmdCalibration:
     A manual correction, not a re-fit: the stripe-sweep homography is
     measured empirically and should already capture any real reflection in
     the optical path, but an operator-confirmed rig can still need this knob
-    (`DmdSettings.roi_flip_y`, 2026-09-14) — composing a flip onto the fitted
-    matrix, rather than re-deriving one, keeps `dmd_to_cam` (a plain inverse)
-    correct for free, and every consumer of `cam_to_dmd` (the ROI editor's
-    field outline and accessible checks, and the real projection mask) sees
-    the same corrected transform.
+    (`DmdSettings.roi_flip_y`, 2026-09-14).
+
+    **This is a mirror of the projected pixels, nothing more.** The flip maps
+    the panel's own corners onto each other, so `accessible_corners()`,
+    `accessible()` and `visible_mirrors()` all come back unchanged — the
+    field outline doesn't move and no ROI changes its reach. The one thing
+    that changes is which mirrors an ROI maps to, and it changes by exactly
+    a row flip: `RoiSet.dmd_frame(flip_y(c))` is `dmd_frame(c)[::-1, :]`
+    (locked by tests/test_dmd_roi.py). Composed onto the matrix rather than
+    applied to the mask so `dmd_to_cam` (a plain inverse) stays right for
+    free and there's one place it can be forgotten instead of several.
     """
     h = float(calib.dmd_size[1])
     flip = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, h - 1.0], [0.0, 0.0, 1.0]])

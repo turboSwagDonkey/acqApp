@@ -350,19 +350,19 @@ class SettingsPanel(QWidget):
         self._chk_roi_flip_x = QCheckBox("Flip X")
         self._chk_roi_flip_x.setChecked(self._s.roi_flip_x)
         self._chk_roi_flip_x.setToolTip(
-            "Mirror the camera→DMD mapping across X before projecting an "
-            "ROI mask — a manual correction for a rig whose measured "
-            "registration is right in Y but backwards in X. Affects the "
-            "editor's field outline and \"outside the field\" checks too, so "
-            "both stay honest about where light will actually land.")
+            "Mirror the ROI mask across X on its way to the panel — a manual "
+            "correction for a rig that projects backwards in X.\nThe ROIs you "
+            "drew don't move, and neither do the editor's field outline or "
+            "its \"outside the field\" checks: only which mirrors light up "
+            "changes. Pattern images aren't affected.")
         self._chk_roi_flip_y = QCheckBox("Flip Y")
         self._chk_roi_flip_y.setChecked(self._s.roi_flip_y)
         self._chk_roi_flip_y.setToolTip(
-            "Mirror the camera→DMD mapping across Y before projecting an "
-            "ROI mask — a manual correction for a rig whose measured "
-            "registration is right in X but backwards in Y. Affects the "
-            "editor's field outline and \"outside the field\" checks too, so "
-            "both stay honest about where light will actually land.")
+            "Mirror the ROI mask across Y on its way to the panel — a manual "
+            "correction for a rig that projects backwards in Y.\nThe ROIs you "
+            "drew don't move, and neither do the editor's field outline or "
+            "its \"outside the field\" checks: only which mirrors light up "
+            "changes. Pattern images aren't affected.")
         flip_row.addWidget(self._chk_roi_flip_x)
         flip_row.addWidget(self._chk_roi_flip_y)
         flip_row.addStretch()

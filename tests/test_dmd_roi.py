@@ -318,6 +318,26 @@ def main() -> int:
     r.check(hit_bad < 0.6,
             f"control: a 40 px registration error misses ({100*hit_bad:.0f}%)")
 
+    # ── 4b. Flip X/Y mirror the PROJECTED PIXELS and nothing else ───────────
+    # The operator's model of this knob (2026-09-24): what they drew stays
+    # put, the mirrors that light up flip. It holds because the flip maps the
+    # panel's corners onto each other, so every question asked in camera
+    # space has the same answer — worth locking, since the panel tooltip now
+    # promises exactly this.
+    from acqApp.devices.dmd.calibration import flip_x, flip_y
+
+    r.check(np.array_equal(near.dmd_frame(flip_y(c)), frame[::-1, :]),
+            "Flip Y mirrors the mask's rows on the panel, exactly")
+    r.check(np.array_equal(near.dmd_frame(flip_x(c)), frame[:, ::-1]),
+            "Flip X mirrors its columns, exactly")
+    r.check(np.allclose(np.sort(flip_y(c).accessible_corners(), axis=0),
+                        np.sort(c.accessible_corners(), axis=0)),
+            "…while the reachable field stays exactly where it was")
+    probe = np.array([[CW / 2, CH / 2], [-50.0, -50.0], [CW + 50.0, CH + 50.0]])
+    r.check(np.array_equal(flip_y(c).accessible(probe), c.accessible(probe))
+            and np.array_equal(flip_x(c).accessible(probe), c.accessible(probe)),
+            "…and so does every \"can the DMD reach this?\" answer")
+
     # ── 5. persistence of the calibration itself ─────────────────────────────
     tmp = Path(tempfile.mkdtemp(prefix="dmd_calib_")) / "cal.json"
     c.save(tmp)
@@ -536,6 +556,34 @@ def main() -> int:
     roi4 = list(ed4.roi_set)[-1]
     r.check(abs(roi4.x - 130) < 1 and abs(roi4.y - 105) < 1,
             "control: zero offset behaves exactly as before")
+
+    # ── scale: a binned frame covers more sensor than it has pixels ─────────
+    # Same seam as the offset above, on the other axis of the problem: the
+    # calibration is measured unbinned, so a 2x2 frame drawn at its own pixel
+    # count sits in a quarter of the area it really covers — and the field
+    # outline lands nowhere near the image it's meant to describe.
+    ed5 = RoiEditor(c, offset=(ox, oy), scale=2.0)
+    ed5.set_image(np.zeros((CH // 2, CW // 2), np.uint8))
+    box5 = ed5._img.mapRectToView(ed5._img.boundingRect())
+    r.check(abs(box5.width() - CW) < 1 and abs(box5.height() - CH) < 1,
+            f"a 2x2-binned frame is drawn across the full sensor area it "
+            f"covers, not its own pixel count "
+            f"({box5.width():.0f}x{box5.height():.0f})")
+
+    # And the view stays in sensor px, so the drag → model conversion is the
+    # SAME one the unbinned case uses — scale belongs to the image alone.
+    ed5._on_drawn((100.0, 80.0), (160.0, 130.0))
+    roi5 = list(ed5.roi_set)[-1]
+    r.check(abs(roi5.x - (130 + ox)) < 1 and abs(roi5.y - (105 + oy)) < 1,
+            f"binning doesn't move where a drag lands in the model "
+            f"({roi5.x:.0f}, {roi5.y:.0f})")
+
+    # CONTROL: unbinned, the image is drawn at its own pixel count.
+    ed6 = RoiEditor(c, offset=(ox, oy))
+    ed6.set_image(np.zeros((CH // 2, CW // 2), np.uint8))
+    box6 = ed6._img.mapRectToView(ed6._img.boundingRect())
+    r.check(abs(box6.width() - CW / 2) < 1 and abs(box6.height() - CH / 2) < 1,
+            "control: at 1x1 the frame spans exactly its own pixels")
 
     # ── 7. saved ROI sets: session/archive storage, the picker, routines ────
     from acqApp.devices.dmd import roi_store

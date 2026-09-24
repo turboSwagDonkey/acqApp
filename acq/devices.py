@@ -310,6 +310,22 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def camera_binning(self, key: str) -> int | None:
+        """Module `key`'s current binning factor, or None if it isn't loaded
+        (or has no such notion of binning)."""
+        ...
+
+    def set_camera_binning(self, key: str, n: int) -> int | None:
+        """Switch module `key`'s binning factor; returns the PREVIOUS value,
+        or None if the module isn't loaded.
+
+        `set_camera_preset`'s twin, and forced alongside it by the DMD
+        calibration: a fit measured on a binned frame is recorded in binned
+        px, while ROIs and the ROI editor speak unbinned sensor px.
+        Structural in the same way — next session start only.
+        """
+        ...
+
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
         """Switch module `key`'s camera into (True) or out of (False)
         External edge trigger mode, restarting live view itself if that

@@ -276,6 +276,8 @@ def main() -> int:
         def is_recording(self): return False
         def camera_preset(self, key): return None
         def set_camera_preset(self, key, preset): return None
+        def camera_binning(self, key): return None
+        def set_camera_binning(self, key, n): return None
         def set_camera_trigger(self, key, on): return None
         def rearm_camera_trigger(self, key): return None
         def set_modules(self, keys): return [], []

@@ -92,37 +92,47 @@ class DmdModule(ModuleAdapter):
                 "Restart and tick Voltage camera in the startup picker.")
             return
 
-        # A calibration measured against a cropped capture area only means
-        # what it says for THAT area — the sensor's ROI shifts the captured
-        # frame's own pixel origin, not just its size, so switching back to a
-        # different capture area afterwards silently invalidates the fit (the
-        # reachable-field outline and any ROI keep drawing against the old
-        # pixel grid). Forcing full frame for the measurement removes the
-        # whole class of mismatch, so always calibrate against it.
+        # A calibration is recorded in the captured frame's OWN pixels, and
+        # both the capture area and the binning change what those are: a crop
+        # shifts the frame's pixel origin off the sensor's, and binning makes
+        # one frame px cover two or four sensor px. Everything downstream —
+        # ROIs, the reachable-field outline, the editor's sensor frame —
+        # speaks unbinned full-sensor px, so measuring under anything else
+        # silently files a fit in units nothing else uses. Forcing full frame
+        # at 1x1 for the measurement removes the whole class of mismatch.
         prev_preset = self.win.camera_preset("voltage_cam")
-        needs_switch = prev_preset is not None and prev_preset != DEFAULT_PRESET
+        prev_binning = self.win.camera_binning("voltage_cam")
+        cropped = prev_preset is not None and prev_preset != DEFAULT_PRESET
+        binned = prev_binning is not None and prev_binning != 1
+        needs_switch = cropped or binned
         was_live = None
         if needs_switch:
+            what = " and ".join(
+                (["cropped to a smaller capture area"] if cropped else [])
+                + ([f"binned {prev_binning}x{prev_binning}"] if binned else []))
             if self.win.is_recording():
                 QMessageBox.warning(
                     self.panel, "Recording in progress",
-                    "The voltage camera isn't on its full-frame capture "
-                    "area, and calibration needs it — but a recording is "
-                    "running, and changing the capture area needs a "
-                    "restart.\n\nStop recording first, then calibrate.")
+                    f"The voltage camera is {what}, and calibration needs "
+                    "full frame at 1x1 — but a recording is running, and "
+                    "changing either needs a restart.\n\nStop recording "
+                    "first, then calibrate.")
                 return
             QMessageBox.information(
                 self.panel, "Switching to full frame",
-                "The voltage camera is cropped to a smaller capture area. "
-                "Calibration only means what it says for the area it was "
-                "measured against, so this switches to full frame for the "
-                "run and puts the camera back the way it was afterwards.")
-            # Changing the preset only takes effect at the next Start (see
+                f"The voltage camera is {what}. Calibration only means what "
+                "it says in the pixels it was measured in, so this switches "
+                "to full frame at 1x1 for the run and puts the camera back "
+                "the way it was afterwards.")
+            # Both only take effect at the next Start (see
             # SettingsPanel.set_preset), so live view has to be stopped first
             # for full frame to actually be what the sweep sees — the dialog
             # below starts it again itself.
             was_live = self.win.set_live(False)
-            self.win.set_camera_preset("voltage_cam", DEFAULT_PRESET)
+            if cropped:
+                self.win.set_camera_preset("voltage_cam", DEFAULT_PRESET)
+            if binned:
+                self.win.set_camera_binning("voltage_cam", 1)
 
         try:
             dlg = CalibrationDialog(
@@ -134,7 +144,10 @@ class DmdModule(ModuleAdapter):
         finally:
             if needs_switch:
                 self.win.set_live(False)
-                self.win.set_camera_preset("voltage_cam", prev_preset)
+                if cropped:
+                    self.win.set_camera_preset("voltage_cam", prev_preset)
+                if binned:
+                    self.win.set_camera_binning("voltage_cam", prev_binning)
                 self.win.set_live(was_live)
 
     def _adopt_calibration(self, path: str) -> None:
@@ -183,6 +196,13 @@ class DmdModule(ModuleAdapter):
         # preset's offset while `frame` was still captured under the old one.
         preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
         offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
+        # And the same frame's BINNING, as sensor px per frame px. Taken from
+        # the frame itself against the preset that captured it rather than
+        # from the panel's combo, for the reason the preset is: the combo can
+        # already name a binning that only applies at the next Start. Without
+        # it a 2x2-binned frame is drawn at half the sensor area it covers,
+        # and the field outline lands nowhere near the image.
+        scale = preset.hsize / frame.shape[1] if preset is not None else 1.0
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
         dlg.resize(1000, 760)
@@ -191,7 +211,8 @@ class DmdModule(ModuleAdapter):
         from acqApp import style
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
-        ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H))
+        ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H),
+                       scale=scale)
         ed.set_image(frame)
         if self.panel.rois:
             ed.load(RoiSet.from_list(list(self.panel.rois)))
