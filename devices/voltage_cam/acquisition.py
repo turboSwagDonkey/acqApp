@@ -180,6 +180,23 @@ class OrcaFireWorker(PullWorker):
                 f"{_TRIG_POLARITY_PROP}={g(_TRIG_POLARITY_PROP)}, "
                 f"{_MP_INTERVAL_PROP}={g(_MP_INTERVAL_PROP)}")
 
+    def _dcimg_readback(self) -> str:
+        """What the attached recorder says about itself, for the re-arm log.
+
+        Empty when none is attached. `total` is the number a routine's
+        `trigger` step is actually watching (`adapters/routines.py`'s
+        `frames()`), so a run where it never moves says so in the log rather
+        than looking like a trigger line that went quiet.
+        """
+        if self._dcimg is None:
+            return ""
+        try:
+            st = self._dcimg.status()
+            return (f"; dcimg total={st.total} recording={st.recording} "
+                    f"session={st.session}")
+        except Exception as e:                       # noqa: BLE001
+            return f"; dcimg status unavailable ({type(e).__name__}: {e})"
+
     @staticmethod
     def _do_rearm(cam, nframes: int) -> None:
         """The actual re-arm, confirmed live against the real camera
@@ -196,6 +213,21 @@ class OrcaFireWorker(PullWorker):
         restarted, and confirmed gated (zero frames) until a real external
         edge arrived. Only `MASTER PULSE MODE` needs rewriting; `TRIGGER
         SOURCE`/`MASTER PULSE TRIGGER SOURCE`/polarity survive the cycle.
+
+        **This does not survive an attached `.dcimg`, and cannot be made to.**
+        The stop below ends the recorder's session: `status()` reports
+        `recording=False` from then on and its frame count never moves again.
+        Re-binding it is not a way out — `detach()` then `attach()` around the
+        restart is rejected by the driver with dcamcap_record 0x84001009
+        (rig, 2026-09-24), so a `DcimgRecorder` is effectively single-use per
+        capture session.
+
+        That count is exactly what a `trigger` step watches
+        (`adapters/routines.py`'s `frames()`), so in a .dcimg routine the
+        FIRST edge is the only one that can ever be seen: recording one starts
+        on its edge, and every later `trigger` step waits out its full timeout
+        with the line pulsing normally. Fixing that means not holding a .dcimg
+        open across a trigger step at all — see PLAN.md §6.
         """
         cam.stop_acquisition()
         cam.set_attribute_value(
@@ -264,6 +296,20 @@ class OrcaFireWorker(PullWorker):
         if self._dcimg_t0 is None:
             return None
         return (self._dcimg_t0, self._dcimg_t1 or 0.0)
+
+    @staticmethod
+    def _hit_frame_cap(st_rec, max_frames: int) -> bool:
+        """Whether `st_rec` is a recorder that stopped because it FILLED, as
+        opposed to one that merely isn't capturing right now.
+
+        Both halves are load-bearing. DCAM clears RECORDING whenever capture
+        isn't running, and a `trigger` step stops capture (`_do_rearm`) and
+        then leaves the camera gated on its edge — so the flag alone reports
+        a full file against a recorder holding nothing. The count is what
+        separates the two, since the cap is a hard ceiling the recorder stops
+        exactly at.
+        """
+        return not st_rec.recording and st_rec.total >= max_frames
 
     def _close_dcimg(self) -> None:
         """Latch the final counts before the handle goes away."""
@@ -664,7 +710,8 @@ class OrcaFireWorker(PullWorker):
                             self._skipped = 0
                             n_acquired = 0
                             print(f"[voltage_cam] re-armed: "
-                                  f"{self._trigger_readback(cam)}")
+                                  f"{self._trigger_readback(cam)}"
+                                  f"{self._dcimg_readback()}")
                         except Exception as e:      # noqa: BLE001
                             # Report and carry on: the routine's own trigger
                             # timeout is what turns "never re-armed" into a
@@ -771,11 +818,19 @@ class OrcaFireWorker(PullWorker):
                             # The frame cap is a HARD ceiling and hitting it is
                             # SILENT: the recorder just stops, `missing` stays
                             # 0, and every later frame is discarded with no
-                            # error anywhere (measured 2026-09-23). This flag
-                            # going False is the only evidence, so say it once
-                            # and loudly rather than file a short recording
-                            # that looks complete.
-                            if not st_rec.recording and not self._dcimg_full:
+                            # error anywhere (measured 2026-09-23). A cleared
+                            # RECORDING flag is the only evidence, so say it
+                            # once and loudly rather than file a short
+                            # recording that looks complete.
+                            #
+                            # `_hit_frame_cap` is why this tests the count and
+                            # not the flag alone: testing the flag alone
+                            # reported a full 156,250-frame file against a
+                            # recorder holding 0 frames, and aborted the
+                            # routine on the first loop pass of every trigger
+                            # step (rig, 2026-09-24).
+                            if (not self._dcimg_full and self._hit_frame_cap(
+                                    st_rec, self._dcimg.max_frames)):
                                 self._dcimg_full = True
                                 why = (f"the .dcimg stopped at its "
                                        f"{self._dcimg.max_frames:,}-frame cap "

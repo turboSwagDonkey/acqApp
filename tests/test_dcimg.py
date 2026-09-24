@@ -243,6 +243,30 @@ def check_wait_for_camera(r: Report, app) -> None:
     adapter._abort()
 
 
+def check_cap_vs_gated(r: Report) -> None:
+    """A recorder that stopped because it FILLED vs one that merely isn't
+    capturing. The rig hit the second and was told the first: a `trigger`
+    step stops capture and leaves the camera gated on its edge, DCAM clears
+    RECORDING for that too, and the routine aborted on a 0-frame file."""
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker as W
+    from acqApp.devices.voltage_cam.dcimg import RecStatus
+
+    def st(total, recording):
+        return RecStatus(total=total, index=0, missing=0, recording=recording)
+
+    cap = 156_250
+    r.check(W._hit_frame_cap(st(cap, False), cap) is True,
+            "a stopped recorder AT the cap really is full")
+    r.check(W._hit_frame_cap(st(cap + 10, False), cap) is True,
+            "…and so is one past it")
+    r.check(W._hit_frame_cap(st(0, False), cap) is False,
+            "a gated 0-frame recorder is NOT full (the rig abort)")
+    r.check(W._hit_frame_cap(st(cap // 2, False), cap) is False,
+            "nor is a half-full one paused between trigger steps")
+    r.check(W._hit_frame_cap(st(cap, True), cap) is False,
+            "still recording is never 'stopped at the cap'")
+
+
 def main() -> int:
     r = Report("dcimg")
     isolate_user_state()
@@ -252,6 +276,7 @@ def main() -> int:
         check_frame_cap(r, tmp)
         check_naming(r, tmp)
         check_cap_guards(r, tmp)
+        check_cap_vs_gated(r)
         check_host_wiring(r, app, tmp)
         check_routine_counts_recorder(r, app)
         check_wait_for_camera(r, app)
