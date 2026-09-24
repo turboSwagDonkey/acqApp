@@ -17,10 +17,11 @@
     "ni_device": "Dev2",
     "hardware": {
       "puffer": false,
-      "primary_led": false,
+      "primary_led": true,
       "pupil_led": false
     },
     "channels": {
+      "primary_led": "port0/line7",
       "wheel": "ai2"
     },
     "dmd_calibration": {
