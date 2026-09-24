@@ -157,7 +157,7 @@ class DmdModule(ModuleAdapter):
 
         from acqApp.devices.dmd.roi import RoiSet
         from acqApp.devices.dmd.roi_panel import RoiEditor
-        from acqApp.devices.voltage_cam.presets import PRESETS
+        from acqApp.devices.voltage_cam.presets import PRESETS, SENSOR_H, SENSOR_W
 
         frame = self.win.latest_frame("voltage_cam")
         if frame is None:
@@ -191,7 +191,7 @@ class DmdModule(ModuleAdapter):
         from acqApp import style
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
-        ed = RoiEditor(calib, offset=offset)
+        ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H))
         ed.set_image(frame)
         if self.panel.rois:
             ed.load(RoiSet.from_list(list(self.panel.rois)))

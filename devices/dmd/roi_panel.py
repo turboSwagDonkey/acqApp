@@ -120,7 +120,8 @@ class RoiEditor(QWidget):
     rois_changed = pyqtSignal(object)      # emits the RoiSet
 
     def __init__(self, calib: DmdCalibration | None = None, parent=None, *,
-                 offset: tuple[float, float] = (0.0, 0.0)):
+                 offset: tuple[float, float] = (0.0, 0.0),
+                 sensor: tuple[float, float] | None = None):
         """`offset` is the active camera preset's (hpos, vpos): the sensor
         pixel the displayed frame's (0, 0) actually is. The model (and every
         calibration, which is always measured full-frame) stays in absolute
@@ -132,6 +133,7 @@ class RoiEditor(QWidget):
         super().__init__(parent)
         self._calib = calib
         self._ox, self._oy = offset
+        self._sensor = sensor              # full (w, h), drawn as the outer frame
         self._set = RoiSet()
         self._items: list = []             # pyqtgraph ROI items, index-aligned
         self._image: np.ndarray | None = None
@@ -146,6 +148,13 @@ class RoiEditor(QWidget):
         self._gv.addItem(self._vb)
         self._img = pg.ImageItem(axisOrder="row-major")
         self._vb.addItem(self._img)
+        self._frame = pg.PlotCurveItem(pen=pg.mkPen(style.muted(), width=1))
+        self._vb.addItem(self._frame)
+        if self._sensor is not None:
+            w, h = self._sensor
+            x0, y0 = -self._ox, -self._oy
+            self._frame.setData([x0, x0 + w, x0 + w, x0, x0],
+                                [y0, y0, y0 + h, y0 + h, y0])
         self._field = pg.PlotCurveItem(pen=_FIELD_PEN)
         self._vb.addItem(self._field)
         self._vignette = pg.PlotCurveItem(pen=_VIGNETTE_PEN)
