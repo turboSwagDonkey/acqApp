@@ -44,7 +44,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 UNITS = ("frames", "seconds")
-KINDS = ("move", "display", "wait", "puff", "trigger")
+KINDS = ("move", "display", "wait", "record", "puff", "trigger")
+# Kinds that run for `length` `unit`; a record step also holds a file open.
+TIMED_KINDS = ("wait", "record")
 
 # key -> label. `single` keeps the one-file-per-session invariant; the other
 # two trade it for a folder of files, rolled by `adapters/routines.py` at
@@ -127,8 +129,8 @@ class Step:
         elif self.kind == "display":
             body = (f"show {pattern_label(self.pattern)}" if self.pattern
                     else "stop displaying")
-        elif self.kind == "wait":
-            body = f"wait {self.length:g} {self.unit}"
+        elif self.kind in TIMED_KINDS:
+            body = f"{self.kind} {self.length:g} {self.unit}"
         elif self.kind == "trigger":
             body = "wait for camera trigger"
         else:
@@ -151,15 +153,10 @@ class Group:
 
 @dataclass
 class Recording:
-    """A contiguous run of steps the camera is capturing for — a draggable
-    bracket over `Routine.steps`, independent of what those steps do.
-
-    Same shape as `Group` and for the same reason: `start`/`end` are 0-based,
-    inclusive indices rather than a membership list, so reordering steps
-    elsewhere doesn't have to rewrite one. Unlike a `Group` there's no
-    repeat count — a Recording that happens to sit inside a repeated `Group`
-    is simply re-entered on every repeat (`recording_run_ids` below is what
-    tells those repeats apart as separate recording runs).
+    """The steps one recording covers. Derived from the routine's `record`
+    steps (`Routine.recordings`), never stored: each record step is a
+    one-step Recording. A record step inside a repeated `Group` is re-entered
+    on every repeat (`recording_run_ids` tells those repeats apart).
     """
     start: int = 0
     end:   int = 0
@@ -290,7 +287,6 @@ class Routine:
     name:          str = "routine"
     steps:         list[Step] = field(default_factory=list)
     groups:        list[Group] = field(default_factory=list)
-    recordings:    list[Recording] = field(default_factory=list)
     cycles:        int = 1
     save_mode:     str = "single"
     start_trigger: str = "manual"
@@ -301,6 +297,12 @@ class Routine:
     # Without it a seconds-unit Wait spends that gap counting down against a
     # camera that isn't running, and the trial comes up short.
     wait_for_camera: bool = True
+
+    @property
+    def recordings(self) -> list[Recording]:
+        """One `Recording` per `record` step; its index is the region id."""
+        return [Recording(start=i, end=i)
+                for i, s in enumerate(self.steps) if s.kind == "record"]
 
     def total_steps(self) -> int:
         return len(play_order(self)) * max(1, self.cycles)
@@ -314,8 +316,7 @@ class Routine:
                 "start_trigger": self.start_trigger,
                 "wait_for_camera": self.wait_for_camera,
                 "steps": [vars(s).copy() for s in self.steps],
-                "groups": [vars(g).copy() for g in self.groups],
-                "recordings": [vars(r).copy() for r in self.recordings]}
+                "groups": [vars(g).copy() for g in self.groups]}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Routine":
@@ -328,7 +329,7 @@ class Routine:
         already-new-format; its absence marks a pre-redesign composite step —
         see `_migrate_step`). `old_to_new` maps every raw step's position to
         the range of new steps it became — identity (i, i) for one that
-        needed no migration — so `groups`/`recordings`, whose indices refer to
+        needed no migration — so `groups`, whose indices refer to
         raw-step positions, can be remapped the same way regardless of
         whether the file was old or new.
         """
@@ -336,7 +337,6 @@ class Routine:
             return cls()
         raw_steps = [s for s in (d.get("steps") or ()) if isinstance(s, dict)]
         steps: list[Step] = []
-        recordings: list[Recording] = []
         old_to_new: dict[int, tuple[int, int]] = {}
         for old_i, raw in enumerate(raw_steps):
             if "kind" in raw:
@@ -357,14 +357,11 @@ class Routine:
                 if end < start:
                     continue
                 old_to_new[old_i] = (start, end)
-                recordings.append(Recording(start=start, end=end))
 
         groups = _remap_ranges(d.get("groups") or (), Group, old_to_new)
-        # Explicit "recordings" only exist in new-format files (old ones never
-        # had the key) — same remap as groups, for the same reason: an index
-        # here refers to a raw-step position, not a post-migration one.
-        recordings.extend(
-            _remap_ranges(d.get("recordings") or (), Recording, old_to_new))
+        if d.get("recordings"):
+            print("[routines] this file has recording brackets, which no "
+                  "longer exist — add Record steps where they were")
 
         try:
             cycles = max(1, int(d.get("cycles", 1)))
@@ -375,7 +372,7 @@ class Routine:
             mode = "per_repeat"
         trigger = d.get("start_trigger")
         return cls(name=str(d.get("name") or "routine"), steps=steps,
-                   groups=groups, recordings=recordings, cycles=cycles,
+                   groups=groups, cycles=cycles,
                    save_mode=mode if mode in SAVE_MODES else "single",
                    start_trigger=trigger if trigger in START_TRIGGERS
                                  else "manual",
@@ -385,7 +382,7 @@ class Routine:
 
 
 def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list:
-    """Parse a list of `Group`/`Recording` dicts, remapping `start`/`end`
+    """Parse a list of `Group` dicts, remapping `start`/`end`
     (raw-step positions) through `old_to_new`. A range touching a raw step
     that was dropped or never existed is dropped too — the same "keep only
     what still makes sense" rule `from_dict` follows everywhere else."""
@@ -409,8 +406,8 @@ def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list
 def _migrate_step(raw: dict) -> list[Step]:
     """One pre-redesign composite step -> the atomic steps it implied.
 
-    An old step always captured (there was no "off" state), which is why
-    `Routine.from_dict` wraps whatever this returns in one `Recording`. A
+    An old step always captured (there was no "off" state), which is why its
+    wait becomes a `record` step. A
     puff interval interleaves exactly against a seconds-unit length; a
     frames-unit length has no frame rate available here to convert a
     real-time interval against a frame-gated duration, so it falls back to
@@ -437,13 +434,13 @@ def _migrate_step(raw: dict) -> list[Step]:
         remaining, first = length, True
         while remaining > 1e-9:
             chunk = min(puff_iv, remaining)
-            out.append(Step(kind="wait", label=label if first else "",
+            out.append(Step(kind="record", label=label if first else "",
                             length=chunk, unit="seconds"))
             first, remaining = False, remaining - chunk
             if remaining > 1e-9:
                 out.append(Step(kind="puff"))
     else:
-        out.append(Step(kind="wait", label=label, length=length, unit=unit))
+        out.append(Step(kind="record", label=label, length=length, unit=unit))
         if puff_iv > 0:
             out.append(Step(kind="puff"))
     return out
@@ -544,7 +541,7 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
                 p = Path(s.pattern)
                 if not p.is_file():
                     out.append(f"{at}: pattern {p.name!r} isn't a file")
-        elif s.kind == "wait":
+        elif s.kind in TIMED_KINDS:
             if s.unit not in UNITS:
                 out.append(f"{at}: unknown unit {s.unit!r}")
             elif s.unit == "frames" and not rig.has_frames:
@@ -563,15 +560,6 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
                 # with no camera there's nothing that could end this step.
                 out.append(f"{at}: waits for the camera's trigger, but no "
                            f"camera is loaded")
-            if recording_region_at(routine, i - 1) is not None:
-                # Two reasons, both hard. The point of the step is that the
-                # recording starts ON the edge — inside a bracket the file is
-                # already open while it waits, which is backwards. And arming
-                # restarts the camera's acquisition, which must not happen
-                # underneath an open file. Put the bracket after this step.
-                out.append(f"{at}: waits for a trigger inside a recording "
-                           f"bracket; move the bracket to start after this "
-                           f"step, so the recording begins on the edge")
 
     n = len(routine.steps)
     spans: list[tuple[int, int]] = []
@@ -589,19 +577,5 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
                            f"another repeat group")
                 break
         spans.append((g.start, g.end))
-
-    spans = []
-    for i, r in enumerate(routine.recordings, start=1):
-        at = f"recording {i}"
-        if not (0 <= r.start <= r.end < n):
-            out.append(f"{at}: steps {r.start + 1}-{r.end + 1} is outside "
-                       f"the routine's {n} step(s)")
-            continue
-        for lo, hi in spans:
-            if r.start <= hi and lo <= r.end:
-                out.append(f"{at}: steps {r.start + 1}-{r.end + 1} overlaps "
-                           f"another recording")
-                break
-        spans.append((r.start, r.end))
 
     return out

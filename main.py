@@ -496,6 +496,13 @@ class MainWindow(QMainWindow):
                if m is not None and hasattr(m, "rearm_trigger")
                else None)
 
+    def arm_camera_with_next_file(self, key: str) -> bool | None:
+        """See `acq.devices.ModuleHost.arm_camera_with_next_file`."""
+        m = self._module(key)
+        return (m.arm_with_next_file()
+               if m is not None and hasattr(m, "arm_with_next_file")
+               else None)
+
     def dcimg_frames(self, key: str) -> int | None:
         """Frames DCAM's own recorder has written for module `key` so far, or
         None when it isn't writing one — which is also "count them the normal

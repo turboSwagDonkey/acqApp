@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from acqApp.routines.settings import (Routine, Step, play_order,
+from acqApp.routines.settings import (Routine, Step, TIMED_KINDS, play_order,
                                       recording_region_at, recording_run_ids)
 
 # A move that never reports arrival must fault, not hang the routine forever.
@@ -121,6 +121,10 @@ class RoutineHooks:
     # so without this only a run's first edge would ever be seen. Inert by
     # default — an engine driven without a camera just waits on `frames`.
     arm_trigger:    Callable[[], None] = _noop
+    # Called before `arm_trigger` when the step after a `trigger` step is a
+    # `record`: the file for that recording has to exist BEFORE its edge, and
+    # some recorders (.dcimg) can only be bound while capture is stopped.
+    prepare_recording: Callable[["RecordingRun"], None] = _noop
     begin_recording: Callable[["RecordingRun"], None] = _noop
     end_recording:   Callable[["RecordingRun"], None] = _noop
     log:            Callable[[str], None] = _noop
@@ -260,7 +264,7 @@ class RoutineEngine:
         step = self.step
         if step is None or self._phase != Phase.RUNNING:
             return 0.0
-        if step.kind == "wait":
+        if step.kind in TIMED_KINDS:
             if step.unit == "frames":
                 n = self._frames()
                 if n is None or self._wait_frame0 is None:
@@ -360,7 +364,7 @@ class RoutineEngine:
         self._advance()
 
     def abort(self) -> None:
-        """Stop for good. Capture is still the operator's to stop."""
+        """Stop for good. The adapter stops capture."""
         if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.WAITING):
             self._halt("aborted")
         self._safe(self._h.stop_motion)
@@ -384,7 +388,7 @@ class RoutineEngine:
             step = self._r.steps[self._i]
             if step.kind == "move":
                 self._tick_move()
-            elif step.kind == "wait":
+            elif step.kind in TIMED_KINDS:
                 self._tick_wait()
             # display/puff always set _step_done in _enter_step and never
             # reach here.
@@ -522,7 +526,7 @@ class RoutineEngine:
                     self._h.light(False)
                 self._dmd_on = bool(step.pattern)
                 self._step_done = True
-            elif step.kind == "wait":
+            elif step.kind in TIMED_KINDS:
                 self._wait_t0 = self._h.now()
                 self._wait_frame0 = self._frames()
                 if step.unit == "frames" and self._wait_frame0 is None:
@@ -535,6 +539,9 @@ class RoutineEngine:
                 # Ask for the re-arm, then hand `_tick_trigger` a baseline it
                 # will keep moving until the count actually goes still — the
                 # camera almost certainly hasn't stopped yet at this point.
+                nxt = self._next_record_run()
+                if nxt is not None:
+                    self._h.prepare_recording(nxt)
                 self._h.arm_trigger()
                 self._trig_t0 = self._trig_still_since = self._h.now()
                 self._trig_gated = False
@@ -555,6 +562,21 @@ class RoutineEngine:
                     f"this cycle, cycle {self._cycle + 1}/"
                     f"{max(1, self._r.cycles)}): {step.describe()}")
 
+    def _next_record_run(self) -> RecordingRun | None:
+        """The run a `record` step right after this position will open, or
+        None if the next step isn't one."""
+        pos, cycle = self._pos + 1, self._cycle
+        if pos >= len(self._order):
+            pos, cycle = 0, cycle + 1
+        if cycle >= max(1, self._r.cycles):
+            return None
+        i = self._order[pos]
+        if self._r.steps[i].kind != "record":
+            return None
+        return RecordingRun(region=recording_region_at(self._r, i),
+                            start_index=i, end_index=i, cycle=cycle,
+                            attempt=1, t0=self._h.now(), frame0=None)
+
     def rearm_step(self) -> bool:
         """Restart the CURRENT Wait step's clock without re-issuing anything.
 
@@ -573,7 +595,7 @@ class RoutineEngine:
         if not self._order:
             return False
         step = self._r.steps[self._i]
-        if step.kind != "wait":
+        if step.kind not in TIMED_KINDS:
             return False
         self._wait_t0 = self._h.now()
         self._wait_frame0 = self._frames()

@@ -26,21 +26,16 @@ a file dialog: the value isn't free text.
 
 Rows are **dragged to reorder**, Ctrl+Up/Down do the same, both through
 `move_row` — one implementation of "what reordering means." Reordering does
-NOT rewrite `Group`/`Recording` ranges (index-based, like before this
-redesign) — a step dragged out of a group or off its recording sticker
+NOT rewrite `Group` ranges (index-based) — a step dragged out of a group
 leaves the range pointing at whatever is now at that position; this is a
-pre-existing limitation carried over unchanged, not something this table
-tries to fix.
+pre-existing limitation, not something this table tries to fix.
 
 Selection is **contiguous, not single**: a repeat group (`Group`) is a
 start/end RANGE, so shift-click/shift-arrow extending a block is the one
 extra thing selection needs to express — `selected_range()` reads it back for
-the panel's "Group selected" control. A recording, by contrast, is always
-exactly one step: click a row's header — where its number, and a group's
-repeat count, are shown — to toggle a `Recording(row, row)` there directly,
-no selection involved (`_on_header_clicked`). `set_groups()`/
-`set_recordings()` tell the table which rows are in one, so it can tint them
-(blended where a row is both grouped and recording) and badge the group's
+the panel's "Group selected" control. A recording is a `record` STEP, not a range.
+`set_groups()` tells the table which rows are in one; Record rows are read
+from the steps. It can tint them (blended where a row is both grouped and recording) and badge the group's
 first row with its repeat count / a recording's row with a marker, rather
 than either only being visible in a separate list below the table.
 
@@ -63,7 +58,7 @@ from PyQt6.QtWidgets import (
     QMenu, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
 )
 
-from acqApp.routines.settings import (KINDS, UNITS, Group, Recording, Step,
+from acqApp.routines.settings import (KINDS, TIMED_KINDS, UNITS, Group, Step,
                                       pattern_label)
 
 # The Pattern cell's thumbnail — big enough to recognise a stripe set or a
@@ -83,7 +78,8 @@ REC_TINT = QColor(196, 60, 60, 55)
 VALUE = Qt.ItemDataRole.UserRole
 
 KIND_LABELS: dict[str, str] = {
-    "move": "Move", "display": "Display", "wait": "Wait", "puff": "Puff",
+    "move": "Move", "display": "Display", "wait": "Wait", "record": "Record",
+    "puff": "Puff",
     "trigger": "Trigger",
 }
 
@@ -124,7 +120,8 @@ NO_CHANGE = "NA"
 RUNNING = "▶"
 
 # Fields only meaningful for one kind — "—" and non-editable on any other row.
-_KIND_OF_FIELD = {"length": "wait", "unit": "wait", "settle_s": "move"}
+_KIND_OF_FIELD = {"length": TIMED_KINDS, "unit": TIMED_KINDS,
+                  "settle_s": ("move",)}
 
 
 class _ChoiceDelegate(QStyledItemDelegate):
@@ -193,7 +190,6 @@ class StepTable(QTableWidget):
     remove_requested = pyqtSignal()
     clear_pattern_requested = pyqtSignal()
     group_requested = pyqtSignal()          # the panel reads selected_range()
-    recording_toggled = pyqtSignal(int)     # row whose sticker was clicked
     reordered = pyqtSignal(int)             # the moved step's new row
 
     def __init__(self, steps: list[Step], parent=None) -> None:
@@ -202,7 +198,6 @@ class StepTable(QTableWidget):
         self._loading = False
         self._running: int | None = None     # row the engine is on
         self._groups: list[Group] = []
-        self._recordings: list[Recording] = []
 
         self.setHorizontalHeaderLabels([t for t, _f, _tip in COLS])
         for col, (_t, _f, tip) in enumerate(COLS):
@@ -258,16 +253,11 @@ class StepTable(QTableWidget):
 
         self.itemChanged.connect(self._on_item_changed)
         self.cellDoubleClicked.connect(self._on_double_click)
-        # The row header IS the recording sticker: click a step's number to
-        # toggle a one-step Recording there, no selection required.
-        self.verticalHeader().sectionClicked.connect(self._on_header_clicked)
-        # …and its name tag: double-click to set the label that used to be
+        # The row header is the step's name tag: double-click to set the label that used to be
         # its own ("Step") column — one that sat empty far more often than not.
         self.verticalHeader().sectionDoubleClicked.connect(
             self._on_header_double_clicked)
-        self.verticalHeader().setToolTip(
-            "Click a step's number to toggle recording for that step.\n"
-            "Double-click to name it.")
+        self.verticalHeader().setToolTip("Double-click to name a step.")
         self.reload()
 
     # ── painting ─────────────────────────────────────────────────────────────
@@ -290,11 +280,6 @@ class StepTable(QTableWidget):
         self._groups = list(groups)
         self._repaint_all()
 
-    def set_recordings(self, recordings: list[Recording]) -> None:
-        """The routine's recording brackets — same idea as `set_groups`."""
-        self._recordings = list(recordings)
-        self._repaint_all()
-
     def _repaint_all(self) -> None:
         # Signals off, as in reload(): this only re-renders existing step
         # data, and an itemChanged here would read it straight back into the
@@ -313,10 +298,11 @@ class StepTable(QTableWidget):
                 return g
         return None
 
-    def _recording_at(self, row: int) -> Recording | None:
-        for r in self._recordings:
-            if r.start <= row <= r.end:
-                return r
+    def _recording_at(self, row: int) -> Step | None:
+        """The row's step if it is a Record step; read live, so a kind edit
+        retints without anyone telling the table."""
+        if 0 <= row < len(self._steps) and self._steps[row].kind == "record":
+            return self._steps[row]
         return None
 
     def _tint_for(self, row: int) -> QColor | None:
@@ -373,7 +359,7 @@ class StepTable(QTableWidget):
             elif field == "details":
                 self._paint_details(item, s)
             else:
-                active = s.kind == _KIND_OF_FIELD[field]
+                active = s.kind in _KIND_OF_FIELD[field]
                 value = getattr(s, field)
                 item.setData(VALUE, value)
                 item.setText(_render(field, value) if active else "—")
@@ -411,8 +397,7 @@ class StepTable(QTableWidget):
                 "Holds here until an external edge arrives on the camera's "
                 "trigger line. Nothing to set — the length of what follows is "
                 "what decides how long the recording lasts.\nPut the "
-                "recording sticker on the step AFTER this one, so the file "
-                "starts on the edge.")
+                "Record step AFTER this one, so the file starts on the edge.")
         else:
             item.setData(VALUE, None)
             item.setIcon(QIcon())
@@ -464,7 +449,7 @@ class StepTable(QTableWidget):
         elif field == "details":
             return                          # only a dialog sets this
         elif field in _KIND_OF_FIELD:
-            if s.kind != _KIND_OF_FIELD[field]:
+            if s.kind not in _KIND_OF_FIELD[field]:
                 return                      # cell wasn't editable; ignore
             value = item.data(VALUE)
             if field == "unit":
@@ -629,21 +614,12 @@ class StepTable(QTableWidget):
         gaps, so min/max is the whole selection, not just its ends.
 
         Two rows is right for a repeat GROUP — one step repeated in place is
-        what a Wait's own length already says. A recording is never a range;
-        see `_on_header_clicked`.
+        what a Wait's own length already says.
         """
         rows = self._selected_rows()
         if len(rows) < 2:
             return None
         return min(rows), max(rows)
-
-    def _on_header_clicked(self, row: int) -> None:
-        """The recording sticker: click a step's row number to toggle a
-        one-step `Recording` there. A `trigger` step needs exactly this — the
-        bracket has to sit on what FOLLOWS it, never on the trigger itself, so
-        "record just this one step" has to be reachable with no range at all."""
-        if 0 <= row < len(self._steps):
-            self.recording_toggled.emit(row)
 
     def _on_header_double_clicked(self, row: int) -> None:
         """Name a step. Its label used to be its own ("Step") column, which

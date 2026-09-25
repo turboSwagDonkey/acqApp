@@ -124,6 +124,7 @@ class OrcaFireWorker(PullWorker):
         self._exp_lock     = threading.Lock()
         self._pending_exp: float | None = None
         self._pending_rearm = False     # see rearm_trigger()
+        self._rearm_with_file = False   # see arm_with_next_file()
         # DCAM's own recorder (set_record_file). The swap needs a capture
         # stop/start, so the loop performs it; this only requests one.
         self._rec_want: Path | None = None
@@ -222,19 +223,21 @@ class OrcaFireWorker(PullWorker):
         (rig, 2026-09-24), so a `DcimgRecorder` is effectively single-use per
         capture session.
 
-        That count is exactly what a `trigger` step watches
-        (`adapters/routines.py`'s `frames()`), so in a .dcimg routine the
-        FIRST edge is the only one that can ever be seen: recording one starts
-        on its edge, and every later `trigger` step waits out its full timeout
-        with the line pulsing normally. Fixing that means not holding a .dcimg
-        open across a trigger step at all — see PLAN.md §6.
+        So a routine never re-arms under an attached recorder: it asks for
+        `arm_with_next_file()` and rolls to a NEW recorder, and `_swap_dcimg`
+        does this same cycle between binding it and starting capture.
         """
         cam.stop_acquisition()
+        OrcaFireWorker._cycle_master_pulse(cam)
+        cam.start_acquisition(nframes=nframes)
+
+    @staticmethod
+    def _cycle_master_pulse(cam) -> None:
+        """Rewrite MASTER PULSE MODE (away and back) — what clears the latch."""
         cam.set_attribute_value(
             _MP_MODE_PROP, _MP_MODE_CONTINUOUS, error_on_missing=False)
         cam.set_attribute_value(
             _MP_MODE_PROP, _MP_MODE_START, error_on_missing=False)
-        cam.start_acquisition(nframes=nframes)
 
     supports_dcimg = True
 
@@ -324,9 +327,28 @@ class OrcaFireWorker(PullWorker):
         self._dcimg.close()
         self._dcimg = None
 
-    def _swap_dcimg(self, cam, path: Path | None) -> None:
+    def arm_with_next_file(self) -> None:
+        """Make the NEXT `.dcimg` swap also re-arm the trigger, in one go.
+
+        A `trigger` step must re-arm, and re-arming stops capture, which kills
+        an attached recorder for good (see `_do_rearm`). So the routine rolls
+        to a fresh file instead, and the swap cycles the master pulse between
+        binding the new recorder and starting capture: gated, with the file
+        already open, so the edge's first frame is in it.
+
+        A flag, not a second request: two separate ones would let the capture
+        thread run the plain re-arm in between and kill the new recorder.
+        """
+        with self._exp_lock:
+            self._rearm_with_file = True
+
+    def _swap_dcimg(self, cam, path: Path | None, *,
+                    rearm_nframes: int | None = None) -> None:
         """Stop capture, change recorder, start again. Raises only if the NEW
-        recording can't open; the old one is closed either way."""
+        recording can't open; the old one is closed either way.
+
+        `rearm_nframes` set (with a path) cycles the master pulse before the
+        restart, so capture comes back gated on the next external edge."""
         from .dcimg import DcimgRecorder
 
         cam.stop_acquisition()
@@ -348,7 +370,11 @@ class OrcaFireWorker(PullWorker):
         finally:
             # Capture restarts either way: a camera left stopped is a frozen
             # preview and no error anywhere the operator is looking.
-            cam.start_acquisition()
+            if rearm_nframes is not None and self._dcimg is not None:
+                self._cycle_master_pulse(cam)
+                cam.start_acquisition(nframes=rearm_nframes)
+            else:
+                cam.start_acquisition()
 
     @staticmethod
     def _frame_shape(cam) -> tuple[int, int]:
@@ -678,6 +704,10 @@ class OrcaFireWorker(PullWorker):
                         rec_change = self._rec_change
                         rec_path = self._rec_want
                         self._rec_change = False
+                        # Consumed with the swap it belongs to, never before.
+                        rearm_file = rec_change and self._rearm_with_file
+                        if rec_change:
+                            self._rearm_with_file = False
                         # Hand the "not ready" baton over INSIDE the lock.
                         # Clearing _rec_change first and only then swapping
                         # left a ~900 ms window reading ready — measured on
@@ -686,7 +716,15 @@ class OrcaFireWorker(PullWorker):
                         self._rec_busy = rec_change
                     if rec_change:
                         try:
-                            self._swap_dcimg(cam, rec_path)
+                            self._swap_dcimg(
+                                cam, rec_path,
+                                rearm_nframes=nframes if rearm_file else None)
+                            if rearm_file and self._dcimg is not None:
+                                self._skipped = 0
+                                n_acquired = 0
+                                print(f"[voltage_cam] re-armed with a new "
+                                      f"file: {self._trigger_readback(cam)}"
+                                      f"{self._dcimg_readback()}")
                         except Exception as e:      # noqa: BLE001
                             # Report and carry on, like the re-arm below: the
                             # capture thread dying takes the session with it,
@@ -700,7 +738,7 @@ class OrcaFireWorker(PullWorker):
                             # dcimg_ready. A failed swap clears it too, or a
                             # held routine would wait out its whole timeout.
                             self._rec_busy = False
-                    if rearm:
+                    if rearm and not (rearm_file and self._dcimg is not None):
                         try:
                             self._do_rearm(cam, nframes)
                             # Both mirror camera counters that restart from 0
@@ -943,6 +981,9 @@ class MockCameraWorker(PullWorker):
     def set_exposure(self, us: float) -> None:
         """No-op on the mock worker (kept for API parity with OrcaFireWorker)."""
         self._config.exposure_us = us
+
+    def arm_with_next_file(self) -> None:
+        """No-op: the mock has no .dcimg recorder to protect (API parity)."""
 
     def rearm_trigger(self) -> None:
         """Go dark for `_GATE_S`, then resume — the mock's stand-in for "gated,

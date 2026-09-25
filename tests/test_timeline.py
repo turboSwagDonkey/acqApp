@@ -2,7 +2,7 @@
 The routine timeline (`routines/timeline.py`) — one cycle drawn to scale.
 
 The one thing worth pinning down with a test, not just eyeballing a dialog:
-**a Recording drawn across a whole repeated Group's range must draw as
+**a Record step inside a repeated Group must draw as
 SEPARATE bars, one per repeat** — the same correctness point
 `test_routines.py` checks for the engine's actual file boundaries. A drawing
 that silently merged them would be worse than no drawing at all: it would
@@ -16,7 +16,7 @@ import sys
 
 from _harness import Report, isolate_user_state, qt_app
 
-from acqApp.routines.settings import Group, Recording, Routine, Step, play_order
+from acqApp.routines.settings import Group, Routine, Step, play_order
 from acqApp.routines.timeline import _group_spans, _layout, _recording_runs
 
 
@@ -69,18 +69,19 @@ def check_group_span(r: Report) -> None:
 def check_recording_runs_separate(r: Report) -> None:
     """The point of the feature: repeats never draw as one merged bar."""
     routine = Routine(
-        steps=[Step(kind="wait", length=1, unit="seconds") for _ in range(4)],
-        groups=[Group(start=1, end=2, repeats=3)],
-        recordings=[Recording(start=1, end=2)],
+        steps=[Step(kind="wait", length=1, unit="seconds"),
+               Step(kind="record", length=1, unit="seconds"),
+               Step(kind="wait", length=1, unit="seconds")],
+        groups=[Group(start=1, end=1, repeats=3)],
     )
     order = play_order(routine)
     runs = _recording_runs(routine, order)
     r.check(len(runs) == 3,
-           "a Recording spanning an ENTIRE repeated group's range draws as "
+           "a Record step in a repeated group draws as "
            "3 separate bars, one per repeat — never one merged bar")
-    r.check(runs == [(1, 2, 0), (3, 4, 0), (5, 6, 0)],
-           "…each bar covering exactly one repeat's positions, same region "
-           "(there is only one Recording bracket, index 0)")
+    r.check(runs == [(1, 1, 0), (2, 2, 0), (3, 3, 0)],
+           "…each bar covering exactly one repeat's position, same region "
+           "(there is only one Record step, region 0)")
     starts = [a for a, _b, _c in runs]
     ends = [b for _a, b, _c in runs]
     r.check(all(a <= b for a, b in zip(starts, ends)),
@@ -91,16 +92,14 @@ def check_recording_runs_separate(r: Report) -> None:
 
 
 def check_recording_runs_not_grouped(r: Report) -> None:
-    """No Group at all — a Recording spanning several plain steps in a row
-    is still ONE run, since nothing repeats through it."""
+    """No Group at all — adjacent Record steps are each their own run."""
     routine = Routine(
-        steps=[Step(kind="wait", length=1, unit="seconds") for _ in range(3)],
-        recordings=[Recording(start=0, end=2)],
+        steps=[Step(kind="record", length=1, unit="seconds") for _ in range(3)],
     )
     order = play_order(routine)
     runs = _recording_runs(routine, order)
-    r.check(runs == [(0, 2, 0)],
-           "a Recording over steps with no repeats draws as ONE bar")
+    r.check(runs == [(0, 0, 0), (1, 1, 1), (2, 2, 2)],
+           "adjacent Record steps draw as three bars, one region each")
 
 
 def check_recording_runs_across_cycle(r: Report) -> None:
@@ -109,8 +108,7 @@ def check_recording_runs_across_cycle(r: Report) -> None:
     so this just confirms it stays a single run within that one pass even
     though the routine as a whole will run it twice."""
     routine = Routine(
-        steps=[Step(kind="wait", length=1, unit="seconds")],
-        recordings=[Recording(start=0, end=0)],
+        steps=[Step(kind="record", length=1, unit="seconds")],
         cycles=2,
     )
     order = play_order(routine)
@@ -135,10 +133,9 @@ def check_widget_builds(r: Report) -> None:
     routine = Routine(
         steps=[Step(kind="move", x_um=1, y_um=2),
               Step(kind="display", pattern="p.png"),
-              Step(kind="wait", length=5, unit="seconds"),
+              Step(kind="record", length=5, unit="seconds"),
               Step(kind="puff")],
         groups=[Group(start=1, end=2, repeats=2)],
-        recordings=[Recording(start=1, end=2)],
         cycles=3,
     )
     dlg = TimelineDialog(routine, hz=30.0)

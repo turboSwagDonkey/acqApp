@@ -74,7 +74,7 @@ from acqApp.adapters.base import ModuleAdapter
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
 from acqApp.routines.estimate import clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
-from acqApp.routines.settings import (RigLimits, Routine, group_region_at,
+from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS, group_region_at,
                                       group_repeat_at, play_order,
                                       recording_region_at, validate)
 
@@ -129,6 +129,9 @@ class RoutinesModule(ModuleAdapter):
         # started" different from "stop the operator's recording".
         self._own_rec = False
         # ── file rolling (save_mode "per_repeat"/"per_group") ──
+        self._prepared = None           # (cycle, step) whose .dcimg is already
+                                         # open — see _prepare_recording
+        self._armed_with_file = False   # that swap re-armed the trigger too
         self._pending_roll_run = None   # set by _on_recording_begin, acted on
                                          # after eng.tick() returns — see _tick
         self._file_group_key = None     # (cycle, group-or-None) of the open file
@@ -235,9 +238,16 @@ class RoutinesModule(ModuleAdapter):
             # `ModuleHost.rearm_camera_trigger`). Raising here is right: the
             # engine turns it into a pause, and a `trigger` step that can't
             # re-arm would otherwise wait on an edge nothing can deliver.
+            if self._armed_with_file:
+                # `_prepare_recording` already re-armed, inside the file swap.
+                self._armed_with_file = False
+                return
             if self.win.rearm_camera_trigger(FRAME_STREAM) is not True:
                 raise RuntimeError("the camera could not be re-armed for the "
                                    "next trigger")
+
+        def prepare_recording(run) -> None:
+            self._prepare_recording(run)
 
         def noop_move(_x, _y, _z=None) -> None:
             raise RuntimeError("no stage loaded")
@@ -253,6 +263,7 @@ class RoutinesModule(ModuleAdapter):
             led=led.set_led if led is not None else (lambda _on: None),
             puff=puffer.fire if puffer is not None else (lambda: None),
             arm_trigger=arm_trigger,
+            prepare_recording=prepare_recording,
             begin_recording=self._on_recording_begin,
             end_recording=self._on_recording_end,
             log=self._status,
@@ -292,6 +303,8 @@ class RoutinesModule(ModuleAdapter):
                 return
         self._filed = 0
         self._pending_roll_run = None
+        self._prepared = None
+        self._armed_with_file = False
         self._hold_t0 = None
         self._file_group_key = None
         self._filed_from = 0
@@ -370,16 +383,12 @@ class RoutinesModule(ModuleAdapter):
         return n
 
     def _close_own_recording(self) -> None:
-        """Stop a recording this adapter started; leave the operator's alone."""
-        # Cleared regardless of ownership: a routine that ran inside a
-        # recording the OPERATOR had already started never owns it, but the
-        # FOV/trial context set for it must not leak into whatever the
-        # operator records next.
+        """Stop the recording and the capture when the routine ends, whoever
+        started them."""
         self.win.set_routine_save_context(None, None)
-        if not self._own_rec:
-            return
         self._own_rec = False            # before the call: detach_sink re-enters
         self.win.set_recording(False)
+        self.win.set_live(False)
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -470,6 +479,29 @@ class RoutinesModule(ModuleAdapter):
             self._close_own_recording()
 
     # ── the file ──
+    def _prepare_recording(self, run) -> None:
+        """Before a `trigger` step re-arms: with a .dcimg open, roll to the
+        file the next recording will use and re-arm in the same swap.
+
+        Re-arming stops capture, and that kills an attached recorder for good,
+        so the plain re-arm can never be used under one. Rolling here also
+        means the edge's first frame lands in the new file, not in the gap.
+        Anything but a .dcimg keeps the old path: roll at the recording's
+        begin, re-arm on its own. Raises, and the engine pauses, if either
+        half fails.
+        """
+        if self.win.dcimg_frames(FRAME_STREAM) is None:
+            return
+        if self.win.arm_camera_with_next_file(FRAME_STREAM) is not True:
+            raise RuntimeError("the camera could not be armed with the next "
+                               "file")
+        if not self._roll_for(run):
+            raise RuntimeError("could not open the next output file")
+        self._prepared = (run.cycle, run.start_index)
+        self._armed_with_file = True
+        self._status("new .dcimg opened before the trigger step re-arms — a "
+                     ".dcimg cannot span one")
+
     def _on_recording_begin(self, run) -> None:
         """A recording bracket opened. One `/routine` entry per boundary, on
         the shared clock — which is what makes recordings locatable in the
@@ -480,7 +512,10 @@ class RoutinesModule(ModuleAdapter):
         A later run whose save mode calls for a fresh file defers the
         actual roll to `_tick` instead of writing the boundary now — see
         the module docstring for why this can't happen inline."""
-        if self._file_group_key is None:
+        if self._prepared == (run.cycle, run.start_index):
+            self._prepared = None       # its file was opened before the edge
+            self._file_group_key = self._group_key_for(run)
+        elif self._file_group_key is None:
             self._file_group_key = self._group_key_for(run)
         elif self._needs_roll(run):
             self._pending_roll_run = run
@@ -673,8 +708,9 @@ class RoutinesModule(ModuleAdapter):
         if step is not None:
             if step.kind == "move":
                 where += " — moving/settling"
-            elif step.kind == "wait":
-                where += (f" — waiting {eng.progress() * 100:.0f} % of "
+            elif step.kind in TIMED_KINDS:
+                verb = "recording" if step.kind == "record" else "waiting"
+                where += (f" — {verb} {eng.progress() * 100:.0f} % of "
                           f"{step.length:g} {step.unit}")
             elif step.kind == "display":
                 where += " — displaying" if step.pattern else " — stopping display"

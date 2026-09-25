@@ -250,6 +250,16 @@ class VoltageCamModule(ModuleAdapter):
         self.worker.rearm_trigger()
         return True
 
+    def arm_with_next_file(self) -> bool:
+        """Have the next `.dcimg` swap re-arm the trigger too, so a routine's
+        `trigger` step can re-arm without killing the recorder — see
+        `OrcaFireWorker.arm_with_next_file`. False unless a .dcimg is open."""
+        w = self.worker
+        if w is None or not getattr(w, "dcimg_active", False):
+            return False
+        w.arm_with_next_file()
+        return True
+
     # ── session ──
     def build_session(self, emulate: bool) -> None:
         cfg = self.panel.get_config()

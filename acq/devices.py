@@ -357,6 +357,17 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def arm_camera_with_next_file(self, key: str) -> bool | None:
+        """Make module `key`'s next file swap also re-arm its external
+        trigger. True if asked for, False if no `.dcimg` is open to swap,
+        None if the module isn't loaded or has no such notion.
+
+        A `.dcimg` recorder dies when capture stops, and re-arming stops it,
+        so a routine's `trigger` step rolls to a new file with the re-arm
+        folded in instead of calling `rearm_camera_trigger`.
+        """
+        ...
+
     def stage_target(self) -> Any:
         """The loaded module a routine may move, or None.
 

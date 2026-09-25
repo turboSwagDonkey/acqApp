@@ -160,6 +160,9 @@ class FakeRig:
         self.log.append(("puff",))
         self.puffed += 1
 
+    def prepare_recording(self, run) -> None:
+        self.log.append(("prepare", run.region, run.cycle, run.start_index))
+
     # file boundaries
     def begin_recording(self, run) -> None:
         if self.fail_begin:
@@ -177,6 +180,7 @@ class FakeRig:
                             set_pattern=self.set_pattern, light=self.light,
                             led=self.led, puff=self.puff,
                             arm_trigger=self.arm_trigger,
+                            prepare_recording=self.prepare_recording,
                             begin_recording=self.begin_recording,
                             end_recording=self.end_recording,
                             log=lambda _m: None)
@@ -257,13 +261,12 @@ def check_validation(r: Report, tmp: Path) -> None:
         # camera nothing could ever end it.
         ("a trigger step with no camera loaded",
          Routine(steps=[Step(kind="trigger")]), RigLimits(), "no camera"),
-        # The recording must start ON the edge, and re-arming restarts the
-        # camera's acquisition — neither is safe underneath an open file.
-        ("a trigger step inside a recording bracket",
-         Routine(steps=[Step(kind="trigger"),
-                       Step(kind="wait", length=1, unit="seconds")],
-                recordings=[Recording(start=0, end=1)]),
-         FULL_RIG, "inside a recording bracket"),
+        ("a record step of zero length",
+         Routine(steps=[Step(kind="record", length=0, unit="seconds")]),
+         FULL_RIG, "above zero"),
+        ("a record step measured in frames with no camera",
+         Routine(steps=[Step(kind="record", length=5, unit="frames")]),
+         RigLimits(), "no camera"),
     ]
     for label, routine, rig, needle in cases:
         problems = validate(routine, rig)
@@ -291,11 +294,10 @@ def check_validation(r: Report, tmp: Path) -> None:
     src = Routine(name="grid", cycles=3, save_mode="per_repeat",
                   start_trigger="ttl",
                   steps=[Step(kind="move", label="a", x_um=1.0, settle_s=0.1),
-                         Step(kind="wait", label="b", length=5, unit="frames"),
+                         Step(kind="record", label="b", length=5, unit="frames"),
                          Step(kind="display", label="c", pattern="p.png"),
                          Step(kind="puff", label="d")],
-                  groups=[Group(start=1, end=2, repeats=2)],
-                  recordings=[Recording(start=0, end=3)])
+                  groups=[Group(start=1, end=2, repeats=2)])
     back = Routine.from_dict(src.to_dict())
     r.check(back == src, "a routine survives the JSON round trip unchanged")
     r.check(Routine.from_dict({"start_trigger": "nonsense"}).start_trigger
@@ -345,23 +347,14 @@ def check_groups(r: Report) -> None:
     r.check(any("repeats" in p for p in validate(zero_repeat, FULL_RIG)),
             "a group that repeats zero times is refused, not silently a no-op")
 
-    # ── validate(): recordings (same range shape, independent of groups) ──
-    bad_rec = Routine(steps=[Step(kind="wait")],
-                      recordings=[Recording(start=0, end=5)])
-    r.check(any("outside" in p for p in validate(bad_rec, FULL_RIG)),
-            "a recording bracket past the end of the routine is refused")
-    overlap_rec = Routine(steps=[Step(kind="wait"), Step(kind="wait"),
-                                Step(kind="wait")],
-                         recordings=[Recording(start=0, end=1),
-                                     Recording(start=1, end=2)])
-    r.check(any("overlaps another recording" in p
-               for p in validate(overlap_rec, FULL_RIG)),
-            "two recordings sharing a step are refused")
-    ok_rec = Routine(steps=[Step(kind="wait"), Step(kind="wait")],
-                     recordings=[Recording(start=0, end=0),
-                                 Recording(start=1, end=1)])
-    r.check(validate(ok_rec, FULL_RIG) == [],
-            "control: two ADJACENT (non-overlapping) recordings are accepted")
+    # ── recordings are derived: one per record step ──
+    two = Routine(steps=[Step(kind="record"), Step(kind="wait"),
+                         Step(kind="record")])
+    r.check(two.recordings == [Recording(start=0, end=0),
+                               Recording(start=2, end=2)],
+            "each record step is its own one-step recording; a wait is not")
+    r.check(validate(two, FULL_RIG) == [],
+            "control: a routine with record steps is accepted")
 
     # ── the engine actually plays that order ──
     rig = FakeRig()
@@ -403,9 +396,8 @@ def check_group_repeat_at(r: Report) -> None:
     from acqApp.routines.settings import group_repeat_at
 
     routine = Routine(steps=[Step(kind="trigger"),
-                             Step(kind="wait", length=8.0, unit="seconds")],
-                      groups=[Group(start=0, end=1, repeats=3)],
-                      recordings=[Recording(start=1, end=1)])
+                             Step(kind="record", length=8.0, unit="seconds")],
+                      groups=[Group(start=0, end=1, repeats=3)])
     order = play_order(routine)
     rep = group_repeat_at(routine, order)
     r.check(order == [0, 1, 0, 1, 0, 1],
@@ -441,18 +433,15 @@ def check_recording_repeats(r: Report) -> None:
     # ── across a repeated Group ──
     routine = Routine(steps=[Step(kind="wait", label="A", length=0.05,
                                   unit="seconds"),
-                             Step(kind="wait", label="B", length=0.05,
-                                  unit="seconds"),
-                             Step(kind="wait", label="C", length=0.05,
+                             Step(kind="record", label="B", length=0.05,
                                   unit="seconds")],
-                      groups=[Group(start=1, end=2, repeats=3)],
-                      recordings=[Recording(start=1, end=2)])
+                      groups=[Group(start=1, end=1, repeats=3)])
     order = play_order(routine)
-    r.check(order == [0, 1, 2, 1, 2, 1, 2], f"fixture: A once, B-C x3 ({order})")
+    r.check(order == [0, 1, 1, 1], f"fixture: A once, B x3 ({order})")
     ids = recording_run_ids(routine, order)
-    r.check(ids == [None, 0, 0, 1, 1, 2, 2],
-            f"a NEW serial every time the order doubles back into the "
-            f"bracket, not one for the whole repeated range ({ids})")
+    r.check(ids == [None, 0, 1, 2],
+            f"a NEW serial every time the order doubles back onto the "
+            f"record step, not one for the whole repeat ({ids})")
 
     rig = FakeRig()
     eng = RoutineEngine(routine, rig.hooks())
@@ -469,15 +458,12 @@ def check_recording_repeats(r: Report) -> None:
             "the bracket")
 
     # ── across a CYCLE boundary ──
-    routine2 = Routine(steps=[Step(kind="wait", label="A", length=0.05,
-                                   unit="seconds"),
-                              Step(kind="wait", label="B", length=0.05,
+    routine2 = Routine(steps=[Step(kind="record", label="A", length=0.05,
                                    unit="seconds")],
-                       recordings=[Recording(start=0, end=1)],
                        cycles=2)
     order2 = play_order(routine2)
     ids2 = recording_run_ids(routine2, order2)
-    r.check(ids2 == [0, 0],
+    r.check(ids2 == [0],
             f"one pass alone sees a single serial — cycles are outside "
             f"play_order's view ({ids2})")
 
@@ -506,12 +492,10 @@ def check_units(r: Report) -> None:
     """
     nominal, actual = 106.0, 97.0
     rig = FakeRig(hz=actual)
-    routine = Routine(steps=[Step(kind="wait", label="A", length=100,
+    routine = Routine(steps=[Step(kind="record", label="A", length=100,
                                   unit="frames"),
-                             Step(kind="wait", label="B", length=1.5,
-                                  unit="seconds")],
-                      recordings=[Recording(start=0, end=0),
-                                  Recording(start=1, end=1)])
+                             Step(kind="record", label="B", length=1.5,
+                                  unit="seconds")])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
     drive(eng, rig)
@@ -650,18 +634,16 @@ def check_pause_keeps_data(r: Report, tmp: Path) -> None:
     rig = FakeRig()
     routine = Routine(steps=[Step(kind="display", label="lit",
                                   pattern=str(pattern)),
-                             Step(kind="wait", label="A", length=1.0,
+                             Step(kind="record", label="A", length=1.0,
                                   unit="seconds"),
-                             Step(kind="wait", label="B", length=1.0,
-                                  unit="seconds")],
-                      recordings=[Recording(start=1, end=1),
-                                  Recording(start=2, end=2)])
+                             Step(kind="record", label="B", length=1.0,
+                                  unit="seconds")])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
     drive(eng, rig, until=lambda e: (e.phase == Phase.RUNNING
                                      and e.step is not None
-                                     and e.step.kind == "wait" and rig.t > 0.4))
-    r.check(eng.phase == Phase.RUNNING and eng.step.kind == "wait" and rig.lit,
+                                     and e.step.kind == "record" and rig.t > 0.4))
+    r.check(eng.phase == Phase.RUNNING and eng.step.kind == "record" and rig.lit,
             "mid-step, waiting, with the display's light still on")
     r.check(eng.steps_done() == 1, "the earlier display step already counted")
 
@@ -701,12 +683,10 @@ def check_pause_keeps_data(r: Report, tmp: Path) -> None:
 def check_skip(r: Report) -> None:
     """The other way out of a pause: give up on this step, take the next."""
     rig = FakeRig()
-    routine = Routine(steps=[Step(kind="wait", label="A", length=1.0,
+    routine = Routine(steps=[Step(kind="record", label="A", length=1.0,
                                   unit="seconds"),
-                             Step(kind="wait", label="B", length=0.2,
-                                  unit="seconds")],
-                      recordings=[Recording(start=0, end=0),
-                                  Recording(start=1, end=1)])
+                             Step(kind="record", label="B", length=0.2,
+                                  unit="seconds")])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
     drive(eng, rig, until=lambda e: e.phase == Phase.RUNNING and rig.t > 0.3)
@@ -723,76 +703,52 @@ def check_skip(r: Report) -> None:
 
 def check_setup_failure(r: Report, tmp: Path) -> None:
     """A step whose own action raises pauses before any light reaches the
-    sample. Recording opens BEFORE the step's own action is attempted (the
-    camera captures continuously regardless of any one step's setup): a step
-    INSIDE a Recording still gets a run — opened, then immediately closed
-    interrupted — while one OUTSIDE any bracket opens nothing, same as ever.
+    sample. A Move/Display step is never inside a recording (a Record step
+    runs alone), so its failure opens no run at all.
     """
     pattern = tmp / "setup.png"
     pattern.write_bytes(b"x")
 
-    # A move that raises, INSIDE a Recording.
     rig = FakeRig()
     rig.fail_move = True
-    routine = Routine(steps=[Step(kind="move", x_um=10.0)],
-                      recordings=[Recording(start=0, end=0)])
+    routine = Routine(steps=[Step(kind="move", x_um=10.0)])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
     r.check(eng.phase == Phase.PAUSED and "setup failed" in eng.fault,
             f"a failing move pauses at setup ({eng.fault!r})")
     r.check(("light", True) not in rig.log,
             "the light was never turned on for a step that never started")
-    r.check(len(eng.runs) == 1 and eng.runs[0].interrupted
-            and (eng.runs[0].frames or 0) <= 1,
-            f"…but the Recording bracket around it still opened, and is "
-            f"closed interrupted with ~0 duration ({eng.runs[0]})")
-    r.check(len(rig.begun) == 1 and len(rig.ended) == 1,
-            "…the file boundary was opened AND closed, not abandoned mid-open")
-
-    # CONTROL: the same failure OUTSIDE any Recording opens nothing at all.
-    rig_nc = FakeRig()
-    rig_nc.fail_move = True
-    routine_nc = Routine(steps=[Step(kind="move", x_um=10.0)])
-    eng_nc = RoutineEngine(routine_nc, rig_nc.hooks())
-    eng_nc.start()
-    r.check(eng_nc.phase == Phase.PAUSED and eng_nc.runs == [],
-            "control: the same failure with no Recording over the step "
-            "opens no run to interrupt")
+    r.check(eng.runs == [] and rig.begun == [],
+            "…and no recording opened, since a move is never inside one")
 
     # The projector failing at the top of Display is the same shape.
     rig2 = FakeRig()
     rig2.fail_light = True
-    e2 = RoutineEngine(Routine(steps=[Step(kind="display", pattern=str(pattern))],
-                               recordings=[Recording(start=0, end=0)]),
+    e2 = RoutineEngine(Routine(steps=[Step(kind="display", pattern=str(pattern))]),
                        rig2.hooks())
     e2.start()
     r.check(e2.phase == Phase.PAUSED and "setup failed" in e2.fault,
             f"a projector that will not light pauses the step ({e2.fault!r})")
-    r.check(len(e2.runs) == 1 and e2.runs[0].interrupted,
-            "…and its Recording bracket is opened, then closed interrupted, "
-            "the same as the move above")
+    r.check(e2.runs == [], "…and opens no recording either")
 
-    # A recording that cannot open its FILE is a different fault, caught
-    # BEFORE the step's own action ever runs.
+    # A recording that cannot open its FILE pauses before the step runs.
     rig3 = FakeRig()
     rig3.fail_begin = True
-    e3 = RoutineEngine(Routine(steps=[Step(kind="move", x_um=10.0)],
-                              recordings=[Recording(start=0, end=0)]),
-                       rig3.hooks())
+    e3 = RoutineEngine(Routine(steps=[Step(kind="record", length=0.05,
+                                           unit="seconds")]), rig3.hooks())
     e3.start()
     r.check(e3.phase == Phase.PAUSED
             and "recording couldn't start" in e3.fault,
             f"a recording that fails to OPEN pauses with its own message "
             f"({e3.fault!r})")
-    r.check(("move", 10.0, None, None) not in rig3.log and e3.runs == [],
-            "…and the step's own action never ran on top of that pause")
+    r.check(e3.runs == [], "…and no run was recorded")
 
     # Resuming once the file starts working again must actually resume — a
     # stray phase check here once could not tell "the resume that just
     # failed" from "the resume that is happening now" and stuck forever.
     rig3.fail_begin = False
     e3.resume()
-    r.check(e3.phase == Phase.RUNNING and ("move", 10.0, None, None) in rig3.log,
+    r.check(e3.phase == Phase.RUNNING and len(rig3.begun) == 1,
             f"…and resuming once the file opens again actually runs the "
             f"step ({e3.phase})")
 
@@ -822,12 +778,10 @@ def check_cycles_and_attrs(r: Report) -> None:
     that.)"""
     rig = FakeRig()
     routine = Routine(name="grid", cycles=3, save_mode="per_repeat",
-                      steps=[Step(kind="wait", label="A", length=0.10,
+                      steps=[Step(kind="record", label="A", length=0.10,
                                   unit="seconds"),
-                             Step(kind="wait", label="B", length=0.10,
-                                  unit="seconds")],
-                      recordings=[Recording(start=0, end=0),
-                                  Recording(start=1, end=1)])
+                             Step(kind="record", label="B", length=0.10,
+                                  unit="seconds")])
     eng = RoutineEngine(routine, rig.hooks())
     eng.start()
     drive(eng, rig)
@@ -963,9 +917,8 @@ def check_trigger_step(r: Report) -> None:
     DRAIN, SETTLE = 0.2, 0.1
     routine = Routine(
         steps=[Step(kind="trigger", label="edge"),
-               Step(kind="wait", label="capture", length=0.5, unit="seconds")],
-        groups=[Group(start=0, end=1, repeats=3)],
-        recordings=[Recording(start=1, end=1)])
+               Step(kind="record", label="capture", length=0.5, unit="seconds")],
+        groups=[Group(start=0, end=1, repeats=3)])
     rig = FakeRig(hz=100.0)
     eng = RoutineEngine(routine, rig.hooks(), trigger_drain_s=DRAIN,
                         trigger_settle_s=SETTLE, trigger_timeout_s=5.0)
@@ -1099,6 +1052,107 @@ def check_trigger_step(r: Report) -> None:
             f"({eng4.fault!r})")
 
 
+def check_prepare_recording(r: Report) -> None:
+    """A `trigger` step followed by a Record step asks for that recording's
+    file BEFORE it re-arms (a .dcimg can only be bound while capture is
+    stopped, and re-arming stops it). Any other next step asks for nothing."""
+    DRAIN, SETTLE = 0.2, 0.1
+
+    def run(routine):
+        rig = FakeRig(hz=100.0)
+        eng = RoutineEngine(routine, rig.hooks(), trigger_drain_s=DRAIN,
+                            trigger_settle_s=SETTLE, trigger_timeout_s=5.0)
+        eng.start()
+        for _ in range(4000):
+            if eng.phase == Phase.DONE:
+                break
+            if eng.phase == Phase.WAITING and rig.gated:
+                for _ in range(int((DRAIN + SETTLE) / DT) + 10):
+                    rig.advance()
+                    eng.tick()
+                rig.fire_trigger()
+            rig.advance()
+            eng.tick()
+        return eng, rig
+
+    eng, rig = run(Routine(
+        steps=[Step(kind="trigger"),
+               Step(kind="record", length=0.2, unit="seconds")],
+        groups=[Group(start=0, end=1, repeats=2)]))
+    kinds = [e[0] for e in rig.log if e[0] in ("prepare", "arm_trigger")]
+    r.check(eng.phase == Phase.DONE, f"fixture: ran to the end ({eng.phase})")
+    r.check(kinds == ["prepare", "arm_trigger"] * 2,
+            f"each trigger step prepares the next file, then re-arms ({kinds})")
+    prep = [e for e in rig.log if e[0] == "prepare"]
+    r.check(prep == [("prepare", 0, 0, 1)] * 2,
+            f"…naming the record step that follows ({prep})")
+
+    eng2, rig2 = run(Routine(steps=[Step(kind="trigger"),
+                                    Step(kind="wait", length=0.2,
+                                         unit="seconds")]))
+    r.check(not any(e[0] == "prepare" for e in rig2.log),
+            "control: a trigger followed by a wait prepares nothing")
+
+    eng3, rig3 = run(Routine(steps=[Step(kind="record", length=0.2,
+                                         unit="seconds"),
+                                    Step(kind="trigger")], cycles=2))
+    prep3 = [e for e in rig3.log if e[0] == "prepare"]
+    r.check(prep3 == [("prepare", 0, 1, 0)],
+            f"a trigger ending a cycle prepares the NEXT cycle's record, and "
+            f"the last cycle's trigger prepares nothing ({prep3})")
+
+
+def check_prepared_adapter(r: Report) -> None:
+    """The adapter half: with a .dcimg open it rolls the file and re-arms once,
+    inside the swap; the recording's own begin then does NOT roll again."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.routines import RoutinesModule
+    from acqApp.routines.engine import RecordingRun
+
+    calls: list = []
+    win = SimpleNamespace(
+        dcimg_frames=lambda key: 0,
+        arm_camera_with_next_file=lambda key: (calls.append("arm") or True),
+        roll_recording=lambda: (calls.append("roll") or True),
+        set_routine_save_context=lambda *a, **k: None)
+    a = RoutinesModule.__new__(RoutinesModule)
+    a.win = win
+    a._routine = Routine(steps=[Step(kind="trigger"),
+                                Step(kind="record", length=1, unit="seconds")],
+                         save_mode="per_repeat")
+    a._engine = SimpleNamespace(runs=[])
+    a._trial_count = {}
+    a._pending_scope = {}
+    a._rolling = False
+    a._filed_from = 0
+    a._file_group_key = (0, None)
+    a._prepared = None
+    a._armed_with_file = False
+    a._pending_roll_run = None
+    a._rec = None
+    a._status = lambda m: None
+    run = RecordingRun(region=0, start_index=1, end_index=1, cycle=0,
+                       attempt=1, t0=0.0, frame0=None)
+
+    a._prepare_recording(run)
+    r.check(calls == ["arm", "roll"],
+            f".dcimg open: armed with the next file, then rolled ({calls})")
+    r.check(a._prepared == (0, 1) and a._armed_with_file,
+            "...and remembers which recording that file is for")
+
+    a._on_recording_begin(run)
+    r.check(a._pending_roll_run is None and a._prepared is None,
+            "the recording's begin finds its file already open - no 2nd roll")
+
+    calls.clear()
+    win.dcimg_frames = lambda key: None
+    a._armed_with_file = False
+    a._prepare_recording(run)
+    r.check(calls == [] and a._prepared is None,
+            "control: no .dcimg open -> nothing prepared, the old path runs")
+
+
 def check_arm_camera_trigger(r: Report) -> None:
     """`RoutinesModule._arm_camera_trigger()` — the fix itself: a TTL-start
     routine puts the camera in External edge mode through the host, before
@@ -1182,20 +1236,19 @@ def check_migration(r: Report) -> None:
             and rm.steps[0].fov == "f1" and rm.steps[0].settle_s == 0.4,
             f"the move half keeps its target, FOV name and settle "
             f"({rm.steps[0]})")
-    r.check(rm.steps[1].kind == "wait" and rm.steps[1].length == 50
+    r.check(rm.steps[1].kind == "record" and rm.steps[1].length == 50
             and rm.steps[1].unit == "frames",
-            f"…followed by a wait step with the old length/unit ({rm.steps[1]})")
-    r.check(rm.recordings == [Recording(start=0, end=1)],
-            "…both wrapped in one Recording spanning the whole expansion — "
-            "an old step always captured")
+            f"…followed by a record step with the old length/unit ({rm.steps[1]})")
+    r.check(rm.recordings == [Recording(start=1, end=1)],
+            "…the old wait is now a Record step — an old step always captured")
 
     # b) a pattern-only composite -> a display step, then a wait step.
     old_pat = {"steps": [{"pattern": "p.png", "length": 10, "unit": "seconds"}]}
     rp = Routine.from_dict(old_pat)
-    r.check([s.kind for s in rp.steps] == ["display", "wait"],
-            f"a pattern step becomes display then wait ({[s.kind for s in rp.steps]})")
+    r.check([s.kind for s in rp.steps] == ["display", "record"],
+            f"a pattern step becomes display then record ({[s.kind for s in rp.steps]})")
     r.check(rp.steps[0].pattern == "p.png" and rp.steps[1].length == 10,
-            "…keeping the pattern path and the wait length")
+            "…keeping the pattern path and the record length")
 
     # c) a seconds-unit step with puff_interval_s>0 interleaves EXACT
     #    Wait+Puff chunks, summing back to the original length.
@@ -1203,17 +1256,17 @@ def check_migration(r: Report) -> None:
                             "puff_interval_s": 2.0, "label": "puffed"}]}
     rs = Routine.from_dict(old_puff_s)
     kinds = [s.kind for s in rs.steps]
-    r.check(kinds == ["wait", "puff", "wait", "puff", "wait"],
+    r.check(kinds == ["record", "puff", "record", "puff", "record"],
             f"a seconds step with a puff interval interleaves exact chunks "
             f"({kinds})")
-    lens = [s.length for s in rs.steps if s.kind == "wait"]
+    lens = [s.length for s in rs.steps if s.kind == "record"]
     r.check(lens == [2.0, 2.0, 1.0],
             f"…summing back to the original 5.0 s ({lens})")
     r.check(rs.steps[0].label == "puffed"
             and all(s.label == "" for s in rs.steps[2::2]),
             "…the label stays on the FIRST chunk only")
-    r.check(rs.recordings == [Recording(start=0, end=4)],
-            "…all wrapped in one Recording covering the whole expansion")
+    r.check(len(rs.recordings) == 3,
+            "…each record chunk is its own recording")
 
     # d) a frames-unit step with puff_interval_s>0 falls back to ONE trailing
     #    Puff (lossy — no frame rate here to convert real time against a
@@ -1221,7 +1274,7 @@ def check_migration(r: Report) -> None:
     old_puff_f = {"steps": [{"length": 100, "unit": "frames",
                             "puff_interval_s": 1.0}]}
     rf = Routine.from_dict(old_puff_f)
-    r.check([s.kind for s in rf.steps] == ["wait", "puff"],
+    r.check([s.kind for s in rf.steps] == ["record", "puff"],
             f"a frames step with a puff interval falls back to one trailing "
             f"puff ({[s.kind for s in rf.steps]})")
 
@@ -1243,7 +1296,7 @@ def check_migration(r: Report) -> None:
             f"the group's OLD range (steps 1-2) remaps to the NEW steps "
             f"those old positions became (2-4) ({rg.groups[0]})")
     r.check(len(rg.recordings) == 3,
-            "each old step still gets its own Recording")
+            "each old step's wait is its own Record step")
 
     # A file with no "kind" anywhere must not raise, whatever it contains.
     try:
@@ -1849,10 +1902,8 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
 def check_group_panel(r: Report, app) -> None:
     """Adding/removing a repeat group by selecting rows in the table — the
     fix for the old flow (typing 1-based row numbers into spinboxes,
-    disconnected from the table you were looking at). A recording is not a
-    selection at all: it's a per-step sticker, toggled by clicking that
-    step's row header (`StepTable.recording_toggled`, read by the panel as
-    `_toggle_recording`)."""
+    disconnected from the table you were looking at). A recording is a
+    `record` step, not a selection."""
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(kind="wait", label="A"),
@@ -1863,34 +1914,26 @@ def check_group_panel(r: Report, app) -> None:
     r.check(not panel._btn_g_add.isEnabled(),
             "control: nothing selected -> no Group offered")
 
-    # ── recordings: a header click toggles one step, no selection involved ──
-    panel._toggle_recording(0)
+    # ── recordings: a Record step is one — there is no sticker ──
+    r.check(routine.recordings == [], "control: no Record step, no recording")
+    routine.steps[0].kind = "record"
+    panel._reload_table()
     r.check(routine.recordings == [Recording(start=0, end=0)],
-            f"clicking step 1's row number stickers a one-step Recording "
-            f"there ({routine.recordings})")
-    r.check(panel._tbl._recording_at(0) is routine.recordings[0]
+            f"a Record step is a one-step Recording ({routine.recordings})")
+    r.check(panel._tbl._recording_at(0) is routine.steps[0]
             and panel._tbl._recording_at(1) is None,
             "…and the table knows which row is recording")
-    panel._toggle_recording(0)
-    r.check(routine.recordings == [],
-            "clicking the same row again removes the sticker")
-
-    panel._tbl.recording_toggled.emit(1)
-    r.check(routine.recordings == [Recording(start=1, end=1)],
-            "the table's own signal (a real header click) reaches the same "
-            "handler")
-    panel._tbl.recording_toggled.emit(2)
-    r.check(routine.recordings == [Recording(start=1, end=1),
+    routine.steps[1].kind = routine.steps[2].kind = "record"
+    panel._reload_table()
+    r.check(routine.recordings == [Recording(start=0, end=0),
+                                   Recording(start=1, end=1),
                                    Recording(start=2, end=2)],
-            f"stickering a second step adds a SECOND one-step Recording, "
-            f"never a merged range ({routine.recordings})")
-    r.check(panel._tbl._recording_at(1) is not None
-            and panel._tbl._recording_at(2) is not None
-            and panel._tbl._recording_at(0) is None,
-            "…independently trackable per row")
-    panel._toggle_recording(1)
-    panel._toggle_recording(2)
-    r.check(routine.recordings == [], "both removed the same way they were added")
+            f"each Record step is its own Recording, never a merged range "
+            f"({routine.recordings})")
+    for st in routine.steps:
+        st.kind = "wait"
+    panel._reload_table()
+    r.check(routine.recordings == [], "back to Waits: no recordings")
 
     # ── repeat groups: a selected range, same as before ──
     panel._tbl.select_row(0)
@@ -1921,18 +1964,20 @@ def check_group_panel(r: Report, app) -> None:
             "…and the table itself knows which rows are grouped")
 
     # A recording sticker on one of the grouped rows coexists with the group.
-    panel._toggle_recording(1)
+    routine.steps[1].kind = "record"
+    panel._reload_table()
     r.check(routine.recordings == [Recording(start=1, end=1)]
             and panel._tbl._group_at(1) is routine.groups[0],
-            "a recording nests inside a group without disturbing it")
+            "a Record step nests inside a group without disturbing it")
 
     # Round-trips through to_dict/from_dict, the same as steps.
     reloaded = Routine.from_dict(routine.to_dict())
     r.check(len(reloaded.groups) == 1 and reloaded.groups[0].repeats == 4,
             "a saved template keeps its repeat group")
     r.check(reloaded.recordings == [Recording(start=1, end=1)],
-            "…and its recording sticker")
-    panel._toggle_recording(1)                   # clean up for what follows
+            "…and its Record step")
+    routine.steps[1].kind = "wait"               # clean up for what follows
+    panel._reload_table()
 
     # The repeat count stays editable after the group exists.
     from PyQt6.QtWidgets import QInputDialog
@@ -1977,7 +2022,8 @@ def check_group_panel(r: Report, app) -> None:
     # set_routine (template load) replaces groups AND recordings, not just steps.
     _select_rows(panel._tbl, 0, 1)
     panel._group_selected()
-    panel._toggle_recording(0)
+    routine.steps[0].kind = "record"
+    panel._reload_table()
     other = Routine(steps=[Step(kind="wait"), Step(kind="wait")])
     panel.set_routine(other)
     r.check(panel.settings.groups == [] and panel.settings.recordings == [],
@@ -1987,24 +2033,21 @@ def check_group_panel(r: Report, app) -> None:
 
 def check_per_edge_routine_is_buildable(r: Report, app) -> None:
     """The operator's per-edge protocol, built the way the UI actually builds
-    it. Every earlier test constructed `Recording(start=1, end=1)` straight
-    into the model, so none of them touched the panel path that actually
-    stickers a single step.
+    it.
 
     "100 recordings at FOV 1, each started by an edge, each x seconds" =
-    [move, trigger, wait] with the group over the last two and the sticker on
-    the wait ALONE.
+    [move, trigger, record] with the group over the last two.
     """
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(kind="move", label="FOV 1", x_um=0.0,
                                   y_um=0.0, settle_s=0.0),
                              Step(kind="trigger", label="edge"),
-                             Step(kind="wait", label="capture", length=5.0,
+                             Step(kind="record", label="capture", length=5.0,
                                   unit="seconds")])
     panel = SettingsPanel(routine)
 
-    # The repeat group: trigger + wait, so the move happens once.
+    # The repeat group: trigger + record, so the move happens once.
     _select_rows(panel._tbl, 1, 2)
     panel._spn_g_repeats.setValue(100)
     panel._group_selected()
@@ -2014,14 +2057,10 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
             f"the trigger+wait pair repeats 100x, leaving the move outside "
             f"({routine.groups})")
 
-    # The sticker: the wait ALONE, no selection needed at all.
-    panel._toggle_recording(2)
     r.check(routine.recordings == [Recording(start=2, end=2)],
-            f"clicking the Wait row's number stickers a Recording over just "
-            f"it ({routine.recordings})")
+            f"the Record step is the only recording ({routine.recordings})")
 
-    # The whole point: the trigger step is NOT inside the bracket, so
-    # validate() accepts it. (The reverse case is covered in check_validation.)
+    # The trigger step is outside the recording, so validate() accepts it.
     panel._cmb_save.setCurrentIndex(panel._cmb_save.findData("per_repeat"))
     built = panel.settings
     r.check(built.save_mode == "per_repeat",
@@ -2361,18 +2400,17 @@ def check_app(r: Report, app, tmp) -> None:
         pump(app, 0.01)
     r.check(not st.is_moving(), "is_moving: false once the stage has arrived")
 
-    # ── the atomic protocol: two "old composite step"-sized recordings ──
+    # ── the atomic protocol: two Record steps ──
     app_pattern = tmp / "app.png"
     app_pattern.write_bytes(b"x")
     panel._r.steps = [
         Step(kind="move", label="one", x_um=inside, settle_s=0.0),
-        Step(kind="wait", label="frames-wait", length=5, unit="frames"),
+        Step(kind="record", label="frames-record", length=5, unit="frames"),
         Step(kind="move", label="two", x_um=inside, y_um=inside_y,
              settle_s=0.05),
         Step(kind="display", label="show", pattern=str(app_pattern)),
-        Step(kind="wait", label="seconds-wait", length=0.30, unit="seconds"),
+        Step(kind="record", label="seconds-record", length=0.30, unit="seconds"),
     ]
-    panel._r.recordings = [Recording(start=0, end=1), Recording(start=2, end=4)]
     panel._reload_table()
 
     # ── Start opens the recording it needs ──
@@ -2386,14 +2424,16 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(not win._btn_rec.isChecked(),
             "ending the routine stops the recording it started")
 
-    # CONTROL: a recording the OPERATOR started is not the routine's to stop.
+    # A recording the OPERATOR started is stopped too: capture always stops.
     win._btn_rec.setChecked(True)
     adapter._start()
     r.check(adapter._engine is not None and not adapter._own_rec,
-            "control: a recording already running is not adopted as its own")
+            "a recording already running is not adopted as its own")
     adapter._abort()
-    r.check(win._btn_rec.isChecked(),
-            "control: …so ending the routine leaves that one running")
+    r.check(not win._btn_rec.isChecked(),
+            "…but ending the routine stops it anyway")
+    r.check(not win._btn_run.isChecked(),
+            "…and capture stops too, not just the file")
     win._btn_rec.setChecked(False)              # clean slate for the real run
     pump(app, 0.1)
 
@@ -2422,6 +2462,7 @@ def check_app(r: Report, app, tmp) -> None:
     if not r.check(adapter._engine is not None,
                    "the routine starts against the operator's own recording"):
         return
+    eng0 = adapter._engine       # the session stops at DONE and drops it
 
     r.check("routine" in adapter.busy_reason().lower(),
             f"the adapter declares itself busy while a routine runs "
@@ -2435,10 +2476,10 @@ def check_app(r: Report, app, tmp) -> None:
     for _ in range(200):
         win._display_tick()
         pump(app, 0.02)
-        if adapter._engine.phase == Phase.DONE:
+        if eng0.phase == Phase.DONE:
             break
 
-    eng = adapter._engine
+    eng = eng0
     phase, runs, filed, steps_done = (eng.phase, list(eng.runs), adapter._filed,
                                       eng.steps_done())
     win._btn_rec.setChecked(False)
@@ -2461,7 +2502,7 @@ def check_app(r: Report, app, tmp) -> None:
 
     frames_run = runs[0]
     r.check(frames_run.frames is not None and frames_run.frames >= 5,
-            f"the first Recording (move + a 5-frame wait) counted frames "
+            f"the first Record step (5 frames) counted frames "
             f"that reached the FILE ({frames_run.frames})")
     r.check(filed == 4, f"four recording boundaries were filed (got {filed})")
 
@@ -2526,12 +2567,11 @@ def check_file_rolling(r: Report, app, tmp) -> None:
     win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     win._save_panel._on_edited()
 
-    def run_to_done(steps, groups, recordings, save_mode) -> int:
+    def run_to_done(steps, groups, save_mode) -> int:
         """Run one routine to completion, -> how many NEW .h5 files appeared."""
         before = set(out.rglob("*.h5"))
         panel._r.steps = steps
         panel._r.groups = groups
-        panel._r.recordings = recordings
         panel._r.cycles = 1
         # Not `panel._r.save_mode = ...` directly — the `settings` property
         # `_start()` reads overwrites it from this combo box on every read.
@@ -2542,24 +2582,23 @@ def check_file_rolling(r: Report, app, tmp) -> None:
                        f"[{save_mode}] the routine starts "
                        f"({panel._lbl_state.text() if adapter._engine is None else ''})"):
             return 0
+        eng0 = adapter._engine   # the session stops at DONE and drops it
         for _ in range(400):
             win._display_tick()
             pump(app, 0.01)
-            if adapter._engine.phase == Phase.DONE:
+            if eng0.phase == Phase.DONE:
                 break
-        r.check(adapter._engine.phase == Phase.DONE,
+        r.check(eng0.phase == Phase.DONE,
                 f"[{save_mode}] the routine ran to the end "
-                f"(phase={adapter._engine.phase}, fault={adapter._engine.fault!r})")
+                f"(phase={eng0.phase}, fault={eng0.fault!r})")
         return len(set(out.rglob("*.h5")) - before)
 
-    # One Recording spanning a 3x-repeated 2-step group -> 3 RecordingRuns
-    # (routines/engine.py: a Recording across a repeated Group yields one
-    # run per repeat) -> per_repeat rolls a file for each.
+    # A Record step in a 3x-repeated 2-step group -> 3 RecordingRuns
+    # (one per repeat) -> per_repeat rolls a file for each.
     n = run_to_done(
         [Step(kind="move", label="m", x_um=10.0, settle_s=0.0),
-         Step(kind="wait", label="w", length=0.02, unit="seconds")],
-        [Group(start=0, end=1, repeats=3)], [Recording(start=0, end=1)],
-        "per_repeat")
+         Step(kind="record", label="w", length=0.02, unit="seconds")],
+        [Group(start=0, end=1, repeats=3)], "per_repeat")
     r.check(n == 3, f"per_repeat: one file per repeat of the group ({n})")
 
     # Two DIFFERENT groups, each repeated twice, each with its OWN Recording
@@ -2568,24 +2607,20 @@ def check_file_rolling(r: Report, app, tmp) -> None:
     # group), not 4 (one per repeat) — the whole point of the coarser mode.
     multi_group_steps = [
         Step(kind="move", label="a", x_um=10.0, settle_s=0.0),
-        Step(kind="wait", label="wa", length=0.02, unit="seconds"),
+        Step(kind="record", label="wa", length=0.02, unit="seconds"),
         Step(kind="move", label="b", x_um=20.0, settle_s=0.0),
-        Step(kind="wait", label="wb", length=0.02, unit="seconds"),
+        Step(kind="record", label="wb", length=0.02, unit="seconds"),
     ]
     multi_group_groups = [Group(start=0, end=1, repeats=2),
                           Group(start=2, end=3, repeats=2)]
-    multi_group_recordings = [Recording(start=0, end=1),
-                              Recording(start=2, end=3)]
-    n2 = run_to_done(list(multi_group_steps), multi_group_groups,
-                     multi_group_recordings, "per_group")
+    n2 = run_to_done(list(multi_group_steps), multi_group_groups, "per_group")
     r.check(n2 == 2,
             f"per_group: repeats of the same group share a file, only "
             f"moving to the other one rolls ({n2})")
 
     # CONTROL: save_mode="single" over the SAME multi-group protocol is the
     # behavior every one of these modes departs from — exactly one file.
-    n3 = run_to_done(list(multi_group_steps), multi_group_groups,
-                     multi_group_recordings, "single")
+    n3 = run_to_done(list(multi_group_steps), multi_group_groups, "single")
     r.check(n3 == 1,
             f"control: single mode never rolls, over the identical protocol "
             f"({n3})")
@@ -2614,6 +2649,8 @@ def main() -> int:
         check_transitions(r)
         check_ttl_start_trigger(r)
         check_trigger_step(r)
+        check_prepare_recording(r)
+        check_prepared_adapter(r)
         check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)

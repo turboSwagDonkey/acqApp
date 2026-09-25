@@ -267,6 +267,86 @@ def check_cap_vs_gated(r: Report) -> None:
             "still recording is never 'stopped at the cap'")
 
 
+def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
+    """A trigger step's file swap must bind the NEW recorder while capture is
+    stopped, cycle the master pulse, and only then start - so capture comes
+    back gated with the file already open. The plain swap must not cycle."""
+    import threading
+    from types import SimpleNamespace
+
+    from acqApp.devices.voltage_cam import acquisition as acq
+    from acqApp.devices.voltage_cam import dcimg as dc
+
+    calls: list = []
+
+    class FakeCam:
+        handle = "H"
+
+        def stop_acquisition(self):
+            calls.append("stop")
+
+        def start_acquisition(self, nframes=None):
+            calls.append(("start", nframes))
+
+        def set_attribute_value(self, name, value, error_on_missing=True):
+            calls.append(("set", value))
+
+        def get_roi(self):
+            return (0, 16, 0, 8, 1, 1)
+
+    class FakeRec:
+        path = tmp / "f.dcimg"
+        max_frames = 10
+
+        @classmethod
+        def for_frames(cls, path, bpf):
+            return cls()
+
+        def open(self):
+            calls.append("open")
+
+        def attach(self, h):
+            calls.append(("attach", h))
+
+        def close(self):
+            calls.append("close")
+
+        def status(self):
+            return SimpleNamespace(total=0, missing=0, recording=True,
+                                   session=0)
+
+    real = dc.DcimgRecorder
+    dc.DcimgRecorder = FakeRec
+    try:
+        w = acq.OrcaFireWorker.__new__(acq.OrcaFireWorker)
+        w._dcimg = None
+        w._dcimg_total = w._dcimg_missing = 0
+        w._dcimg_t0 = w._dcimg_t1 = None
+        w._dcimg_full = False
+        w._exp_lock = threading.Lock()
+        w._rearm_with_file = False
+
+        w._swap_dcimg(FakeCam(), tmp / "a.dcimg", rearm_nframes=59)
+        want = ["stop", "open", ("attach", "H"),
+                ("set", acq._MP_MODE_CONTINUOUS), ("set", acq._MP_MODE_START),
+                ("start", 59)]
+        r.check(calls == want,
+                f"swap with re-arm: stop, bind, cycle the pulse, then start "
+                f"({calls})")
+
+        calls.clear()
+        w._swap_dcimg(FakeCam(), tmp / "b.dcimg")
+        r.check(calls == ["stop", "close", "open", ("attach", "H"),
+                          ("start", None)],
+                f"control: a plain swap never touches the master pulse "
+                f"({calls})")
+
+        w.arm_with_next_file()
+        r.check(w._rearm_with_file, "arm_with_next_file sets the latch")
+    finally:
+        dc.DcimgRecorder = real
+
+
 def main() -> int:
     r = Report("dcimg")
     isolate_user_state()
@@ -280,6 +360,7 @@ def main() -> int:
         check_host_wiring(r, app, tmp)
         check_routine_counts_recorder(r, app)
         check_wait_for_camera(r, app)
+        check_swap_rearms_in_order(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()

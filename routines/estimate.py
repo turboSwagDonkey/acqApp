@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from acqApp.routines.settings import Routine, Step, play_order
+from acqApp.routines.settings import Routine, Step, TIMED_KINDS, play_order
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ def step_seconds(step: Step, hz: float | None) -> tuple[float, float]:
     """
     if step.kind == "move":
         return max(0.0, step.settle_s), 0.0
-    if step.kind != "wait":
+    if step.kind not in TIMED_KINDS:
         return 0.0, 0.0
     if step.unit == "seconds":
         return max(0.0, step.length), 0.0

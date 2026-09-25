@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
 
 from acqApp import style
 from acqApp.routines.estimate import clock, estimate, step_seconds
-from acqApp.routines.settings import (Recording, Routine, group_region_at,
+from acqApp.routines.settings import (Recording, Routine, TIMED_KINDS, group_region_at,
                                       play_order, recording_region_at,
                                       recording_run_ids)
 from acqApp.routines.table import KIND_LABELS, GROUP_TINT, REC_TINT
@@ -59,6 +59,7 @@ _KIND_COLOR = {
     "move":    QColor(style.HEX["stage"]),
     "display": QColor(style.HEX["dmd"]),
     "wait":    QColor(style.HEX["sync"]),
+    "record":  QColor(style.HEX["sync"]),
     "puff":    QColor(style.HEX["puffer"]),
 }
 
@@ -293,7 +294,7 @@ def _summary(routine: Routine, hz: float | None) -> str:
                if routine.cycles > 1 else "")]
     bits.append(est.text() + (f" total (at {est.hz:g} Hz)" if est.hz else
                               " total"))
-    if any(s.kind == "wait" and s.unit == "frames" for s in routine.steps) \
+    if any(s.kind in TIMED_KINDS and s.unit == "frames" for s in routine.steps) \
             and not hz:
         bits.append("dashed blocks: duration unknown, no camera frame rate set")
     return " · ".join(bits)
