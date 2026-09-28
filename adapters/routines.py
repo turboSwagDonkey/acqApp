@@ -1,64 +1,27 @@
 """
-The experiment routine's adapter — the only code here that touches a real
-stage or a real projector.
+The routine's adapter: the only code here that touches a real stage or
+projector. Decisions live in the Qt-free `routines/`; this builds the
+`RoutineHooks` that point the engine at loaded modules, via `ModuleHost`
+(`stage_target`/`pattern_target`) rather than their adapters.
 
-Everything that decides lives in `routines/`, Qt-free. This builds the
-`RoutineHooks` pointing that engine at the loaded modules, reaching them
-through `ModuleHost` (`stage_target`/`pattern_target`) rather than by importing
-their adapters — the stage doesn't know routines exist.
-
-**The tick runs on the GUI thread**, on a QTimer, not in a worker. It is
-non-blocking, and the closed loop already goes out of its way to get actuation
-*back* here (its `fired` signal is queued); this is that, without the hop. A
-stage move is a short serial write; the position poller does the polling, on
-its own thread.
-
-**Start opens the recording itself** (`ModuleHost.set_recording`, the twin of
-the DMD calibration's `set_live`): a routine can't run a step without a file
-open. A recording this adapter started, it stops at the end; one the operator
-started, it leaves alone.
-
-**A "TTL" start trigger arms the camera itself, before opening the
-recording** (`ModuleHost.set_camera_trigger`) — rather than trusting the
-operator to have already set the voltage camera's own External edge mode on
-its own tab, which can silently drift back to Internal between being set
-and the routine actually arming. The camera reports a frame it didn't have
-at arm time (`routines/engine.py`'s ARMED phase watches the frame count);
-nothing here reads a DAQ line.
-
-**A `trigger` STEP waits for an edge mid-routine**, which is how one
-recording per edge is built (a repeat group over [trigger, wait], the
-Recording bracket on the wait). Same physical line as the TTL start, so
-`_start` puts the camera in External edge mode for either. Each such step
-re-arms the camera through `ModuleHost.rearm_camera_trigger` — it latches,
-so without that only a run's first edge would ever be seen — and that call
-is asynchronous, which is what the engine's `TRIGGER_SETTLE_S` accounts for.
-
-**Save modes `per_repeat`/`per_group` roll to a fresh file at a
-`RecordingRun` boundary** (`_needs_roll`/`_roll_for`), via
-`MainWindow.roll_recording()` — a plain stop-then-start of the recorder,
-`main.py`'s only addition for this. The roll is deferred to right after
-`RoutineEngine.tick()` returns, never run from inside the hook that
-discovers it needs one: `begin_recording(run)` fires synchronously from
-deep inside the engine's own call stack (`_advance -> _enter_step ->
-_update_recording -> _open_recording`), which still has code to run after
-the hook returns — calling back into the engine (`roll_recording`'s
-failure path pauses it) from there would be overwritten by that code
-before it ever took effect. `_tick()` is the only place both `eng.tick()`
-and any resulting roll are guaranteed to run at the same, non-reentrant,
-top-level frame.
-
-**Every status message goes through `_status()`, to the console as well as
-the window's status bar** (2026-09-17) — `MainWindow.status()` alone only
-ever reached the bar, so a pause, a fault, or an uncaught tick exception
-looked like the routine had gone silently quiet to an operator who works
-from the console, which is this app's actual workflow at the rig.
-
-**The panel names which REPEAT is running, not just which table row**
-(`_repeat_suffix`, `routines/settings.py`'s `group_repeat_at`) — "step 1/2"
-alone reads identically on repeat 1 and repeat 100 of a `[trigger, wait]`
-pair, since a Group replays the same table rows in place; only the repeat
-number actually changes.
+- The tick runs on the GUI thread (QTimer), non-blocking. A stage move is a
+  short serial write; the position poller has its own thread.
+- Start opens the recording itself and stops it at the end; a recording the
+  operator started is left alone.
+- A "TTL" start trigger arms the camera itself (`set_camera_trigger`) before
+  opening the recording; the ARMED phase watches the camera's frame count, no
+  DAQ line is read. A `trigger` step uses the same line, and re-arms the camera
+  (`rearm_camera_trigger`, asynchronous, hence the engine's
+  `TRIGGER_SETTLE_S`) because it latches after one edge.
+- `per_repeat`/`per_group` save modes roll to a fresh file at a
+  `RecordingRun` boundary (`_needs_roll`/`_roll_for`, `MainWindow.roll_recording`).
+  The roll is deferred to `_tick`, after `eng.tick()` returns: the begin hook
+  fires deep inside the engine's call stack, and calling back into the engine
+  from there would be overwritten by the code still to run.
+- `_status()` puts every message on the status bar; the console gets all but
+  per-step lines, which the banner and panel show.
+- The panel names which repeat is running (`_repeat_suffix`), since "step 1/2"
+  reads the same on repeat 1 and repeat 100.
 """
 from __future__ import annotations
 
@@ -71,6 +34,7 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
+from acqApp.routines.banner import RoutineBanner
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
 from acqApp.routines.estimate import clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
@@ -156,7 +120,10 @@ class RoutinesModule(ModuleAdapter):
         the rig: a pause or an uncaught tick exception read as the routine
         just going silently quiet."""
         self.win.status(msg)
-        print(f"[routines] {msg}")
+        # Per-step progress lives on the banner and status bar; the console
+        # keeps starts, pauses, faults and the end.
+        if not msg.startswith("step "):
+            print(f"[routines] {msg}")
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -169,6 +136,10 @@ class RoutinesModule(ModuleAdapter):
         self.panel.skip_requested.connect(self._skip)
         self.panel.abort_requested.connect(self._abort)
         self.panel.status_message.connect(self._status)
+        # Its own top-level window, so it must be closed with the panel.
+        self._banner = RoutineBanner()
+        self.panel.state_shown.connect(self._banner.show_state)
+        self.panel.destroyed.connect(self._banner.close)
         # Parented to the panel, so it dies with the UI rather than ticking on
         # into an unloaded module.
         self._timer = QTimer(self.panel)
@@ -406,6 +377,7 @@ class RoutinesModule(ModuleAdapter):
         if self._engine is not None:
             self._engine.abort()
         self._stop_ticking()
+        self.update_display()            # before the session (and timer) stops
         self._close_own_recording()
 
     def _stop_ticking(self) -> None:
@@ -475,6 +447,9 @@ class RoutinesModule(ModuleAdapter):
                 eng.pause("could not open the next output file")
         if eng.phase == Phase.DONE:
             self._stop_ticking()
+            # Paint DONE first: closing the capture stops the session, and
+            # with it the display timer, so the panel would never leave RUNNING.
+            self.update_display()
             # The routine is over; a file it opened has nothing left to record.
             self._close_own_recording()
 

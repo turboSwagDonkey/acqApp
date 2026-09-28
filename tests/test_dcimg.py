@@ -327,16 +327,16 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         w._rearm_with_file = False
 
         w._swap_dcimg(FakeCam(), tmp / "a.dcimg", rearm_nframes=59)
-        want = ["stop", "open", ("attach", "H"),
+        want = ["open", "stop", ("attach", "H"),
                 ("set", acq._MP_MODE_CONTINUOUS), ("set", acq._MP_MODE_START),
                 ("start", 59)]
         r.check(calls == want,
-                f"swap with re-arm: stop, bind, cycle the pulse, then start "
+                f"swap with re-arm: open, stop, bind, cycle the pulse, then start "
                 f"({calls})")
 
         calls.clear()
         w._swap_dcimg(FakeCam(), tmp / "b.dcimg")
-        r.check(calls == ["stop", "close", "open", ("attach", "H"),
+        r.check(calls == ["open", "stop", "close", ("attach", "H"),
                           ("start", None)],
                 f"control: a plain swap never touches the master pulse "
                 f"({calls})")

@@ -99,13 +99,12 @@ class OrcaFireWorker(PullWorker):
     drops_update = pyqtSignal(int, int)       # (skipped_frames, buffer_size)
 
     _STOP_WAIT_MS = 5000
-    # Ring buffer holds this many seconds of frames, so a GC pause or disk stall
-    # doesn't overwrite un-read ones. Bounded by memory: a full frame is ~21 MB.
-    # 768 MB (0.38 s at full frame) was too tight with headroom to spare: the
-    # rig has 64 GiB RAM, ~51 GiB free (2026-08-27), and 768 MB was shedding
-    # ~6% of frames on real hardware even after the writer stopped being the
-    # bottleneck (PLAN.md sec 6 item 1). 6 GiB covers the full 2.0 s at full
-    # frame (115 Hz) with margin, and is still <12% of free RAM.
+    # Ring buffer holds this many seconds of frames so a GC pause or disk
+    # stall doesn't overwrite unread ones, bounded by memory (~21 MB/frame).
+    # 768 MB (0.38 s at full frame) still shed ~6% on real hardware after the
+    # writer stopped being the bottleneck (PLAN.md sec 6 item 1). 6 GiB covers
+    # the full 2.0 s at 115 Hz with margin, <12% of the rig's ~51 GiB free
+    # (2026-08-27).
     _BUFFER_SECONDS = 2.0
     _BUFFER_BYTES   = 6 << 30
     _BUFFER_MIN     = 16
@@ -200,32 +199,20 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _do_rearm(cam, nframes: int) -> None:
-        """The actual re-arm, confirmed live against the real camera
-        (2026-09-17): a bare `stop_acquisition()`/`start_acquisition()` is NOT
-        enough. That pair pauses reading frames, but MASTER PULSE MODE=START's
-        own "already got my edge" latch survives it untouched, so the very
-        next `start_acquisition()` free-runs with no edge at all — the actual
-        rig bug (one edge worked, the second recording began on its own).
+        """The actual re-arm (rig-confirmed 2026-09-17): a bare stop/start is
+        NOT enough — MASTER PULSE MODE=START's "already got my edge" latch
+        survives it, so the next start free-runs with no edge (one edge
+        worked, the second recording began on its own). What clears the latch
+        is the property WRITE, not the acquisition state: cycle MODE away
+        from START and back, around the stop/start. TRIGGER SOURCE/MASTER
+        PULSE TRIGGER SOURCE/polarity survive the cycle untouched.
 
-        What resets the latch is writing `MASTER PULSE MODE` itself: away
-        from START to CONTINUOUS, then back to START, around the stop/start.
-        It's the property WRITE that clears it, not the acquisition state —
-        tested by cycling the mode with acquisition already stopped and
-        restarted, and confirmed gated (zero frames) until a real external
-        edge arrived. Only `MASTER PULSE MODE` needs rewriting; `TRIGGER
-        SOURCE`/`MASTER PULSE TRIGGER SOURCE`/polarity survive the cycle.
-
-        **This does not survive an attached `.dcimg`, and cannot be made to.**
-        The stop below ends the recorder's session: `status()` reports
-        `recording=False` from then on and its frame count never moves again.
-        Re-binding it is not a way out — `detach()` then `attach()` around the
-        restart is rejected by the driver with dcamcap_record 0x84001009
-        (rig, 2026-09-24), so a `DcimgRecorder` is effectively single-use per
-        capture session.
-
-        So a routine never re-arms under an attached recorder: it asks for
-        `arm_with_next_file()` and rolls to a NEW recorder, and `_swap_dcimg`
-        does this same cycle between binding it and starting capture.
+        Does not survive an attached `.dcimg`: the stop ends the recorder's
+        session (`recording=False` forever after), and detach/attach to
+        rebind is rejected with dcamcap_record 0x84001009 (rig, 2026-09-24) —
+        a `DcimgRecorder` is single-use per capture session. So a routine
+        never re-arms under one; it calls `arm_with_next_file()` and rolls to
+        a new recorder instead, and `_swap_dcimg` does this same cycle there.
         """
         cam.stop_acquisition()
         OrcaFireWorker._cycle_master_pulse(cam)
@@ -302,15 +289,11 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _hit_frame_cap(st_rec, max_frames: int) -> bool:
-        """Whether `st_rec` is a recorder that stopped because it FILLED, as
-        opposed to one that merely isn't capturing right now.
-
-        Both halves are load-bearing. DCAM clears RECORDING whenever capture
-        isn't running, and a `trigger` step stops capture (`_do_rearm`) and
-        then leaves the camera gated on its edge — so the flag alone reports
-        a full file against a recorder holding nothing. The count is what
-        separates the two, since the cap is a hard ceiling the recorder stops
-        exactly at.
+        """Whether `st_rec` FILLED, vs. merely not capturing right now. Both
+        halves needed: DCAM clears RECORDING whenever capture isn't running,
+        including a gated `trigger` step, so the flag alone would call an
+        empty gated recorder "full". The count is the hard ceiling that
+        distinguishes them.
         """
         return not st_rec.recording and st_rec.total >= max_frames
 
@@ -328,16 +311,13 @@ class OrcaFireWorker(PullWorker):
         self._dcimg = None
 
     def arm_with_next_file(self) -> None:
-        """Make the NEXT `.dcimg` swap also re-arm the trigger, in one go.
+        """Make the NEXT `.dcimg` swap also re-arm the trigger, in one go —
+        re-arming alone kills an attached recorder (`_do_rearm`), so the
+        routine rolls to a fresh file instead, gated, with the file already
+        open so the edge's first frame lands in it.
 
-        A `trigger` step must re-arm, and re-arming stops capture, which kills
-        an attached recorder for good (see `_do_rearm`). So the routine rolls
-        to a fresh file instead, and the swap cycles the master pulse between
-        binding the new recorder and starting capture: gated, with the file
-        already open, so the edge's first frame is in it.
-
-        A flag, not a second request: two separate ones would let the capture
-        thread run the plain re-arm in between and kill the new recorder.
+        A flag, not a second request: two separate calls would let the
+        capture loop run the plain re-arm in between and kill the new file.
         """
         with self._exp_lock:
             self._rearm_with_file = True
@@ -351,13 +331,26 @@ class OrcaFireWorker(PullWorker):
         restart, so capture comes back gated on the next external edge."""
         from .dcimg import DcimgRecorder
 
-        cam.stop_acquisition()
-        self._close_dcimg()
-        try:
-            if path is not None:
+        # Camera-independent work first, while capture still runs: the disk
+        # check and `dcamrec_openW` need no handle, so they stay out of the
+        # ~0.9 s the camera is stopped. A failure is held and raised below,
+        # after the old recorder is closed and capture restarted.
+        t0 = time.perf_counter()
+        rec, err, name = None, None, ""
+        if path is not None:
+            try:
                 w, h = self._frame_shape(cam)
                 rec = DcimgRecorder.for_frames(path, w * h * 2)   # 16-bit
                 rec.open()
+            except Exception as e:                   # noqa: BLE001
+                rec, err = None, e
+        t1 = time.perf_counter()
+        cam.stop_acquisition()
+        self._close_dcimg()
+        try:
+            if err is not None:
+                raise err
+            if rec is not None:
                 rec.attach(cam.handle)
                 self._dcimg = rec
                 self._dcimg_total = self._dcimg_missing = 0
@@ -365,8 +358,7 @@ class OrcaFireWorker(PullWorker):
                 # Stamped after attach, before capture restarts: the first
                 # frame cannot precede this.
                 self._dcimg_t0, self._dcimg_t1 = time.perf_counter(), None
-                print(f"[voltage_cam] recording to {rec.path.name} "
-                      f"(cap {rec.max_frames:,} frames)")
+                name = rec.path.name
         finally:
             # Capture restarts either way: a camera left stopped is a frozen
             # preview and no error anywhere the operator is looking.
@@ -375,6 +367,10 @@ class OrcaFireWorker(PullWorker):
                 cam.start_acquisition(nframes=rearm_nframes)
             else:
                 cam.start_acquisition()
+        # `stopped` is the gap the routine's clocks must hold through.
+        t2 = time.perf_counter()
+        print(f"[voltage_cam] dcimg -> {name or 'closed'}: prep {t1 - t0:.2f} s, "
+              f"camera stopped {t2 - t1:.2f} s")
 
     @staticmethod
     def _frame_shape(cam) -> tuple[int, int]:
@@ -382,18 +378,15 @@ class OrcaFireWorker(PullWorker):
         return ((hend - hstart) // hbin, (vend - vstart) // vbin)
 
     def rearm_trigger(self) -> None:
-        """Queue a re-arm, so the NEXT external edge is detectable again — in
-        MASTER PULSE/START mode the first edge starts the stream and further
-        edges do nothing on their own, so a routine recording once per edge
-        has to re-arm between recordings. `_do_rearm` is the actual sequence
-        and the reasoning behind it; this just queues that call.
+        """Queue a re-arm (see `_do_rearm`) so the NEXT edge is detectable —
+        MASTER PULSE/START only reacts to the first edge, so a routine
+        recording once per edge must re-arm between recordings.
 
-        Queued, not done here: this is called from the Qt thread, and the DCAM
-        calls belong to the capture thread that owns the handle. So the caller
-        can't treat it as complete on return — the loop acts on it when its
-        own frame wait next expires, and residual frames keep arriving for a
-        while after that, which is what `routines/engine.py`'s
-        `TRIGGER_SETTLE_S` accounts for.
+        Queued, not done here: called from the Qt thread, but the DCAM calls
+        belong to the capture thread that owns the handle. So it isn't
+        complete on return — the loop acts on it at its next frame wait, and
+        residual frames keep arriving after that, which is what
+        `routines/engine.py`'s `TRIGGER_SETTLE_S` accounts for.
         """
         with self._exp_lock:
             self._pending_rearm = True
@@ -479,11 +472,10 @@ class OrcaFireWorker(PullWorker):
         return hz
 
     def _buffer_frames(self, cfg, hz: float) -> int:
-        """DCAM ring depth: _BUFFER_SECONDS of frames, capped by memory.
-
-        Prints which bound won. At full frame the byte cap wins hard — 38
-        frames, 0.33 s, not 2 s — and that shortfall is the difference between
-        absorbing a GC pause and dropping through it.
+        """DCAM ring depth: `_BUFFER_SECONDS` of frames, capped by memory —
+        prints which bound won. At full frame the byte cap wins hard (38
+        frames, 0.33 s, not 2 s), the difference between absorbing a GC pause
+        and dropping through it.
         """
         by_time  = int(max(hz, 1.0) * self._BUFFER_SECONDS)
         by_bytes = self._BUFFER_BYTES // cfg.frame_bytes
@@ -570,10 +562,10 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _skip_report(st) -> str:
-        """A camera-side skip is NOT the writer, and the old message said it
-        was. The sink only enqueues (`Recorder.put` → ring, no disk I/O), so a
-        slow writer sheds in the ring and is counted there; a skip here is this
-        loop not draining the driver buffer.
+        """A camera-side skip is NOT the writer — the sink only enqueues
+        (`Recorder.put` → ring, no disk I/O); a slow writer sheds in the ring
+        and is counted there. A skip here is this loop not draining the
+        driver buffer.
         """
         return (f"[voltage_cam] DROPPED {st.skipped} frames (driver buffer "
                 f"{st.unread}/{st.buffer_size} unread) — the read loop is not "
@@ -583,10 +575,8 @@ class OrcaFireWorker(PullWorker):
 
     def _warn_data_rate(self, cfg, hz: float) -> None:
         """Say before the run, not after, that this rate sheds frames however
-        the buffers are tuned. Preview is unaffected.
-
-        Not the disk: D: writes 2700 MB/s, the writer 2464 (2026-08-25). The
-        wall is `WRITER_MBPS`, and it has moved once.
+        the buffers are tuned. Preview is unaffected. Not the disk (D: writes
+        2700 MB/s, the writer 2464, 2026-08-25) — the wall is `WRITER_MBPS`.
         """
         mbps = cfg.frame_bytes * hz / (1 << 20)
         print(f"[voltage_cam] data rate: {mbps:.0f} MB/s "
@@ -705,8 +695,13 @@ class OrcaFireWorker(PullWorker):
                         rec_path = self._rec_want
                         self._rec_change = False
                         # Consumed with the swap it belongs to, never before.
-                        rearm_file = rec_change and self._rearm_with_file
-                        if rec_change:
+                        # A roll is close-then-open (two set_record_file
+                        # calls); if this pass lands between them the swap is
+                        # path=None, and eating the flag there leaves the real
+                        # one ungated — the camera then free-runs.
+                        rearm_file = (rec_change and rec_path is not None
+                                      and self._rearm_with_file)
+                        if rearm_file:
                             self._rearm_with_file = False
                         # Hand the "not ready" baton over INSIDE the lock.
                         # Clearing _rec_change first and only then swapping
@@ -722,9 +717,7 @@ class OrcaFireWorker(PullWorker):
                             if rearm_file and self._dcimg is not None:
                                 self._skipped = 0
                                 n_acquired = 0
-                                print(f"[voltage_cam] re-armed with a new "
-                                      f"file: {self._trigger_readback(cam)}"
-                                      f"{self._dcimg_readback()}")
+                                print("[voltage_cam] re-armed with the new file")
                         except Exception as e:      # noqa: BLE001
                             # Report and carry on, like the re-arm below: the
                             # capture thread dying takes the session with it,
@@ -747,9 +740,7 @@ class OrcaFireWorker(PullWorker):
                             # a pre-restart total) and a phantom drop.
                             self._skipped = 0
                             n_acquired = 0
-                            print(f"[voltage_cam] re-armed: "
-                                  f"{self._trigger_readback(cam)}"
-                                  f"{self._dcimg_readback()}")
+                            print("[voltage_cam] re-armed")
                         except Exception as e:      # noqa: BLE001
                             # Report and carry on: the routine's own trigger
                             # timeout is what turns "never re-armed" into a
@@ -799,17 +790,13 @@ class OrcaFireWorker(PullWorker):
                             # for exactly as long as it took someone to ask.
                             # An IMMEDIATE failure is still a real error, in any
                             # mode, so keep the exception for that.
-                            if mode == "master_pulse" and full_timeout:
-                                msg = (f"[voltage_cam] waiting for an external "
-                                       f"trigger — no frame for "
-                                       f"{now - wait_seq_t0:.1f} s (normal "
-                                       f"while the line is idle)")
-                            else:
-                                msg = (f"[voltage_cam] no frame "
-                                       f"({wait_fails} consecutive, "
-                                       f"{waited * 1e3:.0f} ms): "
-                                       f"{type(e).__name__}: {e}")
-                            print(msg)
+                            # That case is silent: the routine banner already
+                            # says WAITING FOR TRIGGER.
+                            if not (mode == "master_pulse" and full_timeout):
+                                print(f"[voltage_cam] no frame "
+                                      f"({wait_fails} consecutive, "
+                                      f"{waited * 1e3:.0f} ms): "
+                                      f"{type(e).__name__}: {e}")
                         continue
 
                     # Snapshot once: the sink decides how much we read, and it
@@ -853,20 +840,16 @@ class OrcaFireWorker(PullWorker):
                             st_rec = self._dcimg.status()
                             self._dcimg_total = st_rec.total
                             self._dcimg_missing = st_rec.missing
-                            # The frame cap is a HARD ceiling and hitting it is
-                            # SILENT: the recorder just stops, `missing` stays
-                            # 0, and every later frame is discarded with no
-                            # error anywhere (measured 2026-09-23). A cleared
-                            # RECORDING flag is the only evidence, so say it
-                            # once and loudly rather than file a short
-                            # recording that looks complete.
-                            #
-                            # `_hit_frame_cap` is why this tests the count and
-                            # not the flag alone: testing the flag alone
-                            # reported a full 156,250-frame file against a
-                            # recorder holding 0 frames, and aborted the
-                            # routine on the first loop pass of every trigger
-                            # step (rig, 2026-09-24).
+                            # Hitting the frame cap is SILENT: the recorder
+                            # stops, `missing` stays 0, every later frame is
+                            # discarded with no error (measured 2026-09-23).
+                            # A cleared RECORDING flag is the only evidence —
+                            # say it once and loudly. `_hit_frame_cap` tests
+                            # the count too, not the flag alone: the flag
+                            # alone once reported a full 156,250-frame file
+                            # against a 0-frame recorder and aborted the
+                            # routine on the first pass of every trigger step
+                            # (rig, 2026-09-24).
                             if (not self._dcimg_full and self._hit_frame_cap(
                                     st_rec, self._dcimg.max_frames)):
                                 self._dcimg_full = True

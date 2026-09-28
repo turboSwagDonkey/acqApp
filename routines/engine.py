@@ -49,27 +49,21 @@ MOVE_TIMEOUT_S = 30.0
 TRIGGER_TIMEOUT_S = 600.0
 
 # Minimum dead time at the start of a `trigger` step. `arm_trigger` is
-# asynchronous — the camera's capture loop acts on the request only when its
-# own frame wait next expires — so frames already in flight keep being written
-# for a moment. Must exceed that loop's frame-wait timeout
-# (`devices/voltage_cam/acquisition.py`'s `_WAIT_TIMEOUT`, 0.5 s).
-#
-# This is a floor, NOT the whole guard: a fixed window was tried first and
-# isn't sufficient, because how long the re-arm actually takes isn't knowable
-# here (buffer reallocation alone can outlast any guess). Rig symptom it
-# produced: a recording ended, the routine paused for exactly this long, then
-# started the next one with no edge — the first still-in-flight frame after
-# the window read as a trigger. `TRIGGER_SETTLE_S` is what actually decides.
+# asynchronous — acted on only when the capture loop's own frame wait next
+# expires — so frames already in flight keep arriving for a moment. Must
+# exceed that loop's frame-wait timeout (acquisition.py's `_WAIT_TIMEOUT`,
+# 0.5 s). A floor, not the whole guard: true re-arm latency isn't knowable
+# here (buffer reallocation alone can outlast any guess), and a fixed window
+# alone once let a still-in-flight frame read as the trigger of the NEXT
+# recording. `TRIGGER_SETTLE_S` is what actually decides.
 TRIGGER_DRAIN_S = 1.5
 
-# How long the frame count must hold COMPLETELY STILL before the engine will
-# believe the camera is really gated and start watching for an edge. Frames
-# arriving before that are left over from before the re-arm took effect: they
-# raise the baseline and restart this window.
-#
-# This is what makes the wait self-verifying rather than timed: if the camera
-# never stops producing frames, the count never settles, and the step faults
-# saying so instead of silently treating the next frame as a trigger.
+# How long the frame count must hold COMPLETELY STILL before the engine
+# believes the camera is really gated and starts watching for an edge —
+# frames arriving before that are leftovers from before re-arm took effect,
+# and restart the window. Makes the wait self-verifying rather than timed: a
+# camera that never stops producing frames never settles, and the step faults
+# saying so instead of treating the next frame as a trigger.
 TRIGGER_SETTLE_S = 0.75
 
 
@@ -406,22 +400,19 @@ class RoutineEngine:
             self._enter_step()
 
     def _tick_trigger(self) -> None:
-        """Inside a `trigger` step, in two stages: first wait for the camera to
-        actually go quiet, and only then treat a new frame as its edge.
+        """Inside a `trigger` step, in two stages: wait for the camera to
+        actually go quiet, and only then treat a new frame as its edge. The
+        second stage alone isn't enough — a rig run once started its next
+        recording with no trigger at all, because in-flight frames after
+        `arm_trigger` (asynchronous, latency unknowable here) can outlast any
+        fixed window and then read as the edge.
 
-        The second stage alone isn't enough, and assuming it was is what let a
-        rig run start its next recording with no trigger at all. `arm_trigger`
-        is asynchronous and its true latency is unknowable here, so frames keep
-        arriving for a while after the step begins; any fixed window can expire
-        while they're still coming, and the next one then reads as an edge.
-
-        So the baseline is only frozen once the count has held still for
-        `TRIGGER_SETTLE_S` — proof the camera really stopped, rather than a
-        guess that it must have by now. A count that never settles is a camera
-        that isn't re-arming, and faults saying exactly that instead of
-        fabricating a trigger. `TRIGGER_DRAIN_S` survives only as a floor, so
-        a camera that happens to be momentarily idle can't look settled before
-        the re-arm has even been picked up.
+        So the baseline freezes only once the count has held still for
+        `TRIGGER_SETTLE_S` — proof it really stopped, not a guess. A count
+        that never settles faults saying so rather than fabricating a
+        trigger. `TRIGGER_DRAIN_S` is only a floor beneath that, so a
+        momentarily-idle camera can't look settled before re-arm is even
+        picked up.
         """
         n = self._frames()
         if n is None:
@@ -487,24 +478,20 @@ class RoutineEngine:
         """Open/close the recording bracket for this position, then act on
         the step itself: move, start/stop displaying, arm a wait, or puff.
 
-        Recording opens BEFORE the step's own action is attempted — on
-        purpose: the underlying camera records continuously regardless of
-        whether any one step's setup succeeds, so a step that faults
-        immediately inside a Recording bracket still gets a `RecordingRun`
-        (opened, then closed `interrupted` with ~0 duration) rather than no
-        record at all. A step OUTSIDE any bracket that faults the same way
-        opens nothing, same as always.
+        Recording opens BEFORE the step's own action, on purpose: the camera
+        records continuously regardless of whether the step's setup
+        succeeds, so a step that faults immediately inside a bracket still
+        gets a `RecordingRun` (opened, then closed `interrupted`, ~0
+        duration) rather than no record at all. A step outside any bracket
+        opens nothing either way.
         """
         if not self._update_recording():
-            # A recording couldn't open, and `_update_recording` already
-            # halted us — the step's own action must not run on top of that
-            # pause, or the stage/DMD would move after the operator was just
-            # told to decide. NOT a `self._phase == Phase.PAUSED` check: this
-            # is also how `resume()` reaches here, with the phase already
-            # PAUSED from the halt it's resuming FROM — that check couldn't
-            # tell "just failed" from "already was", and would refuse to ever
-            # leave PAUSED again once the routine had paused once (any pause,
-            # not just this one).
+            # Already halted by `_update_recording` — the step's own action
+            # must not run on top of that pause. NOT a `phase == PAUSED`
+            # check: `resume()` reaches here with the phase already PAUSED
+            # from the halt it's resuming FROM, so that check couldn't tell
+            # "just failed" from "already was" and would refuse to ever leave
+            # PAUSED again.
             return
         step = self._r.steps[self._i]
         self._arrived_at = None
@@ -631,15 +618,12 @@ class RoutineEngine:
     def _update_recording(self) -> bool:
         """Open/close a `RecordingRun` as `self._i` crosses a `Recording`'s
         edge. Keyed by `(cycle, serial)`, not the bare serial from
-        `recording_run_ids` — a serial alone repeats every cycle (it only
-        accounts for repeat GROUPS inside one pass of `play_order`), so
-        without the cycle a Recording spanning steps that also span a cycle
-        boundary would merge cycle 1 and cycle 2 into one run.
+        `recording_run_ids` — a serial alone only accounts for repeat groups
+        within one pass of `play_order`, so without the cycle a bracket that
+        also spans a cycle boundary would merge cycle 1 and 2 into one run.
 
-        Returns False only if opening a NEW recording failed — `_open_recording`
-        already halted the engine in that case, and `_enter_step` must not run
-        the step's own action on top of it. True otherwise (nothing to open,
-        or the open succeeded).
+        Returns False only if opening a NEW recording failed (already halted
+        by `_open_recording`); True otherwise.
         """
         serial = self._rec_ids[self._pos]
         key = None if serial is None else (self._cycle, serial)

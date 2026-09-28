@@ -1,42 +1,41 @@
 """Experiment routines — the protocol, the run controls, and one Start button.
 
-The panel edits a `Routine` and emits it; decides nothing. Four rules it enforces
+The panel edits a `Routine` and emits it; decides nothing. Four rules it
+enforces:
 
-- **Start starts everything it needs.** Opens recording itself (through
-  `ModuleHost.set_recording`, like DMD calibration opens live view
-  via `set_live`) rather than refusing until operator has found
-  Record button in another part of the window. 
-- **Start is refused with the problems listed**, not greyed out with no reason.
-  `validate()` returns sentences, and an operator who cannot start needs to
-  read which step is wrong.
-- **Arming is not persisted**, as in `closed_loop/`: the step list is saved,
-  the fact that a routine is *running* never is. Restored "running" would
-  drive the stage at launch.
-- **Templates are files, not another key in the config.** `routines/templates.py`
-  owns the folder; this owns the four buttons over it. The routine being edited
-  persists — loading a template overwrites it, saving one copies it out.
+- **Start starts everything it needs**: opens the recording itself
+  (`ModuleHost.set_recording`, like DMD calibration's `set_live`) rather than
+  refusing until the operator has found Record on another tab.
+- **Start is refused with the problems listed**, not greyed out with no
+  reason — `validate()` returns sentences, so the operator can read which
+  step is wrong.
+- **Arming is not persisted** (as in `closed_loop/`): the step list is saved,
+  whether a routine is *running* never is — restoring "running" would drive
+  the stage at launch.
+- **Templates are files, not another config key**: `routines/templates.py`
+  owns the folder, this owns the four buttons over it. The routine being
+  edited persists across them — loading a template overwrites it, saving one
+  copies it out.
 
 Two readouts, because "is it working" and "how long is this" are different
-questions: **progress bar** is whole routine, current step included,
-and **summary line** is what protocol costs before it starts
+questions: the **progress bar** is the whole routine, current step included;
+the **summary line** is what the protocol costs before it starts
 (`routines/estimate.py`). Both are floors — nothing times a stage move.
 
-The step *table* is `routines/table.py` — a step is one atomic action (Move /
-Display / Wait / Puff) now, and every cell edits through a widget that can
-only produce a legal value, which is why nothing parses "yes". Per-step
-actions (Duplicate, Remove, Pattern/ROI/Clear pattern, Set position, Fill
-from FOV) live on table's right-click menu, gated by row's kind,
-rather than as buttons, panel keeps only +Step (with kind picker) 
-and reordering visible, since those are used on every step.
+The step *table* is `routines/table.py`: a step is one atomic action
+(Move/Display/Wait/Puff), and every cell edits through a widget that can only
+produce a legal value. Per-step actions (Duplicate, Remove, Pattern/ROI/Clear,
+Set position, Fill from FOV) live on the table's right-click menu, gated by
+the row's kind; the panel keeps only +Step and reordering visible, since
+those are used on every step.
 
 A **repeat group** (`routines/settings.py`'s `Group`) comes from selecting a
-range in table, not typing row numbers — `_on_selection_changed` mirrors
-the table's selection into the "Repeat groups" control, and nests range
-of steps inside `cycles`. A **recording** is a `record` step: it runs
-alone, for its length, and holds a file open for that time. A record step
-inside a repeated Group gets a fresh
-recording file each time it repeats — `routines/engine.py` opens a new one
-per `(cycle, serial)` automatically, nothing here has to ask again.
+range in the table, not typing row numbers — `_on_selection_changed` mirrors
+the table's selection into "Repeat groups", nesting that range inside
+`cycles`. A **recording** is a `record` step: runs alone, for its length,
+holding a file open that time. One inside a repeated Group gets a fresh file
+each repeat automatically — `routines/engine.py` opens a new one per
+`(cycle, serial)`, nothing here has to ask again.
 """
 from __future__ import annotations
 
@@ -65,6 +64,7 @@ class SettingsPanel(QWidget):
 
     settings_changed = pyqtSignal(object)      # emits Routine (persisted)
     status_message   = pyqtSignal(str)         # one line for the status bar
+    state_shown      = pyqtSignal(str, str)    # (phase, text), on change
     start_requested  = pyqtSignal()
     pause_requested  = pyqtSignal()
     resume_requested = pyqtSignal()
@@ -662,6 +662,7 @@ class SettingsPanel(QWidget):
         if text != self._painted_text:
             self._lbl_state.setText(text or "—")
             self._painted_text = text
+            self.state_shown.emit(phase, text)
 
     def show_problems(self, problems: list[str]) -> None:
         """Why Start did nothing — every reason, not the first one."""

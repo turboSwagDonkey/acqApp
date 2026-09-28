@@ -254,6 +254,8 @@ routines/               experiment routines: atomic steps (move/display/wait/
                         the one step the camera captures for (click its row
                         number to toggle)
   panel.py              the protocol, the run controls, and one Start button
+  banner.py             large colour-coded run-state popup, driven by the
+                        panel's state_shown signal; click to dismiss
   table.py              the step list: every cell edits through a widget that
                         can only produce a legal value; Kind picks what a row
                         does, unused columns render "—"
