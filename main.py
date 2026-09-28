@@ -260,6 +260,9 @@ class MainWindow(QMainWindow):
         # by _start_recording() below; None means "use the Save tab's own
         # free-text template", which is what a manual Record press always does.
         self._routine_save_ctx: tuple[str, int, tuple | None] | None = None
+        # See ModuleHost.routine_arming_trigger — guards `_start_session()`'s
+        # own reset-camera-to-manual against undoing a routine's own arm.
+        self._routine_arming_trigger = False
         self._save_panel: SavePanel | None = None
         self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
         # Modules whose panel is a window of its own, by key. Hidden until the
@@ -1201,6 +1204,20 @@ class MainWindow(QMainWindow):
             self._stop_session()
 
     def _start_session(self) -> None:
+        # A routine leaves the voltage camera in External edge mode for its
+        # own duration (`routine_arming_trigger`); an ordinary Live view or
+        # Record press means the operator wants frames NOW, not a camera
+        # still gated on an edge from whatever the last routine left behind.
+        # Reset the PANEL setting directly, not through `set_camera_trigger`
+        # (which restarts live view to apply a change) — nothing is running
+        # yet at this point in `_start_session()`, so there's no live view to
+        # restart, and calling into that machinery here would re-enter this
+        # same method through `set_live`'s toggle.
+        if not self._routine_arming_trigger:
+            vc = self._module("voltage_cam")
+            if vc is not None and hasattr(vc, "set_trigger_mode_manual"):
+                vc.set_trigger_mode_manual()
+
         # Build the workers but don't start them: the shared clock must reach
         # t=0 BEFORE any device pushes a timestamped sample.
         for m in self._modules:
@@ -1592,6 +1609,10 @@ class MainWindow(QMainWindow):
         free-text template."""
         self._routine_save_ctx = None if fov is None or trial is None \
             else (fov, trial, coords)
+
+    def routine_arming_trigger(self, on: bool) -> None:
+        """See `ModuleHost.routine_arming_trigger`."""
+        self._routine_arming_trigger = bool(on)
 
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 

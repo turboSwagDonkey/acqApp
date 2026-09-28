@@ -54,8 +54,7 @@ from acqApp.widgets import spin
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
-from acqApp.routines.settings import (KINDS, SAVE_MODES, START_TRIGGERS,
-                                      Group, Routine, Step)
+from acqApp.routines.settings import KINDS, SAVE_MODES, Group, Routine, Step
 from acqApp.routines.table import KIND_LABELS, NO_CHANGE, StepTable
 
 
@@ -137,18 +136,6 @@ class SettingsPanel(QWidget):
         self._cmb_save.setCurrentIndex(max(0, idx))
         form.addRow("Save as:", self._cmb_save)
 
-        self._cmb_trigger = QComboBox()
-        for key, label in START_TRIGGERS.items():
-            self._cmb_trigger.addItem(label, key)
-        idx = self._cmb_trigger.findData(self._r.start_trigger)
-        self._cmb_trigger.setCurrentIndex(max(0, idx))
-        self._cmb_trigger.setToolTip(
-            "Manual: Start begins the routine right away.\nTTL: Start puts "
-            "the camera in External edge mode itself, opens the recording "
-            "and arms the routine, then waits for a frame the camera did "
-            "not have yet — which only happens on a real pulse.")
-        form.addRow("Start trigger:", self._cmb_trigger)
-
         self._chk_wait_cam = QCheckBox("Hold at a file roll until frames resume")
         self._chk_wait_cam.setChecked(self._r.wait_for_camera)
         self._chk_wait_cam.setToolTip(
@@ -160,7 +147,7 @@ class SettingsPanel(QWidget):
             "down through the gap and the\ntrial comes up short.")
         form.addRow("", self._chk_wait_cam)
         # Long item text must not set the panel's width.
-        for cmb in (self._cmb_save, self._cmb_trigger, self._cmb_tpl):
+        for cmb in (self._cmb_save, self._cmb_tpl):
             cmb.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             cmb.setMinimumContentsLength(16)
@@ -190,10 +177,17 @@ class SettingsPanel(QWidget):
         for kind in KINDS:
             self._cmb_new_kind.addItem(KIND_LABELS[kind], kind)
         self._cmb_new_kind.setCurrentIndex(KINDS.index("wait"))
-        self._cmb_new_kind.setToolTip("What kind of step + Step appends.")
+        self._cmb_new_kind.setToolTip(
+            "What kind of step + Step appends. Follows the selected row, so "
+            "adding several of the same kind in a row doesn't need "
+            "reselecting it each time — still yours to override.")
         btns.addWidget(self._cmb_new_kind)
         self._add_buttons(btns, (
             ("+ Step", self._add_step, "Append a step of the chosen kind."),
+            ("+ Trigger→Record", self._add_trigger_record_pair,
+             "Append a Trigger step followed by a Record step — the "
+             "\"one recording per edge\" pattern, built in the order it has "
+             "to run in rather than by hand."),
             ("↑", self._move_up,
              "Move the selected step earlier. Dragging the row and "
              "Ctrl+Up do the same."),
@@ -336,7 +330,6 @@ class SettingsPanel(QWidget):
         self._txt_name.editingFinished.connect(self._emit)
         self._spn_cycles.valueChanged.connect(self._emit)
         self._cmb_save.currentIndexChanged.connect(self._emit)
-        self._cmb_trigger.currentIndexChanged.connect(self._emit)
         self._chk_wait_cam.toggled.connect(self._emit)
 
     # ── step list ────────────────────────────────────────────────────────
@@ -365,6 +358,20 @@ class SettingsPanel(QWidget):
         self._btn_g_add.setEnabled(span is not None)
         self._lbl_g_selection.setText(
             selected or "Select 2+ steps in the table to group them")
+        self._sync_new_kind_to_selection()
+
+    def _sync_new_kind_to_selection(self) -> None:
+        """The "+ Step" kind combo follows the selected row — building a run
+        of same-kind steps (several Waits, several Moves) is the common case,
+        and re-picking the kind for every one of them is the friction this
+        removes. Still just a starting point: the operator can change it
+        before pressing + Step, same as always."""
+        row = self._tbl.selected_row()
+        if row < 0 or row >= len(self._r.steps):
+            return
+        i = self._cmb_new_kind.findData(self._r.steps[row].kind)
+        if i >= 0:
+            self._cmb_new_kind.setCurrentIndex(i)
 
     def _group_selected(self) -> None:
         span = self._tbl.selected_range()
@@ -406,6 +413,24 @@ class SettingsPanel(QWidget):
     def _add_step(self) -> None:
         kind = self._cmb_new_kind.currentData() or "wait"
         self._r.steps.append(Step(kind=kind))
+        self._reload_table()
+        self._tbl.select_row(len(self._r.steps) - 1)
+        self._emit()
+
+    def _add_trigger_record_pair(self) -> None:
+        """Append a `trigger` step immediately followed by a `record` step —
+        the ordering `validate()` requires for "one recording per edge"
+        (module docstring), built once instead of hand-assembled from two
+        separate + Step presses that are easy to get backwards or to
+        interleave with something else in between.
+
+        The Record step defaults to 2 s, not the bare `Step` default of 100
+        frames (sized for a Wait, not a typical trigger-gated recording) —
+        picked to be a plausible starting length, not left at a value that
+        reads as a mistake.
+        """
+        self._r.steps.append(Step(kind="trigger"))
+        self._r.steps.append(Step(kind="record", length=2.0, unit="seconds"))
         self._reload_table()
         self._tbl.select_row(len(self._r.steps) - 1)
         self._emit()
@@ -741,7 +766,6 @@ class SettingsPanel(QWidget):
         try:
             self._r.name, self._r.cycles = r.name, max(1, r.cycles)
             self._r.save_mode = r.save_mode
-            self._r.start_trigger = r.start_trigger
             self._r.wait_for_camera = r.wait_for_camera
             self._r.steps[:] = r.steps
             self._r.groups[:] = r.groups
@@ -749,8 +773,6 @@ class SettingsPanel(QWidget):
             self._spn_cycles.setValue(self._r.cycles)
             self._cmb_save.setCurrentIndex(
                 max(0, self._cmb_save.findData(self._r.save_mode)))
-            self._cmb_trigger.setCurrentIndex(
-                max(0, self._cmb_trigger.findData(self._r.start_trigger)))
             self._chk_wait_cam.setChecked(self._r.wait_for_camera)
         finally:
             self._loading = False
@@ -770,7 +792,6 @@ class SettingsPanel(QWidget):
         self._r.name = self._txt_name.text().strip() or "routine"
         self._r.cycles = self._spn_cycles.value()
         self._r.save_mode = self._cmb_save.currentData() or "single"
-        self._r.start_trigger = self._cmb_trigger.currentData() or "manual"
         self._r.wait_for_camera = self._chk_wait_cam.isChecked()
         return self._r
 

@@ -213,11 +213,10 @@ def check_validation(r: Report, tmp: Path) -> None:
             "control: a valid routine (one of each kind) on a full rig is "
             "accepted")
 
-    good_ttl = Routine(steps=[Step(kind="wait", length=1, unit="seconds")],
-                       start_trigger="ttl")
-    r.check(validate(good_ttl, TTL_RIG) == [],
-            "control: a TTL start trigger is accepted once a camera is "
-            "loaded to receive it")
+    r.check(validate(Routine(steps=[Step(kind="wait", length=1,
+                                        unit="seconds")]), TTL_RIG) == [],
+            "control: every routine arms on Start now, and is accepted once "
+            "a camera is loaded to receive that arm")
 
     cases = [
         ("a move step outside the soft limits",
@@ -254,9 +253,6 @@ def check_validation(r: Report, tmp: Path) -> None:
         ("an empty routine", Routine(steps=[]), FULL_RIG, "no steps"),
         ("an unrecognised kind",
          Routine(steps=[Step(kind="teleport")]), FULL_RIG, "unknown kind"),
-        ("a TTL start trigger with no camera loaded",
-         Routine(steps=[Step(kind="wait", length=1, unit="seconds")],
-                start_trigger="ttl"), RigLimits(), "no camera"),
         # A trigger step is only observable as frames appearing, so with no
         # camera nothing could ever end it.
         ("a trigger step with no camera loaded",
@@ -292,7 +288,6 @@ def check_validation(r: Report, tmp: Path) -> None:
 
     # Persistence round trip: the panel saves this into acqapp_local.json.
     src = Routine(name="grid", cycles=3, save_mode="per_repeat",
-                  start_trigger="ttl",
                   steps=[Step(kind="move", label="a", x_um=1.0, settle_s=0.1),
                          Step(kind="record", label="b", length=5, unit="frames"),
                          Step(kind="display", label="c", pattern="p.png"),
@@ -300,9 +295,10 @@ def check_validation(r: Report, tmp: Path) -> None:
                   groups=[Group(start=1, end=2, repeats=2)])
     back = Routine.from_dict(src.to_dict())
     r.check(back == src, "a routine survives the JSON round trip unchanged")
-    r.check(Routine.from_dict({"start_trigger": "nonsense"}).start_trigger
-            == "manual",
-            "an unrecognised saved start trigger falls back to manual")
+    r.check(not hasattr(Routine.from_dict({"start_trigger": "ttl"}),
+                        "start_trigger"),
+            "an old file's start_trigger key is silently unread — every "
+            "routine arms on Start now, there's no longer a field for it")
     r.check(Routine.from_dict({"save_mode": "per_step"}).save_mode
             == "per_repeat",
             "a saved routine from before the per-group/per-repeat split "
@@ -1224,20 +1220,19 @@ def check_arm_camera_trigger(r: Report) -> None:
             f"({host.calls})")
     r.check(adapter.panel.problems == [], "…and shows no problem")
 
-    # Failure: no camera loaded at all (host returns None for "not loaded"
-    # the same way `set_camera_preset` already does).
+    # NOT a failure: no camera loaded at all (host returns None the same way
+    # `set_camera_preset` already does) — a stage/puffer-only routine has
+    # nothing to arm, and every routine now arms unconditionally, so this
+    # must not refuse a routine that was never about the camera.
     host2 = FakeHost(None)
     adapter2 = RoutinesModule(host2)
     adapter2.panel = FakePanel()
-    r.check(adapter2._arm_camera_trigger() is False,
-            "arming fails when the host can't find the module")
-    r.check(adapter2.panel.problems and "no camera loaded" in
-           adapter2.panel.problems[0][0],
-            f"…and shows a problem naming the reason "
-            f"({adapter2.panel.problems})")
-    r.check(host2.statuses and "refused" in host2.statuses[0],
-            f"…and the status line says the routine was refused "
-            f"({host2.statuses})")
+    r.check(adapter2._arm_camera_trigger() is True,
+            "arming is a no-op, not a refusal, when there's no camera at all")
+    r.check(adapter2.panel.problems == [],
+            f"…and shows no problem ({adapter2.panel.problems})")
+    r.check(host2.statuses == [],
+            f"…and nothing is logged as refused ({host2.statuses})")
 
     # Failure: a recording is already running and the camera isn't already
     # External edge — VoltageCamModule.set_external_trigger's own contract
@@ -2298,18 +2293,10 @@ def check_panel_tracker(r: Report, app) -> None:
             "the panel keeps the rate, so the run readout does not re-ask the "
             "camera 30 times a second")
 
-    # ── the start trigger ──
-    r.check(panel.settings.start_trigger == "manual",
-            f"a routine defaults to a manual start trigger "
-            f"({panel.settings.start_trigger!r})")
-    idx = panel._cmb_trigger.findData("ttl")
-    panel._cmb_trigger.setCurrentIndex(idx)
-    r.check(panel.settings.start_trigger == "ttl",
-            "picking TTL in the combo sets it on the routine")
-    reloaded = SettingsPanel(Routine.from_dict(panel.settings.to_dict()))
-    r.check(reloaded._cmb_trigger.currentData() == "ttl",
-            "…and it survives a save/reload round trip through the panel")
-    panel._cmb_trigger.setCurrentIndex(panel._cmb_trigger.findData("manual"))
+    # ── no more start-trigger choice ──
+    r.check(not hasattr(panel, "_cmb_trigger") and not hasattr(routine,
+                                                               "start_trigger"),
+            "the manual/TTL choice is gone — every routine arms on Start")
 
     # ── the +Step kind picker ──
     r.check(panel._cmb_new_kind.currentData() == "wait",
@@ -2456,16 +2443,19 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(not win._btn_rec.isChecked(),
             "ending the routine stops the recording it started")
 
-    # A recording the OPERATOR started is stopped too: capture always stops.
+    # A manual Record press is always Internal-mode now (`_start_session()`
+    # resets it — the operator, 2026-09-28), and a routine always wants
+    # External edge (`_arm_camera_trigger`, same date) but won't switch mode
+    # out from under an already-running recording — so a manual recording
+    # can no longer be adopted; the routine refuses rather than run in the
+    # wrong trigger mode.
     win._btn_rec.setChecked(True)
     adapter._start()
-    r.check(adapter._engine is not None and not adapter._own_rec,
-            "a recording already running is not adopted as its own")
-    adapter._abort()
-    r.check(not win._btn_rec.isChecked(),
-            "…but ending the routine stops it anyway")
-    r.check(not win._btn_run.isChecked(),
-            "…and capture stops too, not just the file")
+    r.check(adapter._engine is None,
+            "a manual (necessarily Internal-mode) recording already running "
+            "refuses the routine rather than silently adopting the wrong mode")
+    r.check(win._btn_rec.isChecked(),
+            "…leaving the operator's own recording running, untouched")
     win._btn_rec.setChecked(False)              # clean slate for the real run
     pump(app, 0.1)
 
@@ -2485,15 +2475,14 @@ def check_app(r: Report, app, tmp) -> None:
     real_light = mod["dmd"].set_light
     mod["dmd"].set_light = lambda on: (lit.append(bool(on)), real_light(on))[1]
 
-    win._btn_rec.setChecked(True)
-    path = win._rec_path
-    if not r.check(path is not None, "recording started"):
-        return
-
+    # The routine opens its own recording (the normal path — see the block
+    # above for why it can no longer adopt a pre-existing manual one).
     adapter._start()
     if not r.check(adapter._engine is not None,
-                   "the routine starts against the operator's own recording"):
+                   "the routine starts and opens its own recording"):
         return
+    path = win._rec_path
+    r.check(path is not None, "…a session file actually exists")
     eng0 = adapter._engine       # the session stops at DONE and drops it
 
     r.check("routine" in adapter.busy_reason().lower(),
@@ -2590,7 +2579,11 @@ def check_file_rolling(r: Report, app, tmp) -> None:
     fake rig cannot exercise (adapters/routines.py's `_needs_roll`/
     `_roll_for` are only proven end-to-end here)."""
     out = tmp / "routine_roll"
-    win = make_window({"stage", "routines"})
+    # voltage_cam is loaded even though this test doesn't care about its
+    # frames: every routine now arms on the camera's own first edge
+    # (`validate()` requires `rig.has_frames` unconditionally), so a
+    # stage-only window can no longer start one at all.
+    win = make_window({"stage", "routines", "voltage_cam"})
     mod = {m.key: m for m in win._modules}
     adapter, panel = mod["routines"], mod["routines"].panel
 

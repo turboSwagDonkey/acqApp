@@ -88,6 +88,15 @@ class VoltageCamModule(ModuleAdapter):
         time the session (re)starts."""
         self.panel.set_binning(n)
 
+    def set_trigger_mode_manual(self) -> None:
+        """Force Internal (free-running) mode, panel-only — no live-view
+        restart, unlike `set_external_trigger`. `main.py`'s `_start_session()`
+        calls this directly for an ordinary Live view/Record press, before
+        anything is running yet, specifically to avoid `set_external_trigger`'s
+        own restart-through-`set_live` machinery re-entering the session
+        start it's already in the middle of."""
+        self.panel.set_trigger_mode(_INT_TRIGGER)
+
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = CamSettingsPanel(self._load_config())

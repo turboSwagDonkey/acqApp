@@ -70,8 +70,9 @@ TRIGGER_SETTLE_S = 0.75
 class Phase:
     """Where the engine is. Strings, so they go into the file and the panel."""
     IDLE    = "idle"
-    ARMED   = "armed"       # start_trigger="ttl": waiting for the camera's
-                            # first externally-triggered frame
+    ARMED   = "armed"       # start(trigger="ttl"): waiting for the camera's
+                            # first externally-triggered frame — every
+                            # routine now starts this way, see Routine's docstring
     RUNNING = "running"     # executing a step — the panel reads `step.kind`
                             # and `progress()` for what to say, not the phase
     WAITING = "waiting"     # inside a `trigger` step: the camera is re-armed

@@ -343,6 +343,15 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def routine_arming_trigger(self, on: bool) -> None:
+        """A routine brackets its own `_arm_camera_trigger()`/session-open
+        with this (True around it, False after) — so `_start_session()`'s
+        own reset of the camera to manual (for an ordinary Live view/Record
+        press, in case a PREVIOUS routine left it in External edge) doesn't
+        undo the External edge this routine just asked for, the moment the
+        session it opened actually builds."""
+        ...
+
     def rearm_camera_trigger(self, key: str) -> bool | None:
         """Re-gate module `key`'s external trigger so the NEXT edge is
         detectable. True if asked for, False if there's no running worker

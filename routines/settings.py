@@ -60,15 +60,6 @@ SAVE_MODES: dict[str, str] = {
     "per_group":  "One file per group",
 }
 
-# key -> label. `manual` is the button; `ttl` arms the routine on Start and
-# holds it there until the voltage camera reports a frame it didn't have at
-# arm time — `adapters/routines.py` puts the camera in External edge mode
-# itself before arming (ModuleHost.set_camera_trigger), so nothing here
-# reads a DAQ line: the camera already IS the TTL input.
-START_TRIGGERS: dict[str, str] = {
-    "manual": "Manual — Click Start",
-    "ttl":    "TTL — Wait for EXT Cam Frame",
-}
 
 # A settle a routine may ask for. Not a safety limit — an obviously-wrong entry
 # (3600 s between steps) is worth catching at validation.
@@ -283,13 +274,20 @@ def recording_run_ids(routine: "Routine", order: list[int]) -> list[int | None]:
 
 @dataclass
 class Routine:
-    """The whole protocol. `cycles` repeats the step list end to end."""
+    """The whole protocol. `cycles` repeats the step list end to end.
+
+    Always arms on Start and waits for the camera's own first edge before
+    step 1 begins (operator, 2026-09-28) — no per-routine manual/TTL choice
+    any more; `adapters/routines.py` puts the camera in External edge mode
+    itself before arming (`ModuleHost.set_camera_trigger`), so nothing here
+    reads a DAQ line, the camera already IS the input. A saved file's old
+    `start_trigger` key (from before this) is simply unread now.
+    """
     name:          str = "routine"
     steps:         list[Step] = field(default_factory=list)
     groups:        list[Group] = field(default_factory=list)
     cycles:        int = 1
     save_mode:     str = "single"
-    start_trigger: str = "manual"
     # Hold the routine at a file roll until the camera is capturing again,
     # then restart the step's clock. Only a .dcimg roll is slow enough to
     # matter (DCAM rebinds its recorder to a STOPPED camera, ~0.9 s); a TIFF
@@ -313,7 +311,6 @@ class Routine:
     def to_dict(self) -> dict:
         return {"name": self.name, "cycles": self.cycles,
                 "save_mode": self.save_mode,
-                "start_trigger": self.start_trigger,
                 "wait_for_camera": self.wait_for_camera,
                 "steps": [vars(s).copy() for s in self.steps],
                 "groups": [vars(g).copy() for g in self.groups]}
@@ -370,12 +367,9 @@ class Routine:
         mode = d.get("save_mode")
         if mode == "per_step":            # retired name; closest equivalent
             mode = "per_repeat"
-        trigger = d.get("start_trigger")
         return cls(name=str(d.get("name") or "routine"), steps=steps,
                    groups=groups, cycles=cycles,
                    save_mode=mode if mode in SAVE_MODES else "single",
-                   start_trigger=trigger if trigger in START_TRIGGERS
-                                 else "manual",
                    # Absent in a file written before this existed: default ON,
                    # which is a no-op for the TIFF routines those files ran.
                    wait_for_camera=bool(d.get("wait_for_camera", True)))
@@ -497,11 +491,11 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         out.append(f"cycles = {routine.cycles}; must be at least 1")
     if routine.save_mode not in SAVE_MODES:
         out.append(f"unknown save mode {routine.save_mode!r}")
-    if routine.start_trigger not in START_TRIGGERS:
-        out.append(f"unknown start trigger {routine.start_trigger!r}")
-    elif routine.start_trigger == "ttl" and not rig.has_frames:
-        out.append("start trigger is TTL, but no camera is loaded to "
-                   "receive it")
+    # Every routine arms on Start now (no manual/TTL choice), so a camera
+    # able to report frames is required unconditionally, not just for one
+    # routine's own opt-in.
+    if not rig.has_frames:
+        out.append("no camera is loaded to arm the routine's start on")
 
     for i, s in enumerate(routine.steps, start=1):
         at = f"step {i}"

@@ -272,29 +272,36 @@ class RoutinesModule(ModuleAdapter):
             return
 
 
-        # External edge mode is needed by a TTL start AND by any `trigger`
-        # step mid-routine — those wait on the same physical line, so a
-        # manual-start routine full of trigger steps needs it just as much.
-        needs_ext = (routine.start_trigger == "ttl"
-                     or any(s.kind == "trigger" for s in routine.steps))
-        if needs_ext and not self._arm_camera_trigger():
-            return
-
-        self._routine = routine
-        self._trial_count = {}
-        if self._rec is None:
-            if self._first_file_is_doomed(routine):
-                self.win.set_routine_save_context(None, None)
-            else:
-                first_index = min((r.start for r in routine.recordings),
-                                  default=0)
-                region = recording_region_at(routine, first_index) or 0
-                fov, coords = self._fov_for(routine, first_index)
-                self.win.set_routine_save_context(
-                    fov, self._trial_for(region), coords)
-            if not self._open_recording():
-                self.win.set_routine_save_context(None, None)
+        # Always External edge, whatever the steps are — a manual-start
+        # routine with no `trigger` step still shouldn't free-run on
+        # whatever mode the camera was last left in (operator, 2026-09-28):
+        # a routine is understood to own the camera's gating for its own
+        # duration, full stop, not just when it happens to need an edge.
+        # `routine_arming_trigger` tells `_start_session()` not to reset
+        # this back to manual out from under us — it exists for the
+        # OPPOSITE case, an ordinary Live view/Record press.
+        self.win.routine_arming_trigger(True)
+        try:
+            if not self._arm_camera_trigger():
                 return
+
+            self._routine = routine
+            self._trial_count = {}
+            if self._rec is None:
+                if self._first_file_is_doomed(routine):
+                    self.win.set_routine_save_context(None, None)
+                else:
+                    first_index = min((r.start for r in routine.recordings),
+                                      default=0)
+                    region = recording_region_at(routine, first_index) or 0
+                    fov, coords = self._fov_for(routine, first_index)
+                    self.win.set_routine_save_context(
+                        fov, self._trial_for(region), coords)
+                if not self._open_recording():
+                    self.win.set_routine_save_context(None, None)
+                    return
+        finally:
+            self.win.routine_arming_trigger(False)
         self._filed = 0
         self._pending_roll_run = None
         self._prepared = None
@@ -307,31 +314,31 @@ class RoutinesModule(ModuleAdapter):
         self._n_steps = len(routine.steps)
         self._group_repeat = group_repeat_at(routine, play_order(routine))
         self._engine = RoutineEngine(routine, self._hooks())
-        self._engine.start(trigger=routine.start_trigger)
+        # Always TTL: no per-routine manual/TTL choice any more (operator,
+        # 2026-09-28) — `_arm_camera_trigger()` above already put the camera
+        # in External edge mode, so step 1 waits for its first edge here too.
+        self._engine.start(trigger="ttl")
         self._timer.start()
-        if routine.start_trigger == "ttl":
-            self._status(f"routine '{routine.name}' armed — waiting for "
-                         f"the camera's TTL trigger")
-        else:
-            self._status(f"routine '{routine.name}' started — "
-                         f"{routine.total_steps()} step(s)")
+        self._status(f"routine '{routine.name}' armed — waiting for "
+                     f"the camera's TTL trigger")
 
     def _arm_camera_trigger(self) -> bool:
         """Put the voltage camera in External edge mode before the routine's
-        own recording opens — so operator doesn't have to have already
-        set it on the Voltage cam tab, and a mode that quietly drifted back
-        to Internal since then doesn't leave the routine waiting forever.
-        False (with a problem shown) if that isn't possible right now.
+        own recording opens — every routine, unconditionally (operator,
+        2026-09-28), so the operator doesn't have to have already set it on
+        the Voltage cam tab, and a mode that quietly drifted back to
+        Internal since then doesn't leave a `trigger` step waiting forever.
 
-        For a TTL start AND for any `trigger` step, which wait on the same
-        physical line; `_start` decides which routines need it.
+        `None` from the host ("no camera loaded") is NOT a refusal — a
+        stage/puffer-only routine has nothing to arm, and `_start` still
+        runs it. Only `False` (a camera IS loaded, but a running recording
+        keeps it from switching right now) refuses, with a problem shown.
         """
         ok = self.win.set_camera_trigger(FRAME_STREAM, True)
-        if ok is True:
+        if ok is not False:
             return True
-        msg = ("no camera loaded to put in External edge mode" if ok is None
-              else "a recording is already running with the camera not in "
-                   "External edge mode — stop it first")
+        msg = ("a recording is already running with the camera not in "
+              "External edge mode — stop it first")
         self.panel.show_problems([msg])
         self._status(f"routine refused: {msg}")
         return False
@@ -751,7 +758,9 @@ class RoutinesModule(ModuleAdapter):
             "routine_name":          r.name,
             "routine_cycles":        r.cycles,
             "routine_save_mode":     r.save_mode,
-            "routine_start_trigger": r.start_trigger,
+            # Constant now (every routine arms on Start), kept in the file so
+            # an old and a new session's metadata read the same way.
+            "routine_start_trigger": "ttl",
             "routine_n_steps":       len(r.steps),
             "routine_steps":      _steps_json(r),
             # The same protocol, structured rather than a JSON string —

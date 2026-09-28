@@ -49,6 +49,39 @@ _MP_TRIG_SRC_EXTERNAL = 1
 _MP_MODE_CONTINUOUS   = 1
 _MP_MODE_START        = 2
 
+# `cam.get_frame_period()` is NOT a safe MASTER PULSE INTERVAL as-is — a
+# standalone probe against the real camera (2026-09-28) found the interval
+# asked for cam.get_frame_period() itself doesn't run "as fast as the sensor
+# can be read" (the old assumption); it runs at EXACTLY HALF the requested
+# rate, no exceptions. Below the true minimum the camera doesn't degrade
+# gracefully to its own ceiling — it silently divides the rate by 2, a worse
+# failure than running a bit under nominal.
+#
+# A bisection sweep across 5 row counts (128-2368, exposure fixed at 200us)
+# found the true minimum sits a near-CONSTANT ~0.24-0.25 ms above
+# get_frame_period() regardless of row count — but a second sweep, exposure
+# varied at one fixed row count, found that "constant" scales almost exactly
+# 1:1 with EXPOSURE TIME (200/500/1500 us exposure -> ~0.24/0.54/1.54 ms
+# offset). So it isn't a margin on get_frame_period() at all: in MASTER
+# PULSE mode the pulse starts EXPOSURE, and only once that completes can
+# readout (get_frame_period()'s own ~fixed cost) begin — the two phases
+# don't pipeline the way free-running/Internal mode's period assumes. The
+# true minimum period is readout + exposure, plus a small fixed pad for the
+# ~0.04-0.05 ms this doesn't otherwise account for (confirmed against all 8
+# measured configs, ~0.05-0.06 ms of margin each, never negative).
+_MP_INTERVAL_PAD_S = 0.0001      # 100 us, on top of readout + exposure
+
+
+def _master_pulse_interval(period_s: float, cfg) -> float:
+    """The real minimum MASTER PULSE INTERVAL for `cfg` — see the constant
+    above for why this is readout + exposure, not `get_frame_period()` alone
+    or a percentage of it. Takes the readout period rather than `cam`
+    itself, so a caller that already queried it (the hot exposure-change
+    path always has, via `_query_timings`) isn't asking the device twice for
+    the same number on a path its own comments already flag as
+    latency-sensitive."""
+    return period_s + cfg.exposure_us * 1e-6 + _MP_INTERVAL_PAD_S
+
 # Long enough not to busy-poll a free-running camera, short enough that Stop
 # stays responsive; and how often to repeat the complaint when none arrives.
 _WAIT_TIMEOUT = 0.5
@@ -220,7 +253,17 @@ class OrcaFireWorker(PullWorker):
 
     @staticmethod
     def _cycle_master_pulse(cam) -> None:
-        """Rewrite MASTER PULSE MODE (away and back) — what clears the latch."""
+        """Rewrite MASTER PULSE MODE (away and back) — what clears the latch.
+
+        A settling gap between the two writes was tried here (2026-09-28) as
+        a fix for roughly 3 in 4 re-arms free-running at HALF the configured
+        rate instead of the full one — DISPROVEN by a standalone probe
+        against the real camera: MODE=CONTINUOUS (no external edge needed)
+        ran at exactly half the configured rate on every one of 23 trials,
+        with or without a 20 ms gap between the writes, zero variance either
+        way. Whatever causes the half-rate runs, it isn't a race between
+        these two writes. Root cause still open — see PLAN.md.
+        """
         cam.set_attribute_value(
             _MP_MODE_PROP, _MP_MODE_CONTINUOUS, error_on_missing=False)
         cam.set_attribute_value(
@@ -646,13 +689,15 @@ class OrcaFireWorker(PullWorker):
                     cam.set_attribute_value(
                         _MP_MODE_PROP, _MP_MODE_START,
                         error_on_missing=False)
-                    # Leave the generator free to tick as fast as the sensor can
-                    # be read: in START mode its INTERVAL caps the frame rate,
-                    # and the camera's own default (0.1 s) would pin the whole
-                    # recording to 10 Hz regardless of the preset. Too short is
-                    # safe — the camera captures as fast as it can.
+                    # In START mode this caps the frame rate, and the
+                    # camera's own default (0.1 s) would pin the whole
+                    # recording to 10 Hz regardless of the preset — but
+                    # asking for get_frame_period() ITSELF silently halves
+                    # the achieved rate instead of just capping at it (see
+                    # _master_pulse_interval).
                     cam.set_attribute_value(
-                        _MP_INTERVAL_PROP, cam.get_frame_period(),
+                        _MP_INTERVAL_PROP,
+                        _master_pulse_interval(cam.get_frame_period(), cfg),
                         error_on_missing=False)
                 # Read back rather than restate what was asked for: every one of
                 # these was wrong at some point, and a log that echoed the
@@ -751,7 +796,30 @@ class OrcaFireWorker(PullWorker):
                     if pending is not None:
                         try:
                             cam.set_exposure(pending * 1e-6)
-                            self._query_timings(cam, cfg, verbose=False)
+                            hz = self._query_timings(cam, cfg, verbose=False)
+                            if mode == "master_pulse":
+                                # MASTER PULSE INTERVAL caps the achieved
+                                # rate in START mode (see the setup above)
+                                # and was set ONCE, for whatever exposure
+                                # was active at session start. Left alone,
+                                # a later exposure change here keeps every
+                                # recording capped at that stale interval
+                                # — and since the true minimum tracks
+                                # exposure directly (_master_pulse_interval),
+                                # a LONGER new exposure would leave it not
+                                # just stale but genuinely too short,
+                                # re-triggering the half-rate failure.
+                                # `cfg.exposure_us` is already the new
+                                # value here: `set_exposure()` writes it
+                                # synchronously, before this pending-change
+                                # branch ever sees the request. 1/hz reuses
+                                # `_query_timings`'s own device query rather
+                                # than asking the camera for its frame
+                                # period a second time on this same tick.
+                                cam.set_attribute_value(
+                                    _MP_INTERVAL_PROP,
+                                    _master_pulse_interval(1.0 / hz, cfg),
+                                    error_on_missing=False)
                         except Exception as e:      # noqa: BLE001
                             # Say it once per distinct reason: this is the
                             # capture loop, and the operator dragging a slider
