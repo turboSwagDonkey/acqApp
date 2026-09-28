@@ -117,19 +117,18 @@ def load_modes() -> dict:
     """Named mode -> recipe dict, from modes.json ({} if missing/unreadable).
 
     A malformed file must not stop the app from starting — worst case is an
-    empty Mode dropdown (just "None"), the same failure mode as a removed
-    preset in load_dataclass. Non-dict entries are dropped rather than
-    raising, so one bad hand-edit doesn't take out every mode. Also
-    sanitizes each recipe's `camera_presets`/`camera_exposure_us`/
-    `camera_trigger`/`camera_binning`, the four fields `set_mode()` iterates
-    (`.items()`) rather than merely truth-tests: a natural hand-edit mistake
-    — `null` for "no camera presets", or a list by typo — would otherwise
-    reach `set_mode()` as `None`/a list and raise there, since
-    `dict.get(key, {})` only substitutes the default when the key is
-    *absent*, not when it's present with a non-dict value. `dmd_sub_sampling`
-    is sanitized too, even though `set_mode()` only reads it (no `.items()`)
-    — it flows into `int(sub_sampling)`, which raises on a str/list where
-    `dmd_all_on`'s plain truth-test never would.
+    empty Mode dropdown, the same failure mode as a removed preset in
+    `load_dataclass`. Non-dict entries are dropped rather than raising, so
+    one bad hand-edit doesn't take out every mode. Also sanitizes each
+    recipe's `camera_presets`/`camera_exposure_us`/`camera_trigger`/
+    `camera_binning`, the four fields `set_mode()` iterates (`.items()`)
+    rather than merely truth-tests: `null` for "no camera presets", or a
+    list by typo, would otherwise reach `set_mode()` as `None`/a list and
+    raise there — `dict.get(key, {})` only substitutes the default when the
+    key is *absent*, not present-but-wrong-typed. `dmd_sub_sampling` is
+    sanitized too, even though `set_mode()` only reads it: it flows into
+    `int(sub_sampling)`, which raises on a str/list where `dmd_all_on`'s
+    plain truth-test never would.
     """
     data = _load_json(_MODES_PATH)
     modes = {}
@@ -235,12 +234,11 @@ _CHANNEL_SPACES = ("port", "line", "ai", "ao", "ctr", "PFI", "di", "do")
 def load_rigs() -> dict:
     """Named rig -> profile dict, from rigs.json ({} if missing/unreadable).
 
-    Sanitized the same way and for the same reason as `load_modes`: this file
-    is hand-edited, a malformed one must not stop the app from starting, and
-    the fields below are read with `.get(...)` + `.items()` downstream, where
-    a present-but-wrong-typed value (`"hardware": null` for "nothing fitted",
-    a list by typo) would raise rather than fall back. A profile that survives
-    validation always has all four keys, so callers never guard for absence.
+    Sanitized like `load_modes`, for the same reason: this file is
+    hand-edited, and a present-but-wrong-typed value (`"hardware": null`, a
+    list by typo) would otherwise raise downstream rather than fall back. A
+    profile that survives validation always has all four keys, so callers
+    never guard for absence.
     """
     data = _load_json(_RIGS_PATH)
     rigs = {}

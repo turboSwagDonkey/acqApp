@@ -54,16 +54,14 @@ class StageAxis:
     # A bookmark, NOT calibration: never loaded from or written to the config,
     # so a convenience marker can't be mistaken for the true zero next session.
     home_counts:    int | None = None
-    # Runtime-only, never loaded from or written to the config (there's no
-    # way to know from a file alone whether a limit was hit since it was last
-    # saved) — set live by StageController the moment a hard-limit status bit
-    # is observed on THIS axis. A limit hit re-references the controller's
-    # command origin (see driver.py), which silently invalidates `slope`/
-    # `offset` — every absolute move AND every jog after that point computes a
-    # command through the now-wrong linear map and lands somewhere other than
-    # the (correctly clamped, correctly displayed) target. Cleared only by a
-    # fresh `establish_frame()`, which remeasures slope/offset directly in
-    # raw command units and so is immune to the stale map itself.
+    # Runtime-only, never loaded from or written to the config — a file alone
+    # can't say whether a limit was hit since it was last saved. Set live by
+    # StageController the moment a hard-limit status bit is observed on THIS
+    # axis: a limit hit re-references the controller's command origin (see
+    # driver.py), silently invalidating `slope`/`offset`, so every move after
+    # that lands somewhere other than the (correctly displayed) target.
+    # Cleared only by `establish_frame()`, which remeasures slope/offset
+    # directly in raw command units, immune to the stale map itself.
     frame_stale:    bool = False
 
     @property
@@ -125,21 +123,18 @@ class StageAxis:
         return int(round(self.ref_counts + self.sign * um * self.counts_per_um))
 
     def clamp_counts(self, counts: int) -> int:
-        """Clamp to the soft limits, if any are set — a no-op otherwise,
-        which is the correct, EXPECTED shape for an axis that has genuinely
-        never been calibrated at all: jog has to work with no soft limits
-        yet, or there would be no way to move a brand-new axis anywhere to
-        declare a zero in the first place (the bootstrap `set_z_zero_here()`/
-        `set_center_here()` needs before it can create one).
+        """Clamp to the soft limits, if any are set — a no-op otherwise, the
+        correct, EXPECTED shape for an axis never calibrated at all: jog has
+        to work with no soft limits yet, or there'd be no way to move a
+        brand-new axis anywhere to declare a zero in the first place (what
+        the bootstrap `set_z_zero_here()`/`set_center_here()` needs first).
 
-        The one case this DOES refuse: `origin_set` True with no soft limits
-        — a contradiction normal app code can't produce (`center_updates()`
-        always sets both together), but a hand-edited config file could.
-        `move_to_um`/`jog_um`/`go_home` already refuse earlier for the two
-        real dangers (uncalibrated axis reaching an absolute-move call;
-        invalidated by a hard-limit hit — see `has_frame`/`frame_stale`), so
-        this is a narrower, purely defense-in-depth backstop, not the fix
-        for either of those.
+        The one case this DOES refuse: `origin_set` True with no soft
+        limits — a contradiction normal code can't produce
+        (`center_updates()` always sets both together), but a hand-edited
+        config could. `move_to_um`/`jog_um`/`go_home` already refuse earlier
+        for the two real dangers (see `has_frame`/`frame_stale`); this is
+        only a narrower, defense-in-depth backstop.
         """
         if self.soft_min is None or self.soft_max is None:
             if self.origin_set:

@@ -1153,6 +1153,38 @@ def check_prepared_adapter(r: Report) -> None:
             "control: no .dcimg open -> nothing prepared, the old path runs")
 
 
+def check_first_file_doomed(r: Report) -> None:
+    """`_first_file_is_doomed` — the file `_start()` opens for the first
+    Recording is skipped-naming only when a `trigger` step precedes it AND
+    the camera actually uses `.dcimg`: that step's own re-arm rolls the
+    file away before it ever gets a boundary, whatever it was named."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.routines import RoutinesModule
+
+    a = RoutinesModule.__new__(RoutinesModule)
+
+    trigger_then_record = Routine(steps=[
+        Step(kind="wait", length=1, unit="frames"),
+        Step(kind="trigger"),
+        Step(kind="record", length=1, unit="seconds")])
+    record_first = Routine(steps=[
+        Step(kind="record", length=1, unit="seconds"),
+        Step(kind="trigger"),          # AFTER the bracket: doesn't count
+        Step(kind="record", length=1, unit="seconds")])
+
+    a.win = SimpleNamespace(dcimg_enabled=lambda: True)
+    r.check(a._first_file_is_doomed(trigger_then_record),
+            "a trigger step before the first bracket, with .dcimg -> doomed")
+    r.check(not a._first_file_is_doomed(record_first),
+            "no trigger before the bracket -> not doomed, even with .dcimg")
+
+    a.win = SimpleNamespace(dcimg_enabled=lambda: False)
+    r.check(not a._first_file_is_doomed(trigger_then_record),
+            "same protocol, TIFF/composite (no .dcimg) -> nothing to roll "
+            "away, not doomed")
+
+
 def check_arm_camera_trigger(r: Report) -> None:
     """`RoutinesModule._arm_camera_trigger()` — the fix itself: a TTL-start
     routine puts the camera in External edge mode through the host, before
@@ -2651,6 +2683,7 @@ def main() -> int:
         check_trigger_step(r)
         check_prepare_recording(r)
         check_prepared_adapter(r)
+        check_first_file_doomed(r)
         check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)

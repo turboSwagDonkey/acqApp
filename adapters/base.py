@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from acqApp import config, style
 from acqApp.closed_loop import SignalSource
@@ -70,9 +70,34 @@ class DragRectViewBox(pg.ViewBox):
         self.dragged.emit(x0, y0, x1, y1, ev.isFinish())
 
 
+class RecDot(QLabel):
+    """Small red circle pinned to the top-left corner of its parent view,
+    shown only while this module's frames are actually being recorded — not
+    a second source of truth, just a paint of `MainWindow.is_recording()`.
+
+    Parented straight to the `GraphicsView` (not laid out): a QGraphicsView
+    already fills itself with an internal viewport widget, so this only
+    needs a fixed corner position and `raise_()` to paint on top of it,
+    the usual way to overlay a plain widget on a QAbstractScrollArea.
+    """
+    _SIZE = 14
+    _MARGIN = 8
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._SIZE, self._SIZE)
+        self.setStyleSheet(
+            f"background:#e53935; border-radius:{self._SIZE // 2}px; "
+            f"border:1px solid #7a1f1f;")
+        self.setToolTip("Recording")
+        self.move(self._MARGIN, self._MARGIN)
+        self.raise_()
+        self.hide()
+
+
 def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     """Image + LUT bar in a row ->
-    (image, hist, chk_auto, graphics_view, viewbox, row).
+    (image, hist, chk_auto, graphics_view, viewbox, row, rec_dot).
 
     The LUT bar makes contrast draggable; both cameras want exactly this
     layout. `vb_cls` swaps in a ViewBox subclass (e.g. `DragRectViewBox`) for
@@ -82,6 +107,9 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     settings tab — operator is already looking at it. The caller wires
     it to the same auto-contrast path as the settings panel's own checkbox
     and keeps the two in sync (see voltage_cam/pupil_cam's central_widget).
+
+    `rec_dot` is hidden by default; the caller shows/hides it from
+    `update_display()` against `win.is_recording()` (see `_sync_rec_dot`).
     """
     img = pg.ImageItem()
     hist = pg.HistogramLUTWidget()
@@ -91,6 +119,7 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     vb = vb_cls(lockAspect=True, invertY=True)
     gv.setCentralItem(vb)
     vb.addItem(img)
+    rec_dot = RecDot(gv)
 
     chk_auto = QCheckBox("Auto")
     chk_auto.setToolTip("Auto contrast — same control as the settings tab's.")
@@ -107,7 +136,7 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     lay.setContentsMargins(0, 0, 0, 0)
     lay.addWidget(lut_col)
     lay.addWidget(gv)
-    return img, hist, chk_auto, gv, vb, row
+    return img, hist, chk_auto, gv, vb, row, rec_dot
 
 
 def led_controller(emulate: bool, rig_key: str, real_cls, mock_cls, label: str):
@@ -160,6 +189,7 @@ class ModuleAdapter:
         self._hist = None                # its LUT bar, for show/hide + levels
         self._levels: tuple[float, float] | None = None
         self._level_ctr = 0
+        self._rec_dot: QLabel | None = None   # RecDot, for a module with one
 
     # ── construction (once, at startup) ───────────────────────────────────────
     # A panel that belongs in a window of its own rather than as a page of the
@@ -235,12 +265,12 @@ class ModuleAdapter:
         """Show one frame in `self._img` at the right contrast.
 
         Auto recomputes the percentile every LEVELS_EVERY ticks, not every
-        frame — the percentile is the costly part, and contrast a couple of
-        times a second is enough. Manual re-passes the LUT bar's OWN current
-        levels rather than omitting `levels=`: pyqtgraph only reliably
-        re-renders the mapping onto new frame data when setLevels() is
-        actually called, and leaving it out stuck the display on stale
-        contrast until the operator dragged the bar themselves.
+        frame — the percentile is the costly part, and a couple of times a
+        second is enough. Manual re-passes the LUT bar's OWN current levels
+        rather than omitting `levels=`: pyqtgraph only reliably re-renders
+        the mapping when setLevels() is actually called, and omitting it
+        stuck the display on stale contrast until the operator dragged the
+        bar themselves.
         """
         if auto:
             if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
@@ -251,6 +281,13 @@ class ModuleAdapter:
         else:
             levels = self._hist.item.getLevels() if self._hist is not None else None
         self._img.setImage(data, autoLevels=False, levels=levels)
+
+    def _sync_rec_dot(self) -> None:
+        """Show the RecDot while THIS session is saving to disk. Call from
+        `update_display()`; `setVisible` is a no-op once already in the
+        state asked for, so no need to track the last value ourselves."""
+        if self._rec_dot is not None:
+            self._rec_dot.setVisible(self.win.is_recording())
 
     # ── session ───────────────────────────────────────────────────────────────
     def build_session(self, emulate: bool) -> None:

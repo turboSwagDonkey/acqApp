@@ -74,25 +74,19 @@ class StimParams:
     MapTicksPerRegion: float = 10.0
     MapTicksPerFlip: float = 2.0
     MapRepeats: float = 1.0
-    # tuning trial only (tuning.py) — which of the 9 regions (1-9) the
-    # circle sits at, and the tick counts that pace the 2 white pretrials
-    # and the 8-orientation sweep (repeated MapRepeats-style).
+    # tuning/contrast/size trials each follow the same shape as one another
+    # (region 1-9 the circle sits at, tick counts pacing 2 white pretrials
+    # then a sweep, repeated *Repeats-style) — only what's swept differs:
+    # orientation (8 steps), contrast level, or size fraction (size.py's
+    # fixed SIZE_FRACTIONS of the region's own width, not a field here).
     TuningRegion: float = 1.0
     TuningTicksPerPretrial: float = 10.0
     TuningTicksPerOrientation: float = 10.0
     TuningRepeats: float = 1.0
-    # contrast trial only (contrast.py) — which of the 9 regions (1-9) the
-    # circle sits at, and the tick counts that pace the 2 white pretrials
-    # and the contrast-level sweep (repeated ContrastRepeats-style).
     ContrastRegion: float = 1.0
     ContrastTicksPerPretrial: float = 10.0
     ContrastTicksPerLevel: float = 10.0
     ContrastRepeats: float = 1.0
-    # size trial only (size.py) — which of the 9 regions (1-9) the circle
-    # sits at, and the tick counts that pace the 2 white pretrials and the
-    # size-fraction sweep (repeated SizeRepeats-style). The swept diameter
-    # itself is a fixed set of fractions of the region's own width
-    # (size.SIZE_FRACTIONS), not a StimParams field.
     SizeRegion: float = 1.0
     SizeTicksPerPretrial: float = 10.0
     SizeTicksPerLevel: float = 10.0

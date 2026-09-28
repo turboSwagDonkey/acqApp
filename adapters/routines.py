@@ -241,6 +241,24 @@ class RoutinesModule(ModuleAdapter):
         )
 
     # ── run control ──
+    def _first_file_is_doomed(self, routine: Routine) -> bool:
+        """Whether the file `_start()` would open for the first Recording
+        bracket is guaranteed to be rolled away before it holds a single
+        boundary — in which case naming it (and spending a `_trial_for`
+        slot on it) is pointless.
+
+        True only when a `trigger` step comes before the first bracket AND
+        the camera actually uses `.dcimg`: that step's own re-arm kills
+        whatever `.dcimg` is attached (`_do_rearm`'s docstring), so
+        `_prepare_recording` rolls to a fresh file right there regardless of
+        what this one was named. A plain sink (TIFF/composite) survives a
+        re-arm untouched, so the file it already opened stays correct.
+        """
+        if not self.win.dcimg_enabled():
+            return False
+        first_index = min((r.start for r in routine.recordings), default=0)
+        return any(s.kind == "trigger" for s in routine.steps[:first_index])
+
     def _start(self) -> None:
         """Validate, open the recording if there's none, then run.
 
@@ -265,10 +283,15 @@ class RoutinesModule(ModuleAdapter):
         self._routine = routine
         self._trial_count = {}
         if self._rec is None:
-            first_index = min((r.start for r in routine.recordings), default=0)
-            region = recording_region_at(routine, first_index) or 0
-            fov, coords = self._fov_for(routine, first_index)
-            self.win.set_routine_save_context(fov, self._trial_for(region), coords)
+            if self._first_file_is_doomed(routine):
+                self.win.set_routine_save_context(None, None)
+            else:
+                first_index = min((r.start for r in routine.recordings),
+                                  default=0)
+                region = recording_region_at(routine, first_index) or 0
+                fov, coords = self._fov_for(routine, first_index)
+                self.win.set_routine_save_context(
+                    fov, self._trial_for(region), coords)
             if not self._open_recording():
                 self.win.set_routine_save_context(None, None)
                 return

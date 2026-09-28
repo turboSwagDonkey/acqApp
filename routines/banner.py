@@ -56,18 +56,22 @@ class RoutineBanner(QWidget):
             self.hide()
             self._painted = None
             return
-        if (look, text) == self._painted:
-            return
-        self._painted = (look, text)
-        head, colour = look
-        self._head.setText(head)
-        self._body.setText(text)
-        self.setStyleSheet(f"RoutineBanner{{background:{colour};"
-                           f"border-radius:10px;}}")
-        self.adjustSize()
+        if (look, text) != self._painted:
+            self._painted = (look, text)
+            head, colour = look
+            self._head.setText(head)
+            self._body.setText(text)
+            self.setStyleSheet(f"RoutineBanner{{background:{colour};"
+                               f"border-radius:10px;}}")
+            self.adjustSize()
         if not self.isVisible():
             self._place()
             self.show()
+        # WindowStaysOnTopHint is a standing OS request, not a one-time raise
+        # — call it on every update (not just first show), so a routine that
+        # runs unattended for a while doesn't stay buried behind whatever the
+        # operator brought forward since the last state change.
+        self.raise_()
 
     def _place(self) -> None:
         scr = self.screen().availableGeometry() if self.screen() else None

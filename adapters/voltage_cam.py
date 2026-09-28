@@ -159,7 +159,7 @@ class VoltageCamModule(ModuleAdapter):
         return pw
 
     def central_widget(self) -> QWidget:
-        self._img, hist, chk_auto, gv, _vb, row = _image_view()
+        self._img, hist, chk_auto, gv, _vb, row, self._rec_dot = _image_view()
         self._hist = hist
         self._chk_auto_lut = chk_auto
         self._chk_auto_lut.toggled.connect(self._sync_auto_from_lut)
@@ -207,20 +207,19 @@ class VoltageCamModule(ModuleAdapter):
 
     # ── what a routine may drive (ModuleHost.set_camera_trigger) ──
     def set_external_trigger(self, on: bool) -> bool:
-        """Put the camera in External edge (True) or back to Internal
-        (False), restarting live view to apply it if that's actually a
-        change — trigger mode is a start-of-acquisition setting on this
-        camera, not hot-changeable (devices/voltage_cam/acquisition.py sets
-        it right before `start_acquisition()`).
+        """Put the camera in External edge (True) or Internal (False),
+        restarting live view if that's actually a change — trigger mode is a
+        start-of-acquisition setting here, not hot-changeable
+        (acquisition.py sets it right before `start_acquisition()`).
 
         Returns whether the camera ended up in that mode. `False` if a
-        restart was needed but a recording is already running — refused,
-        unattempted, rather than interrupting it; this module always being
-        loaded when this is called (unlike "no camera at all") is what lets
-        the caller (`main.py`'s `set_camera_trigger` pooling, `None` only
-        for THAT case) tell the two apart. Mirrors `adapters/dmd.py`'s
-        `calibrate()`, the other place in the app that already stops/
-        reconfigures/restarts this camera for a structural setting.
+        restart was needed but a recording is already running: refused,
+        unattempted, never interrupted. This module always being loaded when
+        called (unlike "no camera at all") is what lets the caller
+        (`main.py`'s `set_camera_trigger`, `None` only for that case) tell
+        the two apart. Mirrors `adapters/dmd.py`'s `calibrate()`, the other
+        place that stops/reconfigures/restarts this camera for a structural
+        setting.
         """
         want = _EXT_TRIGGER if on else _INT_TRIGGER
         if self.panel.get_config().trigger_mode == want:
@@ -234,14 +233,13 @@ class VoltageCamModule(ModuleAdapter):
 
     def rearm_trigger(self) -> bool:
         """Re-gate the external trigger so the next edge is detectable, for a
-        routine taking one recording per edge. False if there's no running
-        worker to ask (nothing is capturing, so there's nothing to re-arm).
+        routine taking one recording per edge. False if nothing is capturing.
 
-        Unlike `set_external_trigger` this is cheap and hot: it restarts only
-        the camera's acquisition, inside the capture thread, leaving the
-        session, the open file and live view alone. It does NOT put the camera
-        into External edge mode — `set_external_trigger` does that once, before
-        the routine starts.
+        Unlike `set_external_trigger`, cheap and hot: restarts only the
+        camera's acquisition, inside the capture thread, leaving the
+        session, the open file and live view alone. Does NOT put the camera
+        into External edge mode — `set_external_trigger` does that once,
+        before the routine starts.
         """
         # Both worker classes implement it (the mock as a no-op, for exactly
         # this parity), so only "nothing is capturing" has to be handled.
@@ -295,6 +293,7 @@ class VoltageCamModule(ModuleAdapter):
 
     # ── display ──
     def update_display(self) -> None:
+        self._sync_rec_dot()
         f = self.worker.get_latest() if self.worker is not None else None
         if f is None:
             return

@@ -111,7 +111,8 @@ class PupilCamModule(ModuleAdapter):
             self._track.configure(s)
 
     def build_views(self) -> None:
-        self._img, hist, chk_auto, gv, vb, row = _image_view(DragRectViewBox)
+        self._img, hist, chk_auto, gv, vb, row, self._rec_dot = _image_view(
+            DragRectViewBox)
         self._hist = hist
         self._chk_auto_lut = chk_auto
         self._chk_auto_lut.toggled.connect(self._sync_auto_from_lut)
@@ -451,6 +452,7 @@ class PupilCamModule(ModuleAdapter):
         consumes, so two readers would take turns and the ellipse would be
         drawn over a frame it wasn't fitted to.
         """
+        self._sync_rec_dot()
         if self._track is None:
             return
         self._say_tracker_state()
