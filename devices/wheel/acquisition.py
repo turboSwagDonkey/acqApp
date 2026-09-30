@@ -1,16 +1,10 @@
-"""Rotary wheel encoder — NI DAQ acquisition worker.
+"""Rotary wheel encoder — NI DAQ acquisition workers.
 
-Channel voltage encodes angle (`volts_per_rev` per turn); both workers derive a
-(voltage, speed, distance) triple per sample:
-
-    get_latest()  -> (voltage, speed, distance, elapsed_s)   # newest, for the GUI
+    get_latest()  -> (voltage, speed, distance, elapsed_s)
     sink receives    (voltage, speed, distance, acquired_at)
 
-`acquired_at` is when the DAQ sampled, not when the block reached us.
-
-Distance is net signed rotation, lagging the live voltage by ~1 s. Units are
-mm/s and mm with a wheel diameter set, else rev/s. `_EncoderBase` says why
-resets are rejected rather than unwrapped.
+Speed/distance lag the voltage by ~1 s; mm/s and mm with a wheel diameter,
+else rev/s.
 """
 
 from __future__ import annotations
@@ -25,29 +19,26 @@ from acqApp.acq.worker import PullWorker, paced
 
 
 class _EncoderBase(PullWorker):
-    """Shared position→motion derivation, real and mock.
+    """Position -> motion, real and mock.
 
-    The channel carries single-turn POSITION: voltage ramps 0→volts_per_rev then
-    resets, and that reset smears over a few samples — each sub-step too small
-    for a half-turn unwrap to catch. So a step implying more than `_MAX_REV_S`
-    is coasted through, which is what stops distance sawtoothing back once per
-    revolution. Reported `_LAG_S` in the past, buffered, so the trace is smooth.
+    The channel is single-turn POSITION: 0 -> volts_per_rev, then a reset that
+    smears over a few samples, each too small for a half-turn unwrap to catch.
+    Steps implying more than `_MAX_REV_S` are coasted through instead, or the
+    distance sawtooths back once per turn.
     """
     hz_update = pyqtSignal(float)      # samples / second
 
-    _MAX_REV_S = 10.0       # steps implying more than this are reset artifacts
-    _TAU_S = 0.15           # EMA time constant (s) for the coasting velocity
-    _LAG_S = 1.0            # report speed/distance this far in the past
-    _SLOPE_WIN_S = 0.25     # half-width (s) of the least-squares speed window
-    _HIST_S = _LAG_S + _SLOPE_WIN_S + 0.3     # (t, position) history retained
-    _SIGN = +1.0            # forward reads positive; flip if the wiring inverts
-    _DEADBAND_REV_S = 0.05  # below this the readout reads exactly zero
+    _MAX_REV_S = 10.0       # faster steps are reset artifacts
+    _TAU_S = 0.15           # EMA time constant of the coasting velocity
+    _LAG_S = 1.0            # report this far in the past, for a smooth trace
+    _SLOPE_WIN_S = 0.25     # half-width of the least-squares speed window
+    _HIST_S = _LAG_S + _SLOPE_WIN_S + 0.3
+    _SIGN = +1.0            # flip if the wiring inverts
+    _DEADBAND_REV_S = 0.05  # below this, speed reads exactly zero
 
-    # Read together out of the session file: the pair that says whether the
-    # recorded speed is a measurement or a scheduler artefact. Class attributes,
-    # so `devices.ClockedWorker` is checkable without constructing a worker.
+    # Filed; class attributes so ClockedWorker is checkable without an instance.
     timestamp_source: str = "software"  # "hardware" = the board's sample clock
-    actual_rate: float = 0.0            # the rate the device settled on, Hz
+    actual_rate: float = 0.0
 
     def __init__(self, volts_per_rev: float | None = 5.0,
                  wheel_dia_mm: float | None = 150.0):
@@ -55,35 +46,32 @@ class _EncoderBase(PullWorker):
         self._scale_lock = threading.Lock()
         self._vpr = volts_per_rev
         self._dia = wheel_dia_mm
-        self._frac_prev: float | None = None   # previous position fraction (0..1)
+        self._frac_prev: float | None = None   # previous position in the turn
         self._t_prev = 0.0
-        self._pos = 0.0                # absolute cumulative position, rev (signed)
-        self._vel = 0.0                # velocity estimate, rev/s (coasts thru resets)
-        self._buf: deque[tuple[float, float]] = deque()   # (elapsed_s, position_rev)
-        self._dist_rev = 0.0           # reported net distance, rev (gated integral)
-        self._t_report: float | None = None    # last reported (delayed) sample time
-        # Newest sample, kept for watchers rather than consumers — see snapshot().
+        self._pos = 0.0                # cumulative position, rev
+        self._vel = 0.0                # rev/s, coasts through resets
+        self._buf: deque[tuple[float, float]] = deque()   # (elapsed_s, rev)
+        self._dist_rev = 0.0           # reported net distance
+        self._t_report: float | None = None
         self._snap: tuple[float, float, float, float] | None = None
 
     def set_scaling(self, volts_per_rev: float | None,
                     wheel_dia_mm: float | None) -> None:
-        """Update V/rev and wheel diameter live (thread-safe)."""
         with self._scale_lock:
             self._vpr = volts_per_rev
             self._dia = wheel_dia_mm
 
     def _derive(self, v: float, t: float) -> tuple[float, float]:
-        """-> (speed, net_distance) for a sample _LAG_S in the past. With no
-        V/rev configured, speed falls back to the live voltage."""
+        """-> (speed, net_distance). Unscaled, speed is the raw voltage."""
         with self._scale_lock:
             vpr, dia = self._vpr, self._dia
-        circ = np.pi * dia if dia else 1.0   # mm per rev, else 1 → report in rev
+        circ = np.pi * dia if dia else 1.0   # mm per rev, else report in rev
 
-        if not vpr:                          # unscaled → live voltage as "speed"
+        if not vpr:
             return v, 0.0
 
-        frac = min(max(v / vpr, 0.0), 1.0)   # position within one turn, 0..1
-        if self._frac_prev is None:          # first sample → seed, no motion yet
+        frac = min(max(v / vpr, 0.0), 1.0)
+        if self._frac_prev is None:
             self._frac_prev, self._t_prev = frac, t
             self._buf.append((t, 0.0))
             return 0.0, 0.0
@@ -93,14 +81,14 @@ class _EncoderBase(PullWorker):
         if dt > 0:
             step = frac - self._frac_prev
             self._frac_prev = frac
-            if   step >  0.5: step -= 1.0    # wrap-correct a clean single-sample reset
+            if   step >  0.5: step -= 1.0    # a clean single-sample reset
             elif step < -0.5: step += 1.0
-            if abs(step) / dt > self._MAX_REV_S:     # smeared-reset / glitch sample
-                step = self._vel * dt                # coast at current velocity
-            else:                                    # good sample → update velocity
+            if abs(step) / dt > self._MAX_REV_S:     # smeared reset: coast
+                step = self._vel * dt
+            else:
                 a = dt / (self._TAU_S + dt)
                 self._vel += a * (step / dt - self._vel)
-            self._pos += step                        # cleaned cumulative position
+            self._pos += step
             self._buf.append((t, self._pos))
             while self._buf and t - self._buf[0][0] > self._HIST_S:
                 self._buf.popleft()
@@ -108,33 +96,28 @@ class _EncoderBase(PullWorker):
         return self._report(t, circ)
 
     def _report(self, t: float, circ: float) -> tuple[float, float]:
-        """Speed is a least-squares slope over a window; distance is its
-        integral, deadband-gated so ADC noise can't random-walk it at rest."""
+        """Speed: least-squares slope over a window. Distance: its integral,
+        deadband-gated so ADC noise can't random-walk it at rest."""
         td = t - self._LAG_S
-        # Until the buffer brackets td with a full slope window, report live pos.
         n = len(self._buf)
         if n < 8 or self._buf[0][0] > td - self._SLOPE_WIN_S:
             return 0.0, self._SIGN * self._dist_rev * circ
 
         ts = np.fromiter((b[0] for b in self._buf), float, n)
         ps = np.fromiter((b[1] for b in self._buf), float, n)
-        # Ascending times → the window is a contiguous slice, no mask.
-        # left/right keep both ends inclusive, as the old comparisons were.
         lo = int(np.searchsorted(ts, td - self._SLOPE_WIN_S, side="left"))
         hi = int(np.searchsorted(ts, td + self._SLOPE_WIN_S, side="right"))
         tw, pw = ts[lo:hi], ps[lo:hi]
-        # Closed-form LSQ slope, not polyfit: identical at degree 1, but this
-        # runs per sample at 120 Hz and polyfit is an SVD behind a Vandermonde.
-        # Centring conditions it better too.
+        # Closed-form slope: polyfit's SVD is too heavy per sample at 120 Hz.
         rev_s = 0.0
         if tw.size >= 2:
             dt_ = tw - tw.mean()
             var = float(dt_ @ dt_)
             if var > 0.0:
-                rev_s = float(dt_ @ pw / var)      # = cov(t, p) / var(t), rev/s
-        if abs(rev_s) < self._DEADBAND_REV_S:        # ~stationary → freeze distance
+                rev_s = float(dt_ @ pw / var)
+        if abs(rev_s) < self._DEADBAND_REV_S:
             rev_s = 0.0
-        elif self._t_report is not None:             # integrate velocity → distance
+        elif self._t_report is not None:
             self._dist_rev += rev_s * (td - self._t_report)
         self._t_report = td
         return self._SIGN * rev_s * circ, self._SIGN * self._dist_rev * circ
@@ -142,21 +125,14 @@ class _EncoderBase(PullWorker):
     # ── watchers (the closed loop) ───────────────────────────────────────────
 
     def snapshot(self) -> tuple[float, float, float, float] | None:
-        """Newest `(voltage, speed, live_speed, acquired_at)`, non-consuming
-        (`get_latest()` hands each sample out once, and the display tick is
-        already that consumer). None until the first sample.
-
-        Which speed a rule watches is an experimental decision:
-          `speed`       matches `wheel_speed` in the file, but is ~1 s old.
-          `live_speed`  the EMA behind it: noisier, current, for a rule that
-                        must act *while* the animal runs.
-        """
+        """Newest (voltage, speed, live_speed, acquired_at), non-consuming.
+        `speed` matches the file but is ~1 s old; `live_speed` is the noisier
+        current EMA, for a rule that must act while the animal runs."""
         with self._lock:
             return self._snap
 
     def _live_speed(self) -> float:
-        """Current EMA velocity, reported units. Same sign and deadband as
-        `_report`, so a threshold read off one holds on the other."""
+        """Same sign and deadband as `_report`, so thresholds carry over."""
         with self._scale_lock:
             vpr, dia = self._vpr, self._dia
         if not vpr or abs(self._vel) < self._DEADBAND_REV_S:
@@ -166,32 +142,21 @@ class _EncoderBase(PullWorker):
 
     def _emit_sample(self, v: float, t: float, mono: float | None = None) -> None:
         speed, dist = self._derive(v, t)
-        # Watchers get the acquisition instant, not `t` (elapsed-since-start),
-        # which isn't the domain Recorder.put(at=) stamps in.
         with self._lock:
             self._snap = (v, speed, self._live_speed(),
                           time.perf_counter() if mono is None else mono)
-        # Sink gets the same values plus the ACQUISITION instant; None means
-        # "stamp on arrival".
+        # The sink gets the acquisition instant (None = stamp on arrival).
         self._publish((v, speed, dist, t), record=(v, speed, dist, mono))
 
 
 class EncoderWorker(_EncoderBase):
-    """Analog input clocked by the board, not by a Python sleep loop.
+    """Analog input on the board's sample clock. Speed is a slope, so loop
+    jitter went straight into it. Times are anchor + i/rate, the anchor set
+    from the first block. Falls back to a software loop, loudly, if timing
+    won't configure."""
 
-    Speed is a SLOPE, so every millisecond of jitter in the old single-sample
-    `task.read()` loop went straight into it. Times are reconstructed as the
-    camera's are (#1): the device knows the spacing but not our epoch, so the
-    first block anchors index 0 into perf_counter and the rest are
-    `anchor + i/rate`.
-
-    A board that refuses the timing configuration falls back to the
-    software-paced loop rather than losing the wheel — loudly, and in the file
-    via `timestamp_source`.
-    """
-
-    _BLOCK_S = 0.05         # seconds of samples per read: 20 GUI updates/s
-    _BUFFER_S = 5.0         # DAQmx input buffer depth — a stall this long loses data
+    _BLOCK_S = 0.05         # per read: 20 GUI updates/s
+    _BUFFER_S = 5.0         # a stall longer than this loses data
 
     def __init__(self, chan: str = "Dev3/ai2", rate: float = 120.0,
                  volts_per_rev: float | None = 4.912,
@@ -215,11 +180,7 @@ class EncoderWorker(_EncoderBase):
 
     # ── hardware-timed (the normal path) ─────────────────────────────────────
     def _run_hardware(self) -> bool:
-        """Acquire on the board's sample clock. False if it wouldn't configure.
-
-        A fresh Task per path rather than reconfiguring a failed one: a half-set
-        task isn't worth reasoning about.
-        """
+        """False if the board refused the timing configuration."""
         from nidaqmx import Task
         from nidaqmx.constants import AcquisitionType
 
@@ -243,14 +204,13 @@ class EncoderWorker(_EncoderBase):
             self.actual_rate = rate
             self.timestamp_source = "hardware"
             if abs(rate - self._rate) > 1e-3 * self._rate:
-                # The file records what was used, not what was asked for.
                 print(f"[wheel] board coerced {self._rate:g} Hz to {rate:.4f} Hz")
             print(f"[wheel] hardware-timed: {rate:g} Hz, "
                   f"{block} samples per read")
 
             timeout = 4.0 * self._BLOCK_S + 1.0
             anchor: float | None = None
-            i = 0                                     # global sample index
+            i = 0
             n_win, t_win = 0, time.perf_counter()
 
             while not self._stop:
@@ -258,17 +218,15 @@ class EncoderWorker(_EncoderBase):
                     data = task.read(number_of_samples_per_channel=block,
                                      timeout=timeout)
                 except Exception as e:                # noqa: BLE001
-                    # Usually -200279: input buffer overflow, i.e. the process
-                    # stalled for seconds. Those samples are gone — fail
-                    # visibly rather than hand back a hole whose timestamps
-                    # still look continuous.
+                    # Usually a buffer overflow after a stall: fail rather than
+                    # hand back a hole with continuous-looking timestamps.
                     print(f"[wheel] read failed after {i} samples "
                           f"({type(e).__name__}: {e})")
                     raise
                 if not isinstance(data, list):        # a block of 1 comes back bare
                     data = [data]
                 now = time.perf_counter()
-                if anchor is None:      # last sample of this block was at ~now
+                if anchor is None:      # the block's last sample was ~now
                     anchor = now - (len(data) - 1) / rate
 
                 for v in data:
@@ -282,14 +240,8 @@ class EncoderWorker(_EncoderBase):
                     n_win, t_win = 0, now
         return True
 
-    # ── software-paced (fallback only) ───────────────────────────────────────
+    # ── software-paced (fallback only; not yet run on the physical encoder) ──
     def _run_software(self) -> None:
-        # NOTE: pacing uses acq.worker.paced(), which paces this REAL DAQ
-        # sample loop. Verified equivalent to the old inline pacing idiom by
-        # replay test + jitter measurement, but NOT yet run against the
-        # physical encoder — confirm sample cadence/no dropped reads on real
-        # hardware before trusting this in an experiment. See paced()'s
-        # docstring.
         from nidaqmx import Task
 
         self.timestamp_source = "software"
@@ -304,21 +256,20 @@ class EncoderWorker(_EncoderBase):
                     break
                 voltage: float = task.read()  # type: ignore[assignment]
                 now = time.perf_counter()
-                # Arrival is the best estimate here — no device timebase.
                 self._emit_sample(float(voltage), now - t0, now)
                 if n % max(1, int(self._rate)) == 0 and now > t0:
                     self.hz_update.emit(n / (now - t0))
 
 
 class MockEncoderWorker(_EncoderBase):
-    """Synthetic encoder — a real 0→Vfs single-turn SAWTOOTH, so the mock
-    exercises the reset handling. Forward, pause, reverse, with ADC noise."""
+    """A 0 -> Vfs sawtooth with noise, so the reset handling is exercised:
+    forward, pause, reverse."""
     RATE = 120.0
     _STOP_WAIT_MS = 2000
 
     def _run(self) -> None:
         self._stop = False
-        self.actual_rate = self.RATE        # software-paced, like the fallback
+        self.actual_rate = self.RATE
         period = 1.0 / self.RATE
         vfs = self._vpr or 5.0
         rng = np.random.default_rng()
@@ -328,12 +279,10 @@ class MockEncoderWorker(_EncoderBase):
             if self._stop:
                 break
             t = time.perf_counter() - t0
-            # 0.4 rev/s forward for 6 s, still for 3 s, 0.25 rev/s back — repeat.
+            # 0.4 rev/s forward 6 s, still 3 s, 0.25 rev/s back.
             phase = t % 12.0
             spin = 0.4 if phase < 6 else (0.0 if phase < 9 else -0.25)
             rev += spin * period
-            # Rising sawtooth, like the rig: forward rotation ramps the voltage
-            # UP, which with _SIGN = +1.0 reads as positive speed and distance.
             voltage = float((rev % 1.0) * vfs + rng.normal(0, 0.045))
             voltage = min(max(voltage, 0.0), vfs)
             self._emit_sample(voltage, t, t0 + t)

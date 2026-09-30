@@ -1,11 +1,7 @@
-"""
-The shell's own windows.
+"""The shell's own windows; none knows about the clock, recorder or devices.
 
-Split out of `main.py`; none knows about the clock, the recorder or a device.
-
-`SettingsDialog` reads and writes `QSettings` for its geometry, so
-`tests/_harness.isolate_user_state()` substitutes `QSettings` **here** too —
-without it the suite overwrites the operator's real window geometry.
+Geometry lives in QSettings, which `tests/_harness.isolate_user_state()`
+substitutes here too — or the suite overwrites the operator's layout.
 """
 from __future__ import annotations
 
@@ -27,15 +23,8 @@ def _qsettings() -> QSettings:
 
 
 class ModuleSelectDialog(QDialog):
-    """A checkbox per subsystem, pre-checked from what is loaded now.
-
-    Used twice: at startup, and from the sidebar's Modules button, where the
-    change applies to the running window (`MainWindow.set_modules`). Hence the
-    caller supplies the wording — "this session" is a lie mid-session.
-
-    `config.ALWAYS_ON` gets no checkbox and is added back by `selected()`: a
-    box that must stay ticked isn't a choice, it's a trap.
-    """
+    """A checkbox per module, at startup and from the sidebar. ALWAYS_ON
+    modules get no box and are added back by `selected()`."""
 
     def __init__(self, enabled: list[str], parent=None, *,
                  title: str = "Select modules to load",
@@ -69,33 +58,19 @@ class ModuleSelectDialog(QDialog):
         ok.setEnabled(any(cb.isChecked() for cb in self._boxes.values()))
 
     def selected(self) -> list[str]:
-        """Ticked modules, plus the ones that are never untickable."""
         return config.order_modules(
             k for k, cb in self._boxes.items() if cb.isChecked())
 
 
 def _looks_sane(size: QSize, floor: tuple[int, int]) -> bool:
-    """Is a RESTORED size (not a freshly computed one) plausible at all?
-
-    `restoreGeometry` can hand back True on a QByteArray that doesn't actually
-    describe a usable window — corrupted by an interrupted write, saved on a
-    monitor that's since been unplugged, or (seen in practice) saved mid-drag
-    at a few px on a side. None of that is a screen-size question `_fits_on_
-    screen`'s clamp already covers; it's "this is nowhere near what this
-    window would ever choose for itself", so it gets the same fallback as an
-    outright restore failure rather than reopening at a few pixels forever.
-    """
+    """A restored size can be garbage (seen: a few px, saved mid-drag)."""
     return size.width() >= floor[0] // 2 and size.height() >= floor[1] // 2
 
 
 def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
                     screen) -> QSize:
-    """`hint` plus padding, never under `floor`, never over 90 % of the screen.
-
-    The clamp is the part that matters: a size comfortable on this laptop can
-    open taller than the rig's screen, which on Windows puts the bottom of the
-    window — and whatever button is on it — out of reach.
-    """
+    """`hint` + padding, at least `floor`, at most 90% of the screen — or the
+    bottom buttons can open off-screen on the rig."""
     w = max(floor[0], hint.width() + 2 * pad)
     h = max(floor[1], hint.height() + 2 * pad)
     screen = screen or QGuiApplication.primaryScreen()
@@ -107,23 +82,12 @@ def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
 
 
 class PanelWindow(QDialog):
-    """One module's panel, in a window of its own instead of a settings page.
-
-    For a module that is *used* rather than configured: an experiment routine
-    is driven from its panel while the settings window is showing the camera it
-    is driving, and a tab can't be in two places at once. Which modules get
-    one is `ModuleAdapter.own_window` — the window never learns what a routine
-    is.
-
-    Hidden, never destroyed, exactly as `SettingsDialog` is: the panel inside is
-    a live object wired to a running controller. Its geometry is remembered per
-    module key, so two of these don't fight over one saved rectangle.
-    """
+    """One module's panel in its own window (`ModuleAdapter.own_window`).
+    Hidden, never destroyed: the panel is wired to a live controller.
+    Geometry is saved per module key."""
 
     visibility_changed = pyqtSignal(bool)
 
-    # The same width floor as `SettingsDialog`: these are the same panels, and
-    # one shouldn't open narrower for having moved out of the tabs.
     _MIN_DEFAULT = (900, 700)
     _PAD = 16
 
@@ -134,10 +98,9 @@ class PanelWindow(QDialog):
         self._size = size
         self._geom_key = f"panelGeometry/{key}"
         self.setWindowTitle(label)
-        # A real window (minimise/maximise), not a fixed dialog frame.
         self.setWindowFlag(Qt.WindowType.Window, True)
 
-        # Scroll, so the window can be dragged narrower than the panel wants.
+        # Scrolls, so the window can be narrower than the panel.
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setWidget(panel)
@@ -147,8 +110,6 @@ class PanelWindow(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._scroll)
 
-        # The same dressing a settings page gets, so a panel doesn't change
-        # appearance depending on which window it landed in.
         panel.setStyleSheet(style.accent_panel(key))
         widgets.collapsible_groups(panel, key)
 
@@ -182,15 +143,11 @@ class PanelWindow(QDialog):
 
     def closeEvent(self, event) -> None:
         self.save_geometry()
-        super().closeEvent(event)       # hide; the adapter owns the panel
+        super().closeEvent(event)       # hides; the adapter owns the panel
 
     def release(self) -> QWidget | None:
-        """Give the panel back before this window is destroyed.
-
-        `takeWidget` and not just `deleteLater`: a QScrollArea owns its widget,
-        so deleting the window would take the adapter's panel with it — and the
-        adapter is what disposes of the panel, after its controller is closed.
-        """
+        """Hand the panel back before this window dies: a QScrollArea deletes
+        its widget, and the adapter disposes of the panel itself."""
         self.save_geometry()
         self.hide()
         panel = self._scroll.takeWidget()
@@ -199,36 +156,21 @@ class PanelWindow(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """Modeless settings window: the Save page plus one page per subsystem.
-
-    A window rather than a dock: the panels are edited *while* watching the live
-    view, and a floating one can sit on a second screen without taking width
-    from the camera pane. Built once and hidden on close — the panels inside are
-    live objects wired to the running controllers, so it must not be destroyed.
-
-    Two ways to reach a page and they stay in step: the tab bar, and one
-    sidebar item per page (2026-08-25). The sidebar doubles as the list of what
-    is loaded; the tabs let you see every page at once and drag them into your
-    own order.
-    """
+    """Modeless settings window, a page per module. Hidden on close, never
+    destroyed: the panels are wired to live controllers."""
 
     _GEOM_KEY = "settingsGeometry"
-    # First-run floor, in px. The window opens at least this big even if every
-    # panel is small; see `default_size()` for what grows it beyond this.
     _MIN_DEFAULT = (900, 820)
-    _PAD = 16          # slack round the measured panel, for the frame/scrollbar
+    _PAD = 16
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        # A real window (minimise/maximise buttons), not a fixed dialog frame.
         self.setWindowFlag(Qt.WindowType.Window, True)
 
         self.tabs = QTabWidget()
-        self.tabs.setMovable(True)                  # tabs reorderable by drag
+        self.tabs.setMovable(True)
 
-        # Scroll area so the window can be dragged narrower than the widest
-        # panel (content scrolls instead of pinning a minimum width).
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.tabs)
@@ -238,26 +180,16 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(scroll)
 
-        # Sizing waits for the first show: the panels are added after __init__,
-        # and the size is measured from them.
+        # Sized on first show, once the panels exist.
         self._saved_geom = _qsettings().value(self._GEOM_KEY)
         self._sized = False
 
     def default_size(self) -> QSize:
-        """Big enough to show the largest panel whole, clamped to the screen.
-
-        Measured, not hard-coded, so a panel that grows a row doesn't start
-        opening behind a scrollbar. The clamp matters because a size comfortable
-        here can open taller than the rig's screen, which on Windows puts the
-        bottom of the window out of reach.
-
-        Asks the tab widget, not the `QScrollArea` — a scroll area reports a
-        small hint of its own, which is the point of it."""
+        """Fits the largest panel (asks the tabs; a scroll area's hint is small)."""
         return _fits_on_screen(self.tabs.sizeHint(), self._MIN_DEFAULT,
                                self._PAD, self.screen())
 
     def showEvent(self, event) -> None:
-        # First show only: afterwards the operator's own size wins.
         if not self._sized:
             self._sized = True
             restored = (self._saved_geom is not None
@@ -268,15 +200,7 @@ class SettingsDialog(QDialog):
 
     def add_panel(self, panel: QWidget, label: str, key: str,
                   index: int | None = None) -> None:
-        """Add a settings tab wearing its subsystem accent (tab + group box).
-
-        Every group box is made collapsible here rather than in the panels, so
-        a new instrument gets it for free and the panels stay about their
-        instrument. Which are shut is remembered per tab.
-
-        `index` places the tab, for a module loaded mid-session that has to land
-        in `config.MODULES` order rather than at the end.
-        """
+        """A tab in the module's accent, its group boxes made collapsible."""
         idx = (self.tabs.addTab(panel, label) if index is None
                else self.tabs.insertTab(index, panel, label))
         self.tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
@@ -284,8 +208,7 @@ class SettingsDialog(QDialog):
         widgets.collapsible_groups(panel, key)
 
     def remove_panel(self, panel: QWidget) -> None:
-        """Drop an unloaded module's tab. Not deleted here — the adapter owns
-        the panel and disposes of it once its controller is closed."""
+        """Not deleted: the adapter disposes of it."""
         idx = self.tabs.indexOf(panel)
         if idx >= 0:
             self.tabs.removeTab(idx)
@@ -294,7 +217,6 @@ class SettingsDialog(QDialog):
         return self.tabs.indexOf(panel)
 
     def show_panel(self, panel: QWidget) -> bool:
-        """Bring `panel`'s page to the front. False if it isn't in here."""
         idx = self.tabs.indexOf(panel)
         if idx < 0:
             return False
@@ -308,23 +230,17 @@ class SettingsDialog(QDialog):
         _qsettings().setValue(self._GEOM_KEY, self.saveGeometry())
 
     def closeEvent(self, event) -> None:
-        # Remember where the operator put it, then hide (never delete).
         self.save_geometry()
         super().closeEvent(event)
 
 
 class ConnectionMonitor(QDialog):
-    """Modeless panel showing whether each loaded device is detected.
-
-    Uses probe.py's enumeration-only checks, so Refresh is safe to hit at any
-    time — including mid-session — without disturbing a running worker."""
+    """Whether each loaded device is detected. Enumeration-only probes, safe
+    mid-session."""
 
     _DOT = {"ok": "#2e7d32", "missing": "#c62828", "error": "#e0860a", "stub": "#8a8a8a"}
     _WORD = {"ok": "connected", "missing": "not found", "error": "error", "stub": "stub"}
 
-    # Same signal PanelWindow carries, for the same reason: the sidebar's
-    # Devices item used to give no cue the monitor was already open elsewhere
-    # on screen, unlike every other sidebar item.
     visibility_changed = pyqtSignal(bool)
 
     def __init__(self, module_keys: list[str], probe_kwargs=None, parent=None):
@@ -332,8 +248,7 @@ class ConnectionMonitor(QDialog):
         self.setWindowTitle("Device connections")
         self.setMinimumWidth(420)
         self._modules = module_keys
-        # A callable, not a dict: Refresh then picks up a port edited in the
-        # Stage tab after this window was opened.
+        # A callable, so Refresh sees a port edited after opening.
         self._probe_kwargs = probe_kwargs or (lambda: {})
         self._rows: dict[str, tuple[QLabel, QLabel]] = {}
 
@@ -375,14 +290,8 @@ class ConnectionMonitor(QDialog):
         self.visibility_changed.emit(False)
 
     def refresh(self) -> None:
-        """Probe one module at a time, painting each row as it lands.
-
-        `probe_all` in one go left every row on "…" until the last probe
-        returned, because the GUI thread was inside it the whole time — and a
-        driver enumeration isn't fast. Refresh is disabled meanwhile: these
-        touch hardware, and re-entering through a second click isn't something
-        to find out about on a rig.
-        """
+        """One module at a time, painting each row as it lands. Refresh is
+        disabled meanwhile: these touch hardware, and must not re-enter."""
         kwargs = self._probe_kwargs()
         self._btn_refresh.setEnabled(False)
         try:

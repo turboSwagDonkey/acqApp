@@ -1,9 +1,4 @@
-"""Closed loop — the rule and what it watches. Pure, and no Qt.
-
-`LoopRule` is the whole decision, as a function of (value, time): the semantics
-live here, and `tests/test_closed_loop.py` drives this file directly.
-`LoopSettings` is what persists.
-"""
+"""Closed loop — the rule and what it watches. Pure, no Qt."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,62 +6,47 @@ from typing import Callable
 
 COMPARISONS = ("above", "below")
 
-# Outputs a rule can drive, key → label. The key is a module key, so firing is
-# `sync.fire(key, duration)` and the module's `on_trigger` does the rest.
+# Module keys, so firing is `sync.fire(key, duration)`.
 TARGETS: dict[str, str] = {"puffer": "Puffer", "dmd": "DMD"}
 
-# A latency floor, not an experimental parameter, so not a panel setting —
-# 200 Hz already outruns the wheel's 120 Hz, so faster only re-reads a sample.
+# Already outruns the wheel's 120 Hz; faster only re-reads a sample.
 POLL_HZ = 200.0
 
 
 @dataclass(frozen=True)
 class SignalSource:
-    """A live scalar a rule can watch.
-
-    `read()` -> `(value, acquired_at)`, or None while the signal isn't running
-    (normal, not an error). `acquired_at` is the `perf_counter()` instant of
-    ACQUISITION — `Recorder.put(at=)`'s domain — so a fire lands in the file at
-    its cause, not at the GUI hop after. Called from the loop thread; must not
-    consume.
-    """
-    key:   str                                       # stable id: config + file
-    label: str                                       # what the combo shows
+    """A live scalar a rule can watch. `read()` -> (value, acquired_at) or
+    None while not running; must not consume. `acquired_at` is perf_counter
+    at acquisition, so a fire is filed at its cause."""
+    key:   str
+    label: str
     units: str
     read:  Callable[[], tuple[float, float] | None]
 
 
 @dataclass
 class LoopSettings:
-    """The rule, as persisted. All of this reaches `acqapp_local.json` and the
-    session file — hence no `armed`: nothing can restore a rig into it."""
+    """No `armed` field: nothing may restore a rig into it."""
     source:       str   = ""          # SignalSource.key; "" = first on offer
-    comparison:   str   = "above"     # one of COMPARISONS
-    threshold:    float = 50.0        # in the source's units
-    hold_s:       float = 0.25        # condition must hold this long to count
-    refractory_s: float = 5.0         # minimum gap between two fires
+    comparison:   str   = "above"
+    threshold:    float = 50.0        # source units
+    hold_s:       float = 0.25        # must hold this long
+    refractory_s: float = 5.0         # minimum gap between fires
     retrigger:    bool  = True        # False = the condition must clear first
-    target:       str   = "puffer"    # a TARGETS key
-    duration_s:   float = 0.100       # passed to the target
+    target:       str   = "puffer"
+    duration_s:   float = 0.100
     max_fires:    int   = 0           # 0 = no limit
 
 
 class LoopRule:
-    """Should this fire, given the newest value? Pure, Qt-free, testable.
+    """`update()` per sample, True on exactly the samples that should fire.
 
-    One `update()` per sample, True on exactly the samples that should actuate.
-    Each gate covers a way a bare threshold misbehaves on a real signal:
+      hold_s       noise crosses a threshold many times a second
+      refractory_s a true condition would otherwise fire every sample
+      retrigger    False: one fire per bout
+      max_fires    a wrong rule is wrong a bounded number of times
 
-      `hold_s`       noise crosses a threshold many times a second
-      `refractory_s` a condition that stays true would fire on every sample —
-                     200 puffs a second
-      `retrigger`    True: re-fire each refractory while it holds. False: one
-                     fire per bout, the signal must fall back first
-      `max_fires`    session ceiling: a wrong rule is wrong a bounded number of
-                     times
-
-    `update(None, t)` never fires — which matters for `below`, where a source
-    that isn't running must not read as zero and satisfy it.
+    `update(None, t)` never fires, so a stopped source can't satisfy `below`.
     """
 
     def __init__(self, settings: LoopSettings | None = None) -> None:
@@ -75,28 +55,21 @@ class LoopRule:
         self.reset()
 
     def reset(self) -> None:
-        """Forget everything, including the fire count. Per session."""
-        self._since: float | None = None      # when the condition became true
+        """Forget everything, including the count. Per session."""
+        self._since: float | None = None
         self._last_fire: float | None = None
-        self._cleared = True                  # false since the last fire?
+        self._cleared = True
         self.n_fires = 0
-        # What `update()`'s own `satisfied(value)` call just found, so a
-        # caller building a readout right after `update()` (the 200 Hz loop
-        # in closed_loop/worker.py) can read it back instead of re-running
-        # the same comparison a second time.
-        self.last_satisfied = False
+        self.last_satisfied = False     # from the last update(), for readouts
 
     def configure(self, settings: LoopSettings) -> None:
-        """Adopt new settings mid-session, keeping the fire history: nudging a
-        threshold must not hand back a fresh `max_fires` budget or bypass the
-        refractory window."""
+        """Keeps the fire history: a nudged threshold mustn't reset the budget
+        or the refractory window."""
         self._s = settings
         self._since = None
 
     def idle(self) -> None:
-        """Called while disarmed. Drops the in-progress hold, so `hold_s` starts
-        at arming and not from whenever the animal began running. Count and
-        refractory survive."""
+        """While disarmed: the hold restarts at arming."""
         self._since = None
         self._cleared = True
 
@@ -105,8 +78,7 @@ class LoopRule:
         return self._s
 
     def satisfied(self, value: float | None) -> bool:
-        """Is the condition true right now? Ignores every gate — the panel shows
-        it, so a threshold can be set against a live animal while disarmed."""
+        """The bare condition, no gates (shown live while disarmed)."""
         if value is None:
             return False
         return (value > self._s.threshold if self._s.comparison == "above"
@@ -133,5 +105,3 @@ class LoopRule:
         self._cleared = False
         self.n_fires += 1
         return True
-
-
