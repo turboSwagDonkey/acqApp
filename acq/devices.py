@@ -223,6 +223,15 @@ class ModuleHost(Protocol):
         doesn't reset the camera to Internal under it."""
         ...
 
+    def set_camera_burst(self, key: str, n: int) -> bool | None:
+        """Frames per edge (0 = until re-armed), restarting live view if
+        needed. False: refused because a recording is running."""
+        ...
+
+    def camera_burst_frames(self, key: str) -> int | None:
+        """Real frames of the burst the last gate caught; None outside burst."""
+        ...
+
     def rearm_camera_trigger(self, key: str) -> bool | None:
         """Queue a re-gate so the next edge is detectable. False: no worker."""
         ...

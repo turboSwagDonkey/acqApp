@@ -12,7 +12,7 @@ from PyQt6.QtCore import pyqtSignal
 
 from acqApp.acq.worker import PullWorker, paced
 from .presets import (AcqConfig, EXTERNAL_EDGE, MIN_EXPOSURE_US, WRITER_MBPS,
-                      fit_exposure)
+                      burst_next_boundary, burst_pulses, fit_exposure)
 
 # "External edge" is MASTER PULSE, not plain EXTERNAL: EXTERNAL takes one
 # frame per edge, while here one edge starts the camera's own pulse train.
@@ -29,9 +29,11 @@ _TRIG_ACTIVE_PROP     = "TRIGGER ACTIVE"            # 1 EDGE 2 LEVEL 3 SYNCREADO
 _MP_TRIG_SRC_PROP     = "MASTER PULSE TRIGGER SOURCE"   # 1 EXTERNAL 2 SOFTWARE
 _MP_MODE_PROP         = "MASTER PULSE MODE"         # 1 CONTINUOUS 2 START 3 BURST
 _MP_INTERVAL_PROP     = "MASTER PULSE INTERVAL"     # seconds
+_MP_BURST_PROP        = "MASTER PULSE BURST TIMES"
 _MP_TRIG_SRC_EXTERNAL = 1
 _MP_MODE_CONTINUOUS   = 1
 _MP_MODE_START        = 2
+_MP_MODE_BURST        = 3
 # EDGE leaves exposure and readout back to back (512 rows at 500 us: 401 Hz
 # vs a 528 Hz sensor); SYNCREADOUT pipelines them (512.8 Hz at 200/500/1500
 # us; 256 rows 998.4, 1024 rows 262.0 — MODE=CONTINUOUS, 2026-09-28).
@@ -91,6 +93,16 @@ class OrcaFireWorker(PullWorker):
         self._interval_s = 0.0          # frame period fit_exposure chose
         self._pending_rearm = False
         self._rearm_with_file = False
+        self._mp_mode = _MP_MODE_START
+        self._burst_n = 0               # 0 = START mode
+        # Burst: the frame count when the re-arm was asked for; the gate goes
+        # to the end of that burst. Taken then, not when the loop gets to it
+        # (up to a wait later), or an edge in between reads as mid-burst.
+        self._soft_gate: int | None = None
+        self._gate_acq0 = 0             # acquired count the gate sits at
+        self._gate_stale = False        # the gated burst starts with a leftover
+        self._acquired = 0
+        self._rearm_from = 0
         # (re-arms completed, frames since). Capture thread writes, replaced
         # whole so a reader never sees half an update.
         self._gate = (0, 0)
@@ -145,7 +157,7 @@ class OrcaFireWorker(PullWorker):
                 f"{_MP_INTERVAL_PROP}={g(_MP_INTERVAL_PROP)}")
 
     @staticmethod
-    def _do_rearm(cam, nframes: int) -> None:
+    def _do_rearm(cam, nframes: int, mode: int = _MP_MODE_START) -> None:
         """A bare stop/start leaves START mode's "already triggered" latch set
         and the camera free-runs; rewriting MODE clears it (rig, 2026-09-17).
 
@@ -153,15 +165,14 @@ class OrcaFireWorker(PullWorker):
         capture session), so with one open a routine re-arms through
         `arm_with_next_file` instead."""
         cam.stop_acquisition()
-        OrcaFireWorker._cycle_master_pulse(cam)
+        OrcaFireWorker._cycle_master_pulse(cam, mode)
         cam.start_acquisition(nframes=nframes)
 
     @staticmethod
-    def _cycle_master_pulse(cam) -> None:
+    def _cycle_master_pulse(cam, mode: int = _MP_MODE_START) -> None:
         cam.set_attribute_value(
             _MP_MODE_PROP, _MP_MODE_CONTINUOUS, error_on_missing=False)
-        cam.set_attribute_value(
-            _MP_MODE_PROP, _MP_MODE_START, error_on_missing=False)
+        cam.set_attribute_value(_MP_MODE_PROP, mode, error_on_missing=False)
 
     supports_dcimg = True
 
@@ -261,7 +272,7 @@ class OrcaFireWorker(PullWorker):
         finally:
             t_start = time.perf_counter()
             if rearm_nframes is not None and self._dcimg is not None:
-                self._cycle_master_pulse(cam)
+                self._cycle_master_pulse(cam, self._mp_mode)
                 cam.start_acquisition(nframes=rearm_nframes)
             else:
                 cam.start_acquisition()
@@ -277,9 +288,11 @@ class OrcaFireWorker(PullWorker):
         return ((hend - hstart) // hbin, (vend - vstart) // vbin)
 
     def rearm_trigger(self) -> None:
-        """Queue a re-arm; the capture thread owns the handle."""
+        """Queue a re-arm; the capture thread owns the handle. In burst mode
+        the camera re-arms itself, so this only moves the gate — no stop."""
         with self._exp_lock:
             self._pending_rearm = True
+            self._rearm_from = self._acquired
 
     @property
     def trigger_gate(self) -> tuple[int, int]:
@@ -287,9 +300,44 @@ class OrcaFireWorker(PullWorker):
         the count moves is the edge."""
         return self._gate
 
-    def _gated(self) -> None:
+    @property
+    def burst_rule(self) -> tuple[int, bool] | None:
+        """(frames per edge, leftover leads each non-first burst), or None
+        outside burst mode."""
+        return (self._burst_n, self._syncreadout) if self._burst_n else None
+
+    @property
+    def burst_frames_since_gate(self) -> int | None:
+        """Real frames of the burst the last gate caught; None outside burst."""
+        if not self._burst_n:
+            return None
+        return max(0, self._acquired - self._gate_acq0 - int(self._gate_stale))
+
+    def _gated(self, acquired: int = 0) -> None:
+        """`acquired`: the frame count the gate sits at (0 after a restart)."""
+        self._gate_acq0 = acquired
+        self._gate_stale = self._syncreadout and acquired > 0
+        if acquired == 0:
+            self._acquired = 0
         self._gate = (self._gate[0] + 1, 0)
         self._gate_t = time.perf_counter()
+
+    def _poll_burst(self, cam) -> None:
+        """Burst mode: frames counted from the camera, not from wake-ups, so a
+        gate can sit at a boundary the loop never saw quiet."""
+        try:
+            acquired = int(cam.get_frames_status().acquired)
+        except Exception:                            # noqa: BLE001
+            return
+        self._acquired = acquired
+        if self._soft_gate is not None:
+            asked, self._soft_gate = min(self._soft_gate, acquired), None
+            self._gated(burst_next_boundary(asked, self._burst_n,
+                                            self._syncreadout))
+            print(f"[voltage_cam] gated at frame {self._gate_acq0} "
+                  f"(burst, no stop)")
+        seq, _ = self._gate
+        self._gate = (seq, max(0, acquired - self._gate_acq0))
 
     def _count_gate_frame(self) -> None:
         # An edge ~0 s after every re-arm means the camera isn't gating.
@@ -558,11 +606,18 @@ class OrcaFireWorker(PullWorker):
                     cam.set_attribute_value(
                         _MP_TRIG_SRC_PROP, _MP_TRIG_SRC_EXTERNAL,
                         error_on_missing=False)
+                    self._mp_mode = (_MP_MODE_BURST if cfg.burst
+                                     else _MP_MODE_START)
                     cam.set_attribute_value(
-                        _MP_MODE_PROP, _MP_MODE_START,
+                        _MP_MODE_PROP, self._mp_mode,
                         error_on_missing=False)
                     # setup_ext_trigger leaves ACTIVE at EDGE.
                     self._syncreadout = self._enable_syncreadout(cam)
+                    if cfg.burst:
+                        cam.set_attribute_value(
+                            _MP_BURST_PROP,
+                            burst_pulses(cfg.burst_frames, self._syncreadout))
+                        self._burst_n = cfg.burst_frames
                 # Read back, not restated: every one of these was wrong once.
                 print(f"[voltage_cam] trigger: {self._trigger_readback(cam)}")
             except Exception as e:
@@ -596,6 +651,7 @@ class OrcaFireWorker(PullWorker):
                         self._pending_rate = None
                         rearm = self._pending_rearm
                         self._pending_rearm = False
+                        rearm_from = self._rearm_from
                         rec_change = self._rec_change
                         rec_path = self._rec_want
                         self._rec_change = False
@@ -624,9 +680,12 @@ class OrcaFireWorker(PullWorker):
                             self.error.emit(f"DCIMG recording failed: {e}")
                         finally:
                             self._rec_busy = False
-                    if rearm and not (rearm_file and self._dcimg is not None):
+                    if rearm and self._burst_n and not (
+                            rearm_file and self._dcimg is not None):
+                        self._soft_gate = rearm_from
+                    elif rearm and not (rearm_file and self._dcimg is not None):
                         try:
-                            self._do_rearm(cam, nframes)
+                            self._do_rearm(cam, nframes, self._mp_mode)
                             self._gated()
                             # Camera counters restart at 0; stale totals would
                             # read as a negative rate and a phantom drop.
@@ -648,11 +707,14 @@ class OrcaFireWorker(PullWorker):
                                 print(f"[voltage_cam] capture rate change to "
                                       f"{pending:.1f} Hz refused ({why})")
 
+                    if self._burst_n:
+                        self._poll_burst(cam)
                     t_wait = time.perf_counter()
                     try:
                         cam.wait_for_frame(timeout=_WAIT_TIMEOUT)
                         wait_fails = 0
-                        self._count_gate_frame()
+                        if not self._burst_n:
+                            self._count_gate_frame()
                     except Exception as e:
                         # A full timeout is legitimate (gated, no edge yet); an
                         # immediate failure is a device error and must be
@@ -768,6 +830,16 @@ class MockCameraWorker(PullWorker):
         return self._gate
 
     @property
+    def burst_rule(self) -> tuple[int, bool] | None:
+        n = self._config.burst_frames if self._config.burst else 0
+        return (n, False) if n else None
+
+    @property
+    def burst_frames_since_gate(self) -> int | None:
+        """Burst mode: N frames per edge, then quiet until the next re-arm."""
+        return self._gate[1] if self.burst_rule else None
+
+    @property
     def timestamp_source(self) -> str:
         return "camera"
 
@@ -836,6 +908,9 @@ class MockCameraWorker(PullWorker):
                 self._gated_until = acquired + self._GATE_S
                 self._gate = (self._gate[0] + 1, 0)
             if acquired < self._gated_until:
+                continue
+            rule = self.burst_rule
+            if rule and self._gate[1] >= rule[0]:
                 continue
             self._gate = (self._gate[0], self._gate[1] + 1)
             t     = acquired - t0

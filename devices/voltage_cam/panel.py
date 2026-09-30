@@ -24,7 +24,7 @@ from acqApp.widgets import spin
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
-    BINNING_OPTIONS,
+    BINNING_OPTIONS, BURST_TIMES_MAX,
     EXTERNAL_EDGE, TRIGGER_MODES,
     WRITER_MBPS,
 )
@@ -36,6 +36,7 @@ class SettingsPanel(QWidget):
     resolution_changed = pyqtSignal(str)    # preset key
     binning_changed   = pyqtSignal(int)
     trigger_changed   = pyqtSignal(str)
+    burst_changed     = pyqtSignal(int)     # frames per edge; 0 = until re-armed
     target_hz_changed = pyqtSignal(float)   # capture rate, hot; 0 = Max
     lut_visible_changed = pyqtSignal(bool)  # show/hide the histogram bar
     auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
@@ -86,6 +87,19 @@ class SettingsPanel(QWidget):
         self._cmb_trigger.setCurrentText(self._cfg.trigger_mode)
         self._cmb_trigger.currentTextChanged.connect(self.trigger_changed)
         lay.addRow("Trigger:", self._cmb_trigger)
+
+        # -1 pulse of headroom: SYNCREADOUT asks for N+1 (presets.burst_pulses).
+        self._spn_burst = spin(
+            0, BURST_TIMES_MAX - 1, self._cfg.burst_frames, step=100,
+            suffix=" frames", track=False,
+            tooltip="External edge only. Each edge captures exactly this many "
+                    "frames, then the camera waits for the next edge with no "
+                    "re-arm.\nOff = one edge starts capture until re-armed.\n"
+                    "A routine sets this from its Record length at Start.")
+        self._spn_burst.setSpecialValueText("Off")
+        self._spn_burst.valueChanged.connect(self.burst_changed)
+        lay.addRow("Frames per edge:", self._spn_burst)
+        self._cmb_trigger.currentTextChanged.connect(self._sync_burst_enabled)
 
         # The only rate/exposure control: exposure is always the longest this
         # rate allows (presets.fit_exposure).
@@ -157,7 +171,10 @@ class SettingsPanel(QWidget):
         root.addRow(grp)
         root.addRow(led)
 
-        self._locked = [self._cmb_preset, self._cmb_binning, self._cmb_trigger]
+        self._locked = [self._cmb_preset, self._cmb_binning, self._cmb_trigger,
+                        self._spn_burst]
+        self._running = False
+        self._sync_burst_enabled()
 
         for sig in (self._cmb_preset.currentIndexChanged,
                     self._cmb_binning.currentIndexChanged,
@@ -232,6 +249,7 @@ class SettingsPanel(QWidget):
             trigger_mode = self._cmb_trigger.currentText(),
             link         = self._cfg.link,
             target_hz    = self._spn_target_hz.value(),
+            burst_frames = self._spn_burst.value(),
             show_lut     = self._chk_lut.isChecked(),
             auto_levels  = self._chk_auto.isChecked(),
             preview_avg  = self._spn_preview_avg.value(),
@@ -248,8 +266,14 @@ class SettingsPanel(QWidget):
 
     def set_running(self, running: bool) -> None:
         """Lock structural settings (resolution/binning/trigger) while running."""
+        self._running = running
         for w in self._locked:
             w.setEnabled(not running)
+        self._sync_burst_enabled()
+
+    def _sync_burst_enabled(self, *_a) -> None:
+        self._spn_burst.setEnabled(
+            not self._running and self._cmb_trigger.currentText() == EXTERNAL_EDGE)
 
     def set_preset(self, key: str) -> None:
         """Programmatically select a resolution preset (e.g. forcing full
@@ -272,6 +296,10 @@ class SettingsPanel(QWidget):
         Structural, like `set_preset()`: only takes effect at the next Start."""
         if mode in TRIGGER_MODES:
             self._cmb_trigger.setCurrentText(mode)
+
+    def set_burst_frames(self, n: int) -> None:
+        """Frames per edge (a routine sets it). Structural: next Start."""
+        self._spn_burst.setValue(int(n))
 
     def set_rate(self, hz: float) -> None:
         """Capture rate (e.g. from a Mode preset); hot, like a manual edit."""

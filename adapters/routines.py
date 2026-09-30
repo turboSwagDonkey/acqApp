@@ -5,7 +5,9 @@ engine at loaded modules, via `ModuleHost` targets.
 - Ticks on the GUI thread (QTimer), non-blocking.
 - Start arms the camera (External edge) and opens the recording; the end
   closes it. A recording the operator started is left alone.
-- A `trigger` step re-arms the camera, which latches after one edge.
+- A `trigger` step re-arms the camera, which latches after one edge. With
+  Trigger→Record pairs the camera bursts that Record's length per edge
+  instead, re-arming itself; the Record ends on the burst.
 - `per_repeat`/`per_group` roll to a fresh file at a run boundary. The roll
   is deferred to `_tick`, after `eng.tick()` returns: the begin hook fires
   inside the engine's call stack, and code still to run there would
@@ -25,7 +27,8 @@ from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.routines.banner import RoutineBanner
 from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
-from acqApp.routines.estimate import clock, remaining
+from acqApp.devices.voltage_cam.presets import BURST_TIMES_MAX
+from acqApp.routines.estimate import burst_frames, clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS, group_region_at,
                                       group_repeat_at, play_order,
@@ -170,6 +173,7 @@ class RoutinesModule(ModuleAdapter):
             puff=puffer.fire if puffer is not None else (lambda: None),
             arm_trigger=arm_trigger,
             trigger_gate=lambda: self.win.camera_trigger_gate(FRAME_STREAM),
+            burst_frames=lambda: self.win.camera_burst_frames(FRAME_STREAM),
             edge=self._on_edge,
             prepare_recording=self._prepare_recording,
             begin_recording=self._on_recording_begin,
@@ -191,6 +195,12 @@ class RoutinesModule(ModuleAdapter):
         """Validate, arm, open the recording, run — refusals leave no file."""
         routine = self.panel.settings
         problems = validate(routine, self._rig())
+        n_burst, why = burst_frames(routine, self.win.frame_rate_hz())
+        if why:
+            problems.append(why)
+        elif n_burst > BURST_TIMES_MAX - 1:
+            problems.append(f"a Record after a Trigger is {n_burst} frames; "
+                            f"one burst holds at most {BURST_TIMES_MAX - 1}")
         if problems:
             self.panel.show_problems(problems)
             self._status(f"routine refused: {problems[0]}")
@@ -202,6 +212,15 @@ class RoutinesModule(ModuleAdapter):
         try:
             if not self._arm_camera_trigger():
                 return
+            burst_ok = self.win.set_camera_burst(FRAME_STREAM, n_burst)
+            if burst_ok is False:
+                msg = ("a recording is already running with a different "
+                       "frames-per-edge — stop it first")
+                self.panel.show_problems([msg])
+                self._status(f"routine refused: {msg}")
+                return
+            if burst_ok is None:
+                n_burst = 0             # no camera: nothing counts a burst
 
             self._routine = routine
             self._trial_count = {}
@@ -234,8 +253,11 @@ class RoutinesModule(ModuleAdapter):
         self._routine_origin = self.win.sync.clock.now()
         self._n_steps = len(routine.steps)
         self._group_repeat = group_repeat_at(routine, play_order(routine))
-        self._engine = RoutineEngine(routine, self._hooks())
+        self._engine = RoutineEngine(routine, self._hooks(),
+                                     burst_frames=n_burst)
         self._engine.start(trigger="ttl")
+        if n_burst:
+            self._status(f"camera bursts {n_burst} frames per edge")
         self._timer.start()
         if self._engine.phase == Phase.ARMED:
             self._status(f"routine '{routine.name}' armed — waiting for "

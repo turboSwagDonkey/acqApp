@@ -36,6 +36,9 @@ REARM_TIMEOUT_S = 30.0
 TRIGGER_DRAIN_S = 1.5
 TRIGGER_SETTLE_S = 0.75
 
+# A burst's frame count standing still this long mid-burst: the camera stopped.
+BURST_STALL_S = 5.0
+
 
 class Phase:
     """Where the engine is. Strings, so they go into the file and the panel."""
@@ -78,6 +81,8 @@ class RoutineHooks:
     # Missed edges can't be seen live; they're found by matching these
     # against the stim rig's log afterwards (saving/bpod_match.py).
     edge:           Callable[[float, "RecordingRun | None"], None] = _noop
+    # Burst mode: real frames of the burst the last gate caught.
+    burst_frames:   Callable[[], int | None] = lambda: None
     # Before `arm_trigger` when a `record` step follows: some recorders
     # (.dcimg) bind only while capture is stopped, and the file must exist
     # before the edge.
@@ -132,8 +137,16 @@ class RoutineEngine:
                  move_timeout_s: float = MOVE_TIMEOUT_S,
                  trigger_timeout_s: float = TRIGGER_TIMEOUT_S,
                  trigger_drain_s: float = TRIGGER_DRAIN_S,
-                 trigger_settle_s: float = TRIGGER_SETTLE_S) -> None:
+                 trigger_settle_s: float = TRIGGER_SETTLE_S,
+                 burst_frames: int = 0) -> None:
+        """`burst_frames` > 0: the camera captures that many frames per edge,
+        so a Record right after a Trigger ends on the burst, not the clock."""
         self._r = routine
+        self._burst_n = burst_frames
+        self._after_edge = False        # the next step is the edge's burst
+        self._in_burst = False          # this Record step is a burst
+        self._burst_seen = 0
+        self._burst_moved_at = 0.0
         self._h = hooks
         self._timeout = move_timeout_s
         self._trig_timeout = trigger_timeout_s
@@ -216,6 +229,9 @@ class RoutineEngine:
         if step is None or self._phase != Phase.RUNNING:
             return 0.0
         if step.kind in TIMED_KINDS:
+            if self._in_burst:
+                got = self._safe_value(self._h.burst_frames, None)
+                return _ratio(float(got or 0), self._burst_n)
             if step.unit == "frames":
                 n = self._frames()
                 if n is None or self._wait_frame0 is None:
@@ -369,6 +385,7 @@ class RoutineEngine:
         """The trigger step's edge arrived."""
         self._safe(self._h.edge, self._safe_value(self._h.now, 0.0),
                    self._next_record_run())
+        self._after_edge = self._burst_n > 0
         self._phase = Phase.RUNNING
         self._step_done = True
 
@@ -415,6 +432,9 @@ class RoutineEngine:
 
     def _tick_wait(self) -> None:
         step = self._r.steps[self._i]
+        if self._in_burst:
+            self._tick_burst()
+            return
         if step.unit == "frames":
             n = self._frames()
             if n is None or self._wait_frame0 is None:
@@ -426,6 +446,21 @@ class RoutineEngine:
         if done:
             self._step_done = True
 
+    def _tick_burst(self) -> None:
+        """Done at N real frames. Frames come from the camera's own count,
+        so file rolls and preview skips don't move it."""
+        got = self._safe_value(self._h.burst_frames, None)
+        if got is None:
+            self._halt("the camera stopped reporting its burst")
+            return
+        t = self._h.now()
+        if got != self._burst_seen:
+            self._burst_seen, self._burst_moved_at = got, t
+        if got >= self._burst_n:
+            self._step_done = True
+        elif t - self._burst_moved_at > BURST_STALL_S:
+            self._halt(f"burst stopped at {got}/{self._burst_n} frames")
+
     # ── step lifecycle ────────────────────────────────────────────────────────
     def _enter_step(self) -> None:
         """Open/close the recording for this position, then act on the step.
@@ -436,6 +471,12 @@ class RoutineEngine:
         step = self._r.steps[self._i]
         self._arrived_at = None
         self._step_done = False
+        # A repeat after a pause has no edge of its own: back to the clock.
+        self._in_burst = (self._after_edge and step.kind == "record"
+                          and self._attempt == 1)
+        self._after_edge = False
+        self._burst_seen = 0
+        self._burst_moved_at = self._safe_value(self._h.now, 0.0)
         try:
             if step.kind == "move":
                 # Never travel lit; `_tick_move` restores it on arrival.

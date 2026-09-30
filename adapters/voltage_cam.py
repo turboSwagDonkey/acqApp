@@ -1,6 +1,7 @@
 """The voltage camera's adapter — owns the window's central view."""
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import asdict
 from typing import Any
@@ -16,7 +17,8 @@ from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWor
 from acqApp.devices.voltage_cam.led import LedController, MockLedController
 from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
                                                 PRESET_KEYS, TRIGGER_MODES,
-                                                WRITER_MBPS)
+                                                WRITER_MBPS, burst_stale,
+                                                burst_stale_indices)
 from acqApp.devices.voltage_cam.panel import SettingsPanel as CamSettingsPanel
 
 _INT_TRIGGER, _EXT_TRIGGER = TRIGGER_MODES[0], TRIGGER_MODES[1]
@@ -74,7 +76,7 @@ class VoltageCamModule(ModuleAdapter):
         self.panel.target_hz_changed.connect(self._on_rate)
         for sig in (self.panel.resolution_changed,
                     self.panel.binning_changed, self.panel.trigger_changed,
-                    self.panel.target_hz_changed,
+                    self.panel.burst_changed, self.panel.target_hz_changed,
                     self.panel.lut_visible_changed,
                     self.panel.auto_levels_changed,
                     self.panel.preview_avg_changed,
@@ -179,12 +181,30 @@ class VoltageCamModule(ModuleAdapter):
         want = _EXT_TRIGGER if on else _INT_TRIGGER
         if self.panel.get_config().trigger_mode == want:
             return on
+        return self._restart_with(lambda: self.panel.set_trigger_mode(want))
+
+    def set_burst_frames(self, n: int) -> bool:
+        """Frames per edge; structural like the trigger mode."""
+        if self.panel.get_config().burst_frames == n:
+            return True
+        return self._restart_with(lambda: self.panel.set_burst_frames(n))
+
+    def _restart_with(self, change) -> bool:
         if self.win.is_recording():
             return False
         was_live = self.win.set_live(False)
-        self.panel.set_trigger_mode(want)
+        change()
         self.win.set_live(was_live)
-        return on
+        return True
+
+    def burst_frames_done(self) -> int | None:
+        """Real frames of the burst the last gate caught; None outside burst."""
+        w = self.worker
+        return None if w is None else getattr(w, "burst_frames_since_gate", None)
+
+    def _burst_rule(self) -> tuple[int, bool] | None:
+        w = self.worker
+        return None if w is None else getattr(w, "burst_rule", None)
 
     def rearm_trigger(self) -> bool:
         """Hot re-gate inside the capture thread. False if nothing is capturing."""
@@ -279,6 +299,9 @@ class VoltageCamModule(ModuleAdapter):
             rec.put("voltage_cam", frame, at=at)
             if index is not None:
                 rec.put("voltage_cam_index", float(index), at=at)
+                rule = self._burst_rule()
+                if rule and burst_stale(int(index), *rule):
+                    rec.put("voltage_cam_stale", float(index), at=at)
 
         self.worker.set_sink(sink)
 
@@ -308,6 +331,7 @@ class VoltageCamModule(ModuleAdapter):
                 "cam_binning":     cfg.binning,
                 "cam_exposure_us": cfg.exposure_us,     # estimate; final = camera's
                 "cam_rate_hz":     cfg.target_hz,       # requested; 0 = Max
+                "cam_burst_frames": cfg.burst_frames if cfg.burst else 0,
                 # Placeholder, so it exists if the app dies mid-recording.
                 "cam_timestamp_source": self._timestamp_source()}
 
@@ -326,10 +350,17 @@ class VoltageCamModule(ModuleAdapter):
             # What fit_exposure actually set from the camera's own readout.
             "cam_exposure_us": self.worker._config.exposure_us,
         }
+        rule = self._burst_rule()
+        if rule:
+            out["cam_burst_leading_stale"] = rule[1]
         if getattr(self.worker, "dcimg_frames", 0):
             out["cam_dcimg_frames"] = self.worker.dcimg_frames
             out["cam_dcimg_missing"] = self.worker.dcimg_missing
             out.update(self._dcimg_clock_span())
+            if rule:
+                # A .dcimg starts at a capture start, so indices are its own.
+                out["cam_dcimg_stale_frames"] = json.dumps(burst_stale_indices(
+                    self.worker.dcimg_frames, *rule))
         else:
             # Camera-side drops; with a .dcimg, cam_dcimg_missing is the count.
             out["cam_dropped_frames"] = self.worker.skipped_frames

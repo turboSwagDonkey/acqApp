@@ -343,6 +343,12 @@ class MainWindow(QMainWindow):
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
         return self._call(key, "set_external_trigger", on)
 
+    def set_camera_burst(self, key: str, n: int) -> bool | None:
+        return self._call(key, "set_burst_frames", n)
+
+    def camera_burst_frames(self, key: str) -> int | None:
+        return self._call(key, "burst_frames_done")
+
     def rearm_camera_trigger(self, key: str) -> bool | None:
         return self._call(key, "rearm_trigger")
 

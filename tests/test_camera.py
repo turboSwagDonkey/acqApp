@@ -646,6 +646,7 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         w._dcimg_full = False
         w._exp_lock = threading.Lock()
         w._rearm_with_file = False
+        w._mp_mode = acq._MP_MODE_START
 
         w._swap_dcimg(FakeCam(), tmp / "a.dcimg", rearm_nframes=59)
         want = ["open", "stop", ("attach", "H"),
@@ -1277,11 +1278,112 @@ def _part_losses() -> int:
     return r.finish()
 
 
+# ═══ burst (MASTER PULSE MODE=BURST) ═════════════════════════════════════
+
+def check_burst_arithmetic(r: Report) -> None:
+    """Pinned to the rig probe (2026-09-30, SYNCREADOUT, 900 pulses per edge):
+    bursts of 899, then 900 — framestamps 0..898, 899..1798, 1799.. . So 900
+    pulses is N=899, and each later burst leads with one leftover frame."""
+    n = 899
+    r.check(P.burst_pulses(n, True) == 900 and P.burst_pulses(n, False) == n,
+            "SYNCREADOUT asks one pulse more than the frames wanted")
+    r.check([P.burst_next_boundary(a, n, True) for a in (0, 1, 899, 900, 1799,
+                                                          1800)]
+            == [0, 899, 899, 1799, 1799, 2699],
+            "boundaries fall where the probe's bursts ended (899, 1799, ...)")
+    r.check(P.burst_stale_indices(2699, n, True) == [899, 1799],
+            "the leftovers are each later burst's first framestamp (899, 1799)")
+    r.check(P.burst_stale(899, n, True) and not P.burst_stale(900, n, True)
+            and not P.burst_stale(898, n, True),
+            "only the first frame of a later burst is stale")
+    r.check(P.burst_stale_indices(5000, n, False) == []
+            and P.burst_next_boundary(1000, n, False) == 1798,
+            "control: EDGE never leaves one open, bursts are exactly N")
+
+
+def check_burst_gate(r: Report) -> None:
+    """In burst mode a re-arm doesn't stop the camera: the gate moves to the
+    end of the burst the count was in when the re-arm was ASKED for."""
+    from types import SimpleNamespace
+    w = OrcaFireWorker(0, AcqConfig())
+    w._burst_n, w._syncreadout = 900, True
+
+    class Cam:
+        acquired = 0
+
+        def get_frames_status(self):
+            return SimpleNamespace(acquired=self.acquired)
+
+    cam = Cam()
+    w._gated()                                   # a capture start
+    cam.acquired = 500
+    w._poll_burst(cam)
+    r.check(w.trigger_gate == (1, 500) and w.burst_frames_since_gate == 500,
+            f"after a start, every frame is real ({w.trigger_gate}, "
+            f"{w.burst_frames_since_gate})")
+    cam.acquired = 900
+    w._poll_burst(cam)
+    w.rearm_trigger()                            # asked at the boundary
+    w._soft_gate = w._rearm_from                 # what the loop does
+    cam.acquired = 905                           # next edge before the loop ran
+    w._poll_burst(cam)
+    r.check(w.trigger_gate == (2, 5) and w.burst_frames_since_gate == 4,
+            f"an edge between the ask and the loop still counts as the edge, "
+            f"less its leftover frame ({w.trigger_gate}, "
+            f"{w.burst_frames_since_gate})")
+    cam.acquired = 1801
+    w._poll_burst(cam)
+    r.check(w.burst_frames_since_gate == 900,
+            f"a later burst: N real frames after the leftover "
+            f"({w.burst_frames_since_gate})")
+
+    w._soft_gate = 1850                          # asked mid-burst
+    cam.acquired = 1850
+    w._poll_burst(cam)
+    r.check(w.trigger_gate == (3, 0) and w._gate_acq0 == 2702,
+            f"asked mid-burst: the gate waits for that burst's end "
+            f"({w.trigger_gate}, at {w._gate_acq0})")
+    cam.acquired = 2702
+    w._poll_burst(cam)
+    r.check(w.trigger_gate[1] == 0,
+            "control: the burst's own tail is not an edge")
+
+
+def check_burst_panel(r: Report) -> None:
+    from acqApp.devices.voltage_cam.panel import SettingsPanel
+    pnl = SettingsPanel(AcqConfig(trigger_mode=P.TRIGGER_MODES[0],
+                                  burst_frames=1500))
+    r.check(not pnl._spn_burst.isEnabled() and not pnl.get_config().burst,
+            "Internal: Frames per edge is off, whatever it holds")
+    pnl.set_trigger_mode(P.EXTERNAL_EDGE)
+    cfg = pnl.get_config()
+    r.check(pnl._spn_burst.isEnabled() and cfg.burst
+            and cfg.burst_frames == 1500,
+            f"External edge: it applies ({cfg.burst_frames})")
+    pnl.set_running(True)
+    r.check(not pnl._spn_burst.isEnabled(), "locked while running")
+    pnl.set_running(False)
+    pnl.set_burst_frames(0)
+    r.check(not pnl.get_config().burst, "0 is Off")
+
+
+def _part_burst() -> int:
+    r = Report("burst")
+    isolate_user_state()
+    app = qt_app()                      # unassigned, it's collected (PLAN §0)
+    check_burst_arithmetic(r)
+    check_burst_gate(r)
+    check_burst_panel(r)
+    del app
+    return r.finish()
+
+
 PARTS = {
     "readout": _part_readout,
     "timestamps": _part_timestamps,
     "dcimg": _part_dcimg,
     "losses": _part_losses,
+    "burst": _part_burst,
 }
 
 

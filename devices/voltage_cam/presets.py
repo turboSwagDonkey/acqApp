@@ -148,6 +148,39 @@ DEFAULT_TRIGGER: str = "Internal (free-running)"
 # 13 us over the worst measured — UNVERIFIED on the rig (2026-09-30).
 MP_INTERVAL_PAD_S = 0.00007
 
+# MASTER PULSE MODE=BURST: one edge -> a fixed pulse count, then quiet and
+# re-armed with no stop. Under SYNCREADOUT a pulse ENDS the running exposure,
+# so the first pulse after a start yields nothing and a later burst's first
+# frame is the exposure left open since the previous burst (probe, 2026-09-30:
+# 900 pulses -> 899 frames, then 900). One extra pulse keeps N real frames.
+BURST_TIMES_MAX = 65535
+
+
+def burst_pulses(n: int, syncreadout: bool) -> int:
+    return n + 1 if syncreadout else n
+
+
+def burst_stale(index: int, n: int, syncreadout: bool) -> bool:
+    """Frame `index` (since capture start) is a burst's leftover exposure."""
+    return syncreadout and index >= n and (index - n) % (n + 1) == 0
+
+
+def burst_next_boundary(acquired: int, n: int, syncreadout: bool) -> int:
+    """Frame count (since start) at the end of the burst `acquired` is in, or
+    `acquired` itself if it sits between bursts."""
+    if acquired <= 0:
+        return 0
+    if acquired <= n:
+        return n
+    p = burst_pulses(n, syncreadout)
+    return n + -(-(acquired - n) // p) * p
+
+
+def burst_stale_indices(total: int, n: int, syncreadout: bool) -> list[int]:
+    """Every leftover-exposure frame among the first `total` since a start."""
+    return list(range(n, total, n + 1)) if syncreadout and n > 0 else []
+
+
 # Slack on the datasheet ceiling before a requested rate counts as unreachable
 # (512 rows: table 524 Hz, measured 528.2).
 RATE_ESTIMATE_TOLERANCE: float = 1.05
@@ -199,6 +232,8 @@ class AcqConfig:
     link:         str   = DEFAULT_LINK      # for estimates only
     # Capture rate, both trigger modes; 0 = as fast as this preset allows.
     target_hz:    float = 0.0
+    # External edge only: frames per edge (BURST); 0 = until re-armed (START).
+    burst_frames: int   = 0
 
     # ── preview (display only; persisted as preferences) ──
     show_lut:     bool = True
@@ -237,6 +272,10 @@ class AcqConfig:
     @property
     def master_pulse(self) -> bool:
         return self.trigger_mode == EXTERNAL_EDGE
+
+    @property
+    def burst(self) -> bool:
+        return self.master_pulse and self.burst_frames > 0
 
     @property
     def trigger_hz(self) -> float:

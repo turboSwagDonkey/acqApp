@@ -280,6 +280,8 @@ def main() -> int:
         def set_camera_binning(self, key, n): return None
         def set_camera_trigger(self, key, on): return None
         def routine_arming_trigger(self, on): ...
+        def set_camera_burst(self, key, n): return None
+        def camera_burst_frames(self, key): return None
         def rearm_camera_trigger(self, key): return None
         def arm_camera_with_next_file(self, key): return None
         def camera_trigger_gate(self, key): return None
