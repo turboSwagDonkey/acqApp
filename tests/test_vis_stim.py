@@ -206,12 +206,12 @@ def check_tick_driven_tuning_run(r: Report) -> None:
             "the trial opens on pretrial 1 (solid white)")
 
     c.on_tick(0.2)                     # pretrial 1's tick elapses -> pretrial 2
-    r.check(c._tuning_step_idx == 1 and c._window._solid,
-            f"pretrial 2 is still solid white ({c._tuning_step_idx})")
+    r.check(c._sweep_step == 1 and c._window._solid,
+            f"pretrial 2 is still solid white ({c._sweep_step})")
     c.on_tick(0.3)                     # pretrial 2 elapses -> orientation 0
-    r.check(c._tuning_step_idx == 2 and not c._window._solid
+    r.check(c._sweep_step == 2 and not c._window._solid
             and c._window._orientation == 0.0,
-            f"the sweep starts at orientation 0 ({c._tuning_step_idx}, "
+            f"the sweep starts at orientation 0 ({c._sweep_step}, "
             f"{c._window._orientation})")
     c.on_tick(0.4)                     # orientation 0 elapses -> orientation 45
     r.check(c._window._orientation == 45.0,
@@ -255,12 +255,12 @@ def check_tick_driven_contrast_run(r: Report) -> None:
             "the trial opens on pretrial 1 (solid white)")
 
     c.on_tick(0.2)                     # pretrial 1 elapses -> pretrial 2
-    r.check(c._contrast_step_idx == 1 and c._window._solid,
-            f"pretrial 2 is still solid white ({c._contrast_step_idx})")
+    r.check(c._sweep_step == 1 and c._window._solid,
+            f"pretrial 2 is still solid white ({c._sweep_step})")
     c.on_tick(0.3)                     # pretrial 2 elapses -> level 0
-    r.check(c._contrast_step_idx == 2 and not c._window._solid,
+    r.check(c._sweep_step == 2 and not c._window._solid,
             f"the sweep starts at the first contrast level "
-            f"({c._contrast_step_idx})")
+            f"({c._sweep_step})")
     img_at_level0 = c._window._img
     c.on_tick(0.4)                     # level 0 elapses -> level 1
     r.check(c._window._img is not img_at_level0,
@@ -310,11 +310,11 @@ def check_tick_driven_size_run(r: Report) -> None:
     pretrial_radius = c._window._radius
 
     c.on_tick(0.2)                     # pretrial 1 elapses -> pretrial 2
-    r.check(c._size_step_idx == 1 and c._window._solid,
-            f"pretrial 2 is still solid white ({c._size_step_idx})")
+    r.check(c._sweep_step == 1 and c._window._solid,
+            f"pretrial 2 is still solid white ({c._sweep_step})")
     c.on_tick(0.3)                     # pretrial 2 elapses -> size step 0
-    r.check(c._size_step_idx == 2 and not c._window._solid,
-            f"the sweep starts at the first size fraction ({c._size_step_idx})")
+    r.check(c._sweep_step == 2 and not c._window._solid,
+            f"the sweep starts at the first size fraction ({c._sweep_step})")
     ratio = c._window._radius / pretrial_radius
     r.check(abs(ratio - SIZE_FRACTIONS[0]) < 1e-9,
             f"the aperture actually shrinks to the first fraction of the "
