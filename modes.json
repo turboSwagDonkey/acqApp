@@ -14,5 +14,20 @@
     "camera_trigger": {
       "voltage_cam": false
     }
+  },
+  "Record": {
+    "dmd_sub_sampling": 2,
+    "camera_presets": {
+      "voltage_cam": "4432x512"
+    },
+    "camera_exposure_us": {
+      "voltage_cam": 2000.0
+    },
+    "camera_binning": {
+      "voltage_cam": 4
+    },
+    "camera_trigger": {
+      "voltage_cam": false
+    }
   }
 }
