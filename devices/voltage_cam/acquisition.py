@@ -11,8 +11,8 @@ import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
 from acqApp.acq.worker import PullWorker, paced
-from .presets import (AcqConfig, EXTERNAL_EDGE, WRITER_MBPS,
-                      master_pulse_interval)
+from .presets import (AcqConfig, EXTERNAL_EDGE, MIN_EXPOSURE_US, WRITER_MBPS,
+                      fit_exposure)
 
 # "External edge" is MASTER PULSE, not plain EXTERNAL: EXTERNAL takes one
 # frame per edge, while here one edge starts the camera's own pulse train.
@@ -25,12 +25,17 @@ _TRIGGER_MODE: dict[str, str] = {
 # free-runs. Enums are written as numeric codes; strings raise.
 _TRIG_SRC_PROP        = "TRIGGER SOURCE"            # 1 INT 2 EXT 3 SW 4 MASTER
 _TRIG_POLARITY_PROP   = "TRIGGER POLARITY"          # 1 NEGATIVE 2 POSITIVE
+_TRIG_ACTIVE_PROP     = "TRIGGER ACTIVE"            # 1 EDGE 2 LEVEL 3 SYNCREADOUT
 _MP_TRIG_SRC_PROP     = "MASTER PULSE TRIGGER SOURCE"   # 1 EXTERNAL 2 SOFTWARE
 _MP_MODE_PROP         = "MASTER PULSE MODE"         # 1 CONTINUOUS 2 START 3 BURST
 _MP_INTERVAL_PROP     = "MASTER PULSE INTERVAL"     # seconds
 _MP_TRIG_SRC_EXTERNAL = 1
 _MP_MODE_CONTINUOUS   = 1
 _MP_MODE_START        = 2
+# EDGE leaves exposure and readout back to back (512 rows at 500 us: 401 Hz
+# vs a 528 Hz sensor); SYNCREADOUT pipelines them (512.8 Hz at 200/500/1500
+# us; 256 rows 998.4, 1024 rows 262.0 — MODE=CONTINUOUS, 2026-09-28).
+_TRIG_ACTIVE_SYNCREADOUT = 3
 
 _WAIT_TIMEOUT = 0.5
 _WAIT_MSG_EVERY = 5.0
@@ -59,9 +64,9 @@ def open_camera(device_index: int = 0):
 
 
 class OrcaFireWorker(PullWorker):
-    """AcqConfig is read once at start; exposure can change hot."""
+    """AcqConfig is read once at start; capture rate can change hot."""
     hz_update = pyqtSignal(int, float)        # (total_frames, recent Hz)
-    timing_update = pyqtSignal(float, bool)   # (achievable_hz, exposure_limited)
+    timing_update = pyqtSignal(float, bool)   # (achievable_hz, unused: False)
     drops_update = pyqtSignal(int, int)       # (skipped_frames, buffer_size)
 
     _STOP_WAIT_MS = 5000
@@ -80,7 +85,10 @@ class OrcaFireWorker(PullWorker):
         # A handle we were given is never opened or closed here (~7 s open).
         self._ext_cam      = cam
         self._exp_lock     = threading.Lock()
-        self._pending_exp: float | None = None
+        self._pending_rate: float | None = None
+        self._syncreadout = False       # camera-confirmed; decides the floor
+        self._readout_s = 1.0 / max(self._config.readout_hz, 1e-9)
+        self._interval_s = 0.0          # frame period fit_exposure chose
         self._pending_rearm = False
         self._rearm_with_file = False
         # (re-arms completed, frames since). Capture thread writes, replaced
@@ -110,10 +118,14 @@ class OrcaFireWorker(PullWorker):
             return "arrival"
         return "camera" if self._t_offset is not None else "unknown"
 
-    def set_exposure(self, us: float) -> None:
-        self._config.exposure_us = us
+    def set_rate(self, hz: float) -> None:
+        """Hot capture-rate change; exposure follows (fit_exposure)."""
         with self._exp_lock:
-            self._pending_exp = us
+            self._pending_rate = float(hz)
+
+    def set_exposure(self, us: float) -> None:
+        """Device protocol: the longest exposure `us` is the rate 1/`us`."""
+        self.set_rate(1e6 / us if us > 0 else 0.0)
 
     @staticmethod
     def _trigger_readback(cam) -> str:
@@ -129,6 +141,7 @@ class OrcaFireWorker(PullWorker):
         return (f"{_TRIG_SRC_PROP}={src}, {_MP_MODE_PROP}={g(_MP_MODE_PROP)}, "
                 f"{_MP_TRIG_SRC_PROP}={g(_MP_TRIG_SRC_PROP)}, "
                 f"{_TRIG_POLARITY_PROP}={g(_TRIG_POLARITY_PROP)}, "
+                f"{_TRIG_ACTIVE_PROP}={g(_TRIG_ACTIVE_PROP)}, "
                 f"{_MP_INTERVAL_PROP}={g(_MP_INTERVAL_PROP)}")
 
     @staticmethod
@@ -325,37 +338,96 @@ class OrcaFireWorker(PullWorker):
         return "set"
 
     def _query_timings(self, cam, cfg, verbose: bool = True) -> float:
-        """Internal's frame rate, from the camera, else the datasheet. What
-        the panel is told is the rate the trigger mode actually runs at.
-        Quiet on the hot exposure path."""
+        """The rate the camera runs at: 1/interval under External edge (the
+        interval IS the rate), else the camera's own frame period, else the
+        datasheet. Quiet on the hot path."""
         hz = cfg.expected_hz
-        try:
-            timings = cam.get_frame_timings()      # (exposure, frame_period)
-            period = float(getattr(timings, "frame_period", 0.0) or 0.0)
-            if period > 0:
-                hz = 1.0 / period
-        except Exception as e:
-            if verbose:
-                print(f"[voltage_cam] get_frame_timings unavailable ({e}); "
-                      f"using datasheet estimate")
-        limited = cfg.exposure_limited
-        real = hz
-        if self._master_pulse:
-            real = 1.0 / master_pulse_interval(1.0 / hz, cfg.exposure_us)
+        if self._master_pulse and self._interval_s > 0:
+            hz = 1.0 / self._interval_s
+        else:
+            try:
+                timings = cam.get_frame_timings()      # (exposure, frame_period)
+                period = float(getattr(timings, "frame_period", 0.0) or 0.0)
+                if period > 0:
+                    hz = 1.0 / period
+            except Exception as e:
+                if verbose:
+                    print(f"[voltage_cam] get_frame_timings unavailable ({e}); "
+                          f"using datasheet estimate")
         if verbose:
-            print(f"[voltage_cam] achievable: {hz:.1f} Hz "
-                  f"(readout ceiling {cfg.readout_hz:.1f}, "
-                  f"exposure ceiling {cfg.exposure_hz:.1f}"
-                  f"{' — EXPOSURE LIMITED' if limited else ''})")
-            if limited:
-                print(f"[voltage_cam] shorten exposure to "
-                      f"≤{cfg.max_exposure_us:.0f} µs to reach the readout ceiling")
+            how = ""
             if self._master_pulse:
-                print(f"[voltage_cam] External edge: {real:.1f} Hz — exposure "
-                      f"and readout run back to back in this mode")
-        self._achievable_hz = real
-        self.timing_update.emit(real, limited)
+                how = (" — External edge, SYNCREADOUT" if self._syncreadout
+                       else " — External edge, EDGE: exposure and readout "
+                            "back to back")
+            print(f"[voltage_cam] achievable: {hz:.1f} Hz{how}")
+        self._achievable_hz = hz
+        self.timing_update.emit(hz, False)
         return hz
+
+    def _measure_readout(self, cam, cfg) -> float:
+        """Readout period with a negligible exposure, so it's readout alone."""
+        try:
+            cam.set_exposure(MIN_EXPOSURE_US * 1e-6)
+            period = float(cam.get_frame_period())
+            if period > 0:
+                return period
+        except Exception as e:                       # noqa: BLE001
+            print(f"[voltage_cam] readout period unavailable ({e}); "
+                  f"using datasheet estimate")
+        return 1.0 / max(cfg.readout_hz, 1e-9)
+
+    def _apply_rate(self, cam, cfg, verbose: bool = True) -> None:
+        """Longest exposure for `cfg.target_hz`, and under External edge the
+        matching MASTER PULSE INTERVAL."""
+        exp_s, period_s = fit_exposure(self._readout_s, cfg.target_hz,
+                                       self._master_pulse, self._syncreadout)
+        cam.set_exposure(exp_s)
+        cfg.exposure_us = exp_s * 1e6
+        if self._master_pulse:
+            cam.set_attribute_value(_MP_INTERVAL_PROP, period_s,
+                                    error_on_missing=False)
+        self._interval_s = period_s
+        if verbose:
+            self._report_rate_request(period_s, cfg)
+
+    @staticmethod
+    def _enable_syncreadout(cam) -> bool:
+        """Ask for SYNCREADOUT; True only if the camera reads it back —
+        trusting an unwritten property would halve the rate."""
+        try:
+            cam.set_attribute_value(_TRIG_ACTIVE_PROP, _TRIG_ACTIVE_SYNCREADOUT,
+                                    error_on_missing=False)
+            got = str(cam.get_attribute_value(_TRIG_ACTIVE_PROP,
+                                              enum_as_str=True))
+        except Exception as e:                       # noqa: BLE001
+            print(f"[voltage_cam] TRIGGER ACTIVE=SYNCREADOUT failed "
+                  f"({type(e).__name__}: {e}) — staying on the EDGE interval "
+                  f"floor, which costs the exposure time in rate")
+            return False
+        if got.upper().replace(" ", "") != "SYNCREADOUT":
+            print(f"[voltage_cam] TRIGGER ACTIVE reads {got!r}, not SYNCREADOUT "
+                  f"— using the EDGE interval floor (rate will be lower by the "
+                  f"exposure time)")
+            return False
+        return True
+
+    @staticmethod
+    def _report_rate_request(interval_s: float, cfg) -> None:
+        """Say the rate it will run at, loudly when a request was clamped."""
+        got = 1.0 / interval_s if interval_s > 0 else 0.0
+        want = cfg.target_hz
+        exp = f"exposure {cfg.exposure_us:.0f} µs"
+        if want <= 0:
+            print(f"[voltage_cam] capture rate: {got:.1f} Hz (Max), {exp}")
+        elif got < want - 0.5:
+            print(f"[voltage_cam] CANNOT REACH {want:.1f} Hz: this "
+                  f"configuration tops out at {got:.1f} Hz, running there "
+                  f"instead ({exp}). Fewer ROWS is the lever — binning is "
+                  f"not one.")
+        else:
+            print(f"[voltage_cam] capture rate: {got:.1f} Hz "
+                  f"(requested {want:.1f}), {exp}")
 
     def _buffer_frames(self, cfg, hz: float) -> int:
         """DCAM ring depth: `_BUFFER_SECONDS` of frames, capped by memory."""
@@ -438,9 +510,9 @@ class OrcaFireWorker(PullWorker):
             print(f"[voltage_cam] ⚠ RECORDING CANNOT KEEP UP: the writer sustains"
                   f" ~{self._WRITER_MBPS:.0f} MB/s, so ~{(1 - keep) * 100:.0f}% of"
                   f" frames would be dropped.")
-            print(f"[voltage_cam]   To record gap-free, cap the rate near "
-                  f"{cap_hz:.0f} Hz (exposure ≥ {1e6 / cap_hz:.0f} µs), "
-                  f"or use a smaller ROI/binning. Live preview is unaffected.")
+            print(f"[voltage_cam]   To record gap-free, set the capture rate "
+                  f"≤ {cap_hz:.0f} Hz, or use a smaller ROI/binning. Live "
+                  f"preview is unaffected.")
 
     def _run(self) -> None:
         cfg    = self._config
@@ -472,8 +544,8 @@ class OrcaFireWorker(PullWorker):
                 )
             mark = _t("set_roi", mark)
 
-            cam.set_exposure(cfg.exposure_us * 1e-6)
             self._maximise_readout_speed(cam)
+            self._readout_s = self._measure_readout(cam, cfg)
 
             mode = _TRIGGER_MODE.get(cfg.trigger_mode, "int")
             self._master_pulse = mode == "master_pulse"
@@ -489,13 +561,8 @@ class OrcaFireWorker(PullWorker):
                     cam.set_attribute_value(
                         _MP_MODE_PROP, _MP_MODE_START,
                         error_on_missing=False)
-                    # The camera's default interval (0.1 s) would pin every
-                    # recording at 10 Hz.
-                    cam.set_attribute_value(
-                        _MP_INTERVAL_PROP,
-                        master_pulse_interval(cam.get_frame_period(),
-                                              cfg.exposure_us),
-                        error_on_missing=False)
+                    # setup_ext_trigger leaves ACTIVE at EDGE.
+                    self._syncreadout = self._enable_syncreadout(cam)
                 # Read back, not restated: every one of these was wrong once.
                 print(f"[voltage_cam] trigger: {self._trigger_readback(cam)}")
             except Exception as e:
@@ -503,6 +570,12 @@ class OrcaFireWorker(PullWorker):
                 # already taken effect.
                 print(f"[voltage_cam] trigger setup failed ({e}); camera left "
                       f"at {self._trigger_readback(cam)}")
+            # Also replaces the camera's default interval (0.1 s = 10 Hz).
+            try:
+                self._apply_rate(cam, cfg)
+            except Exception as e:                   # noqa: BLE001
+                print(f"[voltage_cam] capture rate not applied "
+                      f"({type(e).__name__}: {e})")
 
             hz = self._query_timings(cam, cfg)
             nframes = self._buffer_frames(cfg, hz)
@@ -519,8 +592,8 @@ class OrcaFireWorker(PullWorker):
             try:
                 while not self._stop:
                     with self._exp_lock:
-                        pending = self._pending_exp
-                        self._pending_exp = None
+                        pending = self._pending_rate
+                        self._pending_rate = None
                         rearm = self._pending_rearm
                         self._pending_rearm = False
                         rec_change = self._rec_change
@@ -565,22 +638,15 @@ class OrcaFireWorker(PullWorker):
                                   f"({type(e).__name__}: {e})")
                     if pending is not None:
                         try:
-                            cam.set_exposure(pending * 1e-6)
-                            hz = self._query_timings(cam, cfg, verbose=False)
-                            if mode == "master_pulse":
-                                # The interval tracks exposure; left stale, a
-                                # longer exposure brings back the half rate.
-                                cam.set_attribute_value(
-                                    _MP_INTERVAL_PROP,
-                                    master_pulse_interval(1.0 / hz,
-                                                          cfg.exposure_us),
-                                    error_on_missing=False)
+                            cfg.target_hz = pending
+                            self._apply_rate(cam, cfg)
+                            self._query_timings(cam, cfg, verbose=False)
                         except Exception as e:      # noqa: BLE001
                             why = f"{type(e).__name__}: {e}"
                             if why != self._last_exp_error:
                                 self._last_exp_error = why
-                                print(f"[voltage_cam] exposure change to "
-                                      f"{pending:.0f} us refused ({why})")
+                                print(f"[voltage_cam] capture rate change to "
+                                      f"{pending:.1f} Hz refused ({why})")
 
                     t_wait = time.perf_counter()
                     try:
@@ -737,6 +803,10 @@ class MockCameraWorker(PullWorker):
 
     def set_exposure(self, us: float) -> None:
         self._config.exposure_us = us
+
+    def set_rate(self, hz: float) -> None:
+        self._config.target_hz = hz
+        self._config.fit_exposure()
 
     def arm_with_next_file(self) -> None:
         pass

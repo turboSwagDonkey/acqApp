@@ -27,9 +27,8 @@ import sys
 
 from _harness import APP_DIR, REPO_ROOT, Report
 
-# The exact call that used to kill the camera worker: _query_timings prints
-# "shorten exposure to ≤N µs" whenever the config is exposure-limited, which
-# the default 10 ms full-frame config is.
+# What used to kill the camera worker: its start-up prints carrying characters
+# a cp1252 console can't encode.
 CAMERA_PATH = r'''
 import sys
 sys.path.insert(0, r"{repo}")
@@ -39,15 +38,15 @@ _app = QCoreApplication([])
 from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
 from acqApp.devices.voltage_cam.presets import AcqConfig
 
-cfg = AcqConfig()                     # default: 10 ms exposure at full frame
-assert cfg.exposure_limited, "default config is expected to be exposure-limited"
+cfg = AcqConfig()
 
 class _Timings:  frame_period = 1.0 / 115
 class _FakeCam:
     def get_frame_timings(self): return _Timings()
 
 w = OrcaFireWorker(0, cfg, cam=_FakeCam())
-w._query_timings(_FakeCam(), cfg)     # <- the print that used to explode
+w._query_timings(_FakeCam(), cfg)
+w._warn_data_rate(cfg, 10_000.0)      # <- "⚠"/"≤", outside cp1252
 print("REACHED-END")
 '''
 

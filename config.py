@@ -86,7 +86,8 @@ def _is_num(v) -> bool:
 # Recipe fields set_mode() iterates, with the value type each map must hold.
 _RECIPE_MAPS = {
     "camera_presets":     lambda v: isinstance(v, str),
-    "camera_exposure_us": _is_num,
+    "camera_rate_hz":     _is_num,
+    "camera_exposure_us": _is_num,      # legacy; set_mode reads it as a rate
     "camera_trigger":     lambda v: isinstance(v, bool),
     "camera_binning":     lambda v: isinstance(v, int) and not isinstance(v, bool),
 }

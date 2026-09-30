@@ -89,17 +89,18 @@ def _part_readout() -> int:
             P.readout_hz(-5, link=P.CXP) == 19500.0,
             "zero or negative rows clamps instead of dividing by zero")
 
-    # ── binning reads out fewer lines ────────────────────────────────────────
-    r.check(abs(P.readout_hz(2048, binning=2) - P.readout_hz(1024)) < 1e-9,
-            "binning 2 over 2048 rows reads out like 1024 rows")
-    r.check(abs(P.readout_hz(2048, binning=4) - P.readout_hz(512)) < 1e-9,
-            "binning 4 over 2048 rows reads out like 512 rows")
-    r.check(P.readout_hz(2368, binning=0) == P.readout_hz(2368, binning=1),
-            "binning 0 is treated as 1, not as a division by zero")
-    r.check(all(P.readout_hz(2368, binning=b) >= P.readout_hz(2368)
-                for b in P.BINNING_OPTIONS),
-            f"every offered binning option ({P.BINNING_OPTIONS}) is at least as "
-            f"fast as unbinned")
+    # ── binning is NOT a rate lever on this camera (2026-09-28: 512 rows at
+    # bin 1/2/4 all read out in 1.893 ms) ─────────────────────────────────────
+    r.check(all(P.readout_hz(2048, binning=b) == P.readout_hz(2048)
+                for b in (0, 1, 2, 4, 8)),
+            "binning does not change the readout ceiling")
+    r.check(P.readout_hz(512) > P.readout_hz(2048) + 1.0,
+            "control: fewer rows really is faster")
+    cfg_b1 = P.AcqConfig(preset_key="4432x512", binning=1, exposure_us=500.0)
+    cfg_b4 = P.AcqConfig(preset_key="4432x512", binning=4, exposure_us=500.0)
+    r.check(cfg_b1.readout_hz == cfg_b4.readout_hz
+            and cfg_b4.frame_bytes < cfg_b1.frame_bytes,
+            "AcqConfig: binning shrinks the frame, not the readout ceiling")
 
     # ── the presets the panel actually offers ────────────────────────────────
     bad = [k for k in P.PRESET_KEYS
@@ -117,19 +118,85 @@ def _part_readout() -> int:
             f"the smallest offered preset is exactly {P.MIN_PRESET_ROWS} rows")
 
     # Control: the check above is vacuous unless the table still HAS smaller
-    # rows to have excluded. It must, because binning interpolates them.
+    # rows to have excluded.
     r.check(any(rws < P.MIN_PRESET_ROWS for rws, _u, _c in P._ROWS_HZ_BOTH),
             f"the datasheet table still carries rows below "
             f"{P.MIN_PRESET_ROWS} (trimming presets must not trim physics)")
-    # The consequence that would break silently: the smallest preset at bin 4
-    # reads out like 128 rows, and only the table knows that rate.
-    r.check(abs(P.readout_hz(P.MIN_PRESET_ROWS, binning=4)
-                - P.readout_hz(P.MIN_PRESET_ROWS // 4)) < 1e-9,
-            f"{P.MIN_PRESET_ROWS} rows at bin 4 still resolves to the "
-            f"{P.MIN_PRESET_ROWS // 4}-row rate "
-            f"({P.readout_hz(P.MIN_PRESET_ROWS, binning=4):.0f} Hz)")
 
+    check_trigger_rate_request(r)
     return r.finish()
+
+
+def check_trigger_rate_request(r: Report) -> None:
+    """External edge under SYNCREADOUT, and a requested rate. Rig 2026-09-28,
+    4432x512 / 500 us: EDGE 401 Hz, SYNCREADOUT 513 Hz."""
+    edge = P.EXTERNAL_EDGE
+    cfg = P.AcqConfig(preset_key="4432x512", binning=4, exposure_us=500.0,
+                      trigger_mode=edge)
+    r.check(cfg.trigger_hz < cfg.expected_hz,
+            "trigger ceiling sits below free-running (the pad)")
+    r.check(480.0 < cfg.trigger_hz < 530.0,
+            f"512 rows estimates near the measured 513 Hz ({cfg.trigger_hz:.1f})")
+    long_exp = P.AcqConfig(preset_key="4432x512", exposure_us=1500.0,
+                           trigger_mode=edge)
+    r.check(abs(long_exp.trigger_hz - cfg.trigger_hz) < 1e-9,
+            "exposure doesn't move the SYNCREADOUT ceiling")
+    r.check(not cfg.rate_unreachable, "no request: nothing unreachable")
+    cfg500 = P.AcqConfig(preset_key="4432x512", exposure_us=500.0,
+                         trigger_mode=edge, target_hz=500.0)
+    r.check(not cfg500.rate_unreachable and abs(cfg500.rate_hz - 500.0) < 1e-9,
+            "500 Hz at 4432x512 is reachable and is the rate")
+    over = P.AcqConfig(preset_key="4432x512", exposure_us=500.0,
+                       trigger_mode=edge, target_hz=900.0)
+    r.check(over.rate_unreachable
+            and abs(over.rate_hz - over.trigger_hz) < 1e-9,
+            "900 Hz is unreachable and falls back to the ceiling")
+    internal = P.AcqConfig(preset_key="4432x512", target_hz=900.0)
+    r.check(internal.rate_unreachable
+            and abs(internal.rate_hz - internal.readout_hz) < 1e-9,
+            "Internal: beyond readout is unreachable too, ceiling = readout")
+
+    # The interval written to the camera, from the MEASURED readout period.
+    mpi = P.master_pulse_interval
+    readout_s = 0.001893
+    sync_floor = readout_s + P.MP_INTERVAL_PAD_S
+    edge_floor = sync_floor + 500e-6
+    r.check(1.0 / 500.0 > sync_floor + 1e-6,
+            "control: a 500 Hz ask is slower than the floor")
+    r.check(abs(mpi(readout_s, 500.0, True, 500.0) - 1.0 / 500.0) < 1e-9,
+            "a reachable request is honoured exactly")
+    r.check(abs(mpi(readout_s, 500.0, True, 5000.0) - sync_floor) < 1e-9,
+            "an unreachable request clamps to the SYNCREADOUT floor")
+    r.check(abs(mpi(readout_s, 500.0, True) - sync_floor) < 1e-9,
+            "target 0 means the floor")
+    r.check(abs(mpi(readout_s, 500.0) - edge_floor) < 1e-9
+            and edge_floor > sync_floor,
+            "default is the longer EDGE floor — can't bring back the half rate")
+
+    # Exposure is always the longest the rate allows.
+    fit = P.fit_exposure
+    close = lambda a, b: abs(a[0] - b[0]) < 1e-12 and abs(a[1] - b[1]) < 1e-12
+    r.check(close(fit(readout_s, 500.0, True, True), (0.002, 0.002)),
+            "SYNCREADOUT at 500 Hz: exposure = the whole 2 ms interval")
+    r.check(close(fit(readout_s, 5000.0, True, True), (sync_floor, sync_floor)),
+            "SYNCREADOUT, unreachable: clamped to the floor, exposure fills it")
+    r.check(close(fit(readout_s, 0.0, True, True), (sync_floor, sync_floor)),
+            "SYNCREADOUT, Max: the floor")
+    r.check(close(fit(readout_s, 500.0, True, False),
+                  (0.002 - sync_floor, 0.002)),
+            "EDGE at 500 Hz: exposure = interval - readout - pad, rate held")
+    r.check(close(fit(readout_s, 0.0, True, False),
+                  (P.MIN_EXPOSURE_US * 1e-6,
+                   sync_floor + P.MIN_EXPOSURE_US * 1e-6)),
+            "EDGE, Max: minimum exposure, fastest interval")
+    r.check(close(fit(readout_s, 30.0, False), (1 / 30.0, 1 / 30.0)),
+            "Internal at 30 Hz: exposure = 1/30 s")
+    r.check(close(fit(readout_s, 5000.0, False), (readout_s, readout_s)),
+            "Internal beyond readout: exposure = the readout period")
+    slow = P.AcqConfig(preset_key="4432x512", trigger_mode=edge,
+                       target_hz=250.0).fit_exposure()
+    r.check(abs(slow.exposure_us - 4000.0) < 1e-6 and slow.rate_hz == 250.0,
+            f"AcqConfig.fit_exposure: 250 Hz -> 4000 us ({slow.exposure_us:.1f})")
 
 
 # ═══ timestamps (was test_camera_timestamps.py) ═════════════════════════
@@ -1090,45 +1157,59 @@ def check_nocamera_retry(r: Report) -> None:
 
 
 def check_edge_rate_reported(r: Report) -> None:
-    """External edge runs at 1/(readout + exposure), not Internal's rate. The
-    panel said "measured by camera" 528 Hz while files came out at 446 (rig,
-    2026-09-30), which read as lost frames."""
+    """External edge reports the rate its interval sets, not Internal's: the
+    panel said 528 Hz while files came out at 446 (rig, 2026-09-30), which
+    read as lost frames. And exposure fills whatever the rate leaves."""
     import io
     from contextlib import redirect_stdout
     from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
     from acqApp.devices.voltage_cam.presets import (
         EXTERNAL_EDGE, master_pulse_interval)
 
-    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=250.0,
-                    trigger_mode=EXTERNAL_EDGE)
-    want = 1.0 / master_pulse_interval(PERIOD, cfg.exposure_us)
-    w = OrcaFireWorker(0, cfg)
-    w._master_pulse = True
+    class Cam(FakeCam):
+        def __init__(self, shape):
+            super().__init__(shape)
+            self.props: dict = {}
+            self.exposure = None
+
+        def set_exposure(self, s):
+            self.exposure = s
+
+        def set_attribute_value(self, name, value, error_on_missing=True):
+            self.props[name] = value
+
+    readout = 1.8940e-3                       # rig, 4432x512
+    for sync in (True, False):
+        cfg = AcqConfig(preset_key="4432x512", binning=4,
+                        trigger_mode=EXTERNAL_EDGE, target_hz=400.0)
+        cam = Cam(cfg.frame_shape)
+        w = OrcaFireWorker(0, cfg, cam=cam)
+        w._master_pulse, w._syncreadout, w._readout_s = True, sync, readout
+        with redirect_stdout(io.StringIO()):
+            w._apply_rate(cam, cfg)
+            got = w._query_timings(cam, cfg)
+        name = "SYNCREADOUT" if sync else "EDGE"
+        r.check(abs(got - 400.0) < 1e-6 and abs(w.achievable_hz - 400.0) < 1e-6,
+                f"{name}: reports the interval's rate, 400 Hz ({got:.2f})")
+        r.check(abs(cam.props.get("MASTER PULSE INTERVAL", 0) - 2.5e-3) < 1e-12,
+                f"{name}: interval written = 1/400 s")
+        want_exp = 2.5e-3 if sync else 2.5e-3 - readout - P.MP_INTERVAL_PAD_S
+        r.check(abs(cam.exposure - want_exp) < 1e-12
+                and abs(cfg.exposure_us - want_exp * 1e6) < 1e-6,
+                f"{name}: exposure is the longest that holds it "
+                f"({cam.exposure * 1e6:.0f} us)")
+
+    ctrl_cfg = AcqConfig(preset_key="4432x512", binning=4)
+    ctrl = OrcaFireWorker(0, ctrl_cfg)
     with redirect_stdout(io.StringIO()):
-        got = w._query_timings(FakeCam(cfg.frame_shape), cfg)
-    r.check(abs(got - FPS) < 1e-6,
-            "the returned rate is still Internal's (the interval is built on it)")
-    r.check(abs(w.achievable_hz - want) < 1e-6,
-            f"External edge reports {w.achievable_hz:.2f} Hz = 1/(period + "
-            f"exposure + pad), {want:.2f}")
-    ctrl = OrcaFireWorker(0, cfg)
-    with redirect_stdout(io.StringIO()):
-        ctrl._query_timings(FakeCam(cfg.frame_shape), cfg)
+        ctrl._query_timings(FakeCam(ctrl_cfg.frame_shape), ctrl_cfg)
     r.check(abs(ctrl.achievable_hz - FPS) < 1e-6,
             "control: Internal still reports the camera's frame period")
-
-    r.check(cfg.rate_hz < cfg.expected_hz,
-            f"the panel estimate for External edge is below Internal's "
-            f"({cfg.rate_hz:.1f} < {cfg.expected_hz:.1f})")
-    cfg.trigger_mode = "Internal (free-running)"
-    r.check(cfg.rate_hz == cfg.expected_hz,
-            "control: Internal's estimate is unchanged")
-    # The rig's measured spacing: 2.2440 ms at 250 us, 2.4929 ms at 500 us,
-    # the same readout under both (1.894 ms).
+    # The rig's measured EDGE spacing: 2.2440 ms at 250 us, 2.4929 ms at
+    # 500 us, same 1.894 ms readout — with the old 100 us pad.
     r.check(abs((master_pulse_interval(1.8940e-3, 500.0)
-                 - master_pulse_interval(1.8940e-3, 250.0)) - 0.25e-3) < 1e-9
-            and abs(master_pulse_interval(1.8940e-3, 250.0) - 2.2440e-3) < 2e-6,
-            "the formula reproduces the rig's measured frame spacing")
+                 - master_pulse_interval(1.8940e-3, 250.0)) - 0.25e-3) < 1e-9,
+            "the EDGE interval grows 1:1 with exposure, as measured")
 
 
 def check_dcimg_preview_skips_not_drops(r: Report) -> None:

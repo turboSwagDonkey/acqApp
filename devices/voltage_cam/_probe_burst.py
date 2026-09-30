@@ -8,9 +8,12 @@ Questions:
   E. Rate inside a burst = 1/INTERVAL, same as START mode?
 
     acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\voltage_cam\\_probe_burst.py
-        [N=900] [part1_s=90] [part2_s=60]
+        [N=900] [part1_s=90] [part2_s=60] [target_hz=500]
 
-Close acqApp first (it holds the camera). Send edges when it says SEND EDGES.
+target_hz > the EDGE floor (~452 Hz here) needs SYNCREADOUT, which is asked for.
+
+Close acqApp first (it holds the camera). At "PART 1 ... SEND EDGES NOW", click
+triggerApp's RUN PROBE SEQUENCE once (same part1_s/part2_s) - it covers both parts.
 """
 import sys
 import time
@@ -21,13 +24,15 @@ from acqApp.console import enable_safe_console              # noqa: E402
 
 enable_safe_console()
 
-from acqApp.devices.voltage_cam.acquisition import open_camera   # noqa: E402
+from acqApp.devices.voltage_cam.acquisition import (             # noqa: E402
+    OrcaFireWorker, open_camera)
 from acqApp.devices.voltage_cam.presets import (                  # noqa: E402
     PRESETS, master_pulse_interval)
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 900
 PART1_S = float(sys.argv[2]) if len(sys.argv) > 2 else 90.0
 PART2_S = float(sys.argv[3]) if len(sys.argv) > 3 else 60.0
+TARGET_HZ = float(sys.argv[4]) if len(sys.argv) > 4 else 500.0
 EXP_US = 250.0
 BASELINE_S = 5.0
 QUIET_S = 0.3           # no frames this long = the burst is over
@@ -43,7 +48,7 @@ def say(msg):
 
 def readback(cam):
     out = []
-    for p in ("TRIGGER SOURCE", "TRIGGER POLARITY", SRC, MODE, INTERVAL, BURST):
+    for p in ("TRIGGER SOURCE", "TRIGGER ACTIVE", "TRIGGER POLARITY", SRC, MODE, INTERVAL, BURST):
         try:
             out.append(f"{p}={cam.get_attribute_value(p, enum_as_str=True)}")
         except Exception as e:                  # noqa: BLE001
@@ -96,7 +101,8 @@ def report(label, k, b, bursts, interval, still_running=False):
 
 
 def main():
-    say(f"opening camera (N={N}, exposure {EXP_US:g} us)")
+    say(f"opening camera (N={N}, exposure {EXP_US:g} us, "
+        f"target {TARGET_HZ:g} Hz)")
     cam = open_camera(0)
     try:
         p = PRESETS["4432x512"]
@@ -109,10 +115,17 @@ def main():
             pass
         cam.set_trigger_mode("master_pulse")
         cam.setup_ext_trigger(invert=True)
+        sync = OrcaFireWorker._enable_syncreadout(cam)
+        say(f"SYNCREADOUT {'on' if sync else 'REFUSED - EDGE floor'}")
         cam.set_attribute_value(SRC, 1)
         cam.set_attribute_value(MODE, BURST_MODE)
         cam.set_attribute_value(BURST, N)
-        interval = master_pulse_interval(cam.get_frame_period(), EXP_US)
+        period = cam.get_frame_period()
+        interval = master_pulse_interval(period, EXP_US, syncreadout=sync,
+                                         target_hz=TARGET_HZ)
+        say(f"frame period {period * 1e3:.4f} ms -> INTERVAL "
+            f"{interval * 1e3:.4f} ms ({1 / interval:.1f} Hz"
+            f"{'' if interval <= 1 / TARGET_HZ + 1e-9 else ', FLOOR ABOVE TARGET'})")
         cam.set_attribute_value(INTERVAL, interval)
         try:
             a = cam.get_attribute(BURST)
@@ -127,7 +140,8 @@ def main():
         say(f"A. baseline: {sum(len(b['stamps']) for b in base)} frames "
             f"(want 0)")
 
-        say(f"B/C. PART 1 ({PART1_S:g} s): SEND EDGES NOW, several, a few s apart")
+        say(f"B/C. PART 1 ({PART1_S:g} s): SEND EDGES NOW "
+            f"(click triggerApp RUN PROBE SEQUENCE once)")
         p1 = watch(cam, PART1_S, "part1", interval)
         say(f"part 1: {len(p1)} burst(s), sizes {[len(b['stamps']) for b in p1]}")
 
@@ -137,7 +151,8 @@ def main():
         cam.set_attribute_value(MODE, BURST_MODE)
         cam.start_acquisition(nframes=max(2 * N, 2000))
         say(f"readback: {readback(cam)}")
-        say(f"PART 2 ({PART2_S:g} s): SEND EDGES AGAIN")
+        say(f"PART 2 ({PART2_S:g} s): SEND EDGES AGAIN "
+            f"(triggerApp sequence covers this)")
         p2 = watch(cam, PART2_S, "part2", interval)
         say(f"part 2: {len(p2)} burst(s), sizes {[len(b['stamps']) for b in p2]}")
     finally:

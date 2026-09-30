@@ -54,9 +54,9 @@ class VoltageCamModule(ModuleAdapter):
     def set_preset(self, key: str) -> None:
         self.panel.set_preset(key)
 
-    def set_exposure(self, us: float) -> None:
-        """Hot, through the panel's own exposure wiring."""
-        self.panel.set_exposure(us)
+    def set_rate(self, hz: float) -> None:
+        """Hot, through the panel's own capture-rate wiring."""
+        self.panel.set_rate(hz)
 
     def binning(self) -> int:
         return self.panel.get_config().binning
@@ -71,9 +71,10 @@ class VoltageCamModule(ModuleAdapter):
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = CamSettingsPanel(self._load_config())
-        self.panel.exposure_changed.connect(self._on_exposure)
-        for sig in (self.panel.exposure_changed, self.panel.resolution_changed,
+        self.panel.target_hz_changed.connect(self._on_rate)
+        for sig in (self.panel.resolution_changed,
                     self.panel.binning_changed, self.panel.trigger_changed,
+                    self.panel.target_hz_changed,
                     self.panel.lut_visible_changed,
                     self.panel.auto_levels_changed,
                     self.panel.preview_avg_changed,
@@ -92,7 +93,7 @@ class VoltageCamModule(ModuleAdapter):
             self._hist.setVisible(cfg.show_lut)
         if self._chk_auto_lut is not None:
             self._chk_auto_lut.setChecked(cfg.auto_levels)
-        for sig in (self.panel.exposure_changed, self.panel.resolution_changed,
+        for sig in (self.panel.target_hz_changed, self.panel.resolution_changed,
                     self.panel.binning_changed, self.panel.trigger_changed):
             sig.connect(self._push_rate)
         self._push_rate()
@@ -149,7 +150,11 @@ class VoltageCamModule(ModuleAdapter):
         cfg = config.load_dataclass(AcqConfig, "voltage_cam")
         if cfg.preset_key not in PRESET_KEYS:      # a preset may have been removed
             cfg.preset_key = DEFAULT_PRESET
-        return cfg
+        # Saved before capture rate existed: keep its exposure's rate.
+        if "target_hz" not in config.load_settings("voltage_cam") \
+                and cfg.exposure_us > 0:
+            cfg.target_hz = round(1e6 / cfg.exposure_us, 1)
+        return cfg.fit_exposure()
 
     def _save(self, *_a) -> None:
         config.save_settings("voltage_cam", asdict(self.panel.get_config()))
@@ -162,9 +167,9 @@ class VoltageCamModule(ModuleAdapter):
     def frame_rate_hz(self) -> float | None:
         return self.panel.get_config().rate_hz
 
-    def _on_exposure(self, us: float) -> None:
+    def _on_rate(self, hz: float) -> None:
         if self.worker is not None:
-            self.worker.set_exposure(us)
+            self.worker.set_rate(hz)
 
     # ── what a routine may drive ──
     def set_external_trigger(self, on: bool) -> bool:
@@ -301,7 +306,8 @@ class VoltageCamModule(ModuleAdapter):
         cfg = self.panel.get_config()
         return {"cam_preset":      cfg.preset_key,
                 "cam_binning":     cfg.binning,
-                "cam_exposure_us": cfg.exposure_us,
+                "cam_exposure_us": cfg.exposure_us,     # estimate; final = camera's
+                "cam_rate_hz":     cfg.target_hz,       # requested; 0 = Max
                 # Placeholder, so it exists if the app dies mid-recording.
                 "cam_timestamp_source": self._timestamp_source()}
 
@@ -317,12 +323,16 @@ class VoltageCamModule(ModuleAdapter):
             return {"cam_timestamp_source": "unknown"}
         out = {
             "cam_timestamp_source": self.worker.timestamp_source,
-            "cam_dropped_frames": self.worker.skipped_frames,
+            # What fit_exposure actually set from the camera's own readout.
+            "cam_exposure_us": self.worker._config.exposure_us,
         }
         if getattr(self.worker, "dcimg_frames", 0):
             out["cam_dcimg_frames"] = self.worker.dcimg_frames
             out["cam_dcimg_missing"] = self.worker.dcimg_missing
             out.update(self._dcimg_clock_span())
+        else:
+            # Camera-side drops; with a .dcimg, cam_dcimg_missing is the count.
+            out["cam_dropped_frames"] = self.worker.skipped_frames
         return out
 
     def _dcimg_clock_span(self) -> dict[str, Any]:

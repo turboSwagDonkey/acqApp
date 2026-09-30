@@ -317,7 +317,7 @@ def check_round_trip(r: Report, tmp: Path) -> None:
         "dmd_all_on": True,
         "dmd_sub_sampling": 2,
         "camera_presets": {"voltage_cam": "full"},
-        "camera_exposure_us": {"voltage_cam": 33333.0},
+        "camera_rate_hz": {"voltage_cam": 30.0},
         "camera_binning": {"voltage_cam": 1},
         "camera_trigger": {"voltage_cam": False},
     }
@@ -347,9 +347,8 @@ def check_scan_mode_shipped(r: Report) -> None:
             f"…1x1 binning ({scan.get('camera_binning')})")
     r.check(scan.get("camera_trigger", {}).get("voltage_cam") is False,
             f"…internal trigger ({scan.get('camera_trigger')})")
-    us = scan.get("camera_exposure_us", {}).get("voltage_cam")
-    r.check(us is not None and abs(1e6 / us - 30.0) < 0.1,
-            f"…exposure set for ~30 Hz capture ({us!r} us)")
+    hz = scan.get("camera_rate_hz", {}).get("voltage_cam")
+    r.check(hz == 30.0, f"…30 Hz capture ({hz!r})")
     r.check(scan.get("dmd_all_on") is True,
             f"…full DMD display ({scan.get('dmd_all_on')})")
     r.check(scan.get("dmd_sub_sampling") == 2,
@@ -385,8 +384,8 @@ def _add_step(panel) -> None:
 
 
 EDITS = [
-    ("voltage_cam", "exposure",  lambda p: p._spn_exposure.setValue(7321.0),
-     lambda p: p._spn_exposure.value(),        7321.0),
+    ("voltage_cam", "capture rate", lambda p: p._spn_target_hz.setValue(321.0),
+     lambda p: p.get_config().target_hz,       321.0),
     ("voltage_cam", "binning",   lambda p: p._cmb_binning.setCurrentIndex(1),
      lambda p: p.get_config().binning,          2),
     ("voltage_cam", "preview avg", lambda p: p._spn_preview_avg.setValue(4),

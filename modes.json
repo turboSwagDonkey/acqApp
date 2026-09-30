@@ -5,8 +5,8 @@
     "camera_presets": {
       "voltage_cam": "full"
     },
-    "camera_exposure_us": {
-      "voltage_cam": 33333.0
+    "camera_rate_hz": {
+      "voltage_cam": 30.0
     },
     "camera_binning": {
       "voltage_cam": 1
