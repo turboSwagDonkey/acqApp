@@ -1,24 +1,377 @@
-"""
-Panel settings survive a restart (audit #4).
+"""Configuration: rigs.json, modes.json, settings persistence, mirror startup default.
 
-Only the camera and Save tabs used to persist. Every other panel was built
-bare, so each launch reset the wheel's V/rev and diameter to defaults — the two
-constants that scale every wheel number written into a session file, and both
-still unmeasured on this rig. A value that resets silently is worse than one
-that is missing: the file records the default as though it were measured.
-
-The test is a real restart: build a MainWindow, edit every panel, close it,
-build a second window in the same process and read the panels back.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_settings_persistence.py
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_config.py [-q] [--part NAME]
 """
 from __future__ import annotations
 
 import json
 import shutil
 import sys
+import tempfile
+from pathlib import Path
+from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
+                      run_parts)
+from acqApp import config
+from acqApp.devices.puffer.control import PufferSettings
+from acqApp.devices.wheel.settings import EncoderSettings
+from acqApp.devices.mirror.startup import ensure_camera_default, AXIS
+from acqApp.devices.stage.driver import (MIRROR_CHAN_GR, MIRROR_CHAN_CAMERA,
+                                         MIRROR_OUT, MIRROR_IN)
 
-from _harness import Report, isolate_user_state, make_window, pump, qt_app
+
+# ═══ rigs (was test_rigs.py) ════════════════════════════════════════════
+
+FULL = {
+    "ni_device": "Dev3",
+    "hardware": {"puffer": True, "primary_led": True},
+    "channels": {"puffer": "port0/line7", "primary_led": "port0/line2",
+                 "wheel": "ai2"},
+}
+BARE = {
+    "ni_device": "Dev2",
+    "hardware": {"puffer": False, "primary_led": False},
+    "channels": {"wheel": "ai2"},
+}
+
+
+def _write(tmp: Path, rigs: dict, active: str | None = None) -> None:
+    """Point config at a temp rigs.json/acqapp_local.json pair."""
+    config._RIGS_PATH = tmp / "rigs.json"
+    config._CONFIG_PATH = tmp / "acqapp_local.json"
+    config._RIGS_PATH.write_text(json.dumps(rigs), encoding="utf-8")
+    config._CONFIG_PATH.write_text(
+        json.dumps({"rig": active} if active else {}), encoding="utf-8")
+
+
+def check_sanitize(r: Report, tmp: Path) -> None:
+    _write(tmp, {
+        "good": FULL,
+        "not-a-dict": ["nope"],
+        "bad-types": {"ni_device": 7, "hardware": None, "channels": ["x"]},
+        "part-bad": {"ni_device": "Dev9",
+                     "hardware": {"puffer": "yes", "primary_led": False},
+                     "channels": {"puffer": "port0/line3", "wheel": 5}},
+        "bad-dmd-cal": {"ni_device": "Dev2",
+                        "dmd_calibration": {"model": "projective",
+                                            "cross_frac": 4.0}},
+    })
+    rigs = config.load_rigs()
+    r.check("good" in rigs and "bad-types" in rigs, "valid + salvageable kept")
+    r.check("not-a-dict" not in rigs,
+            "a non-dict profile is dropped, not raised")
+    bad = rigs["bad-types"]
+    r.check(bad["ni_device"] == config.DEFAULT_NI_DEVICE,
+            "a non-str ni_device falls back to the default device")
+    r.check(bad["hardware"] == {} and bad["channels"] == {},
+            "null/list where a dict belongs becomes empty, not None")
+    part = rigs["part-bad"]
+    r.check(part["hardware"] == {"primary_led": False},
+            "a non-bool hardware flag is dropped, the real bool kept")
+    r.check(part["channels"] == {"puffer": "port0/line3"},
+            "a non-str channel value is dropped, the str kept")
+    dmd_cal = rigs["bad-dmd-cal"]["dmd_calibration"]
+    r.check(dmd_cal == {"model": None, "cross_frac": None},
+            "an unrecognized model name and an out-of-range cross_frac both "
+            "fall back to None (\"use the module default\"), not raise")
+
+
+def check_corrupt(r: Report, tmp: Path) -> None:
+    _write(tmp, {})
+    config._RIGS_PATH.write_text("{not json at all", encoding="utf-8")
+    r.check(config.load_rigs() == {}, "an unreadable rigs.json loads as empty")
+    r.check(config._RIGS_PATH.with_suffix(".corrupt.json").is_file(),
+            "...and is quarantined, not discarded (the load_config policy)")
+
+
+def check_resolution(r: Report, tmp: Path) -> None:
+    _write(tmp, {"full": FULL}, active="full")
+    r.check(config.rig_device() == "Dev3", "rig_device comes from the profile")
+    r.check(config.rig_channel("puffer") == "Dev3/port0/line7",
+            "a device-relative channel is qualified with the rig's device")
+    r.check(config.rig_channel("nothing-here") is None,
+            "an unnamed channel is None, so the caller keeps its own default")
+    r.check(config.rig_has("puffer") is True, "a True hardware flag reads True")
+    r.check(config.rig_has("never-listed") is True,
+            "an unlisted flag defaults to fitted (pre-rigs.json behaviour)")
+
+    _write(tmp, {"two-daq": {"ni_device": "Dev2",
+                             "channels": {"wheel": "Dev4/ai0"}}},
+           active="two-daq")
+    r.check(config.rig_channel("wheel") == "Dev4/ai0",
+            "a channel naming its own device is passed through, not prefixed")
+
+    _write(tmp, {"full": FULL}, active="no-such-rig")
+    r.check(config.rig_profile() == {} and config.rig_device() == "Dev3",
+            "an unknown rig name falls back to defaults, not a half profile")
+
+
+def check_profile_beats_saved(r: Report, tmp: Path) -> None:
+    """The reason the file exists: a stale saved channel must not win."""
+    _write(tmp, {"bare": BARE}, active="bare")
+    cfg = json.loads(config._CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg["settings"] = {"wheel":  {"channel": "Dev3/ai2"},   # from the old rig
+                       "puffer": {"channel": "Dev3/port0/line7"}}
+    config._CONFIG_PATH.write_text(json.dumps(cfg), encoding="utf-8")
+
+    wheel = config.load_dataclass(EncoderSettings, "wheel")
+    r.check(wheel.channel == "Dev2/ai2",
+            "the rig profile overrides a channel saved from another rig")
+    puffer = config.load_dataclass(PufferSettings, "puffer")
+    r.check(puffer.channel == "",
+            "hardware false blanks the line rather than aiming it somewhere")
+
+    # Unrelated saved fields must still survive the override.
+    cfg["settings"]["puffer"]["duration_s"] = 0.25
+    config._CONFIG_PATH.write_text(json.dumps(cfg), encoding="utf-8")
+    r.check(config.load_dataclass(PufferSettings, "puffer").duration_s == 0.25,
+            "overriding the channel leaves the panel's other settings alone")
+
+    # Only devices with a blank-channel path may be blanked: the encoder has
+    # none, and EncoderWorker._add_channel would raise on "" inside its own
+    # thread — so a hand-edited `wheel: false` must not reach it.
+    _write(tmp, {"nowheel": {"ni_device": "Dev2",
+                             "hardware": {"wheel": False},
+                             "channels": {"wheel": "ai2"}}}, active="nowheel")
+    r.check("wheel" not in config.RIG_BLANKABLE,
+            "the wheel is not blankable (it has no not-fitted path)")
+    r.check(config.load_dataclass(EncoderSettings, "wheel").channel
+            == "Dev2/ai2",
+            "so hardware false leaves the encoder aimed at real hardware")
+
+
+def check_dmd_calibration(r: Report, tmp: Path) -> None:
+    """A stable physical fact (camera tilt), not a per-session setting — see
+    rig_dmd_calibration's docstring — so it lives in the profile, seeding the
+    Calibration dialog's controls rather than being re-picked every run."""
+    _write(tmp, {"tilted": {"ni_device": "Dev2",
+                            "dmd_calibration": {"model": "homography",
+                                                "cross_frac": 0.06}}},
+           active="tilted")
+    r.check(config.rig_dmd_calibration() == {"model": "homography",
+                                             "cross_frac": 0.06},
+            "an explicit override is passed straight through")
+
+    _write(tmp, {"plain": {"ni_device": "Dev3"}}, active="plain")
+    r.check(config.rig_dmd_calibration() == {"model": "affine",
+                                             "cross_frac": None},
+            "a rig that never mentions it gets affine / module-default cross "
+            "-frac — byte-for-byte the pre-dmd_calibration behaviour")
+
+    _write(tmp, {}, active="no-such-rig")
+    r.check(config.rig_dmd_calibration() == {"model": "affine",
+                                             "cross_frac": None},
+            "no profile at all resolves the same way")
+
+
+def check_no_profile_is_unchanged(r: Report, tmp: Path) -> None:
+    """A machine with no rigs.json must behave exactly as it did before."""
+    _write(tmp, {})
+    cfg = {"settings": {"puffer": {"channel": "Dev3/port0/line1"}}}
+    config._CONFIG_PATH.write_text(json.dumps(cfg), encoding="utf-8")
+    s = config.load_dataclass(PufferSettings, "puffer")
+    r.check(s.channel == "Dev3/port0/line1",
+            "with no profile, the saved channel still wins (no regression)")
+    config._CONFIG_PATH.write_text("{}", encoding="utf-8")
+    r.check(config.load_dataclass(PufferSettings, "puffer").channel
+            == PufferSettings().channel,
+            "...and with nothing saved either, the dataclass default stands")
+
+
+def check_puffer_skips_daq(r: Report) -> None:
+    """An unfitted puffer must not touch nidaqmx at all."""
+    from _harness import qt_app
+    qt_app()
+    from acqApp.devices.puffer.control import PufferController
+    import builtins
+
+    real_import, attempted = builtins.__import__, []
+
+    def spy(name, *a, **kw):
+        if name == "nidaqmx":
+            attempted.append(name)
+        return real_import(name, *a, **kw)
+
+    builtins.__import__ = spy
+    try:
+        ctl = PufferController(PufferSettings(channel=""))
+    finally:
+        builtins.__import__ = real_import
+    r.check(not attempted, "a blank channel never imports or opens nidaqmx")
+    r.check(ctl._task is None, "...and leaves no task, so fire() no-ops")
+    ctl.fire(0.01)          # must not raise
+    r.check(True, "...and fire() on an unfitted puffer is silent, not an error")
+
+
+def _part_rigs() -> int:
+    r = Report("rigs")
+    saved = (config._RIGS_PATH, config._CONFIG_PATH)
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_rigs_"))
+    try:
+        check_sanitize(r, tmp)
+        check_corrupt(r, tmp)
+        check_resolution(r, tmp)
+        check_dmd_calibration(r, tmp)
+        check_profile_beats_saved(r, tmp)
+        check_no_profile_is_unchanged(r, tmp)
+        check_puffer_skips_daq(r)
+    finally:
+        config._RIGS_PATH, config._CONFIG_PATH = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+# ═══ modes (was test_modes.py) ══════════════════════════════════════════
+
+def _write_modes(tmp: Path, modes: dict) -> None:
+    """Point config at a temp modes.json."""
+    config._MODES_PATH = tmp / "modes.json"
+    config._MODES_PATH.write_text(json.dumps(modes), encoding="utf-8")
+
+
+def check_modes_sanitize(r: Report, tmp: Path) -> None:
+    _write_modes(tmp, {
+        "good": {
+            "dmd_all_on": True,
+            "dmd_sub_sampling": 2,
+            "camera_presets": {"voltage_cam": "full"},
+            "camera_exposure_us": {"voltage_cam": 33333.0},
+            "camera_binning": {"voltage_cam": 1},
+            "camera_trigger": {"voltage_cam": False},
+        },
+        "not-a-dict": ["nope"],
+        "bad-types": {
+            "camera_presets": ["nope"],
+            "camera_exposure_us": None,
+            "camera_binning": "nope",
+            "camera_trigger": 7,
+            "dmd_sub_sampling": [2],
+        },
+        "part-bad": {
+            "camera_presets": {"voltage_cam": "full", "other_cam": 7},
+            "camera_exposure_us": {"voltage_cam": 33333.0,
+                                   "typo_key": True},   # bool, not a number
+            "camera_binning": {"voltage_cam": 1, "typo_key": True},   # bool, not int
+            "camera_trigger": {"voltage_cam": False, "typo_key": "nope"},
+            "dmd_sub_sampling": True,   # bool, not an int
+        },
+    })
+    modes = config.load_modes()
+    r.check("good" in modes and "bad-types" in modes,
+            "valid + salvageable recipes are kept")
+    r.check("not-a-dict" not in modes,
+            "a non-dict recipe is dropped, not raised")
+
+    good = modes["good"]
+    r.check(good["camera_binning"] == {"voltage_cam": 1},
+            f"a well-formed camera_binning entry passes through "
+            f"({good['camera_binning']})")
+    r.check(good["camera_trigger"] == {"voltage_cam": False},
+            f"…and camera_trigger, bool value kept as a bool "
+            f"({good['camera_trigger']})")
+    r.check(good["dmd_sub_sampling"] == 2,
+            f"…and dmd_sub_sampling, a plain int like dmd_all_on's plain "
+            f"bool, not a per-module dict ({good['dmd_sub_sampling']})")
+
+    bad = modes["bad-types"]
+    r.check("camera_presets" not in bad and "camera_exposure_us" not in bad,
+            "a list/null where a dict belongs is dropped entirely (existing "
+            "fields, control)")
+    r.check("camera_binning" not in bad and "camera_trigger" not in bad,
+            "…and the same for the two new fields: wrong type entirely -> "
+            "dropped, not raised")
+    r.check("dmd_sub_sampling" not in bad,
+            "…a list where dmd_sub_sampling wants a plain number is dropped "
+            "too, not passed to int() and left to raise")
+
+    part = modes["part-bad"]
+    r.check(part["camera_presets"] == {"voltage_cam": "full"},
+            "a non-str value is dropped, the real entry kept")
+    r.check(part["camera_exposure_us"] == {"voltage_cam": 33333.0},
+            "a bool value is dropped from camera_exposure_us — bool is an "
+            "int subclass in Python, so this must be checked explicitly")
+    r.check(part["camera_binning"] == {"voltage_cam": 1},
+            "…the same guard applies to camera_binning (a bool would "
+            "otherwise pass an int check silently)")
+    r.check(part["camera_trigger"] == {"voltage_cam": False},
+            "a non-bool value is dropped from camera_trigger, the real bool "
+            "kept")
+    r.check("dmd_sub_sampling" not in part,
+            "a bool dmd_sub_sampling is dropped too — the same int-subclass "
+            "guard, in the direction dmd_sub_sampling actually needs it")
+
+
+def check_modes_corrupt(r: Report, tmp: Path) -> None:
+    _write_modes(tmp, {})
+    config._MODES_PATH.write_text("{not json at all", encoding="utf-8")
+    r.check(config.load_modes() == {}, "an unreadable modes.json loads as empty")
+    r.check(config._MODES_PATH.with_suffix(".corrupt.json").is_file(),
+            "...and is quarantined, not discarded (the load_rigs policy, "
+            "shared through _load_json)")
+
+
+def check_round_trip(r: Report, tmp: Path) -> None:
+    """save_modes -> load_modes must be lossless for every field set_mode()
+    reads, the new two included — this is the "Save as preset" path."""
+    _write_modes(tmp, {})
+    recipe = {
+        "dmd_all_on": True,
+        "dmd_sub_sampling": 2,
+        "camera_presets": {"voltage_cam": "full"},
+        "camera_exposure_us": {"voltage_cam": 33333.0},
+        "camera_binning": {"voltage_cam": 1},
+        "camera_trigger": {"voltage_cam": False},
+    }
+    config.save_modes({"Scan": recipe})
+    reloaded = config.load_modes()
+    r.check(reloaded == {"Scan": recipe},
+            f"a saved recipe round-trips byte-for-byte ({reloaded})")
+
+
+def check_scan_mode_shipped(r: Report) -> None:
+    """The repo's own modes.json ships a "Scan" mode — internal trigger,
+    full frame, 1x1 binning, ~30 Hz, full DMD display at 1-in-2
+    sub-sampling — so this is a regression guard on the actual shipped
+    file, not just the sanitizer logic above."""
+    saved = config._MODES_PATH
+    config._MODES_PATH = Path(__file__).resolve().parent.parent / "modes.json"
+    try:
+        modes = config.load_modes()
+    finally:
+        config._MODES_PATH = saved
+    r.check("Scan" in modes, "the shipped modes.json has a Scan entry")
+    scan = modes.get("Scan", {})
+    r.check(scan.get("camera_presets", {}).get("voltage_cam") == "full",
+            f"…full frame, the largest possible size "
+            f"({scan.get('camera_presets')})")
+    r.check(scan.get("camera_binning", {}).get("voltage_cam") == 1,
+            f"…1x1 binning ({scan.get('camera_binning')})")
+    r.check(scan.get("camera_trigger", {}).get("voltage_cam") is False,
+            f"…internal trigger ({scan.get('camera_trigger')})")
+    us = scan.get("camera_exposure_us", {}).get("voltage_cam")
+    r.check(us is not None and abs(1e6 / us - 30.0) < 0.1,
+            f"…exposure set for ~30 Hz capture ({us!r} us)")
+    r.check(scan.get("dmd_all_on") is True,
+            f"…full DMD display ({scan.get('dmd_all_on')})")
+    r.check(scan.get("dmd_sub_sampling") == 2,
+            f"…at 1-in-2 sub-sampling ({scan.get('dmd_sub_sampling')})")
+
+
+def _part_modes() -> int:
+    r = Report("modes")
+    saved = config._MODES_PATH
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_modes_"))
+    try:
+        check_modes_sanitize(r, tmp)
+        check_modes_corrupt(r, tmp)
+        check_round_trip(r, tmp)
+        check_scan_mode_shipped(r)
+    finally:
+        config._MODES_PATH = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+# ═══ settings (was test_settings_persistence.py) ════════════════════════
 
 # (module key, panel attribute, setter, reader, expected) — one distinctive,
 # non-default value per panel so a stuck default cannot pass.
@@ -131,7 +484,7 @@ def same(a, b) -> bool:
     return a == b
 
 
-def main() -> int:
+def _part_settings() -> int:
     r = Report("settings")
     tmp = isolate_user_state()
 
@@ -459,5 +812,94 @@ def main() -> int:
     return r.finish()
 
 
+# ═══ mirror (was test_mirror_startup.py) ════════════════════════════════
+
+class FakeDriver:
+    """Stands in for MCM6101: no serial port, records every call."""
+
+    def __init__(self, port: str, states: dict[int, int] | None = None,
+                 open_fails: bool = False):
+        self.port = port
+        self._states = dict(states or {})
+        self._open_fails = open_fails
+        self.opened = False
+        self.closed = False
+        self.set_calls: list[tuple[int, int, int]] = []
+
+    def open(self):
+        if self._open_fails:
+            raise PermissionError("Access is denied.")  # matches the real ThorImage-holds-port error
+        self.opened = True
+
+    def close(self):
+        self.closed = True
+
+    def get_mirror_state(self, axis: int, channel: int) -> int:
+        return self._states.get(channel, MIRROR_OUT)
+
+    def set_mirror_state(self, axis: int, channel: int, state: int):
+        self._states[channel] = state
+        self.set_calls.append((axis, channel, state))
+
+
+def check_already_correct(r: Report) -> None:
+    """Both channels already OUT: no SET sent, reported as not corrected."""
+    fake = FakeDriver("COM54", states={MIRROR_CHAN_GR: MIRROR_OUT, MIRROR_CHAN_CAMERA: MIRROR_OUT})
+    result = ensure_camera_default(driver_cls=lambda port: fake)
+    r.check(result.ok, "check runs when the port opens")
+    r.check(not result.corrected, "already-correct state is not reported as corrected")
+    r.check(fake.set_calls == [], "no SET sent when nothing was wrong")
+    r.check(fake.closed, "port closed after a successful check")
+
+
+def check_corrects_mismatch(r: Report) -> None:
+    """GR left on PMT (IN): only GR is corrected, CAMERA (already OUT) is left alone."""
+    fake = FakeDriver("COM54", states={MIRROR_CHAN_GR: MIRROR_IN, MIRROR_CHAN_CAMERA: MIRROR_OUT})
+    result = ensure_camera_default(driver_cls=lambda port: fake)
+    r.check(result.ok and result.corrected, "mismatch is detected and corrected")
+    r.check(fake.set_calls == [(AXIS, MIRROR_CHAN_GR, MIRROR_OUT)],
+            "SET sent for the wrong channel only, not the one already correct")
+
+
+def check_corrects_both(r: Report) -> None:
+    """Both left on PMT (IN): both channels corrected."""
+    fake = FakeDriver("COM54", states={MIRROR_CHAN_GR: MIRROR_IN, MIRROR_CHAN_CAMERA: MIRROR_IN})
+    result = ensure_camera_default(driver_cls=lambda port: fake)
+    r.check(result.ok and result.corrected, "both-wrong case is detected and corrected")
+    r.check(set(fake.set_calls) == {(AXIS, MIRROR_CHAN_GR, MIRROR_OUT),
+                                     (AXIS, MIRROR_CHAN_CAMERA, MIRROR_OUT)},
+            "SET sent for both channels")
+
+
+def check_port_unavailable(r: Report) -> None:
+    """ThorImage holding COM54 (or the controller absent): reported, not raised."""
+    fake = FakeDriver("COM54", open_fails=True)
+    try:
+        result = ensure_camera_default(driver_cls=lambda port: fake)
+    except Exception as e:                                # noqa: BLE001
+        r.check(False, f"a closed port raised {type(e).__name__} instead of being reported")
+        return
+    r.check(not result.ok and result.error, "unopenable port reported as not ok, with a reason")
+    r.check(not result.corrected, "no correction attempted when the port never opened")
+    r.check(fake.set_calls == [], "no SET sent when the port never opened")
+
+
+def _part_mirror() -> int:
+    r = Report("mirror-startup")
+    check_already_correct(r)
+    check_corrects_mismatch(r)
+    check_corrects_both(r)
+    check_port_unavailable(r)
+    return r.finish()
+
+
+PARTS = {
+    "rigs": _part_rigs,
+    "modes": _part_modes,
+    "settings": _part_settings,
+    "mirror": _part_mirror,
+}
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_parts(PARTS))

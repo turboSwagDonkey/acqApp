@@ -86,6 +86,22 @@ def block_real_devices(*names: str) -> None:
     """
     for name in (names or ("ALP4", "nidaqmx", "pylablib", "pypylon")):
         sys.modules[name] = _BlockedDriver(name)
+    if not names:
+        _block_stage()
+
+
+def _block_stage() -> None:
+    """The stage's auto-detect enumerates the MCM301 through its vendor DLL,
+    OPENS one if found, and probes the serial port for an MCM6101. Both entry
+    points go through `backend` (imported at call time), so refuse there."""
+    from acqApp.devices.stage import backend
+
+    def refuse(*_a, **_k):
+        raise backend.BackendError(
+            "stage connect is blocked by the test harness "
+            "(tests must never touch real hardware)")
+    backend.connect_auto = refuse
+    backend.open_backend = refuse
 
 
 def isolate_user_state() -> Path:
@@ -184,6 +200,24 @@ class Report:
             return 1
         print(f"[{self.name}] PASS ({self.n_ok} checks)")
         return 0
+
+
+# ── multi-part test files ─────────────────────────────────────────────────────
+
+def run_parts(parts: dict) -> int:
+    """Run each part of a test file in its own process, as separate files did:
+    parts patch modules and build QApplications, which don't mix in one.
+    `--part NAME` runs one part here; `-q` is passed through."""
+    import subprocess
+    if "--part" in sys.argv:
+        return parts[sys.argv[sys.argv.index("--part") + 1]]()
+    rc = 0
+    for name in parts:
+        sys.stdout.flush()
+        args = [sys.executable, sys.argv[0], "--part", name]
+        args += [a for a in sys.argv[1:] if a == "-q"]
+        rc |= subprocess.run(args).returncode
+    return rc
 
 
 # ── Qt helpers ────────────────────────────────────────────────────────────────

@@ -286,58 +286,30 @@ docs/
   STRUCTURE.md          this file
   USER_GUIDE.md         operator quick-start, screenshots in images/guide/
   WHEEL_TRANSFER.md
-tests/                  plain scripts, not pytest; each runs in its own process
-  _harness.py           Report, qt_app(), isolate_user_state()
+tests/                  plain scripts, not pytest; each file (and each part of a
+                        multi-part file, `--part NAME`) runs in its own process
+  _harness.py           Report, qt_app(), isolate_user_state(), run_parts()
   README.md             the two conventions: isolate user state, include a control
   run_all.py            the suite: run this
-  test_camera_timestamps.py
+  test_camera.py              readout table, frame timestamps, .dcimg, recording losses
   test_closed_loop.py
+  test_config.py              rigs.json, modes.json, settings persistence, mirror default
   test_console_safety.py
   test_device_contracts.py    the Protocols in acq/devices.py, both directions
-  test_dmd.py
-  test_dmd_calibration.py
-  test_dmd_roi.py
-  test_dmd_sweep.py           the wiring: fresh grabs, untransformed patterns
-  test_pickers.py             the saved-ROI and saved-FOV pickers over their
-                              shared widgets.SessionPicker base
-  test_vis_stim.py            trial expansion, grating/region/circle
-                              geometry, the tick-driven priming/gating state
-                              machine (grating, map, tuning, contrast),
-                              settings round-trip, hot-load
-  test_encoder_derive.py
-  test_encoder_timing.py
-  test_modes.py                modes.json sanitizing/round-trip, and the
-                                shipped Scan mode
-  test_module_hotload.py       loading instruments without restarting
-  test_module_subsets.py
-  test_pupil_eyeloop.py       EyeLoop through the app path; every check has a control
-  test_pupil_track.py         tracking through the app: thread, trace, overlay, file
-  test_pupil_limit.py         the eye region: panel, preview, persistence
-  test_pupil_video.py
-  test_readout_hz.py
-  test_rigs.py                rigs.json profiles, and that one beats a
-                              channel saved on another rig
-  test_routines.py            the routine engine, on a fake rig and a fake clock
-  test_timeline.py            the routine timeline's layout math — repeats
-                              draw as separate bars, never merged
-  test_recording_losses.py
-  test_save_paths.py
+  test_dmd.py                 frames/controllers, calibration fit, sweep wiring, ROIs
+  test_encoder.py             position -> speed/distance, hardware-timed reads
+  test_modules.py             every module subset; loading/unloading in place
+  test_pickers.py             the saved-ROI and saved-FOV pickers
+  test_pupil.py               EyeLoop seam, tracking, eye region, clip replay
+  test_routines.py            routine engine/adapter/panel, and the timeline
+  test_saving.py              save paths, split writer, direct-chunk HDF5 write
   test_session_recording.py
-  test_settings_persistence.py
-  test_mirror_startup.py      chip 7's launch-time CAMERA/epi default check
+  test_stage.py               stage calibration persistence, the Z axis
   test_stage_panel.py
-  test_stage_z.py            the Z (focus) axis: opt-in gating,
-                              frame-rotation isolation, no-Z refusal
-  test_stage_focus_ui.py      the Focus slider/jog widgets and the
-                              calibration dialog's two-warning Z gate
-  test_stage_state.py
+  test_stage_focus_ui.py      Z widgets and the calibration dialog's two-warning gate
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
-  test_writer_chunks.py       the direct-chunk write, and the guard on it
-  test_dcimg.py         the .dcimg path short of the DLL: the frame cap, the
-                        naming, and that a routine refuses to run on it
-  test_split_writer.py       TiffFileWriter/LongCsvWriter/SplitWriter —
-                              split-mode save (PLAN.md S6)
+  test_vis_stim.py            trial expansion, geometry, the tick-driven state machine
 main.py                 the shell: window chrome, docks, theme, session start/stop,
                         the venv bootstrap. Holds no per-instrument logic.
 config.py               settings persistence + the MODULES table

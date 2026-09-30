@@ -1,35 +1,131 @@
-"""
-Loading and unloading instruments WITHOUT restarting the app.
+"""Module sets: every subset builds and runs; loading/unloading in place.
 
-Until 2026-08-25 the module set was fixed at launch by the startup picker, so
-adding the wheel meant closing the app, re-picking and losing the session. The
-sidebar's Modules button now calls `MainWindow.set_modules`, which splices
-adapters in and out of a live window.
-
-Two things make that harder than it looks, and both are checked here:
-
-  * **Everything a module put on the window has to come back off.** Its settings
-    tab, its Signals tab, its docks, and its pyqtgraph views — that last one
-    silently: `setCentralWidget` DELETES the old central widget, so a view left
-    in `_pg_views` is a dangling C++ object and the next theme toggle takes the
-    process down with no Python traceback.
-  * **`config.MODULES` order is load-bearing.** `closed_loop` is last so every
-    source-providing adapter exists before its panel asks what is on offer, and
-    a module loaded later must land in that order, not at the end.
-
-Recording is refused outright: the file's `modules` attribute is written once,
-at record start.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_module_hotload.py
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_modules.py [-q] [--part NAME]
 """
 from __future__ import annotations
 
+import shutil
 import sys
-
-from _harness import Report, isolate_user_state, make_window, qt_app
-
+import traceback
+from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
+                      run_parts)
 from acqApp import config
 
+
+# ═══ subsets (was test_module_subsets.py) ═══════════════════════════════
+
+SUBSETS = [
+    ["voltage_cam"],
+    ["wheel"],                          # no central view at all
+    ["pupil_cam"],                      # extra dock, no central view
+    ["stage"],                          # panel only, no plot
+    ["puffer", "dmd"],                  # controllers only, no workers
+    ["voltage_cam", "wheel"],
+    ["pupil_cam", "wheel", "stage"],
+    ["closed_loop"],                    # a rule with no signal and no output
+    ["wheel", "closed_loop"],           # a signal but nothing to fire
+]
+
+
+def _part_subsets() -> int:
+    r = Report("subsets")
+    tmp = isolate_user_state()
+
+    sys.argv = ["main.py", "--mock"]
+    app = qt_app()
+    from acqApp import config, probe
+
+    for subset in SUBSETS + [list(config.MODULES)]:
+        label = "+".join(subset)
+        try:
+            win = make_window(set(subset))
+            # A session: build workers -> start clock -> start -> display -> stop.
+            win._btn_run.setChecked(True)
+            pump(app, 0.4)
+            for _ in range(4):
+                win._display_tick()
+                pump(app, 0.03)
+            win._btn_run.setChecked(False)
+
+            # The Emulate toggle rebuilds the output controllers in place.
+            win._btn_emulate.setChecked(False)
+            win._btn_emulate.setChecked(True)
+
+            # The Devices monitor collects probe arguments from every adapter.
+            kw = win._probe_kwargs()
+            assert isinstance(kw, dict)
+            # Every kwarg an adapter offers must be one probe_all accepts —
+            # otherwise the Devices window dies with a TypeError the moment a
+            # particular subset of modules is loaded, which is exactly the
+            # failure this test exists to find.
+            probe.probe_all(subset, **kw)
+
+            win.close()
+            pump(app, 0.1)
+            r.check(True, label)
+        except Exception as e:
+            traceback.print_exc()
+            r.check(False, f"{label}: {type(e).__name__}: {e}")
+
+    # ── teardown survives one module failing to stop ─────────────────────────
+    # Stopping touches hardware: a stage whose serial port went away, a camera
+    # that will not release. `_stop_session` stops every adapter in one loop, so
+    # unguarded, the FIRST raise skipped every module after it (worker threads
+    # left running) and skipped `stop_all()` (clock and trigger bus still alive
+    # while the UI said "Stopped"). Via closeEvent it also skipped the DCAM
+    # handle close, which is the native crash the pre-init note describes.
+    try:
+        win = make_window({"wheel", "stage", "puffer"})
+        win._btn_run.setChecked(True)
+        pump(app, 0.3)
+
+        victim = win._modules[0]
+        later = win._modules[1:]
+        stopped: list[str] = []
+        for m in later:                       # record that the rest still stop
+            original = m.stop
+            m.stop = (lambda mod=m, orig=original: (stopped.append(mod.key),
+                                                    orig())[1])
+
+        def boom():
+            raise RuntimeError("serial port went away")
+        victim.stop = boom
+
+        win._stop_session()
+        r.check([m.key for m in later] == stopped,
+                f"one module raising in stop() does not strand the others "
+                f"(stopped {stopped})")
+        r.check(not win._sync.running,
+                "…and the clock/trigger bus is still torn down")
+        r.check(win._btn_run.text() == "Live view",
+                "…and the UI returns to a consistent state")
+
+        # CONTROL: the same failure through the OLD unguarded loop must strand
+        # them, or the three checks above pass no matter what `_stop_session`
+        # does.
+        reached: list[str] = []
+        adapters = [("victim", boom)] + [(m.key, lambda: None) for m in later]
+        try:
+            for key, fn in adapters:
+                fn()
+                reached.append(key)
+        except RuntimeError:
+            pass
+        r.check(reached == [],
+                f"control: the unguarded loop strands every later module "
+                f"(reached {reached})")
+
+        win.close()
+        pump(app, 0.1)
+    except Exception as e:
+        traceback.print_exc()
+        r.check(False, f"teardown-failure: {type(e).__name__}: {e}")
+
+    shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+# ═══ hotload (was test_module_hotload.py) ═══════════════════════════════
 
 def _keys(win) -> list[str]:
     return [m.key for m in win._modules]
@@ -426,7 +522,7 @@ def check_own_window(r: Report, win) -> None:
     win._settings_dialog.hide()
 
 
-def main() -> int:
+def _part_hotload() -> int:
     r = Report("hotload")
     isolate_user_state()
     app = qt_app()          # keep the reference: a GC'd QApplication aborts
@@ -452,5 +548,11 @@ def main() -> int:
     return r.finish()
 
 
+PARTS = {
+    "subsets": _part_subsets,
+    "hotload": _part_hotload,
+}
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_parts(PARTS))

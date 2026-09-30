@@ -1,38 +1,6 @@
-"""
-Stage: the Z (focus) axis.
+"""Stage model and controller: persisted calibration, the Z axis.
 
-Most rigs have no Z motor at all, and the one that does must not get it for
-free: `StageSettings.z` is None unless the calibration file BOTH names a Z
-axis (`xy_pad.z_axis`) AND marks that axis `"active": true` — a config with
-Z merely present-but-inactive (the pre-2026-09-13 shape of every stage_config
-on record) must keep behaving exactly as before. Three more properties, all
-consequences of Z being a FOCUS axis rather than a third planar axis:
-
-  - `frame_rotation_deg` (the camera-alignment jog rotation) must never touch
-    Z — rotating a focus move by the XY mounting angle would send it sideways.
-  - Z calibrates independently: `has_frame` gates X/Y absolute go-to as a
-    pair (unchanged), but Z's own `has_frame` must gate Z's Go-to on its own,
-    since `establish_frame()`/Calibrate… never touches it.
-  - A rig with no Z stage must be able to call every Z-shaped method
-    (`jog_um("z", ...)`, `read_z_um()`) and get a clean refusal, not an
-    AttributeError from indexing a None axis.
-
-Also: `frame_stale` — added after Z drove into the sample on what looked
-like an ordinary move (2026-09-18). A hard-limit hit re-references the
-controller's command origin, silently invalidating the
-slope/offset conversion every absolute move AND jog rely on; nothing used to
-notice, so the UI kept saying "Frame OK" and the next move landed somewhere
-other than its (correctly displayed, correctly confirmed) target. The checks
-below cover: StageAxis's own frame_stale/has_frame/clamp_counts contract,
-StageController detecting a limit bit live off the SAME status read the poll
-worker already makes, both real and mock controllers refusing every motion
-method once it latches, and that a non-drifting backend (MCM301) is never
-false-flagged.
-
-`config_path()` points at the real shared calibration; every check here
-redirects it at a temp file first, same as test_stage_state.py.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_stage_z.py
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_stage.py [-q] [--part NAME]
 """
 from __future__ import annotations
 
@@ -41,13 +9,130 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-
-from _harness import Report
-
+from _harness import Report, run_parts
 from acqApp.devices.stage import settings as S
-from acqApp.devices.stage.control import (
-    MockStageController, StageController, StageControllerError, _pick_axis,
-)
+from acqApp.devices.stage.control import (StageController,
+                                          StageControllerError,
+                                          MockStageController, _pick_axis)
+
+
+# ═══ state (was test_stage_state.py) ════════════════════════════════════
+
+UPDATES = {1: {"true_center": 12345, "soft_min": -1000, "soft_max": 1000},
+           2: {"true_center": 6789}}
+
+
+def redirect_config(tmp: Path, name: str) -> Path:
+    """Point config_path() at a temp file — never the operator's calibration."""
+    path = tmp / name
+    S._SHARED_CONFIG = path
+    S._LOCAL_CONFIG = path
+    return path
+
+
+def check_guards(r: Report) -> None:
+    """#6 — motion on a disconnected controller is a stage error, not a crash."""
+    ctl = StageController(S.StageSettings())          # never connect()ed
+    for label, call in (
+        ("move_to_um", lambda: ctl.move_to_um("x", 100.0)),
+        ("jog_um",     lambda: ctl.jog_um("x", 10.0)),
+        ("read_xy_um", lambda: ctl.read_xy_um()),
+        # "not connected" is checked before "no Z stage" (see read_z_um), so
+        # this rig-with-no-Z case still raises the same way as X/Y here.
+        ("read_z_um",  lambda: ctl.read_z_um()),
+    ):
+        try:
+            call()
+        except StageControllerError:
+            r.check(True, f"{label}() while disconnected raises StageControllerError")
+        except Exception as e:                        # noqa: BLE001 - report it
+            r.check(False, f"{label}() raised {type(e).__name__}: {e}")
+        else:
+            r.check(False, f"{label}() while disconnected did not raise")
+
+    # stop/stop_all are called on teardown paths and must stay silent no-ops.
+    try:
+        ctl.stop("x")
+        ctl.stop_all()
+        r.check(True, "stop()/stop_all() while disconnected are no-ops")
+    except Exception as e:                            # noqa: BLE001
+        r.check(False, f"stop() while disconnected raised {type(e).__name__}: {e}")
+
+
+def check_persist_missing(r: Report, tmp: Path) -> None:
+    """#7 — no config file yet: create one instead of raising."""
+    path = redirect_config(tmp, "missing.json")
+    r.check(not path.exists(), "config file absent to begin with")
+    try:
+        S.save_axis_updates(UPDATES)
+    except Exception as e:                            # noqa: BLE001
+        r.check(False, f"save_axis_updates raised {type(e).__name__}: {e}")
+        return
+    r.check(path.is_file(), "a config file was created")
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    by_index = {a["index"]: a for a in cfg["axes"]}
+    r.check(by_index[1]["true_center"] == 12345 and by_index[2]["true_center"] == 6789,
+            "both axes' calibration survived to disk")
+
+
+def check_persist_merges(r: Report, tmp: Path) -> None:
+    """An existing config keeps its other keys, and is backed up first."""
+    path = redirect_config(tmp, "existing.json")
+    original = {"port": "COM54", "margin_um": 50,
+                "axes": [{"index": 1, "counts_per_um": 20.0, "slope": 1.5},
+                         {"index": 2, "counts_per_um": 20.0}]}
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    S.save_axis_updates({1: {"true_center": 999}})
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    ax1 = {a["index"]: a for a in cfg["axes"]}[1]
+    r.check(cfg.get("port") == "COM54", "unrelated top-level keys untouched")
+    r.check(ax1.get("counts_per_um") == 20.0 and ax1.get("slope") == 1.5,
+            "unrelated axis keys untouched")
+    r.check(ax1.get("true_center") == 999, "the update landed")
+
+    bak = path.with_suffix(path.suffix + ".bak")
+    r.check(bak.is_file() and json.loads(bak.read_text(encoding="utf-8")) == original,
+            "previous contents kept as .bak (one step undoable)")
+
+
+def check_persist_corrupt(r: Report, tmp: Path) -> None:
+    """A truncated config must not swallow a just-measured calibration."""
+    path = redirect_config(tmp, "corrupt.json")
+    path.write_text('{"axes": [{"index": 1,', encoding="utf-8")   # killed mid-write
+
+    try:
+        S.save_axis_updates({1: {"true_center": 42}})
+    except Exception as e:                            # noqa: BLE001
+        r.check(False, f"save over a corrupt config raised {type(e).__name__}: {e}")
+        return
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    r.check({a["index"]: a for a in cfg["axes"]}[1]["true_center"] == 42,
+            "calibration written over a corrupt config")
+    bak = path.with_suffix(path.suffix + ".bak")
+    r.check(bak.is_file() and bak.read_text(encoding="utf-8").startswith('{"axes"'),
+            "the corrupt original is preserved in .bak, not discarded")
+
+
+def _part_state() -> int:
+    r = Report("stage-state")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_stage_"))
+    real = S.config_path()
+    before = real.stat().st_mtime_ns if real.is_file() else None
+    try:
+        check_guards(r)
+        check_persist_missing(r, tmp)
+        check_persist_merges(r, tmp)
+        check_persist_corrupt(r, tmp)
+        after = real.stat().st_mtime_ns if real.is_file() else None
+        r.check(after == before,
+                f"the operator's real calibration ({real.name}) was not written")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+# ═══ z (was test_stage_z.py) ════════════════════════════════════════════
 
 CFG_NO_Z = {
     "port": "COM10", "controller": "auto",
@@ -410,7 +495,7 @@ def check_limit_bit_ignored_on_non_drifting_backend(r: Report) -> None:
     r.check(z.has_frame, "…and absolute go-to stays available")
 
 
-def main() -> int:
+def _part_z() -> int:
     r = Report("stage-z")
     real_config_path = S.config_path
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_stagez_"))
@@ -433,5 +518,11 @@ def main() -> int:
     return r.finish()
 
 
+PARTS = {
+    "state": _part_state,
+    "z": _part_z,
+}
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_parts(PARTS))

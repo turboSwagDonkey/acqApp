@@ -5,13 +5,9 @@ Run the acqApp test suite.
     acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\run_all.py -v      (full output)
     acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\run_all.py console  (one test)
 
-Each test runs in its own process: three of them build a QApplication, and
-creating and tearing one down repeatedly inside a single process is not
-reliable. It also means a hard crash in one test (these drive real device
-threads) reports as a failure instead of taking the whole run down.
-
-Everything here runs in Emulate mode against fakes — no rig hardware, no windows
-on screen, and no writes to the operator's real config or dock layout.
+Each test (and each part of a multi-part file) runs in its own process:
+QApplications and module patches don't mix in one, and a hard crash reports as
+a failure instead of ending the run. Emulate mode against fakes only.
 """
 from __future__ import annotations
 
@@ -34,38 +30,21 @@ TESTS = [
     ("console",   "test_console_safety.py"),
     ("undefined", "test_undefined_names.py"),
     ("structure", "test_structure.py"),
-    ("readout",   "test_readout_hz.py"),
-    ("encoder",   "test_encoder_derive.py"),
-    ("enc-timing", "test_encoder_timing.py"),
     ("contracts", "test_device_contracts.py"),
+    ("encoder",   "test_encoder.py"),
+    ("saving",    "test_saving.py"),
+    ("config",    "test_config.py"),
+    ("stage",     "test_stage.py"),
+    ("stage-panel", "test_stage_panel.py"),
+    ("stage-focus-ui", "test_stage_focus_ui.py"),
     ("dmd",       "test_dmd.py"),
-    ("dmd-calib", "test_dmd_calibration.py"),
-    ("dmd-sweep", "test_dmd_sweep.py"),
-    ("dmd-roi",   "test_dmd_roi.py"),
     ("pickers",   "test_pickers.py"),
     ("vis-stim",  "test_vis_stim.py"),
-    ("closed-loop", "test_closed_loop.py"),
     ("routines",  "test_routines.py"),
-    ("timeline",  "test_timeline.py"),
-    ("save-paths", "test_save_paths.py"),
-    ("writer-chunks", "test_writer_chunks.py"),
-    ("split-writer", "test_split_writer.py"),
-    ("dcimg", "test_dcimg.py"),
-    ("stage-state", "test_stage_state.py"),
-    ("stage-panel", "test_stage_panel.py"),
-    ("stage-z",     "test_stage_z.py"),
-    ("stage-focus-ui", "test_stage_focus_ui.py"),
-    ("pupil-eyeloop", "test_pupil_eyeloop.py"),
-    ("pupil-track", "test_pupil_track.py"),
-    ("pupil-limit", "test_pupil_limit.py"),
-    ("pupil-video", "test_pupil_video.py"),
-    ("losses",    "test_recording_losses.py"),
-    ("camera-ts", "test_camera_timestamps.py"),
-    ("subsets",   "test_module_subsets.py"),
-    ("hotload",   "test_module_hotload.py"),
-    ("rigs",      "test_rigs.py"),
-    ("modes",     "test_modes.py"),
-    ("settings",  "test_settings_persistence.py"),
+    ("pupil",     "test_pupil.py"),
+    ("camera",    "test_camera.py"),
+    ("closed-loop", "test_closed_loop.py"),
+    ("modules",   "test_modules.py"),
     ("session",   "test_session_recording.py"),
 ]
 

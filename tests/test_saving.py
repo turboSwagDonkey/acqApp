@@ -1,0 +1,493 @@
+"""Saving: paths and naming, the split writer, the HDF5 direct-chunk path.
+
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_saving.py [-q] [--part NAME]
+"""
+from __future__ import annotations
+
+import shutil
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from _harness import Report, run_parts
+from acqApp.acq.writer import (HDF5Writer, LongCsvWriter, SplitWriter,
+                               TiffFileWriter)
+from acqApp.saving import SaveConfig, benchmark_drive, sanitize
+import csv
+import json
+import numpy as np
+import tifffile
+import subprocess
+import h5py
+
+
+# ═══ paths (was test_save_paths.py) ═════════════════════════════════════
+
+WHEN = datetime(2026, 8, 12, 14, 30, 5)
+
+
+def check_stem(r: Report) -> None:
+    """Token substitution and sanitisation — the inputs are operator free text."""
+    cfg = SaveConfig(mouse_id="m17", project="run2",
+                     template="{mouse_id}_{project}_{date}_{time}")
+    r.check(cfg.stem(WHEN) == "m17_run2_20260812_143005",
+            f"all four tokens substituted (got {cfg.stem(WHEN)!r})")
+
+    # A path separator in the mouse ID would otherwise create a directory, or
+    # escape the save folder entirely.
+    cfg = SaveConfig(mouse_id=r"m17/../x", template="{mouse_id}")
+    r.check("/" not in cfg.stem(WHEN) and "\\" not in cfg.stem(WHEN),
+            f"path separators sanitised out of the mouse ID "
+            f"(got {cfg.stem(WHEN)!r})")
+    r.check(sanitize("") == "session" and sanitize("  ..  ") == "session",
+            "empty/degenerate names fall back rather than producing ''")
+
+    # An unfilled token must not leave a dangling separator.
+    cfg = SaveConfig(mouse_id="m17", project="", template="{mouse_id}_{project}")
+    r.check(cfg.stem(WHEN) == "m17", f"empty token tidied (got {cfg.stem(WHEN)!r})")
+
+    # The active FOV name is a plain suffix, not a template token — opt-in via
+    # `fov=`, appended after everything else, sanitised the same way.
+    cfg = SaveConfig(mouse_id="m17", template="{mouse_id}")
+    r.check(cfg.stem(WHEN) == cfg.stem(WHEN, fov=""),
+            "no FOV is a no-op — today's plain stem, unchanged")
+    r.check(cfg.stem(WHEN, fov="window1") == "m17_window1",
+            f"a FOV name is appended after the resolved stem "
+            f"(got {cfg.stem(WHEN, fov='window1')!r})")
+    r.check("/" not in cfg.stem(WHEN, fov="a/b") and cfg.stem(WHEN, fov="a/b")
+            == "m17_a_b",
+            f"the FOV name is sanitised too (got {cfg.stem(WHEN, fov='a/b')!r})")
+
+    # A routine trial is FOV<name>_T<n>, but a FOV already named "fov…" must
+    # not read "FOVfov1".
+    for fov, want in (("1", "FOV1_T2"), ("fov1", "fov1_T2"),
+                      ("FOV3", "FOV3_T2"), ("custom", "FOVcustom_T2")):
+        got = cfg.resolve_routine(fov, 2, WHEN).stem
+        r.check(got == want, f"routine stem for FOV {fov!r} (got {got!r})")
+
+    # No project means no project folder level.
+    p = SaveConfig(mouse_id="m17", project="").routine_base(WHEN)
+    r.check(p.parent.name == "m17"
+            and p.parent.parent == SaveConfig(mouse_id="m17").resolved_folder(),
+            f"empty project adds no level (got {p})")
+    p = SaveConfig(mouse_id="m17", project="pX").routine_base(WHEN)
+    r.check(p.parent.name == "m17" and p.parent.parent.name == "pX",
+            f"a set project is still a level (got {p})")
+
+
+def check_unique(r: Report, tmp: Path) -> None:
+    """resolve(unique=True) must never name a file that already exists."""
+    for subfolder in (True, False):
+        base = tmp / f"sub{int(subfolder)}"
+        cfg = SaveConfig(folder=str(base), mouse_id="m17",
+                         template="{mouse_id}", subfolder=subfolder)
+        label = "subfolder" if subfolder else "flat"
+
+        first = cfg.resolve(WHEN, unique=True)
+        r.check(first.name == "m17.h5", f"[{label}] first recording keeps the stem")
+        first.parent.mkdir(parents=True, exist_ok=True)
+        first.write_bytes(b"first recording")
+
+        second = cfg.resolve(WHEN, unique=True)
+        r.check(second != first and not second.exists(),
+                f"[{label}] second resolves to a free path ({second.name})")
+        r.check(second.name == "m17_001.h5",
+                f"[{label}] suffix is _001 (got {second.name})")
+        if subfolder:
+            r.check(second.parent.name == "m17_001",
+                    f"[{label}] the subfolder is renamed with it "
+                    f"(got {second.parent.name})")
+        second.parent.mkdir(parents=True, exist_ok=True)
+        second.write_bytes(b"second recording")
+
+        third = cfg.resolve(WHEN, unique=True)
+        r.check(third.name == "m17_002.h5",
+                f"[{label}] numbering continues (got {third.name})")
+        r.check(first.read_bytes() == b"first recording",
+                f"[{label}] the original file was never touched")
+
+        # unique=False is still the plain path — the preview and the metadata
+        # both rely on that staying deterministic.
+        r.check(cfg.resolve(WHEN) == first,
+                f"[{label}] unique=False is unchanged")
+
+
+def check_writer_refuses(r: Report, tmp: Path) -> None:
+    """The backstop: opening onto an existing file raises, never truncates."""
+    path = tmp / "existing" / "session.h5"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not an hdf5 file, but it is somebody's data")
+    size = path.stat().st_size
+
+    w = HDF5Writer()
+    try:
+        w.open(path, {"subject": "m17"})
+    except FileExistsError:
+        r.check(True, "HDF5Writer.open refuses an existing path")
+    except Exception as e:                      # noqa: BLE001 - report, don't hide
+        r.check(False, f"expected FileExistsError, got {type(e).__name__}: {e}")
+    else:
+        w.close()
+        r.check(False, "HDF5Writer.open OVERWROTE an existing file")
+    r.check(path.stat().st_size == size, "the existing file is byte-for-byte intact")
+
+    # A fresh path still works, and the deliberate-clobber escape hatch works.
+    fresh = tmp / "existing" / "session_001.h5"
+    w = HDF5Writer()
+    w.open(fresh, {"subject": "m17"})
+    w.write("wheel", 0.0, 1.5)
+    w.close()
+    r.check(fresh.is_file() and fresh.stat().st_size > 0,
+            "a free path still records normally")
+
+    w = HDF5Writer(overwrite=True)
+    w.open(fresh, {"subject": "m17"})
+    w.close()
+    r.check(fresh.is_file(), "overwrite=True still truncates when asked for")
+
+
+def check_benchmark_drive(r: Report, tmp: Path) -> None:
+    """The Save panel's drive-scan button (SavePanel._on_scan_drives) trusts
+    this for a real number — it must actually measure, not just succeed."""
+    mbps = benchmark_drive(str(tmp), 2 << 20)      # 2 MB — fast, not realistic
+    r.check(mbps is not None and mbps > 0,
+            f"a writable folder returns a positive rate (got {mbps!r})")
+
+    leftover = list(tmp.glob(".acqapp_drive_speedtest*"))
+    r.check(not leftover, f"the test file is cleaned up (found {leftover})")
+
+    missing = benchmark_drive(str(tmp / "does_not_exist_at_all"), 2 << 20)
+    r.check(missing is None,
+            f"an unwritable/missing path returns None, not a crash (got {missing!r})")
+
+
+def _part_paths() -> int:
+    r = Report("save-paths")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_savepaths_"))
+    try:
+        check_stem(r)
+        check_unique(r, tmp)
+        check_writer_refuses(r, tmp)
+        check_benchmark_drive(r, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+# ═══ split (was test_split_writer.py) ═══════════════════════════════════
+
+def check_tiff_roundtrip(r: Report, tmp: Path) -> None:
+    frames = [np.full((16, 16), i, dtype=np.uint16) for i in range(4)]
+    p = tmp / "cam.tiff"
+    w = TiffFileWriter(p)
+    for i, f in enumerate(frames):
+        w.write(i * 0.1, f)
+    w.close()
+
+    data = tifffile.imread(p)
+    r.check(data.shape == (4, 16, 16), f"all frames present ({data.shape})")
+    ok = all(np.array_equal(data[i], frames[i]) for i in range(4))
+    r.check(ok, "every frame reads back byte-identical")
+
+    ts_path = tmp / "cam_timestamps.csv"
+    with open(ts_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    r.check([row["frame"] for row in rows] == ["0", "1", "2", "3"],
+            "one timestamp row per frame, in order")
+    r.check(abs(float(rows[2]["timestamp"]) - 0.2) < 1e-9,
+            "timestamps match what was written")
+
+
+def check_csv_routine_step(r: Report, tmp: Path) -> None:
+    """Not just the routine stream's own rows: every OTHER stream's row in
+    the open window is tagged too, and rows outside any step read "" —
+    the control that proves the tagging isn't vacuously always-on."""
+    p = tmp / "data.csv"
+    w = LongCsvWriter(p)
+    w.write("wheel", 0.0, 1.5)                 # before any step: untagged
+    w.write("routine", 1.0, 1.0)                # entering step 0 (encoded +1)
+    w.write("wheel", 2.0, 1.6)
+    w.write("puffer", 2.5, 0.1)
+    w.write("routine", 3.0, -1.0)               # leaving step 0 (encoded -1)
+    w.write("wheel", 4.0, 1.7)                  # after: untagged again
+    w.close()
+
+    with open(p, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    r.check([row["stream"] for row in rows]
+            == ["wheel", "routine", "wheel", "puffer", "routine", "wheel"],
+            "rows in write order, long format")
+    r.check(rows[0]["routine_step"] == "",
+            "a sample before any step is untagged")
+    r.check(rows[2]["routine_step"] == "0" and rows[3]["routine_step"] == "0",
+            "wheel and puffer rows inside the open step both get step 0")
+    r.check(rows[4]["routine_step"] == "0",
+            "the routine stream's own closing row is tagged too")
+    r.check(rows[5]["routine_step"] == "",
+            "a sample after the step closes goes back to untagged")
+
+
+def check_split_writer_routes(r: Report, tmp: Path) -> None:
+    """Image streams -> their own TIFF; scalars -> the one shared CSV;
+    metadata (incl. a nested dict, like routine_protocol) -> JSON."""
+    session = tmp / "sess_001"
+    w = SplitWriter()
+    meta = {"subject": "m1", "emulated": True,
+            "routine_protocol": {"name": "r1", "steps": [{"label": "a"}]}}
+    w.open(session, meta)
+
+    frame = np.full((8, 8), 42, dtype=np.uint16)
+    w.write("voltage_cam", 0.0, frame)
+    w.write("wheel", 0.0, 1.5)
+    w.write("puffer", 0.1, 0.05)
+    w.update_metadata({"cam_dropped_frames": 0})
+    w.close()
+
+    tiff_path = session / "sess_001_voltage_cam.tiff"
+    r.check(tiff_path.is_file(), "the image stream got its own TIFF")
+    # A single-page stack reads back 2-D (tifffile squeezes the page axis),
+    # not (1, H, W) — reshape rather than index [0] into the wrong axis.
+    got = tifffile.imread(tiff_path).reshape(frame.shape)
+    r.check(np.array_equal(got, frame), "…with the right frame data")
+
+    csv_path = session / "sess_001_data.csv"
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    r.check({row["stream"] for row in rows} == {"wheel", "puffer"},
+            "scalar streams share the one CSV, not the TIFF")
+
+    json_path = session / "sess_001_settings.json"
+    with open(json_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    r.check(saved.get("subject") == "m1" and saved.get("emulated") is True,
+            "flat metadata round-trips with native JSON types")
+    r.check(saved.get("routine_protocol") == meta["routine_protocol"],
+            "nested metadata (the routine protocol) stays a real object, "
+            "not a stringified blob")
+    r.check(saved.get("cam_dropped_frames") == 0,
+            "update_metadata() after close is reflected in the final JSON")
+
+
+def check_refuses_existing_folder(r: Report, tmp: Path) -> None:
+    """Mirrors HDF5Writer's mode 'x': an existing session is hours of
+    animal time with no undo."""
+    session = tmp / "sess_002"
+    session.mkdir()
+    w = SplitWriter()
+    try:
+        w.open(session, {})
+        r.check(False, "opening an existing session folder should raise")
+    except FileExistsError:
+        r.check(True, "opening an existing session folder raises, like "
+                      "HDF5Writer's mode 'x'")
+
+
+def _part_split() -> int:
+    r = Report("split-writer")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_splitwriter_"))
+    try:
+        check_tiff_roundtrip(r, tmp)
+        check_csv_routine_step(r, tmp)
+        check_split_writer_routes(r, tmp)
+        check_refuses_existing_folder(r, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+# ═══ chunks (was test_writer_chunks.py) ═════════════════════════════════
+
+# Small enough to be fast, >8 MB so chunk_frames is 1 and the direct path is
+# chosen — the same branch the 4432x2368 camera frame takes.
+BIG = (2048, 2048)          # uint16 -> 8.4 MB
+SMALL = (64, 64)            # uint16 -> 8 KB, so 16 frames share a chunk
+
+# Run as a child by check_guard_rejects: half-fills a uint16 chunk with uint8
+# bytes exactly as an unguarded direct write would, then reads it back. It is
+# expected NOT to reach the last line.
+DEMO_SRC = '''
+import sys
+import numpy as np
+import h5py
+
+path = sys.argv[1]
+src = np.zeros((2048, 2048), dtype=np.uint8)
+with h5py.File(path, "w") as f:
+    d = f.create_dataset("frames", shape=(1, 2048, 2048), dtype=np.uint16,
+                         chunks=(1, 2048, 2048))
+    d.id.write_direct_chunk((0, 0, 0), memoryview(src).cast("B"))
+with h5py.File(path, "r") as f:
+    _ = f["frames"][0]
+print("SURVIVED")
+'''
+
+
+def _frames(shape, n, dtype=np.uint16):
+    """n distinct frames, so a mix-up of two of them cannot pass unnoticed."""
+    rng = np.random.default_rng(7)
+    return [rng.integers(0, 4000, size=shape, dtype=dtype) for _ in range(n)]
+
+
+def _write(path, frames, stream="cam", **kw):
+    w = HDF5Writer(**kw)
+    w.open(path, {"bench": False})
+    for i, f in enumerate(frames):
+        w.write(stream, i * 0.01, f)
+    direct = w._streams[stream]["direct"]
+    w.close()
+    return direct
+
+
+def check_direct_roundtrip(r: Report, tmp: Path) -> None:
+    """The fast path stores exactly what it was given."""
+    frames = _frames(BIG, 5)
+    p = tmp / "direct.h5"
+    direct = _write(p, frames)
+
+    # The control for everything below: if this is False the round trips still
+    # pass, but they are testing the old slice assignment and prove nothing.
+    r.check(direct, "a full-size frame takes the direct-chunk path "
+                    "(if this fails, the round-trip checks are vacuous)")
+
+    with h5py.File(p, "r") as f:
+        d = f["cam/frames"]
+        r.check(d.shape == (5,) + BIG, f"trimmed to what was written ({d.shape})")
+        r.check(d.chunks == (1,) + BIG, f"one frame per chunk ({d.chunks})")
+        ok = all(np.array_equal(d[i], frames[i]) for i in range(5))
+        r.check(ok, "every frame reads back byte-identical")
+        ts = f["cam/timestamps"][:]
+        r.check(np.array_equal(ts, np.arange(5) * 0.01) and not np.isnan(ts).any(),
+                "timestamps trimmed, no NaN tail after a clean close")
+
+
+def check_guard_rejects(r: Report, tmp: Path) -> None:
+    """A frame the direct write would corrupt goes the slow way instead."""
+    base = _frames(BIG, 3)
+
+    # Non-C-contiguous: a transpose has the right shape and dtype, and only its
+    # memory layout is wrong.
+    view = np.ascontiguousarray(base[0]).T
+    r.check(not view.flags.c_contiguous, "the transposed frame really is "
+                                         "non-contiguous (control)")
+    p = tmp / "noncontig.h5"
+    _write(p, [view])
+    with h5py.File(p, "r") as f:
+        r.check(np.array_equal(f["cam/frames"][0], view),
+                "a non-contiguous frame still round-trips (slice fallback)")
+
+    # The two rejected cases fail in DIFFERENT ways, and the difference is the
+    # point. Contiguity: the buffer cannot even be taken, so bypassing the
+    # guard raises inside the writer thread — a lost recording, not a lost
+    # frame.
+    try:
+        memoryview(view).cast("B")
+        raised = False
+    except TypeError:
+        raised = True
+    r.check(raised, "a non-contiguous frame cannot be cast to a byte buffer at "
+                    "all, so the guard prevents a raise (control)")
+
+    # dtype: the bad one. uint8 bytes into a uint16 chunk fill half of it and
+    # HDF5 accepts them — the write returns, the file closes, and the damage
+    # only lands on whoever opens it. Measured 2026-08-25: reading that file
+    # back does not raise, it takes the process out with an access violation
+    # (0xC0000005). So this control runs in a CHILD process; in-process it
+    # would abort the suite, which is the finding.
+    demo = tmp / "demo_corrupt.py"
+    demo.write_text(DEMO_SRC, encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(demo), str(tmp / "corrupt.h5")],
+                          capture_output=True, text=True, timeout=120)
+    r.check(proc.returncode != 0 and "SURVIVED" not in proc.stdout,
+            f"bypassing the guard on a dtype mismatch writes a file that kills "
+            f"the reader (child exit {proc.returncode}) — so the guard is not "
+            f"superstition (control)")
+
+
+def check_dtype_change(r: Report, tmp: Path) -> None:
+    """A stream whose dtype changes mid-run must not be written raw."""
+    p = tmp / "dtype.h5"
+    w = HDF5Writer()
+    w.open(p, {})
+    first = _frames(BIG, 1)[0]
+    w.write("cam", 0.0, first)
+    r.check(w._streams["cam"]["direct"], "stream opened on the direct path")
+    # uint8 into a uint16 dataset: 8.4 MB of bytes where 16.8 MB belong. A raw
+    # write would half-fill the chunk and leave the rest stale.
+    odd = (first // 16).astype(np.uint8)
+    w.write("cam", 0.01, odd)
+    w.close()
+    with h5py.File(p, "r") as f:
+        d = f["cam/frames"]
+        r.check(np.array_equal(d[0], first), "the uint16 frame is intact")
+        r.check(np.array_equal(d[1], odd.astype(np.uint16)),
+                "the uint8 frame was converted, not written raw")
+
+
+def check_path_disabled(r: Report, tmp: Path) -> None:
+    """Where the direct write is invalid it must be off, and data still land."""
+    # Multi-frame chunks: the offset arithmetic assumes one frame per chunk.
+    small = _frames(SMALL, 20)
+    p = tmp / "small.h5"
+    direct = _write(p, small)
+    with h5py.File(p, "r") as f:
+        d = f["cam/frames"]
+        r.check(d.chunks[0] > 1, f"small frames really do share a chunk "
+                                 f"({d.chunks[0]} per chunk — control)")
+        r.check(not direct, "multi-frame chunks disable the direct path")
+        r.check(all(np.array_equal(d[i], small[i]) for i in range(20)),
+                "all 20 small frames round-trip")
+
+    # Compression: a raw write would store uncompressed bytes under a filter
+    # that says they are deflated, and the file would not read back at all.
+    big = _frames(BIG, 2)
+    p = tmp / "gzip.h5"
+    direct = _write(p, big, compression="gzip", compression_opts=1)
+    r.check(not direct, "compression disables the direct path")
+    with h5py.File(p, "r") as f:
+        d = f["cam/frames"]
+        r.check(d.compression == "gzip", "the filter really is on (control)")
+        r.check(all(np.array_equal(d[i], big[i]) for i in range(2)),
+                "compressed frames round-trip")
+
+
+def check_scalars(r: Report, tmp: Path) -> None:
+    """Scalar streams never touch the image branch."""
+    p = tmp / "mixed.h5"
+    w = HDF5Writer()
+    w.open(p, {})
+    frames = _frames(BIG, 2)
+    for i, f in enumerate(frames):
+        w.write("cam", i * 0.01, f)
+        w.write("wheel", i * 0.01, 1.5 + i)
+    r.check(not w._streams["wheel"]["direct"], "a scalar stream is never direct")
+    w.close()
+    with h5py.File(p, "r") as f:
+        r.check(np.array_equal(f["wheel/values"][:], [1.5, 2.5]),
+                "scalar values written and trimmed")
+        r.check(np.array_equal(f["cam/frames"][1], frames[1]),
+                "frames unaffected by an interleaved scalar stream")
+
+
+def _part_chunks() -> int:
+    r = Report("writer-chunks")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_writerchunks_"))
+    try:
+        check_direct_roundtrip(r, tmp)
+        check_guard_rejects(r, tmp)
+        check_dtype_change(r, tmp)
+        check_path_disabled(r, tmp)
+        check_scalars(r, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+PARTS = {
+    "paths": _part_paths,
+    "split": _part_split,
+    "chunks": _part_chunks,
+}
+
+
+if __name__ == "__main__":
+    sys.exit(run_parts(PARTS))
