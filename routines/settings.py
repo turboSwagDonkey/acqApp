@@ -1,42 +1,13 @@
-"""Experiment routines — the protocol, and no Qt.
+"""Experiment routines — the protocol. No Qt.
 
-A routine is a list of atomic steps executed in order: move, start
-displaying, wait, puff, wait for an external trigger. A **Recording** is a
-separate, draggable bracket over a contiguous range of steps — "the camera
-is capturing for these" — independent of what those steps individually do.
-`Step`, `Recording` and `Routine` are what persists; `validate()` is what
-refuses a run *before* it starts.
+A routine is a list of atomic steps (`KINDS`), one `Step` class whose unused
+fields stay at their defaults. Each `record` step is a one-step Recording.
+One recording per external edge is `[trigger, record]` in a repeat group.
 
-**One recording per external edge** is a `trigger` step inside a repeat
-group, with the Recording bracket on the steps AFTER it: each repeat
-re-arms the camera, waits for its edge, and only then opens the file. With
-`save_mode="per_repeat"` that's a folder of one file per edge. The bracket
-must not cover the trigger step itself — `validate()` refuses that, since
-the file would be open while waiting, and re-arming restarts the camera's
-acquisition underneath it.
-
-Five kinds, one step class (`KINDS`): a step is one thing regardless of
-which fields it uses, the same way `x_um=None` already meant "leave this
-axis alone" before this redesign — a field a step's kind doesn't use just
-stays at its default, the table renders it as "—", and nothing here reads
-it. This keeps `Routine.to_dict()`'s `vars(s).copy()` round-trip and the
-table's one-row-per-step model from needing kind-per-subclass dispatch at
-the serialization boundary.
-
-Two things here were the operator's calls (PLAN §6) and are load-bearing:
-
-- **A Wait step's length is frames OR seconds, its author's choice**, never
-  interconverted — at 106 Hz a rounded conversion sheds frames at every step
-  boundary, so `unit` travels with `length` into the engine.
-- **Validation is up front.** A stage target outside the soft limits is a
-  refusal at the Start button, not a fault at step 7 of 12 with an animal on
-  the rig.
-
-**Old (pre-redesign) saved routines/templates auto-migrate** on load —
-`Routine.from_dict` expands each old composite step (move+pattern+capture+
-settle+puff bundled) into the atomic steps it implied, each wrapped in its
-own `Recording` (an old step always captured — there was no "off" state).
-See `_migrate_step`.
+- A timed step's length is frames OR seconds, never converted: at 106 Hz a
+  rounded conversion sheds frames at every boundary.
+- `validate()` refuses a run up front, not at step 7 with an animal on the rig.
+- Pre-redesign composite steps migrate on load (`_migrate_step`).
 """
 from __future__ import annotations
 
@@ -45,33 +16,22 @@ from pathlib import Path
 
 UNITS = ("frames", "seconds")
 KINDS = ("move", "display", "wait", "record", "puff", "trigger")
-# Kinds that run for `length` `unit`; a record step also holds a file open.
-TIMED_KINDS = ("wait", "record")
+TIMED_KINDS = ("wait", "record")      # run for `length` `unit`
 
-# key -> label. `single` keeps the one-file-per-session invariant; the other
-# two trade it for a folder of files, rolled by `adapters/routines.py` at
-# every RecordingRun boundary (`per_repeat`) or only when the covering Group
-# actually changes (`per_group`, coarser — repeats of the same Group share a
-# file). Provenance (which group/repeat/cycle) lives in each file's own
-# metadata (RecordingRun.attrs()), not the filename.
+# Files roll at each run boundary (per_repeat) or only when the Group changes
+# (per_group). Provenance goes in each file's metadata, not its name.
 SAVE_MODES: dict[str, str] = {
     "single":     "One file for the whole routine",
     "per_repeat": "One file per repeat (each recording run)",
     "per_group":  "One file per group",
 }
 
-
-# A settle a routine may ask for. Not a safety limit — an obviously-wrong entry
-# (3600 s between steps) is worth catching at validation.
+# Not a safety limit; catches an obviously wrong entry.
 MAX_SETTLE_S = 120.0
 
 
 def pattern_label(path: str) -> str:
-    """How a step's pattern reads in the table and the log.
-
-    A saved ROI set (`devices/dmd/roi_store.py`) is a `<name>.roi.json`, not a
-    device frame — naming it "ROI: <name>" rather than the raw filename reads
-    as an ROI set at a glance, the way a plain image's own name does."""
+    """"ROI: <name>" for a saved ROI set, else the file name."""
     p = Path(path)
     if p.name.endswith(".roi.json"):
         return f"ROI: {p.name[:-len('.roi.json')]}"
@@ -80,36 +40,22 @@ def pattern_label(path: str) -> str:
 
 @dataclass
 class Step:
-    """One atomic action: move, start displaying, wait, or puff.
-
-    Only the fields its `kind` uses are meaningful; the rest sit at their
-    default the way `x_um=None` already meant "leave this axis alone"
-    before this redesign — the table renders an unused field as "—" and
-    nothing here reads it.
-    """
     kind:     str = "wait"
     label:    str = ""
-    comment:  str = ""                # free-text note; no effect on the run
-    # move only
-    x_um:     float | None = None
+    comment:  str = ""
+    # move
+    x_um:     float | None = None      # None leaves the axis alone
     y_um:     float | None = None
-    z_um:     float | None = None     # focus; None on a rig with no Z stage
-    fov:      str = ""                # name of the saved FOV x_um/y_um(/z_um)
-                                       # came from, purely a display label —
-                                       # "" once any axis is hand-edited, since
-                                       # the numbers may no longer match that
-                                       # spot.
-    settle_s: float = 0.25            # after arrival, before the step ends
-    # display only — "" means STOP displaying (light off), not "leave alone":
-    # unlike the old composite Step, a Display step is a stated action, so
-    # there's no "didn't say" state left for it to mean.
+    z_um:     float | None = None
+    fov:      str = ""                 # display label; "" once hand-edited
+    settle_s: float = 0.25             # after arrival
+    # display: "" means STOP displaying
     pattern:  str = ""
-    # wait only — never converted between the two, see the module docstring.
+    # wait / record
     length:   float = 100.0
     unit:     str = "frames"
 
     def describe(self) -> str:
-        """One line for the panel and the log: the label, then what it does."""
         if self.kind == "move":
             where = (f"FOV {self.fov}" if self.fov else
                      ", ".join(f"{a}={v:.0f}um" for a, v in
@@ -131,37 +77,22 @@ class Step:
 
 @dataclass
 class Group:
-    """A contiguous run of steps that repeats as a unit, nested inside `cycles`.
-
-    `start`/`end` are 0-based indices into `Routine.steps`, inclusive — a
-    range, not a list of steps of its own, so reordering/inserting steps
-    elsewhere in the table doesn't have to rewrite a membership list.
-    """
+    """Steps start..end (inclusive indices) repeated in place."""
     start:   int = 0
     end:     int = 0
-    repeats: int = 2          # 1 would be a no-op; the UI starts useful
+    repeats: int = 2
 
 
 @dataclass
 class Recording:
-    """The steps one recording covers. Derived from the routine's `record`
-    steps (`Routine.recordings`), never stored: each record step is a
-    one-step Recording. A record step inside a repeated `Group` is re-entered
-    on every repeat (`recording_run_ids` tells those repeats apart).
-    """
+    """Derived from a `record` step, never stored."""
     start: int = 0
     end:   int = 0
 
 
 def play_order(routine: "Routine") -> list[int]:
-    """One pass through `routine.steps`, each group's range repeated in
-    place — indices into `routine.steps`. `cycles` repeats this whole list
-    again, outside; groups nest inside one pass, not across cycles.
-
-    Invalid or overlapping groups (validate() refuses those before a run)
-    are skipped here rather than raising, so a stale/hand-edited routine
-    still degrades to something playable instead of crashing the estimate.
-    """
+    """One pass as step indices, each group repeated in place (`cycles`
+    repeats the pass). Invalid groups are skipped, not raised on."""
     n = len(routine.steps)
     order: list[int] = []
     groups = sorted((g for g in routine.groups if 0 <= g.start <= g.end < n),
@@ -180,51 +111,32 @@ def play_order(routine: "Routine") -> list[int]:
     return order
 
 
-def recording_region_at(routine: "Routine", step_index: int) -> int | None:
-    """Which `routine.recordings` bracket (its index) covers `step_index`,
-    or None if no Recording does. Shared by `recording_run_ids` below and by
-    the engine, which needs to name the region a freshly-opened run belongs
-    to — one implementation of "which bracket is this," not two that could
-    drift apart."""
-    return next((i for i, r in enumerate(routine.recordings)
+def _region(spans, step_index: int) -> int | None:
+    return next((i for i, r in enumerate(spans)
                 if r.start <= step_index <= r.end), None)
 
 
+def recording_region_at(routine: "Routine", step_index: int) -> int | None:
+    """Index of the Recording covering `step_index`, or None."""
+    return _region(routine.recordings, step_index)
+
+
 def group_region_at(routine: "Routine", step_index: int) -> int | None:
-    """Which `routine.groups` range (its index) covers `step_index`, or None
-    if no Group does. Same shape as `recording_region_at` — shared by
-    `adapters/routines.py`'s per-group save mode (repeats of the SAME Group
-    share one output file) and by `routines/timeline.py`, which used to do
-    this lookup inline."""
-    return next((i for i, g in enumerate(routine.groups)
-                if g.start <= step_index <= g.end), None)
+    """Index of the Group covering `step_index`, or None."""
+    return _region(routine.groups, step_index)
 
 
 def group_repeat_at(routine: "Routine",
                     order: list[int]) -> list[tuple[int, int] | None]:
-    """Parallel to `order` (a `play_order(routine)` result): at each position,
-    `(1-based repeat number, total repeats)` if it falls inside a repeat
-    Group, else None.
-
-    For the operator's own progress reading (`adapters/routines.py`'s status
-    text): a Group's steps repeat in place, so "step 1/2" alone reads
-    identically on repeat 1, repeat 2, … repeat 100 of a `[trigger, wait]`
-    pair — nothing else in the display says which one is running.
-
-    Walks `order` itself, like `recording_run_ids` — a running count of steps
-    seen so far for the step's own Group, divided by the Group's span, is the
-    0-based repeat index. Needs no assumption about how `order` was built
-    beyond "one Group's range appears as contiguous repeats", which is
-    exactly what `play_order` guarantees.
-    """
+    """Parallel to `order`: (1-based repeat, total) inside a Group, else None."""
     n = len(routine.steps)
     valid = [g for g in routine.groups if 0 <= g.start <= g.end < n]
-    group_of: dict[int, int] = {}     # step_index -> index into `valid`
+    group_of: dict[int, int] = {}
     for gi, g in enumerate(valid):
         for step_i in range(g.start, g.end + 1):
             group_of[step_i] = gi
 
-    seen = [0] * len(valid)           # steps of each group visited so far
+    seen = [0] * len(valid)
     out: list[tuple[int, int] | None] = []
     for step_i in order:
         gi = group_of.get(step_i)
@@ -239,33 +151,22 @@ def group_repeat_at(routine: "Routine",
 
 
 def recording_run_ids(routine: "Routine", order: list[int]) -> list[int | None]:
-    """Parallel to `order` (a `play_order(routine)` result): a run-serial
-    number at each position that is inside some Recording, None elsewhere.
+    """Parallel to `order`: a run serial inside a Recording, None outside.
 
-    Equal consecutive serials mean "still the same open recording run"; any
-    change — None<->serial, OR a new serial even for the SAME Recording —
-    is a boundary the engine must close/open on. A serial changes on any
-    non-monotonic step (the order doubling back — a repeat group's range
-    looping to its start) even when the surrounding Recording is identical,
-    so a Recording drawn across an entire repeated Group's range still
-    yields one run per repeat rather than one run merging all of them.
-
-    Says nothing about `cycles` — this only covers ONE pass of `order` — the
-    engine additionally keys on the current cycle number, since `cycles`
-    repeats the whole pass outside this function's view.
-    """
+    A serial changes whenever the order doubles back, so a Recording across
+    a repeated Group yields one run per repeat. One pass only — the engine
+    also keys on the cycle."""
+    recs = routine.recordings
     ids: list[int | None] = []
     serial = -1
     prev_step: int | None = None
     prev_rec: int | None = None
     for step_i in order:
-        rec = recording_region_at(routine, step_i)
+        rec = _region(recs, step_i)
         if rec is None:
             ids.append(None)
         else:
-            new_run = (rec != prev_rec or prev_step is None
-                       or step_i != prev_step + 1)
-            if new_run:
+            if rec != prev_rec or prev_step is None or step_i != prev_step + 1:
                 serial += 1
             ids.append(serial)
         prev_step, prev_rec = step_i, rec
@@ -274,31 +175,20 @@ def recording_run_ids(routine: "Routine", order: list[int]) -> list[int | None]:
 
 @dataclass
 class Routine:
-    """The whole protocol. `cycles` repeats the step list end to end.
-
-    Always arms on Start and waits for the camera's own first edge before
-    step 1 begins (operator, 2026-09-28) — no per-routine manual/TTL choice
-    any more; `adapters/routines.py` puts the camera in External edge mode
-    itself before arming (`ModuleHost.set_camera_trigger`), so nothing here
-    reads a DAQ line, the camera already IS the input. A saved file's old
-    `start_trigger` key (from before this) is simply unread now.
-    """
+    """The whole protocol; `cycles` repeats the step list end to end. Always
+    arms on Start (the camera's first edge starts step 1)."""
     name:          str = "routine"
     steps:         list[Step] = field(default_factory=list)
     groups:        list[Group] = field(default_factory=list)
     cycles:        int = 1
     save_mode:     str = "single"
-    # Hold the routine at a file roll until the camera is capturing again,
-    # then restart the step's clock. Only a .dcimg roll is slow enough to
-    # matter (DCAM rebinds its recorder to a STOPPED camera, ~0.9 s); a TIFF
-    # roll never stops capture, so this costs nothing and changes nothing.
-    # Without it a seconds-unit Wait spends that gap counting down against a
-    # camera that isn't running, and the trial comes up short.
+    # Hold at a .dcimg roll (camera stopped ~0.9 s) and restart the step's
+    # clock, or a seconds Wait counts down against a stopped camera.
     wait_for_camera: bool = True
 
     @property
     def recordings(self) -> list[Recording]:
-        """One `Recording` per `record` step; its index is the region id."""
+        """One per `record` step; its index is the region id."""
         return [Recording(start=i, end=i)
                 for i, s in enumerate(self.steps) if s.kind == "record"]
 
@@ -306,8 +196,6 @@ class Routine:
         return len(play_order(self)) * max(1, self.cycles)
 
     # ── persistence ───────────────────────────────────────────────────────────
-    # Explicit rather than asdict(): this nests, and config.py's JSON is flat
-    # enough that a silent shape change would come back as a stale routine.
     def to_dict(self) -> dict:
         return {"name": self.name, "cycles": self.cycles,
                 "save_mode": self.save_mode,
@@ -317,19 +205,12 @@ class Routine:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Routine":
-        """Rebuild from saved JSON, dropping anything that no longer fits.
+        """Rebuild from saved JSON, dropping what no longer fits (worst case:
+        an empty routine that `validate` refuses).
 
-        A stale or hand-edited file must not stop the app starting — the worst
-        case is an empty routine, which `validate` then refuses to run.
-
-        Each raw step is migrated independently (a `"kind"` key marks it as
-        already-new-format; its absence marks a pre-redesign composite step —
-        see `_migrate_step`). `old_to_new` maps every raw step's position to
-        the range of new steps it became — identity (i, i) for one that
-        needed no migration — so `groups`, whose indices refer to
-        raw-step positions, can be remapped the same way regardless of
-        whether the file was old or new.
-        """
+        A step without "kind" is pre-redesign and migrates to several steps;
+        `old_to_new` maps each raw position to its new range so groups can be
+        remapped."""
         if not isinstance(d, dict):
             return cls()
         raw_steps = [s for s in (d.get("steps") or ()) if isinstance(s, dict)]
@@ -365,21 +246,16 @@ class Routine:
         except (TypeError, ValueError):
             cycles = 1
         mode = d.get("save_mode")
-        if mode == "per_step":            # retired name; closest equivalent
+        if mode == "per_step":            # retired name
             mode = "per_repeat"
         return cls(name=str(d.get("name") or "routine"), steps=steps,
                    groups=groups, cycles=cycles,
                    save_mode=mode if mode in SAVE_MODES else "single",
-                   # Absent in a file written before this existed: default ON,
-                   # which is a no-op for the TIFF routines those files ran.
                    wait_for_camera=bool(d.get("wait_for_camera", True)))
 
 
 def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list:
-    """Parse a list of `Group` dicts, remapping `start`/`end`
-    (raw-step positions) through `old_to_new`. A range touching a raw step
-    that was dropped or never existed is dropped too — the same "keep only
-    what still makes sense" rule `from_dict` follows everywhere else."""
+    """Parse Group dicts, remapping start/end; drop any touching a lost step."""
     out = []
     for raw in raw_list:
         if not isinstance(raw, dict):
@@ -398,17 +274,9 @@ def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list
 
 
 def _migrate_step(raw: dict) -> list[Step]:
-    """One pre-redesign composite step -> the atomic steps it implied.
-
-    An old step always captured (there was no "off" state), which is why its
-    wait becomes a `record` step. A
-    puff interval interleaves exactly against a seconds-unit length; a
-    frames-unit length has no frame rate available here to convert a
-    real-time interval against a frame-gated duration, so it falls back to
-    one trailing Puff step instead — lossy, and only reachable by loading an
-    old saved file (operator-accepted trade-off, nothing built after this
-    redesign can lose anything this way).
-    """
+    """A pre-redesign composite step -> atomic steps. It always captured, so
+    its wait becomes `record`. A puff interval interleaves exactly in seconds;
+    in frames (no rate to convert with) it becomes one trailing Puff."""
     out: list[Step] = []
     x, y = _opt_num(raw.get("x_um")), _opt_num(raw.get("y_um"))
     if x is not None or y is not None:
@@ -453,19 +321,15 @@ def _opt_num(v) -> float | None:
 
 @dataclass(frozen=True)
 class RigLimits:
-    """What the loaded rig can actually do, as validation sees it.
-
-    Built by the adapter from its neighbours, so a routine that projects is
-    refused when the DMD isn't loaded rather than half-running without light.
-    """
+    """What the loaded rig can do, as validation sees it."""
     x_um:            tuple[float, float] | None = None    # stage soft limits
     y_um:            tuple[float, float] | None = None
-    z_um:            tuple[float, float] | None = None    # None: no Z stage
+    z_um:            tuple[float, float] | None = None
     has_stage:       bool = False
-    has_z:           bool = False   # the loaded stage has a Z (focus) axis
+    has_z:           bool = False
     has_dmd:         bool = False
     has_puffer:      bool = False
-    has_frames:      bool = False   # a camera is loaded, so frames() ticks
+    has_frames:      bool = False   # a camera is loaded
 
 
 def _limit_problem(axis: str, value: float,
@@ -479,11 +343,7 @@ def _limit_problem(axis: str, value: float,
 
 
 def validate(routine: Routine, rig: RigLimits) -> list[str]:
-    """Everything wrong with running `routine` on `rig`, worst first-ish.
-
-    An empty list means it may run. Every check here is one that would
-    otherwise surface mid-run, which on this rig means mid-experiment.
-    """
+    """Everything wrong with running `routine` on `rig`; empty = may run."""
     out: list[str] = []
     if not routine.steps:
         out.append("routine has no steps")
@@ -491,9 +351,6 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
         out.append(f"cycles = {routine.cycles}; must be at least 1")
     if routine.save_mode not in SAVE_MODES:
         out.append(f"unknown save mode {routine.save_mode!r}")
-    # Every routine arms on Start now (no manual/TTL choice), so a camera
-    # able to report frames is required unconditionally, not just for one
-    # routine's own opt-in.
     if not rig.has_frames:
         out.append("no camera is loaded to arm the routine's start on")
 
@@ -539,7 +396,6 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
             if s.unit not in UNITS:
                 out.append(f"{at}: unknown unit {s.unit!r}")
             elif s.unit == "frames" and not rig.has_frames:
-                # Nothing would ever end the step; it would sit there forever.
                 out.append(f"{at}: measured in frames, but no camera is loaded")
             if not (s.length > 0):
                 out.append(f"{at}: length = {s.length:g}; must be above zero")
@@ -550,8 +406,6 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
                 out.append(f"{at}: uses the puffer, which isn't loaded")
         elif s.kind == "trigger":
             if not rig.has_frames:
-                # The edge is only ever observable as frames appearing, so
-                # with no camera there's nothing that could end this step.
                 out.append(f"{at}: waits for the camera's trigger, but no "
                            f"camera is loaded")
 

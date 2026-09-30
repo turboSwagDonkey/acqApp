@@ -1,12 +1,11 @@
-"""Recorder — one background writer thread draining a shared ring buffer to disk.
+"""Recorder — one writer thread draining a shared ring buffer to disk.
 
-Device workers call `put()` from their acquisition threads; it stamps the sample
-on the session-wide clock at acquisition time (not write time) and enqueues it,
-so no acquisition thread ever touches disk I/O.
+Workers call `put()`, which stamps the sample on the session clock and
+enqueues it; no acquisition thread touches disk.
 
     rec = Recorder(clock, HDF5Writer(), RingBuffer(512))
     rec.start(path, metadata)
-    rec.put("wheel", voltage)       # from each worker thread
+    rec.put("wheel", voltage)
     rec.stop()
 """
 from __future__ import annotations
@@ -33,15 +32,11 @@ class Recorder:
         self._buf = ring_buffer
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # Detaching the sinks doesn't stop a worker already inside its callback,
-        # so a put() can land after the file closed. Those used to return
-        # silently, undercounting drops exactly when the number mattered.
+        # A worker already inside its sink can put() after close; counted.
         self._gate = threading.Lock()
         self._closed = False
-        self._late = 0              # arrived after the file was closed
-        self._unstamped = 0         # arrived before the session clock started
-        # Samples offered per stream. Incremented under the gate (68 ns on top
-        # of an enqueue that already holds it); read without it — see offered().
+        self._late = 0              # after the file closed
+        self._unstamped = 0         # before the session clock started
         self._offered: dict[str, int] = {}
 
     def start(self, path: Path, metadata: dict[str, Any]) -> None:
@@ -52,17 +47,13 @@ class Recorder:
         self._thread.start()
 
     def put(self, stream: str, data: Any, at: float | None = None) -> None:
-        """Enqueue one sample, stamped on the shared clock at acquisition time.
-
-        `at` is a `perf_counter()` reading of when the sample was ACQUIRED, for
-        devices carrying their own timestamps — the camera hands over frames in
-        batches, so stamping on arrival would quantise that stream to the read
-        cadence. Omit it for devices polled one sample at a time.
-        """
+        """Enqueue one sample. `at` is a perf_counter() reading of when it was
+        ACQUIRED, for batched devices (stamping on arrival would quantise
+        them to the read cadence)."""
         try:
             ts = self._clock.now() if at is None else self._clock.at(at)
         except RuntimeError:
-            with self._gate:            # clock not started — nothing to stamp with
+            with self._gate:
                 self._unstamped += 1
             return
         with self._gate:
@@ -73,24 +64,17 @@ class Recorder:
             self._offered[stream] = self._offered.get(stream, 0) + 1
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
-        """Facts known only once the run is under way. Call before stop()."""
         self._writer.update_metadata(metadata)
 
     def stop(self, drain_timeout: float = 30.0,
              final_metadata: Callable[[], dict[str, Any]] | None = None) -> int:
-        """Stop, drain to disk, close. Returns samples still un-drained if the
-        timeout was hit (0 on a clean drain), so the caller can surface it.
-
-        `final_metadata()` runs after the drain and before the close: its counts
-        are only final once the writer thread stopped, and there's no way to
-        write them afterwards.
-        """
+        """Drain and close; returns samples left un-drained (0 = clean).
+        `final_metadata()` runs between the drain and the close."""
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=drain_timeout)
             self._thread = None
-        # Close the gate before measuring, so a straggler is either in the
-        # buffer (counted in `remaining`) or counted late — never discarded.
+        # Close the gate first, so a straggler is counted either way.
         with self._gate:
             self._closed = True
             remaining = len(self._buf)
@@ -100,35 +84,23 @@ class Recorder:
         return remaining
 
     def offered(self, stream: str) -> int:
-        """Samples of `stream` handed to this file so far.
+        """Samples of `stream` handed to this file (the ring may still shed).
 
-        "Offered", not written: the ring can still shed one, and that's counted
-        in `drop_count`, not here. An experiment routine measures a "100 frames"
-        step by this — frames that reached the file, not frames the camera
-        produced, which differ exactly when the write path is what's behind.
-
-        **Read without the gate**, deliberately. One dict lookup of an int is
-        atomic under the GIL; taking the gate would buy a count that never leads
-        the buffer, which no caller can tell apart, and cost a GUI-thread stall
-        behind every enqueueing worker — measured at 6.1 ms mean / 28.7 ms worst
-        against a saturating producer, versus 1.3 µs unlocked. The routine reads
-        it ~70×/s while it runs.
-        """
+        Read without the gate on purpose: the routine polls this ~70x/s, and
+        locking stalled the GUI up to 29 ms behind a busy producer."""
         return self._offered.get(stream, 0)
 
     @property
     def drop_count(self) -> int:
-        """Shed by the ring buffer because the writer fell behind."""
+        """Shed by the ring because the writer fell behind."""
         return self._buf.drop_count
 
     @property
     def late_count(self) -> int:
-        """Arrived after the file was closed."""
         return self._late
 
     @property
     def unstamped_count(self) -> int:
-        """Offered before the session clock started, so they had no timebase."""
         return self._unstamped
 
     def _writer_loop(self) -> None:

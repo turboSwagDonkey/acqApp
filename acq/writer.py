@@ -1,21 +1,14 @@
-"""Writer ABC + HDF5Writer.
+"""Writers: persist (stream, timestamp, data), all timestamps on the session
+clock.
 
-A Writer persists (stream, timestamp, data) tuples, swappable without touching
-acquisition code. Timestamps all come from the SessionClock, so every stream
-shares one origin.
-
-Metadata lands in the root attributes in its OWN type (`attr_value`), so
-analysis reads `f.attrs["wheel_volts_per_rev"] * x` instead of parsing strings.
-
-Layout, one group per stream, created lazily on first write:
+HDF5 layout, one group per stream, created on first write:
   /<stream>/timestamps   float64 (N,)         seconds since session start
-  /<stream>/frames       <dtype> (N, H, W)    image streams (camera, pupil)
-  /<stream>/values       float64 (N,)         scalar streams (encoder, puffer)
+  /<stream>/frames       <dtype> (N, H, W)    image streams
+  /<stream>/values       float64 (N,)         scalar streams
 
-Datasets grow a block at a time to amortise the resize, but each sample is
-written immediately. `timestamps` has a NaN fill, so a killed process leaves
-identifiable tail rows and every written row is recoverable; a clean close
-trims to exact length, so a normal file has no NaNs.
+Datasets grow in blocks but each sample is written at once. `timestamps` has
+a NaN fill, so a killed process leaves identifiable tail rows; a clean close
+trims them.
 """
 from __future__ import annotations
 
@@ -28,17 +21,13 @@ import numpy as np
 
 
 def attr_value(v: Any) -> Any:
-    """Coerce one metadata value into something HDF5 stores in its own type.
-
-    Everything used to go through `str()`, so `emulated` landed as `"False"` —
-    truthy. `None` becomes `""`: HDF5 has no null, and 0.0 for an unset
-    volts-per-rev is indistinguishable from a measured zero.
-    """
+    """Metadata in its own HDF5 type (str() once filed `False` as truthy
+    "False"). None -> "": HDF5 has no null, and 0.0 would read as measured."""
     if v is None:
         return ""
     if isinstance(v, (bool, int, float, str, np.generic, np.ndarray)):
-        return v            # bool before int: bool IS an int, and h5py keeps it
-    return str(v)           # Path, enum, dataclass, anything else
+        return v
+    return str(v)
 
 
 def _attrs(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -46,13 +35,7 @@ def _attrs(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def _json_value(v: Any) -> Any:
-    """Coerce one metadata value into something `json.dump` serializes
-    natively. Unlike `attr_value` (HDF5's flat-attribute model, where a
-    dict has nowhere to go but `str()`), this preserves dict/list
-    structure — the routine protocol (`Routine.to_dict()`) is a nested
-    dict and should read back as one in the settings JSON, not a
-    stringified blob nobody can `json.load()` back into anything useful.
-    """
+    """Like attr_value, but keeps dict/list structure (the routine protocol)."""
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
     if isinstance(v, np.generic):
@@ -63,7 +46,7 @@ def _json_value(v: Any) -> Any:
         return {k: _json_value(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
         return [_json_value(x) for x in v]
-    return str(v)           # Path, enum, dataclass, anything else
+    return str(v)
 
 
 class Writer(ABC):
@@ -72,44 +55,35 @@ class Writer(ABC):
 
     @abstractmethod
     def write(self, stream: str, timestamp: float, data: Any) -> None:
-        """Persist one sample. `data` is an ndarray (image) or a scalar."""
+        """`data` is an ndarray (image) or a scalar."""
         ...
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
-        """Add or overwrite file metadata after open(). Optional.
-
-        Some facts are known only once the recording is over — the camera's
-        timebase, how much was shed — and belong in the file rather than in a
-        status message that scrolls away.
-        """
+        """Add or overwrite metadata after open(). Optional."""
 
     @abstractmethod
     def close(self) -> None: ...
 
 
 class HDF5Writer(Writer):
-    """Streams any number of named image/scalar channels into one HDF5 file.
+    """Any number of image/scalar streams in one HDF5 file.
 
-    Images are UNCOMPRESSED: gzip manages a fraction of the rate on noisy
-    16-bit data, stalling the writer and backing up the ring. `compression=`
-    also gives up the direct-chunk path below, which is the fast one.
-
-    Full frame on D: (KC3000 NVMe), 2026-08-25; the rig kept 53 % of a bin-1
-    stream before it (2026-08-17). A plain file writes 2700 MB/s, so the disk
-    was never the wall — the slice assignment was:
+    Images are uncompressed: gzip can't keep up with noisy 16-bit data, and
+    compression also disables the direct-chunk path. Full frame on the NVMe
+    (2026-08-25; the disk itself writes 2700 MB/s):
 
         `dset[i] = frame`              1304 MB/s
         direct chunk write             2696 MB/s
         + Recorder/ring, 106 Hz        2225 MB/s   100 % kept (was 59)
         + Recorder/ring, saturated     2464 MB/s
 
-    Chunk cache size, growth block, preallocation, 1/4 MB alignment, the Windows
-    VFD and multi-frame chunks were each measured: none moves it over 3 %.
+    Cache size, growth block, preallocation, alignment, VFD and multi-frame
+    chunks each moved it under 3 %.
     """
 
     _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
-    _IMG_CHUNK_BYTES = 8 << 20  # aim for ~8 MB image chunks
-    _MIN_GROW_BYTES = 64 << 20  # grow datasets in >=64 MB steps
+    _IMG_CHUNK_BYTES = 8 << 20
+    _MIN_GROW_BYTES = 64 << 20
 
     def __init__(self, compression: str | None = None,
                  compression_opts: Any = None, overwrite: bool = False) -> None:
@@ -121,11 +95,7 @@ class HDF5Writer(Writer):
         self._overwrite = overwrite
 
     def open(self, path: Path, metadata: dict[str, Any]) -> None:
-        """Create the session file. Raises FileExistsError if `path` is taken.
-
-        Mode "x", not "w": an existing session file is hours of animal time with
-        no undo. `overwrite=True` for the rare deliberate clobber.
-        """
+        """Mode "x": raises FileExistsError rather than clobber a session."""
         import h5py
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = h5py.File(path, "w" if self._overwrite else "x")
@@ -147,7 +117,7 @@ class HDF5Writer(Writer):
                 st = self._create_stream(stream, data, is_image)
 
             i = st["idx"]
-            if i >= st["cap"]:                       # grow capacity by one block
+            if i >= st["cap"]:
                 cap = st["cap"] + st["block"]
                 st["ts"].resize((cap,))
                 st["data"].resize((cap,) + st["shape"])
@@ -157,9 +127,7 @@ class HDF5Writer(Writer):
             if not st["image"]:
                 st["data"][i] = float(data)
             elif st["direct"] and self._writable_chunk(st, data):
-                # One frame IS one chunk, so hand HDF5 the frame's own
-                # buffer: no cache copy, no conversion. The slice assignment
-                # below is why bin 1 dropped half its frames.
+                # One frame is one chunk: hand HDF5 the frame's own buffer.
                 st["data"].id.write_direct_chunk(
                     (i,) + st["zero_offset"], memoryview(data).cast("B"))
             else:
@@ -168,12 +136,8 @@ class HDF5Writer(Writer):
 
     @staticmethod
     def _writable_chunk(st: dict[str, Any], data: Any) -> bool:
-        """Is `data` byte-for-byte what this dataset's chunk holds?
-
-        A direct write converts nothing, and an undersized one is accepted
-        silently — the file then kills whatever reads it (access violation,
-        `test_writer_chunks`). Anything else falls to the slice assignment.
-        """
+        """A direct write converts nothing and accepts an undersized buffer
+        silently (the file then crashes its reader), so match exactly."""
         return (data.shape == st["shape"] and data.dtype == st["dtype"]
                 and data.flags.c_contiguous)
 
@@ -187,9 +151,7 @@ class HDF5Writer(Writer):
             frame_bytes = data.dtype.itemsize * int(np.prod(shape))
             chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // max(frame_bytes, 1)))
             chunk_bytes = chunk_frames * frame_bytes
-            # A multi-frame chunk is touched once per frame before it's
-            # complete, so hold a few or every write evicts and re-reads it.
-            # Unused on the direct path, which never enters the cache.
+            # A multi-frame chunk is touched once per frame; cache a few.
             dset = g.create_dataset(
                 "frames", shape=(0,) + shape, maxshape=(None,) + shape,
                 dtype=data.dtype, chunks=(chunk_frames,) + shape,
@@ -197,21 +159,13 @@ class HDF5Writer(Writer):
                 compression_opts=self._compression_opts,
                 rdcc_nbytes=max(4 * chunk_bytes, 8 << 20),
                 rdcc_nslots=4093)
-            # Independent of chunk size: a resize is dataset-wide metadata,
-            # so every 16 frames would cost hundreds of resizes/s.
+            # Grow in large steps: a resize is dataset-wide metadata.
             grow = max(chunk_frames,
                        (self._MIN_GROW_BYTES // max(frame_bytes, 1)) or 1)
             grow = (grow // chunk_frames) * chunk_frames or chunk_frames
             st = {"image": True, "shape": shape, "dtype": data.dtype,
                   "ts": ts, "data": dset, "idx": 0, "cap": 0, "block": grow,
-                  # write_direct_chunk writes one chunk of raw bytes: only
-                  # valid where a frame is exactly a chunk and no filter is
-                  # meant to run on it.
                   "direct": chunk_frames == 1 and self._compression is None,
-                  # The chunk-index offset's trailing zeros, precomputed once
-                  # rather than rebuilt into a fresh tuple on every write() —
-                  # the direct path exists specifically to avoid per-frame
-                  # overhead.
                   "zero_offset": (0,) * len(shape)}
         else:
             dset = g.create_dataset(
@@ -226,9 +180,7 @@ class HDF5Writer(Writer):
     def close(self) -> None:
         with self._lock:
             if self._file is not None:
-                # Trim each dataset to exactly what was written (drops the
-                # pre-allocated tail so a cleanly closed file has no NaN rows).
-                for st in self._streams.values():
+                for st in self._streams.values():     # trim the preallocated tail
                     n = st["idx"]
                     st["ts"].resize((n,))
                     st["data"].resize((n,) + st["shape"])
@@ -238,14 +190,7 @@ class HDF5Writer(Writer):
 
 
 class TiffFileWriter:
-    """One image stream's frames as a multi-page TIFF, kept open for the
-    whole session. Not a `Writer` itself — `SplitWriter` owns one of these
-    per image stream, the way `HDF5Writer` owns one group per stream.
-
-    TIFF has no per-frame timestamp slot worth trusting across readers, so
-    timestamps go in a small sidecar CSV (frame index -> timestamp)
-    instead of a custom TIFF tag scheme nothing else would understand.
-    """
+    """One image stream as a multi-page TIFF, timestamps in a sidecar CSV."""
 
     def __init__(self, path: Path) -> None:
         import tifffile
@@ -266,19 +211,10 @@ class TiffFileWriter:
 
 
 class LongCsvWriter:
-    """One CSV for every scalar/event stream in a session:
-    `timestamp,stream,value,routine_step`. Long format — one row per
-    sample, not one column per stream — so streams sampled at very
-    different rates (wheel ~120 Hz, puffer sparse events, pupil fit
-    ~7-20 Hz) never need resampling or alignment to share a file.
-
-    `routine_step` is carried on every row, not just the `routine` stream's
-    own: `adapters/routines.py`'s `_put()` already encodes step boundaries
-    as +/-(index+1) on that one stream (positive = entering, negative =
-    leaving) — this decodes that and stamps whichever step is currently
-    open onto every other row too, so filtering the CSV by routine_step
-    needs no join against a separate boundaries table.
-    """
+    """Every scalar stream in one long-format CSV
+    (`timestamp,stream,value,routine_step`), so different rates never need
+    aligning. `routine_step` decodes the `routine` stream's +/-(n+1) edges
+    and stamps the open Recording's index onto every row."""
 
     _HEADER = "timestamp,stream,value,routine_step\n"
 
@@ -291,8 +227,8 @@ class LongCsvWriter:
         if stream == "routine":
             n = int(data)
             idx = str(abs(n) - 1)
-            row_step = idx                     # this row names step idx either way
-            self._step = idx if n > 0 else ""   # what applies to rows AFTER this one
+            row_step = idx                      # this row names it either way
+            self._step = idx if n > 0 else ""   # rows after it
         else:
             row_step = self._step
         self._file.write(f"{timestamp!r},{stream},{float(data)!r},{row_step}\n")
@@ -302,14 +238,8 @@ class LongCsvWriter:
 
 
 class SplitWriter(Writer):
-    """Each stream in its own file instead of one composite .h5: a TIFF
-    stack per image stream, one shared `LongCsvWriter` for every scalar
-    stream, one JSON for settings (including the full routine protocol,
-    not just its boundary markers — see `RoutinesModule.metadata()`).
-
-    `path` passed to `open()` is a DIRECTORY (the session folder), not a
-    file — `SaveConfig.resolve_dir()` is what `main.py` resolves it from.
-    """
+    """A session FOLDER: a TIFF per image stream, one long CSV for scalars,
+    one settings JSON (with the full routine protocol)."""
 
     def __init__(self) -> None:
         self._dir: Path | None = None
@@ -320,9 +250,7 @@ class SplitWriter(Writer):
         self._lock = threading.Lock()
 
     def open(self, path: Path, metadata: dict[str, Any]) -> None:
-        # Mirrors HDF5Writer's mode "x": an existing session folder is
-        # hours of animal time with no undo.
-        path.mkdir(parents=True, exist_ok=False)
+        path.mkdir(parents=True, exist_ok=False)   # never reuse a session folder
         self._dir = path
         self._stem = path.name
         self._metadata = dict(metadata)

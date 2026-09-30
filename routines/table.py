@@ -1,50 +1,12 @@
 """The step list as a table of typed editors.
 
-A step is one atomic action now (Move / Display / Wait / Puff), not a
-composite row bundling all of them — the **Kind** column picks which, and
-the **Details**/**Length**/**Unit**/**Settle** columns render "—" and refuse
-editing on a row whose kind doesn't use them (Length/Unit are Wait-only,
-Settle is Move-only, Details is Move/Display-only) — the same "sentinel, not
-blank" rule the old Stage/Pattern cells already used for "NA". Every
-editable cell still edits through a widget that can only produce a legal
-value: the value lives in `UserRole` while the text is a rendering of it,
-usually — **Details** renders as something OTHER than its raw value the same
-two ways Stage/Pattern always have:
+Cells a row's kind doesn't use show "—" and refuse edits. Each value lives in
+`UserRole`; the text is a rendering. Details is set through dialogs, not
+typed: Move shows (x, y[, z]) or a saved FOV's name, Display a thumbnail.
 
-- **Move**'s Details is X, Y (and Z, on a rig with a focus axis) together,
-  `(x, y)` or `(x, y, z)` — one place, not several cells. Filled from a saved
-  FOV (double-click, or right-click -> Fill from FOV…) it shows the FOV's
-  name in front of the numbers instead. Typing a new number (double-click ->
-  Set position…) detaches the name.
-- **Display**'s Details shows a thumbnail once a pattern is set, a picture
-  being the whole point of an image path; an ROI set rasterises its shapes
-  over their own bounding box instead (`_roi_icon`).
-
-Both are non-editable cells (no delegate) rather than something typed
-directly into — Move takes a small dialog for the same reason Display takes
-a file dialog: the value isn't free text.
-
-Rows are **dragged to reorder**, Ctrl+Up/Down do the same, both through
-`move_row` — one implementation of "what reordering means." Reordering does
-NOT rewrite `Group` ranges (index-based) — a step dragged out of a group
-leaves the range pointing at whatever is now at that position; this is a
-pre-existing limitation, not something this table tries to fix.
-
-Selection is **contiguous, not single**: a repeat group (`Group`) is a
-start/end RANGE, so shift-click/shift-arrow extending a block is the one
-extra thing selection needs to express — `selected_range()` reads it back for
-the panel's "Group selected" control. A recording is a `record` STEP, not a range.
-`set_groups()` tells the table which rows are in one; Record rows are read
-from the steps. It can tint them (blended where a row is both grouped and recording) and badge the group's
-first row with its repeat count / a recording's row with a marker, rather
-than either only being visible in a separate list below the table.
-
-Most non-reordering actions live on a right-click menu (`contextMenuEvent`),
-gated by the row's kind — Set pattern/ROI/Clear only for Display rows, Set
-position/Fill from FOV only for Move rows — the table still owns none of
-their dialogs, it only emits a signal per action and the panel does the rest.
-
-Split from `panel.py`: what it edits, `routines/settings.py` owns.
+Reordering (drag, Ctrl+Up/Down) goes through `move_row`, and does NOT rewrite
+Group ranges. Selection is contiguous because a Group is a range. The table
+emits a signal per action; the panel owns every dialog.
 """
 from __future__ import annotations
 
@@ -61,18 +23,10 @@ from PyQt6.QtWidgets import (
 from acqApp.routines.settings import (KINDS, TIMED_KINDS, UNITS, Group, Step,
                                       pattern_label)
 
-# The Pattern cell's thumbnail — big enough to recognise a stripe set or a
-# grating by eye, small enough that a dozen rows still fit on screen.
 _THUMB = QSize(28, 28)
 
-# A grouped row's tint — faint enough to read as "part of something" without
-# fighting the running-step bold/selection highlight painted over it. A warm
-# accent (matches the "N step(s) emit light" summary text), not one of
-# style.HEX's per-subsystem colors — public so `routines/timeline.py` can
-# paint the same bracket in the same color there.
+# Shared with routines/timeline.py.
 GROUP_TINT = QColor(208, 135, 112, 40)
-# A recording bracket's tint — a different hue (red, "on air") so a row that
-# is both grouped and recording reads as neither tint alone; see `_tint_for`.
 REC_TINT = QColor(196, 60, 60, 55)
 
 VALUE = Qt.ItemDataRole.UserRole
@@ -83,9 +37,7 @@ KIND_LABELS: dict[str, str] = {
     "trigger": "Trigger",
 }
 
-# Columns, in order: (title, field, tooltip). "details" is a synthetic field
-# — what it shows and edits depends on the row's kind, painted in
-# `_paint_details` rather than through the generic `_render`.
+# (title, field, tooltip). "details" depends on kind; see `_paint_details`.
 COLS = (
     ("Comment", "comment", "A short note for this step, shown as a title "
                           "here. Double-click to read or write the full "
@@ -110,14 +62,8 @@ COLS = (
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
-# What an axis a Move step doesn't send reads as. A word, not a blank cell:
-# blank used to mean both "leave this axis alone" and "I haven't typed it
-# yet", and "leave" on its own didn't say leave WHAT.
-NO_CHANGE = "NA"
-
-# The row header of the step the engine is on. The row is bold as well; the
-# marker is what survives a table the operator has scrolled.
-RUNNING = "▶"
+NO_CHANGE = "NA"        # an axis a Move leaves alone
+RUNNING = "▶"           # row header of the step the engine is on
 
 # Fields only meaningful for one kind — "—" and non-editable on any other row.
 _KIND_OF_FIELD = {"length": TIMED_KINDS, "unit": TIMED_KINDS,
@@ -143,8 +89,7 @@ class _ChoiceDelegate(QStyledItemDelegate):
         editor.showPopup()          # one click to the list, not two
 
     def setModelData(self, editor, model, index) -> None:
-        # Only the value: the table renders the text from it, under its own
-        # signal guard, so one edit is one change rather than two.
+        # Value only; the table renders the text, so one edit is one change.
         model.setData(index, editor.currentData(), VALUE)
 
 
@@ -175,11 +120,7 @@ class _NumberDelegate(QStyledItemDelegate):
 
 
 class StepTable(QTableWidget):
-    """The routine's steps, edited in place. Emits `changed` on any edit.
-
-    Holds a reference to the caller's list of `Step`s and writes into it — the
-    panel owns the routine, this owns how it's edited.
-    """
+    """Edits the caller's list of `Step`s in place; `changed` on any edit."""
 
     changed = pyqtSignal()
     pattern_requested = pyqtSignal()        # the panel owns the file dialog
@@ -205,38 +146,26 @@ class StepTable(QTableWidget):
         self.verticalHeader().setDefaultSectionSize(_THUMB.height() + 4)
         self.setIconSize(_THUMB)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        # Contiguous, not Extended: a Group/Recording is a RANGE — see module
-        # docstring. ctrl-click (disjoint rows) stays unavailable.
         self.setSelectionMode(QAbstractItemView.SelectionMode.ContiguousSelection)
-        # Drag a row to where it belongs. InternalMove alone would have Qt move
-        # the *cells*; `dropEvent` below moves the Step instead, because the
-        # list is what the engine reads.
+        # `dropEvent` moves the Step, not Qt's cells: the list is what runs.
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropOverwriteMode(False)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.verticalHeader().setSectionsMovable(False)
-        # Kind/Length/Unit/Settle are a word or a number — fit to content
-        # instead of an equal Stretch share, which left them mostly empty
-        # space. Comment/Details are the two columns worth the room that
-        # frees up.
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         for f in ("comment", "details"):
             header.setSectionResizeMode(FIELDS.index(f),
                                         QHeaderView.ResizeMode.Stretch)
-        # One click on a selected cell opens its editor: with combo boxes and
-        # spin boxes, needing a double-click to see the choices hides them.
         self.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
             | QAbstractItemView.EditTrigger.AnyKeyPressed)
 
-        # Details has no delegate — like before this redesign, it's set
-        # through a dialog (Set position…/Fill from FOV…, or a pattern/ROI
-        # file dialog), not typed into a cell.
+        # Details has no delegate: it's set through dialogs.
         self.setItemDelegateForColumn(
             FIELDS.index("kind"),
             _ChoiceDelegate(tuple((KIND_LABELS[k], k) for k in KINDS),
@@ -253,8 +182,6 @@ class StepTable(QTableWidget):
 
         self.itemChanged.connect(self._on_item_changed)
         self.cellDoubleClicked.connect(self._on_double_click)
-        # The row header is the step's name tag: double-click to set the label that used to be
-        # its own ("Step") column — one that sat empty far more often than not.
         self.verticalHeader().sectionDoubleClicked.connect(
             self._on_header_double_clicked)
         self.verticalHeader().setToolTip("Double-click to name a step.")
@@ -274,16 +201,11 @@ class StepTable(QTableWidget):
             self._loading = False
 
     def set_groups(self, groups: list[Group]) -> None:
-        """The routine's repeat groups, so the table can show which rows are
-        in one — a separate list below the table isn't "at a glance" once
-        you're scrolled past it. Repaints; call after any group edit."""
+        """So rows can be tinted/badged. Call after any group edit."""
         self._groups = list(groups)
         self._repaint_all()
 
     def _repaint_all(self) -> None:
-        # Signals off, as in reload(): this only re-renders existing step
-        # data, and an itemChanged here would read it straight back into the
-        # routine as a spurious edit.
         self._loading = True
         try:
             self._paint_numbers()
@@ -299,15 +221,12 @@ class StepTable(QTableWidget):
         return None
 
     def _recording_at(self, row: int) -> Step | None:
-        """The row's step if it is a Record step; read live, so a kind edit
-        retints without anyone telling the table."""
         if 0 <= row < len(self._steps) and self._steps[row].kind == "record":
             return self._steps[row]
         return None
 
     def _tint_for(self, row: int) -> QColor | None:
-        """The row's background: blended if it's both grouped AND inside a
-        recording, so neither reads as the other's plain tint."""
+        """Blended when both grouped and recording."""
         g, r = self._group_at(row) is not None, self._recording_at(row) is not None
         if g and r:
             return QColor((GROUP_TINT.red() + REC_TINT.red()) // 2,
@@ -321,12 +240,8 @@ class StepTable(QTableWidget):
         return None
 
     def _paint_numbers(self) -> None:
-        """The row header is the step's place in the order, and carries the
-        running marker, a group's repeat count on its FIRST row, a recording
-        marker on EVERY row it covers (no count to show like a group's ×N),
-        and the step's own name if it has one (double-click to set) —
-        "which step is this, is it repeated, is it being recorded, what is
-        it called" answered in one glance."""
+        """Row headers: number (or ▶), ×N on a group's first row, ⏺ on
+        Record rows, and the step's label."""
         labels = []
         for r in range(self.rowCount()):
             n = RUNNING if r == self._running else str(r + 1)
@@ -369,9 +284,6 @@ class StepTable(QTableWidget):
     def _paint_details(self, item: QTableWidgetItem, s: Step) -> None:
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if s.kind == "move":
-            # Not typed into — see Details' entry in COLS. The triple is
-            # still the value of record (VALUE, above) and still what the
-            # engine drives to; only the rendering changes for a named spot.
             item.setData(VALUE, (s.x_um, s.y_um, s.z_um))
             item.setIcon(QIcon())
             item.setText(_xyz_text(s.x_um, s.y_um, s.z_um, s.fov))
@@ -411,13 +323,8 @@ class StepTable(QTableWidget):
                      else flags & ~Qt.ItemFlag.ItemIsEditable)
 
     def mark_running(self, row: int | None) -> None:
-        """Show which step the engine is on. -1/None clears it.
-
-        Signals off, like every other repaint path: `setFont()` calls
-        `setData()` under the hood, so without the guard this fires
-        itemChanged on every cell, every time the running row moves — read
-        straight back into the routine as a spurious edit mid-run.
-        """
+        """Bold the engine's step; -1/None clears. Guarded: setFont() fires
+        itemChanged, which would read back as an edit mid-run."""
         self._running = row if row is not None and row >= 0 else None
         self._loading = True
         try:
@@ -455,9 +362,7 @@ class StepTable(QTableWidget):
             if field == "unit":
                 s.unit = value if value in UNITS else s.unit
             elif field == "length":
-                # A step measured in frames is a whole number of them; the
-                # validator refuses the alternative, so round here rather than
-                # refuse at the Start button for a rounding the panel could fix.
+                # Round frames here rather than have validate() refuse them.
                 s.length = (round(float(value)) if s.unit == "frames"
                             else float(value))
             elif field == "settle_s":
@@ -466,7 +371,6 @@ class StepTable(QTableWidget):
         self.changed.emit()
 
     def _repaint_row(self, row: int) -> None:
-        """Re-render one row from the step, without re-entering the handler."""
         self._loading = True
         try:
             self._paint_row(row, self._steps[row])
@@ -489,10 +393,7 @@ class StepTable(QTableWidget):
         else:
             self.pattern_requested.emit()
 
-    # The one cell with no delegate at all — set through a dialog, so Delete
-    # is the only way to empty it: Move back to "NA" on both axes,
-    # Display back to "stop displaying".
-    _CLEARABLE = ("details",)
+    _CLEARABLE = ("details",)       # Delete is the only way to empty it
 
     def keyPressEvent(self, ev) -> None:
         if (ev.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -508,8 +409,6 @@ class StepTable(QTableWidget):
         super().keyPressEvent(ev)
 
     def clear_cell(self, row: int, field: str) -> None:
-        """Empty the Details cell: Move back to "NA", Display back to
-        "stop displaying"."""
         if not (0 <= row < len(self._steps)):
             return
         s = self._steps[row]
@@ -524,11 +423,7 @@ class StepTable(QTableWidget):
 
     # ── reordering ───────────────────────────────────────────────────────────
     def move_row(self, src: int, dest: int) -> bool:
-        """Move one step to `dest`, its FINAL index. The one implementation.
-
-        The arrows, Ctrl+Up/Down and a drop all land here, so reordering can't
-        mean two different things depending on how it was asked for.
-        """
+        """Move one step to `dest`, its FINAL index."""
         n = len(self._steps)
         if not (0 <= src < n):
             return False
@@ -536,9 +431,6 @@ class StepTable(QTableWidget):
         if dest == src:
             return False
         self._steps.insert(dest, self._steps.pop(src))
-        # Only src..dest actually shifted — a full reload() repainted every
-        # row for what's always a contiguous shift of the rows between them;
-        # drag-drop and Ctrl+Up/Down both land here.
         lo, hi = min(src, dest), max(src, dest)
         self._loading = True
         try:
@@ -553,10 +445,8 @@ class StepTable(QTableWidget):
         return True
 
     def startDrag(self, supported_actions) -> None:
-        """Offer Copy only. Qt's own startDrag deletes the source rows
-        whenever the drag ends as a Move — wherever it lands, including a
-        drop outside this table — and `move_row` already does the whole move
-        itself, so a Move outcome can only lose the step."""
+        """Copy only: a Move outcome makes Qt delete the source row on top of
+        `move_row`'s own move, losing the step."""
         indexes = self.selectedIndexes()
         if not indexes:
             return
@@ -565,22 +455,14 @@ class StepTable(QTableWidget):
         drag.exec(Qt.DropAction.CopyAction, Qt.DropAction.CopyAction)
 
     def dropEvent(self, ev) -> None:
-        """A dropped row moves the Step, not the cells.
-
-        Qt's InternalMove would shuffle the *items* and leave `self._steps` in
-        the old order — the table would look right and the engine would run the
-        old protocol.
-        """
+        """Move the Step, not Qt's items — otherwise the table looks right and
+        the engine runs the old order."""
         if ev.source() is not self:
             ev.ignore()
             return
         src = self.selected_row()
         insert = self._drop_index(ev)
-        # CopyAction, not MoveAction: `move_row` below already does the whole
-        # move (list splice + repaint). Accepting MoveAction here makes Qt's
-        # own startDrag() ALSO delete the source row afterward, on top of the
-        # one move_row already performed — the step then vanishes until the
-        # next full reload() repaints over the damage.
+        # Copy, not Move: see startDrag.
         ev.setDropAction(Qt.DropAction.CopyAction)
         ev.accept()
         # An insertion point past the source collapses by one once it's lifted.
@@ -593,7 +475,6 @@ class StepTable(QTableWidget):
         if not idx.isValid():
             return len(self._steps)
         rect = self.visualRect(idx)
-        # Below the middle of a row means after it — the drop indicator's line.
         return idx.row() + (1 if pos.y() > rect.center().y() else 0)
 
     # ── selection ────────────────────────────────────────────────────────────
@@ -609,22 +490,13 @@ class StepTable(QTableWidget):
             self.selectRow(row)
 
     def selected_range(self) -> tuple[int, int] | None:
-        """(first, last) rows of the current selection, inclusive — or None
-        with fewer than 2 rows selected. ContiguousSelection guarantees no
-        gaps, so min/max is the whole selection, not just its ends.
-
-        Two rows is right for a repeat GROUP — one step repeated in place is
-        what a Wait's own length already says.
-        """
+        """(first, last) selected rows, or None under 2 rows."""
         rows = self._selected_rows()
         if len(rows) < 2:
             return None
         return min(rows), max(rows)
 
     def _on_header_double_clicked(self, row: int) -> None:
-        """Name a step. Its label used to be its own ("Step") column, which
-        sat empty far more often than not; the header already shows the
-        step's number, so it shows the name too."""
         if not (0 <= row < len(self._steps)):
             return
         text, ok = QInputDialog.getText(
@@ -636,8 +508,6 @@ class StepTable(QTableWidget):
             self.changed.emit()
 
     def _edit_comment(self, row: int) -> None:
-        """The Comment cell shows a title; double-click opens the full text
-        — the cell itself is too narrow for more than that."""
         if not (0 <= row < len(self._steps)):
             return
         text, ok = QInputDialog.getMultiLineText(
@@ -649,13 +519,8 @@ class StepTable(QTableWidget):
 
     # ── context menu ─────────────────────────────────────────────────────────
     def contextMenuEvent(self, event) -> None:
-        """One place for the actions that used to be a row of buttons under
-        the table, gated by the row's kind — Set pattern/ROI/Clear only make
-        sense on a Display row, Set position/Fill from FOV only on a Move
-        row. Right-click on a row already part of a multi-row selection keeps
-        that selection (so "Group selected" is on offer); right-click
-        elsewhere collapses to just that row, like any other list. Recording
-        isn't here at all — click the row header instead."""
+        """Actions gated by the row's kind. Right-clicking inside a multi-row
+        selection keeps it, so "Group selected" is offered."""
         idx = self.indexAt(event.pos())
         if idx.isValid() and idx.row() not in self._selected_rows():
             self.select_row(idx.row())
@@ -696,11 +561,7 @@ class StepTable(QTableWidget):
 
 def _xyz_text(x: float | None, y: float | None, z: float | None,
              fov: str) -> str:
-    """Move's Details as one fact: "(x, y)", or "(x, y, z)" once a step has a
-    Z target (most rigs and most steps never do — Z only joins the text when
-    it's actually set), or the saved FOV's name in front of it once one is
-    filled — a recognised spot is read by name, not by the numbers that
-    happen to describe it."""
+    """"(x, y)" or "(x, y, z)", prefixed by the FOV name if any."""
     def part(v: float | None) -> str:
         return NO_CHANGE if v is None else f"{v:g} um"
     coords = (f"({part(x)}, {part(y)})" if z is None else
@@ -708,11 +569,24 @@ def _xyz_text(x: float | None, y: float | None, z: float | None,
     return f"{fov} {coords}" if fov else coords
 
 
+_ICONS: dict[tuple[str, float], QIcon] = {}
+
+
 def _pattern_icon(pattern: str) -> QIcon:
-    """A thumbnail of the pattern, so a step reads as "shows this" at a
-    glance instead of a filename."""
+    """Thumbnail, cached by (path, mtime): every repaint used to reload it."""
     if not pattern:
         return QIcon()
+    try:
+        key = (pattern, Path(pattern).stat().st_mtime)
+    except OSError:
+        return QIcon()
+    icon = _ICONS.get(key)
+    if icon is None:
+        icon = _ICONS[key] = _load_icon(pattern)
+    return icon
+
+
+def _load_icon(pattern: str) -> QIcon:
     if Path(pattern).name.endswith(".roi.json"):
         return _roi_icon(pattern)
     pix = QPixmap(pattern)
@@ -723,16 +597,13 @@ def _pattern_icon(pattern: str) -> QIcon:
 
 
 def _roi_icon(path: str) -> QIcon:
-    """An ROI set has no image of its own — its shapes are rasterised over
-    their own bounding box instead, in camera px (the space they're drawn
-    in). No DMD calibration involved: this answers "what shapes", not "where
-    on the DMD" — `RoiSet.dmd_frame` is the one that needs a calibration."""
+    """An ROI set's shapes rasterised over their bounding box (camera px)."""
     from acqApp.devices.dmd import roi_store
 
     try:
         rois = roi_store.load(path)
-    except Exception:                # noqa: BLE001 — a bad/missing file is
-        return QIcon()                # just "no thumbnail", not a crash
+    except Exception:                # noqa: BLE001 — no thumbnail, not a crash
+        return QIcon()
     shown = [r for r in rois if r.enabled] or list(rois)
     if not shown:
         return QIcon()
@@ -747,15 +618,12 @@ def _roi_icon(path: str) -> QIcon:
     for r in shown:
         mask |= r.mask_at(xs, ys)
     bits = np.where(mask, np.uint8(255), np.uint8(0))
-    # QImage can reference the buffer it's built from — .copy() detaches it,
-    # so the array going out of scope on return doesn't corrupt the icon.
+    # .copy() detaches QImage from the buffer, which dies on return.
     img = QImage(bits.tobytes(), n, n, n, QImage.Format.Format_Grayscale8)
     return QIcon(QPixmap.fromImage(img.copy()))
 
 
 def _comment_preview(text: str, limit: int = 40) -> str:
-    """The Comment cell's text — a title, not the note; the full thing is
-    one double-click away."""
     if not text:
         return "—"
     first = text.splitlines()[0]
@@ -763,7 +631,6 @@ def _comment_preview(text: str, limit: int = 40) -> str:
 
 
 def _render(field: str, value) -> str:
-    """One value as the operator reads it. The parse is the delegate's job."""
     if field == "length":
         return f"{value:g}"
     if field == "settle_s":

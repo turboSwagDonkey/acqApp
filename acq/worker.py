@@ -1,22 +1,6 @@
-"""
-PullWorker — shared scaffolding for pull-based acquisition workers.
-
-Each worker runs on its own QThread, keeps the newest sample for a ~30 Hz GUI
-preview, and optionally feeds every sample to a recording sink. Snapshot,
-sink handle and stop()/wait() live here; a worker implements only _run().
-
-Subclass contract:
-    class FooWorker(PullWorker):
-        some_signal = pyqtSignal(...)          # declare device-specific signals
-        def run(self):
-            ...
-            self._publish(value)               # newest sample (+ feed the sink)
-            # or, when the recorded payload differs from the preview value:
-            self._publish(preview_value, record=payload)
-
-The GUI calls get_latest() (returns the newest value once, else None) and
-set_sink(fn) / set_sink(None). stop() flips the flag and joins the thread.
-"""
+"""PullWorker — a QThread that keeps the newest sample for the GUI preview and
+feeds every sample to an optional recording sink. Subclasses implement
+`_run()` and call `_publish(value[, record=payload])`."""
 from __future__ import annotations
 
 import threading
@@ -28,32 +12,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 
 def paced(period: float, t0: float) -> Iterator[int]:
-    """Yield 1, 2, 3, ... at a fixed rate relative to `t0` (drift-free).
-
-    Recomputes the ABSOLUTE target time for iteration n from the fixed `t0`,
-    rather than sleeping a flat `period` each time, so the loop free-runs at
-    the true average rate with no cumulative drift from per-iteration
-    overhead. Capture `t0` once, before the loop starts, and pass that same
-    value into any of the caller's own `now - t0` timestamp math too, so
-    pacing and timestamps agree on the origin.
-
-    Usage (replaces the old per-callsite idiom `nxt = t0 + n * period; slp =
-    nxt - time.perf_counter(); if slp > 0: time.sleep(slp)`):
-
-        t0 = time.perf_counter()
-        for n in paced(period, t0):
-            if self._stop:
-                break
-            ...do one iteration's work...
-
-    *** NOT YET VALIDATED ON REAL HARDWARE ***
-    Verified equivalent to the old idiom by a deterministic replay test
-    (byte-identical sleep durations and elapsed time across randomized
-    work/overrun patterns on a simulated clock) and by jitter measurement on
-    a dev machine — not against actual hardware. A caller pacing a REAL
-    device poll/sample loop must be run on the physical rig, confirming
-    cadence and no dropped reads, before being trusted in an experiment.
-    """
+    """Yield 1, 2, 3, ... at absolute targets t0 + n*period, so per-iteration
+    overhead never accumulates as drift. Use the same `t0` for timestamps."""
     n = 0
     while True:
         n += 1
@@ -64,12 +24,11 @@ def paced(period: float, t0: float) -> Iterator[int]:
 
 
 class PullWorker(QThread):
-    # "TypeName: message" if _run() raises. An exception escaping QThread.run()
-    # makes PyQt6 qFatal() and takes the WHOLE process down, so catch everything
-    # here and surface it as a signal the GUI can show.
+    # An exception escaping QThread.run() makes PyQt6 abort the whole process,
+    # so run() catches everything and reports it here.
     error = pyqtSignal(str)
 
-    _STOP_WAIT_MS = 3000        # subclasses may override
+    _STOP_WAIT_MS = 3000
 
     def __init__(self) -> None:
         super().__init__()
@@ -78,7 +37,7 @@ class PullWorker(QThread):
         self._latest: Any = None
         self._sink: Callable[[Any], None] | None = None
 
-    # ── thread entry (do not override — implement _run instead) ──────────────
+    # ── thread entry (implement _run, not run) ────────────────────────────────
     def run(self) -> None:
         self._stop = False
         try:
@@ -88,30 +47,24 @@ class PullWorker(QThread):
             self.error.emit(f"{type(e).__name__}: {e}")
 
     def _run(self) -> None:
-        """Subclasses implement the acquisition loop here (not run())."""
         raise NotImplementedError
 
     # ── GUI side ────────────────────────────────────────────────────────────
     def get_latest(self) -> Any:
+        """The newest value, once; None until the next one."""
         with self._lock:
             v = self._latest
             self._latest = None
         return v
 
     def set_sink(self, sink: Callable[[Any], None] | None) -> None:
-        """Attach (or clear) a per-sample recording sink.
-
-        The store is atomic under the GIL, so a reader sees the old sink or the
-        new one. It does **not** stop a worker already inside `sink(value)`:
-        that call runs to completion and can land after the file closed, which
-        is why `Recorder` counts those rather than dropping them silently
-        (`late_count`). Detaching isn't a barrier.
-        """
+        """Not a barrier: a call already inside the old sink finishes, which is
+        why `Recorder` counts late samples."""
         self._sink = sink
 
     # ── run()-side helpers ──────────────────────────────────────────────────
     def _emit_sink(self, value: Any) -> None:
-        sink = self._sink       # snapshot: no None deref if set_sink races us
+        sink = self._sink       # snapshot against a racing set_sink
         if sink is not None:
             sink(value)
 
@@ -120,8 +73,7 @@ class PullWorker(QThread):
             self._latest = value
 
     def _publish(self, value: Any, record: Any = None) -> None:
-        """Feed the sink (with `record` if given, else `value`) and update the
-        newest-sample snapshot the GUI pulls."""
+        """Sink `record` (or `value`), and keep `value` for the preview."""
         self._emit_sink(value if record is None else record)
         self._set_latest(value)
 
