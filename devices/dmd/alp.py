@@ -1,16 +1,11 @@
-"""Vialux ALP device layer — no Qt, no app state.
+"""Vialux ALP-4.2 (1024x768) device layer, via ALP4lib and the vendor's
+high-speed API. No Qt, so `build_frame` is testable without the device.
 
-A **1024x768 Vialux ALP-4.2** through `ALP4lib` over the vendor's high-speed
-API (a separate non-pip install, like NI-DAQmx and DCAM). Where that API is,
-image → binary frame, and the open/project/halt/close lifecycle. Split from
-`control.py` so `build_frame` — pure numpy/PIL, and where a misplaced stimulus
-comes from — is testable without Qt or the device.
+`build_frame` ports `dmdGUI_project`'s `dmdCommandLine.buildFrame`, which the
+optics are aligned with; the two must stay identical.
 
-The maths is a port of `dmdGUI_project`'s `dmdCommandLine.buildFrame`, the path
-the optics are aligned with; keeping the two identical is the point.
-
-**One process at a time**: whoever opened the ALP holds it over USB, so acqApp
-and `dmdGUI_project` can't both connect. `open()` raises rather than waiting.
+Only one process can hold the ALP (over USB); `open()` raises if the
+standalone app has it.
 """
 from __future__ import annotations
 
@@ -21,21 +16,18 @@ from typing import Any
 
 import numpy as np
 
-# Vendor cap between pictures (ALP-4 doc, AlpSeqTiming). The panel allows
-# longer, so clamp and report here rather than let the driver truncate.
+# Vendor cap between pictures (AlpSeqTiming); clamped here, not truncated.
 MAX_PICTURE_US = 10_000_000
 
-# A hint only — see resolve_lib_dir().
 _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
-# Carries the operator's libDir and aligned scale/rotation — the same
-# arrangement the stage has with stage_control/.
+# The standalone app's libDir and aligned scale/rotation.
 _SIBLING_CONFIG = Path("dmdGUI_project") / "dmd_config.json"
 
 _ROOT = Path(__file__).resolve().parents[3]        # …/python
 
 
 def sibling_config() -> dict[str, Any]:
-    """The standalone DMD app's `dmd_config.json`, or {} if it isn't there."""
+    """The standalone DMD app's `dmd_config.json`, or {}."""
     p = _ROOT / _SIBLING_CONFIG
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -44,12 +36,8 @@ def sibling_config() -> dict[str, Any]:
 
 
 def resolve_lib_dir(explicit: str = "") -> tuple[str | None, str]:
-    """Find the ALP-4.2 high-speed API → (path or None, where it came from).
-
-    `None` lets ALP4lib use the registry, right for a normal vendor install.
-    The earlier sources exist because this rig's copy sits beside the repo and
-    the standalone app already records where.
-    """
+    """-> (API path or None, where it came from). None = ALP4lib's registry
+    lookup, right for a normal install."""
     if explicit:
         return explicit, "panel setting"
     env = os.environ.get("ACQAPP_ALP_DIR", "")
@@ -72,21 +60,13 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
                 scale_pct: float = 100.0, rotation_deg: float = 0.0,
                 offset_x: float = 0.0, offset_y: float = 0.0,
                 invert: bool = False, fit: bool = False) -> np.ndarray:
-    """Render a pattern into the (height, width) uint8 {0,255} frame.
+    """A pattern as a (height, width) uint8 {0,255} frame: binarize, invert,
+    scale, rotate, place — the standalone app's order and conventions:
 
-    Order — binarize, invert, scale, rotate, place — is the standalone app's,
-    and so is every convention in it:
-
-      * threshold >127, on the source AND again after the interpolating
-        scale/rotate, so the frame really is binary (mirrors have no grey);
-      * rotation **clockwise-positive**, matching Qt and the standalone dial,
-        which is the opposite of PIL's;
-      * `offset_x/offset_y` move the pattern's centre off the DMD's in device
-        px, so 0,0 is centred whatever the image size;
-      * `fit` overrides scale, rotation AND offset — a calibration sweep must
-        not use it.
-
-    Anything off the panel is cropped.
+      * threshold >127 before AND after interpolation (mirrors have no grey);
+      * rotation clockwise-positive (Qt's; PIL's is the opposite);
+      * offsets move the pattern centre off the DMD's, in device px;
+      * `fit` overrides scale, rotation and offset — never for calibration.
     """
     from PIL import Image
 
@@ -117,7 +97,6 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
         proc = proc.resize((new_w, new_h), Image.BILINEAR)
 
     if rotation_deg % 360.0 != 0.0:
-        # PIL rotates counter-clockwise; Qt (and the standalone GUI) clockwise.
         proc = proc.rotate(-rotation_deg, resample=Image.BILINEAR,
                            expand=True, fillcolor=0)
 
@@ -134,15 +113,9 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AlpDevice:
-    """Open / upload / project / halt / close, and nothing else.
-
-    Per projection, as in the standalone app:
-        SeqAlloc(1 image, 1 bit) -> SeqPut(frame) -> SeqControl(BIN_UNINTERRUPTED)
-        -> SetTiming(...) -> Run(loop)
-    and `halt()` is Halt + FreeSeq, so the next `project()` starts clean.
-    ALP_BIN_UNINTERRUPTED is what makes a held pattern hold: the mirrors keep
-    their state between pictures instead of blanking.
-    """
+    """Per projection: SeqAlloc(1, 1 bit) -> SeqPut -> BIN_UNINTERRUPTED (so a
+    held pattern holds between pictures) -> SetTiming -> Run. `halt()` is
+    Halt + FreeSeq, so the next project starts clean."""
 
     def __init__(self, lib_dir: str | None = None, version: str = "4.2") -> None:
         self._lib_dir = lib_dir
@@ -157,7 +130,7 @@ class AlpDevice:
         return self._dev is not None
 
     def open(self) -> tuple[int, int]:
-        """Connect and return (width, height). Raises if the ALP isn't free."""
+        """-> (width, height). Raises if the ALP isn't free."""
         from ALP4 import ALP4
         dev = ALP4(version=self._version, libDir=self._lib_dir)
         dev.Initialize()
@@ -167,12 +140,8 @@ class AlpDevice:
 
     def project(self, frame: np.ndarray, *, illumination_us: int | None = None,
                 loop: bool = True, repeats: int = 0) -> None:
-        """Upload one frame and start displaying it.
-
-        `illumination_us=None` leaves the timing at the device default, which is
-        what a held pattern wants. `repeats` > 0 shows the picture that many
-        times and stops; `loop` displays until `halt()`.
-        """
+        """Upload one frame and display it. None timing = device default (a
+        held pattern); `repeats` > 0 shows it that many times."""
         from ALP4 import ALP_BIN_MODE, ALP_BIN_UNINTERRUPTED, ALP_SEQ_REPEAT
         if self._dev is None:
             raise RuntimeError("ALP not open")
@@ -195,12 +164,8 @@ class AlpDevice:
         dev.Run(loop=loop)
 
     def halt(self) -> None:
-        """Stop display and release the sequence. Safe at any time.
-
-        Each step is guarded separately: a device unplugged mid-run fails the
-        Halt but must still get the FreeSeq, and neither failure should stop the
-        caller from closing.
-        """
+        """Safe at any time. Steps guarded separately: an unplugged device
+        fails Halt but must still get FreeSeq."""
         if self._dev is None or not self._seq:
             return
         for step in ("Halt", "FreeSeq"):

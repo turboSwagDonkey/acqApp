@@ -1,7 +1,4 @@
-"""
-The running wheel's adapter — and the first module to offer a closed-loop
-signal source (`signal_sources`).
-"""
+"""The running wheel's adapter; also a closed-loop signal source."""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -23,20 +20,18 @@ class WheelModule(ModuleAdapter):
     tab_label = "Wheel"
     plot_label = "Wheel"
 
-    worker: ClockedWorker | None         # narrows ModuleAdapter.worker
+    worker: ClockedWorker | None
 
     def __init__(self, win) -> None:
         super().__init__(win)
         self._plot_w = None
         self._curve = None
         self._y: list[float] = []
-        self._units: str | None = None       # current Y-axis unit label
-        self._title_text: str | None = None   # current plot title
-        self._readout_text: str | None = None # current live-readout text
-        # Cached copy of the panel's settings, refreshed by `_on_settings` —
-        # so the per-tick display path (`_show`) reads two plain attributes
-        # instead of rebuilding a whole EncoderSettings from its widgets every
-        # frame (pupil_cam.py's pattern for the same reason).
+        # Last-set labels: each set is a relayout, so only on change.
+        self._units: str | None = None
+        self._title_text: str | None = None
+        self._readout_text: str | None = None
+        # Cached: `panel.settings` rebuilds from widgets per call.
         self._cfg = EncoderSettings()
 
     # ── construction ──
@@ -44,8 +39,8 @@ class WheelModule(ModuleAdapter):
         self.panel = WheelSettingsPanel(
             config.load_dataclass(EncoderSettings, self.key))
         self.panel.settings_changed.connect(self._on_settings)
-        self._cfg = self.panel.settings     # seed the cache; _on_settings
-        return self.panel                   # keeps it fresh from here on
+        self._cfg = self.panel.settings
+        return self.panel
 
     def build_plot(self) -> QWidget:
         self._plot_w, self._curve = _plot(
@@ -53,12 +48,7 @@ class WheelModule(ModuleAdapter):
         return self._plot_w
 
     def _on_settings(self, st) -> None:
-        """Push live V/rev and wheel-diameter changes to a running worker.
-
-        They scale every wheel number in the session file. V/rev is a measured
-        4.912; the diameter is still unmeasured, so until it's set the file
-        carries rev/s rather than mm/s.
-        """
+        """V/rev and diameter apply live; they scale every wheel number filed."""
         config.save_settings(self.key, asdict(st))
         self._cfg = st
         if self.worker is not None:
@@ -79,15 +69,14 @@ class WheelModule(ModuleAdapter):
         sample = self.worker.get_latest() if self.worker is not None else None
         if sample is None:
             return
-        v, speed, dist, _t = sample      # the worker already derived speed+distance
+        v, speed, dist, _t = sample
         self._y.append(self._show(v, speed, dist))
         del self._y[:-PLOT_HISTORY]
         self._curve.setData(self._y)
 
     def _show(self, v: float, speed: float, dist: float) -> float:
-        """Pick units/labels for the current scaling, update the live readout,
-        and return the value to plot. With no V/rev set there's nothing to
-        derive, so it plots the raw voltage instead."""
+        """Label for the current scaling and return what to plot (raw volts
+        without V/rev)."""
         cfg = self._cfg
         if not cfg.volts_per_rev:
             self._axis("Voltage", "V")
@@ -99,36 +88,24 @@ class WheelModule(ModuleAdapter):
             self._title(speed, "mm/s")
             self._readout(
                 f"speed {speed:+.1f} mm/s      net {dist / 1000:+.2f} m")
-            return dist / 1000.0                 # plot net distance in metres
+            return dist / 1000.0
         self._axis("Distance", "rev")
         self._title(speed, "rev/s")
         self._readout(f"speed {speed:+.2f} rev/s      net {dist:+.1f} rev")
-        return dist                              # plot net distance in revolutions
+        return dist
 
     def _readout(self, text: str) -> None:
-        """Update the live-readout label only when the text actually
-        changed — same reasoning as `_title`: a stationary wheel formats
-        identically tick after tick."""
         if text != self._readout_text:
             self._readout_text = text
             self.panel.set_readout(text)
 
     def _axis(self, name: str, units: str) -> None:
-        """Relabel the Y axis only when the unit actually changes."""
         if self._units == units:
             return
         self._units = units
         self._plot_w.setLabel("left", name, units=units)
 
     def _title(self, speed: float | None, units: str) -> None:
-        """Show the live speed as a number in the distance plot's title.
-
-        Guarded like `_axis`, and for the same reason it was: a pyqtgraph title
-        goes through `LabelItem.setText` -> `setHtml` -> a QTextDocument
-        relayout. The digits usually move, so this mostly buys nothing — but a
-        stationary wheel formats identically tick after tick, and that's what
-        the rig sits at between runs.
-        """
         if speed is None:
             text = "Wheel distance"
         else:
@@ -140,14 +117,8 @@ class WheelModule(ModuleAdapter):
 
     # ── closed loop ──
     def signal_sources(self) -> list[SignalSource]:
-        """Both wheel speeds, because they aren't interchangeable.
-
-        `wheel_speed` is the recorded one — a slope centred a second in the past
-        (`_EncoderBase._report`), so a rule on it agrees with the trace in the
-        file but acts a second late. `wheel_speed_live` is the EMA behind it:
-        noisier, current. A scientific choice, so both are offered and the file
-        records which was used. Reads are non-consuming (`snapshot()`).
-        """
+        """Both speeds: the recorded one matches the file but is ~1 s late;
+        the live EMA is noisier but current. Non-consuming reads."""
         u = self._speed_units()
         return [
             SignalSource("wheel_speed_live", "Wheel speed (live)", u,
@@ -157,7 +128,7 @@ class WheelModule(ModuleAdapter):
         ]
 
     def _speed_units(self) -> str:
-        s = self.panel.settings if self.panel is not None else EncoderSettings()
+        s = self._cfg
         return "mm/s" if (s.volts_per_rev and s.wheel_dia_mm) else "rev/s"
 
     def _snapshot(self):
@@ -177,13 +148,7 @@ class WheelModule(ModuleAdapter):
             return
 
         def sink(sample: tuple[float, float, float, float | None]) -> None:
-            """Voltage + speed + distance: three streams on the one timebase.
-
-            `at` is when the DAQ sampled, not when the block reached us —
-            hardware-timed reads arrive in batches, so stamping on arrival
-            quantises the timebase to the read cadence, as it did for the
-            camera (#1).
-            """
+            # `at` is the DAQ sample time; blocks arrive batched.
             v, speed, dist, at = sample
             rec.put("wheel_voltage", v, at=at)
             rec.put("wheel_speed", speed, at=at)
@@ -201,16 +166,13 @@ class WheelModule(ModuleAdapter):
             "wheel_dia_mm":         s.wheel_dia_mm or 0.0,
             "wheel_speed_units":    "mm/s" if linear else "rev/s",
             "wheel_distance_units": "mm"   if linear else "rev",
-            "wheel_distance_mode":  "net_forward",   # signed; back-spin subtracts
-            # Derived speed/distance are computed with look-ahead and so lag the
-            # (live) voltage stream by this many seconds. _SIGN orients forward.
+            "wheel_distance_mode":  "net_forward",   # back-spin subtracts
             "wheel_speed_lag_s":    EncoderWorker._LAG_S,
             "wheel_sign":           EncoderWorker._SIGN,
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        # Read off the worker, never defaulted: "software" and "unknown"
-        # differ, and a defaulted 0.0 Hz would read as a measured stall.
+        # Never defaulted: 0.0 Hz would read as a measured stall.
         if self.worker is None:
             return {"wheel_timestamp_source": "unknown",
                     "wheel_rate_actual_hz":   0.0}
