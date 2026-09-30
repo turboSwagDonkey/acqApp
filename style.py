@@ -1,15 +1,8 @@
-"""
-Shared color, theme, and QSS definitions.
-Every UI panel imports from here — nothing is hardcoded elsewhere.
-
-Theming: call apply_theme(app, "dark"|"light") once at startup. It sets a Fusion
-palette (which colours all standard widgets), the base stylesheet, and
-pyqtgraph's plot background/foreground. The subsystem accents in HEX are bright
-enough to read on either background, so per-widget accent styling is unchanged.
-"""
+"""Shared colours, theme and QSS. `apply_theme(app, "dark"|"light")` once at
+startup sets the Fusion palette, base stylesheet and pyqtgraph colours."""
 from PyQt6.QtGui import QColor, QPalette
 
-# ── Per-subsystem accent colors ───────────────────────────────────────────────
+# ── Per-subsystem accent colors (readable on either theme) ────────────────────
 HEX = {
     "voltage_cam": "#4488ff",   # blue
     "pupil_cam":   "#44bb66",   # green
@@ -17,55 +10,42 @@ HEX = {
     "puffer":      "#dd4444",   # red
     "stage":       "#1aa3b8",   # teal
     "dmd":         "#d6459b",   # magenta
-    "vis_stim":    "#22c7d6",   # cyan   (screen-driven visual stimulus)
-    "mirror":      "#ff4fa3",   # pink   (PMT/camera mirror switch)
-    "closed_loop": "#9ecf2a",   # chartreuse (rule: signal in, actuation out)
-    "routines":    "#6f7bf7",   # indigo — the gap left between blue and purple
-    "sync":        "#8844cc",   # purple  (session-wide controls)
-    "saving":      "#c9a227",   # gold    (where recordings are written)
+    "vis_stim":    "#22c7d6",   # cyan
+    "mirror":      "#ff4fa3",   # pink
+    "closed_loop": "#9ecf2a",   # chartreuse
+    "routines":    "#6f7bf7",   # indigo
+    "sync":        "#8844cc",   # purple (session-wide controls)
+    "saving":      "#c9a227",   # gold
 }
 
-# Neutral (non-accent) tones per theme: (groupbox border, pane border, status
-# text, plot background, plot foreground).
 _THEME = {
     "light": dict(border="#bbb", pane="#ccc", status="#555", plot_bg="w",       plot_fg="k"),
     "dark":  dict(border="#454a4e", pane="#3a3e42", status="#9aa0a6", plot_bg="#1b1e20", plot_fg="#c8ccd0"),
 }
 
-
-# The theme in force, so a panel can ask for a neutral tone instead of writing
-# a hex literal. Hard-coded "#777" and "#9aa0a6" were dark-theme values that
-# looked wrong the moment the operator switched to light.
-_ACTIVE = "dark"
+_ACTIVE = "dark"                # so panels can ask for neutral tones
 
 WARN = "#cc8866"        # amber: "this won't do what you expect"
 
 
 def muted() -> str:
-    """Secondary text colour for the theme in force."""
     return _THEME[_ACTIVE]["status"]
 
 
 def line() -> str:
-    """Neutral border colour for the theme in force."""
     return _THEME[_ACTIVE]["border"]
 
 
 # ── Reusable QSS snippets ─────────────────────────────────────────────────────
+# Every button style has a :disabled rule: a stylesheet background overrides
+# the palette, so a disabled button would otherwise still look pressable.
 
 def _tint(c: str) -> str:
-    """A pale, lightened version of an accent colour, for an unchecked toggle."""
     return QColor(c).lighter(185).name()
 
 
 def toggle_btn(key: str) -> str:
-    """Checkable button: a pale accent tint when off, full accent when checked.
-
-    The disabled rule isn't optional, for the reason `solid_btn` spells out: a
-    stylesheet background overrides the palette, so a greyed-out button without
-    one still reads as the thing to press. Emulate is disabled for the whole
-    of a session, which is exactly when it matters.
-    """
+    """Pale accent when off, full accent when checked."""
     c = HEX[key]
     tint = _tint(c)
     return (
@@ -80,9 +60,7 @@ def toggle_btn(key: str) -> str:
 
 
 def record_btn(key: str) -> str:
-    """Like `toggle_btn`, but sized and weighted for the one control whose
-    accidental state costs an experiment. Bigger hit area, a red ring while
-    armed, so "am I recording?" is answerable from across the rig."""
+    """Bigger, and red while recording: readable from across the rig."""
     c = HEX[key]
     tint = _tint(c)
     return (
@@ -96,12 +74,7 @@ def record_btn(key: str) -> str:
 
 
 def solid_btn(key: str) -> str:
-    """Accent-coloured button for a panel's primary action.
-
-    The disabled rule isn't optional: a stylesheet background overrides the
-    palette, so without it a greyed-out button still reads as the thing to
-    press — which on a rig means reaching for an action that won't fire.
-    """
+    """A panel's primary action."""
     c = HEX[key]
     return (
         f"QPushButton{{background:{c};color:white;font-weight:bold;"
@@ -113,7 +86,8 @@ def solid_btn(key: str) -> str:
 
 
 def accent_panel(key: str) -> str:
-    """Tint a panel's group boxes with the subsystem accent (border + title)."""
+    """Group boxes in the subsystem accent. The checkable-box indicator is
+    hidden: `widgets.collapsible` shows ▾/▸ in the title instead."""
     c = HEX[key]
     return (
         "QGroupBox{"
@@ -121,16 +95,11 @@ def accent_panel(key: str) -> str:
         "padding-top:6px;font-weight:bold}"
         "QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;"
         f"color:{c}}}"
-        # A collapsible section is a disclosure, not an on/off switch. Qt's
-        # checkable group box draws a tick box, which reads as "enable this" —
-        # so the box is hidden and `widgets.collapsible` puts a ▾/▸ in the
-        # title instead. The whole title stays clickable either way.
         "QGroupBox::indicator{width:0px;height:0px;margin:0px}"
     )
 
 
 def dock_accent(key: str) -> str:
-    """Thin accent underline on a dock's title bar."""
     c = HEX[key]
     return f"QDockWidget::title{{border-bottom:2px solid {c};padding:4px}}"
 
@@ -162,7 +131,6 @@ QStatusBar {{ font-size: 8pt; color: {t['status']}; }}
 """
 
 
-
 def _dark_palette() -> QPalette:
     p = QPalette()
     window   = QColor("#232629")
@@ -186,14 +154,13 @@ def _dark_palette() -> QPalette:
 
 
 def plot_colors(theme: str) -> tuple[str, str]:
-    """(background, foreground) for pyqtgraph in the given theme."""
+    """(background, foreground) for pyqtgraph."""
     t = _THEME.get(theme, _THEME["dark"])
     return (t["plot_bg"], t["plot_fg"])
 
 
 def apply_theme(app, theme: str) -> None:
-    """Apply a full dark/light theme to the QApplication (palette + QSS +
-    pyqtgraph). Call once at startup, before building windows/plots."""
+    """Palette + QSS + pyqtgraph. Before building windows/plots."""
     import pyqtgraph as pg
     global _ACTIVE
     dark = theme == "dark"

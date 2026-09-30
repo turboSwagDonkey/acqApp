@@ -1,8 +1,6 @@
-"""
-The closed loop's adapter. The rule itself is instrument-agnostic and lives in
-`acqApp/closed_loop.py`; this only wires it to the loaded modules' signal
-sources and to the shared trigger bus.
-"""
+"""The closed loop's adapter: wires the instrument-agnostic rule to the loaded
+modules' signal sources and the shared trigger bus. Last in MODULES, so every
+source exists before its panel asks; never reaches into another adapter."""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -17,24 +15,13 @@ from acqApp.adapters.base import ModuleAdapter
 
 
 class ClosedLoopModule(ModuleAdapter):
-    """Wires `closed_loop/` into this window.
-
-    Owns no device, but needs exactly what a `ModuleAdapter` provides: a
-    settings tab, a per-session worker, a sink and metadata. **Last** in
-    `config.MODULES`, so every source-providing adapter exists before its panel
-    asks what is on offer.
-
-    It reaches its neighbours only through `signal_sources`/`module_keys` on the
-    window and the shared trigger bus — never into another adapter. That's what
-    keeps the wheel ignorant of the loop and the loop ignorant of the puffer.
-    """
     key = "closed_loop"
     tab_label = "Closed loop"
 
     def __init__(self, win) -> None:
         super().__init__(win)
         self._sources: dict[str, SignalSource] = {}
-        self._reported_fires = 0        # last count announced on the status bar
+        self._reported_fires = 0        # last count shown on the status bar
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -45,13 +32,11 @@ class ClosedLoopModule(ModuleAdapter):
         return self.panel
 
     def on_modules_changed(self) -> None:
-        # Its whole panel is a list of what the neighbours offer.
         if self.panel is not None:
             self._refresh_offers()
 
     def _refresh_offers(self) -> None:
-        """Re-read what the loaded modules offer. Done at build and again per
-        session, because the wheel's units follow its V/rev and diameter."""
+        """Also per session: the wheel's units follow its scaling."""
         self._sources = {s.key: s for s in self.win.signal_sources()}
         self.panel.set_sources(list(self._sources.values()))
         self.panel.set_targets(self.win.module_keys())
@@ -79,9 +64,7 @@ class ClosedLoopModule(ModuleAdapter):
         s = self.panel.settings
         src = self._sources.get(s.source)
         if src is None:
-            # The module that produces this signal isn't loaded this session.
-            # Say so: an armed rule that can never fire looks identical to one
-            # whose condition simply hasn't been met.
+            # Otherwise an armed rule that can never fire looks merely unmet.
             self.win.status("closed loop: no signal source loaded — rule idle")
             return
         self._reported_fires = 0
@@ -94,18 +77,10 @@ class ClosedLoopModule(ModuleAdapter):
         self.panel.clear_readout()
 
     def _on_fired(self, target: str, duration: float, value: float) -> None:
-        """The rule fired. Runs on the GUI thread — but keep it to one emit.
-
-        `fired` comes from the loop's thread and a `ModuleAdapter` isn't a
-        QObject, so this LOOKS like a direct call on the emitting thread.
-        Measured on PyQt6 it isn't: a slot that isn't a QObject bound method
-        runs on the thread `connect()` was called from — `build_session`, on the
-        GUI thread — so it arrives queued.
-
-        The guarantee is in the CALLER: move that `connect()` onto a worker
-        thread and this silently becomes a cross-thread GUI call. Hence the
-        status line stays in `update_display()`.
-        """
+        """Arrives queued on the GUI thread only because `connect()` ran there
+        (this adapter isn't a QObject); moving that connect would make it a
+        cross-thread call. So: one emit, and the status line lives in
+        update_display."""
         self.win.sync.fire(target, duration)
 
     # ── display ──
@@ -114,8 +89,6 @@ class ClosedLoopModule(ModuleAdapter):
         if latest is None:
             return
         self.panel.set_readout(*latest)
-        # Reporting the fire here rather than in _on_fired keeps the GUI call
-        # somewhere its thread is guaranteed locally — see the note there.
         n = latest[2]
         if n != self._reported_fires:
             self._reported_fires = n
@@ -129,9 +102,7 @@ class ClosedLoopModule(ModuleAdapter):
             return
 
         def sink(event: tuple[float | None, float]) -> None:
-            """One entry per fire, stamped at the instant of the sample it was
-            measured from — so the decision lines up in the file with its cause,
-            not with the GUI hop after it."""
+            # Stamped at the sample that caused the fire.
             value, at = event
             rec.put("closed_loop", float(value or 0.0), at=at)
 
@@ -141,9 +112,7 @@ class ClosedLoopModule(ModuleAdapter):
         s = self.panel.settings
         src = self._sources.get(s.source)
         return {
-            # A rule that was never armed and one that was armed but never met
-            # its condition both leave /closed_loop empty. This is what tells
-            # them apart afterwards.
+            # Never armed vs armed-but-unmet both leave /closed_loop empty.
             "loop_armed":        self.panel.armed,
             "loop_source":       s.source,
             "loop_source_units": src.units if src is not None else "",
@@ -158,17 +127,10 @@ class ClosedLoopModule(ModuleAdapter):
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        # 0 is honest for "no worker": build_session refuses to make one when
-        # the source isn't loaded, and a rule that never ran fired nothing.
-        # `loop_armed` distinguishes that from one that ran and never matched.
         if self.worker is None:
             return {"loop_fires": 0, "loop_fires_session": 0}
         return {
-            # Fires handed to the sink — normally len(/closed_loop). Not a
-            # guarantee: the Recorder can still shed one, and says so in the
-            # recorder_* attributes. See ClosedLoopWorker.recorded_fires.
-            "loop_fires":         self.worker.recorded_fires,
-            # Larger when the rule was armed during Live view and fired before
-            # Record: those actuated the hardware but are in no file.
+            "loop_fires":         self.worker.recorded_fires,   # handed to the sink
+            # Larger if it fired during Live view before Record: actuated, unfiled.
             "loop_fires_session": self.worker.n_fires,
         }

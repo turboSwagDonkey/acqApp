@@ -1,31 +1,9 @@
-"""Visual stim — the settings model. No Qt (the widgets are in `panel.py`).
+"""Visual stim settings. No Qt.
 
-Port of visStimCode's logicLibHelpers.getDefaultParams: a drifting sinusoidal
-grating shown through a circular aperture, gated on/off by "trigger" pulses.
-The .m code read those pulses from an external MCC DAQ line; this rig has no
-such line, so acqApp counts pulses off the shared session clock's own
-periodic tick instead (`acq/sync.py`'s SyncController, 10 Hz by default) —
-the same timing sequence every other module already shares, rather than
-inventing a second one. See control.py's `on_tick`.
-
-Only a drifting sinusoid is implemented (`grating.py`); the MATLAB defaults'
-other wave/flash/LUT fields (BarWidth, RotationPeriodInHz, FlashPeriodInHz,
-LUTStart/End, DoubleStim, FlashType, ModulationType, WaveType) were dropped
-rather than carried over unrendered — nothing in this codebase ever read
-them, and a saved config's stale values for them are just ignored by
-`from_dict` like any other unknown key.
-
-`VisStimSettings` nests `StimParams`/`LoopVar`, so it doesn't go through
-config.load_dataclass (that helper only handles flat dataclasses — see
-adapters/dmd.py's DmdSettings for the flat convention). It gets its own
-to_dict/from_dict instead, the same shape as routines/settings.py's Routine.
-
-Beyond the grating, `VisStimSettings.trial_type` selects among the
-paradigms the operator's rig runs — string constants, the same convention
-`devices/dmd/control.py` uses for MODE_ALL_ON/MODE_PATTERN/MODE_ROI. All six
-are implemented (control.py); `IMPLEMENTED_TRIAL_TYPES` exists so a future
-reserved-but-unbuilt paradigm can still be named in the panel (shown,
-disabled) before its control.py half exists.
+Ported from visStimCode's getDefaultParams. Only a drifting sinusoid is
+rendered; the MATLAB wave/flash/LUT fields were dropped, and stale saved
+values for them are ignored by `from_dict`. Nested, so it has its own
+to_dict/from_dict rather than config.load_dataclass.
 """
 from __future__ import annotations
 
@@ -40,16 +18,10 @@ TRIAL_SIZE       = "size"
 TRIAL_VISUOMOTOR = "visuomotor"
 TRIAL_TYPES = (TRIAL_GRATING, TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST,
               TRIAL_SIZE, TRIAL_VISUOMOTOR)
+# Lets a reserved-but-unbuilt type show in the panel, disabled.
 IMPLEMENTED_TRIAL_TYPES = TRIAL_TYPES
 
-# Map/Tuning/Contrast/Size each run their own dedicated internal sweep
-# (regions.py / tuning.py / contrast.py / size.py) over a region's geometry,
-# as opposed to Grating/Visuomotor's plain full-field/free-position grating.
-# The one source of truth for "is this trial type a region sweep" —
-# control.py (skipping the generic Loop-variable expansion) and panel.py
-# (hiding fields/groups that don't apply, incl. the Loop variables group
-# itself) each need the same answer and must not drift into two separately
-# maintained tuples.
+# Types that sweep a region internally (no Loop variables, no stretch).
 REGION_TRIAL_TYPES = (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
 
 
@@ -66,19 +38,14 @@ class StimParams:
     StimYPosition: float = 0.0
     PeriodsToShow: float = 1000.0
     BKGColor: float = 0.5
-    TriggersBlank: float = 10.0
+    TriggersBlank: float = 10.0       # counted in shared-clock ticks
     TriggersStim: float = 5.0
     WaitTrigger: float = 5.0
-    # map trial only — the shared-clock-tick counts that pace region
-    # advance/flip.
+    # map
     MapTicksPerRegion: float = 10.0
     MapTicksPerFlip: float = 2.0
     MapRepeats: float = 1.0
-    # tuning/contrast/size trials each follow the same shape as one another
-    # (region 1-9 the circle sits at, tick counts pacing 2 white pretrials
-    # then a sweep, repeated *Repeats-style) — only what's swept differs:
-    # orientation (8 steps), contrast level, or size fraction (size.py's
-    # fixed SIZE_FRACTIONS of the region's own width, not a field here).
+    # tuning / contrast / size: region 1-9, pretrial and step ticks, repeats
     TuningRegion: float = 1.0
     TuningTicksPerPretrial: float = 10.0
     TuningTicksPerOrientation: float = 10.0
@@ -91,16 +58,8 @@ class StimParams:
     SizeTicksPerPretrial: float = 10.0
     SizeTicksPerLevel: float = 10.0
     SizeRepeats: float = 1.0
-    # visuomotor trial only (control.py's _begin_visuomotor_trial) — a
-    # normal drifting grating (same geometry/appearance fields as Grating)
-    # except the drift offset is driven by the wheel's live speed each
-    # painted frame instead of WaveTempPeriodInHz, scaled by this gain (px
-    # of grating drift per unit the wheel travels — mm if the wheel module
-    # has a diameter configured, else rev). 0 gain = a static grating
-    # regardless of locomotion, useful as an open-loop control condition.
-    # Blank/stim gating is still tick-counted (TriggersBlank/TriggersStim,
-    # shared with Grating); trial length is this instead of PeriodsToShow,
-    # since there's no fixed temporal frequency to count cycles of.
+    # visuomotor: px of drift per wheel unit (mm, or rev without a diameter);
+    # 0 = static, an open-loop control. Length in ticks.
     VisuomotorGain: float = 1.0
     VisuomotorDurationTicks: float = 100.0
 
@@ -114,7 +73,7 @@ class LoopVar:
 @dataclass
 class VisStimSettings:
     trial_type: str = TRIAL_GRATING
-    screen_index: int = 0             # which QScreen the stimulus opens on
+    screen_index: int = 0
     stretch_to_screen: bool = False
     params: StimParams = field(default_factory=StimParams)
     loops: dict[str, LoopVar] = field(default_factory=dict)
@@ -145,7 +104,7 @@ class VisStimSettings:
             except (TypeError, ValueError):
                 continue
         trial_type = d.get("trial_type", TRIAL_GRATING)
-        if trial_type not in TRIAL_TYPES:      # a stale/hand-edited value
+        if trial_type not in TRIAL_TYPES:
             trial_type = TRIAL_GRATING
         return cls(
             trial_type=trial_type,
@@ -160,9 +119,7 @@ _RANGE_RE = re.compile(r"^\s*([+-]?[\d.]+)\s*:\s*([+-]?[\d.]+)\s*:\s*([+-]?[\d.]
 
 
 def parse_values(text: str) -> tuple[float, ...]:
-    """Parse a loop-values field: "1,2,3", "1 2 3", or a "start:step:stop"
-    range (MATLAB colon syntax) — replaces `str2num` on a numeric vector
-    literal. Returns () if nothing parses, same as MATLAB's empty result."""
+    """"1,2,3", "1 2 3" or MATLAB "start:step:stop"; () if it doesn't parse."""
     text = (text or "").strip()
     if not text:
         return ()
