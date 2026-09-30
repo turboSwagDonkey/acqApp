@@ -48,6 +48,32 @@ HOLD_TIMEOUT_S = 10.0
 
 EDGE_LOG_HEADER = "edge,session_s,wall_time,fov,trial,path\n"
 
+# The camera thread closes a rolled .dcimg a moment after the roll; Windows
+# refuses to delete it until then.
+JUNK_RETRY_MS = 500
+JUNK_TRIES = 20
+
+
+def delete_recording(path: Path) -> bool:
+    """Remove one recording: a split folder's own files (named after it) and
+    the folder if that empties it, or a lone .h5. Never anything else. False
+    while a file is still held open."""
+    try:
+        if path.is_dir():
+            for f in path.iterdir():
+                if f.is_file() and f.name.startswith(path.name):
+                    f.unlink()
+            if not any(path.iterdir()):
+                path.rmdir()
+        elif path.suffix == ".h5" and path.is_file():
+            path.unlink()
+            folder = path.parent
+            if folder.name == path.stem and not any(folder.iterdir()):
+                folder.rmdir()
+    except PermissionError:
+        return False
+    return True
+
 
 class RoutinesModule(ModuleAdapter):
     """Wires `routines/` into this window. Owns no device."""
@@ -82,6 +108,9 @@ class RoutinesModule(ModuleAdapter):
         self._edge_log = None                    # Path, created at first edge
         self._edge_n = 0
         self._pending_edge = None   # (n, t, wall, (cycle, step)) until its file opens
+        # Start's file when a trigger step will roll it away before a frame:
+        # stage travel only, deleted at that roll.
+        self._doomed: Path | None = None
 
     def _status(self, msg: str) -> None:
         """Status bar, and the console (which the rig actually watches) for
@@ -223,6 +252,7 @@ class RoutinesModule(ModuleAdapter):
                 n_burst = 0             # no camera: nothing counts a burst
 
             self._routine = routine
+            self._doomed = None
             self._trial_count = {}
             self._edge_log = None
             self._edge_n = 0
@@ -240,6 +270,8 @@ class RoutinesModule(ModuleAdapter):
                 if not self._open_recording():
                     self.win.set_routine_save_context(None, None)
                     return
+                if self._own_rec and self._first_file_is_doomed(routine):
+                    self._doomed = self.win.recording_path()
         finally:
             self.win.routine_arming_trigger(False)
         self._filed = 0
@@ -310,11 +342,17 @@ class RoutinesModule(ModuleAdapter):
 
     def _close_own_recording(self) -> None:
         """Stop recording and capture at the routine's end."""
+        # Ended before its first trigger rolled Start's file away.
+        junk, self._doomed = self._doomed, None
+        if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
+            junk = None
         self.win.set_routine_save_context(None, None)
         self._own_rec = False            # before: detach_sink re-enters
         self.win.set_recording(False)
         self.win.set_live(False)
         self._flush_pending_edge()
+        if junk is not None:
+            self._delete_junk(junk, JUNK_TRIES)
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -477,6 +515,9 @@ class RoutinesModule(ModuleAdapter):
 
     def _roll_for(self, run) -> bool:
         """Close the current file and open the next, scoped to `run`."""
+        junk, self._doomed = self._doomed, None
+        if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
+            junk = None                 # it caught frames after all: keep it
         fov, coords = self._fov_for(self._routine, run.start_index)
         self.win.set_routine_save_context(fov, self._trial_for(run.region), coords)
         self._pending_scope = self._scope_for(run)
@@ -488,7 +529,20 @@ class RoutinesModule(ModuleAdapter):
         if ok:
             self._filed_from = len(self._engine.runs)
             self._file_group_key = self._group_key_for(run)
+            if junk is not None:
+                self._delete_junk(junk, JUNK_TRIES)
         return ok
+
+    def _delete_junk(self, path: Path, tries: int) -> None:
+        if delete_recording(path):
+            self._status(f"deleted {path.name} — stage travel before the "
+                         f"first trigger, no frames")
+        elif tries > 1:
+            QTimer.singleShot(JUNK_RETRY_MS,
+                              lambda: self._delete_junk(path, tries - 1))
+        else:
+            self._status(f"could not delete {path} (still open) — safe to "
+                         f"delete by hand")
 
     def _scope_for(self, run) -> dict[str, Any]:
         cycle, group = self._group_key_for(run)
