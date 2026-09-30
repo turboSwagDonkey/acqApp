@@ -506,6 +506,13 @@ class MainWindow(QMainWindow):
                if m is not None and hasattr(m, "arm_with_next_file")
                else None)
 
+    def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
+        """See `acq.devices.ModuleHost.camera_trigger_gate`."""
+        m = self._module(key)
+        return (m.trigger_gate()
+                if m is not None and hasattr(m, "trigger_gate")
+                else None)
+
     def dcimg_frames(self, key: str) -> int | None:
         """Frames DCAM's own recorder has written for module `key` so far, or
         None when it isn't writing one — which is also "count them the normal

@@ -157,6 +157,11 @@ class OrcaFireWorker(PullWorker):
         self._pending_exp: float | None = None
         self._pending_rearm = False     # see rearm_trigger()
         self._rearm_with_file = False   # see arm_with_next_file()
+        # (re-arms completed, frames since the last) — see trigger_gate.
+        # Written only by the capture thread, replaced whole so a reader
+        # never sees half an update.
+        self._gate = (0, 0)
+        self._gate_t = 0.0              # perf_counter when the last re-arm landed
         # DCAM's own recorder (set_record_file). The swap needs a capture
         # stop/start, so the loop performs it; this only requests one.
         self._rec_want: Path | None = None
@@ -390,6 +395,8 @@ class OrcaFireWorker(PullWorker):
         t1 = time.perf_counter()
         cam.stop_acquisition()
         self._close_dcimg()
+        t_stop = time.perf_counter()
+        t_start = t_stop
         try:
             if err is not None:
                 raise err
@@ -405,15 +412,19 @@ class OrcaFireWorker(PullWorker):
         finally:
             # Capture restarts either way: a camera left stopped is a frozen
             # preview and no error anywhere the operator is looking.
+            t_start = time.perf_counter()
             if rearm_nframes is not None and self._dcimg is not None:
                 self._cycle_master_pulse(cam)
                 cam.start_acquisition(nframes=rearm_nframes)
             else:
                 cam.start_acquisition()
-        # `stopped` is the gap the routine's clocks must hold through.
+        # `stopped` is the gap the routine's clocks must hold through — and
+        # for a re-arm, the window in which an edge is lost. Split, because
+        # it has measured 0.9 s and 4.9 s and only one of the calls knows why.
         t2 = time.perf_counter()
         print(f"[voltage_cam] dcimg -> {name or 'closed'}: prep {t1 - t0:.2f} s, "
-              f"camera stopped {t2 - t1:.2f} s")
+              f"camera stopped {t2 - t1:.2f} s (stop+close {t_stop - t1:.2f}, "
+              f"attach {t_start - t_stop:.2f}, start {t2 - t_start:.2f})")
 
     @staticmethod
     def _frame_shape(cam) -> tuple[int, int]:
@@ -433,6 +444,29 @@ class OrcaFireWorker(PullWorker):
         """
         with self._exp_lock:
             self._pending_rearm = True
+
+    @property
+    def trigger_gate(self) -> tuple[int, int]:
+        """(re-arms completed, frames since the last one). The count moves
+        the moment capture restarts gated, so a routine knows exactly when
+        the next frame means an edge — no guessing at when leftover frames
+        have drained. Frames counted are any that `wait_for_frame` returned."""
+        return self._gate
+
+    def _gated(self) -> None:
+        """Capture just restarted waiting for an edge (capture thread)."""
+        self._gate = (self._gate[0] + 1, 0)
+        self._gate_t = time.perf_counter()
+
+    def _count_gate_frame(self) -> None:
+        """A frame arrived (capture thread). The first after a re-arm is the
+        edge; its latency is logged, since a camera that isn't really gating
+        shows up here as an 'edge' within a frame period of every re-arm."""
+        seq, n = self._gate
+        if n == 0 and seq > 0:
+            print(f"[voltage_cam] trigger edge "
+                  f"{time.perf_counter() - self._gate_t:.2f} s after re-arm")
+        self._gate = (seq, n + 1)
 
     @property
     def achievable_hz(self) -> float:
@@ -760,6 +794,7 @@ class OrcaFireWorker(PullWorker):
                                 cam, rec_path,
                                 rearm_nframes=nframes if rearm_file else None)
                             if rearm_file and self._dcimg is not None:
+                                self._gated()
                                 self._skipped = 0
                                 n_acquired = 0
                                 print("[voltage_cam] re-armed with the new file")
@@ -779,6 +814,7 @@ class OrcaFireWorker(PullWorker):
                     if rearm and not (rearm_file and self._dcimg is not None):
                         try:
                             self._do_rearm(cam, nframes)
+                            self._gated()
                             # Both mirror camera counters that restart from 0
                             # here. Leaving them would make the next status
                             # tick report a large NEGATIVE rate (acquired minus
@@ -836,6 +872,7 @@ class OrcaFireWorker(PullWorker):
                     try:
                         cam.wait_for_frame(timeout=_WAIT_TIMEOUT)
                         wait_fails = 0
+                        self._count_gate_frame()
                     except Exception as e:
                         # Two failures share one exception. A real TIMEOUT is
                         # legitimate (an external trigger that hasn't fired) and
@@ -983,6 +1020,13 @@ class MockCameraWorker(PullWorker):
         super().__init__()
         self._config = config or AcqConfig()
         self._gated_until = 0.0
+        self._rearm_req = False
+        self._gate = (0, 0)             # see OrcaFireWorker.trigger_gate
+
+    @property
+    def trigger_gate(self) -> tuple[int, int]:
+        """Same contract as `OrcaFireWorker.trigger_gate`."""
+        return self._gate
 
     @property
     def timestamp_source(self) -> str:
@@ -1045,9 +1089,10 @@ class MockCameraWorker(PullWorker):
         faults on rather than treating the next frame as an edge. Emulating the
         gate is what keeps a `trigger` routine drivable end to end without the
         rig, and makes the mock exercise the real waiting path instead of
-        skipping past it.
+        skipping past it. Applied by the loop thread, like the real one, so
+        a frame already being made can't count as the edge.
         """
-        self._gated_until = time.perf_counter() + self._GATE_S
+        self._rearm_req = True
 
     def _run(self) -> None:
         self._stop = False
@@ -1065,8 +1110,13 @@ class MockCameraWorker(PullWorker):
             if self._stop:
                 break
             acquired = time.perf_counter()
+            if self._rearm_req:
+                self._rearm_req = False
+                self._gated_until = acquired + self._GATE_S
+                self._gate = (self._gate[0] + 1, 0)
             if acquired < self._gated_until:
                 continue         # gated by a re-arm — see rearm_trigger()
+            self._gate = (self._gate[0], self._gate[1] + 1)
             t     = acquired - t0
             frame = rng.integers(1500, 2500, (H, W), dtype=np.uint16)
             sig   = int(300 * np.sin(2 * np.pi * 0.5 * t))

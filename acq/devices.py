@@ -377,6 +377,13 @@ class ModuleHost(Protocol):
         """
         ...
 
+    def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
+        """(re-arms completed, frames since the last) for module `key`'s
+        camera, or None if it isn't capturing or can't say. Written by the
+        capture thread as each re-arm lands, so a routine's `trigger` step
+        knows the exact moment a frame starts meaning an edge."""
+        ...
+
     def stage_target(self) -> Any:
         """The loaded module a routine may move, or None.
 

@@ -48,6 +48,10 @@ MOVE_TIMEOUT_S = 30.0
 # than hanging the routine forever.
 TRIGGER_TIMEOUT_S = 600.0
 
+# A re-arm the camera reports (`RoutineHooks.trigger_gate`) takes ~1-5 s; one
+# that hasn't completed in this long never will.
+REARM_TIMEOUT_S = 30.0
+
 # Minimum dead time at the start of a `trigger` step. `arm_trigger` is
 # asynchronous — acted on only when the capture loop's own frame wait next
 # expires — so frames already in flight keep arriving for a moment. Must
@@ -116,6 +120,11 @@ class RoutineHooks:
     # so without this only a run's first edge would ever be seen. Inert by
     # default — an engine driven without a camera just waits on `frames`.
     arm_trigger:    Callable[[], None] = _noop
+    # (re-arms completed, frames since the last one), from the capture thread
+    # itself — or None if the camera can't say. When present it replaces the
+    # settle heuristic: the gate closed exactly when the count of re-arms
+    # moved, so the first frame after that IS the edge, however soon it came.
+    trigger_gate:   Callable[[], tuple[int, int] | None] = lambda: None
     # Called before `arm_trigger` when the step after a `trigger` step is a
     # `record`: the file for that recording has to exist BEFORE its edge, and
     # some recorders (.dcimg) can only be bound while capture is stopped.
@@ -214,6 +223,9 @@ class RoutineEngine:
         self._trig_still_since = 0.0             # when the count last moved
         self._trig_gated = False                 # count has held still long
                                                   # enough to trust it
+        self._gate_seq0: int | None = None       # trigger_gate()'s re-arm
+                                                  # count before this step's
+                                                  # own re-arm, or None
 
     # ── readout ───────────────────────────────────────────────────────────────
     @property
@@ -414,7 +426,16 @@ class RoutineEngine:
         trigger. `TRIGGER_DRAIN_S` is only a floor beneath that, so a
         momentarily-idle camera can't look settled before re-arm is even
         picked up.
+
+        With a `trigger_gate` hook none of that timing applies (see
+        `_tick_trigger_gated`). The heuristic has a failure the gate doesn't:
+        an edge landing inside the settle window starts the camera
+        free-running, the count never holds still, and every later edge is
+        swallowed until the timeout.
         """
+        if self._gate_seq0 is not None:
+            self._tick_trigger_gated()
+            return
         n = self._frames()
         if n is None:
             self._halt("no frame count to detect the trigger by")
@@ -438,6 +459,32 @@ class RoutineEngine:
             self._step_done = True
             return
         if t - self._trig_t0 > self._trig_timeout:
+            self._halt(f"no camera trigger within {self._trig_timeout:g} s")
+
+    def _tick_trigger_gated(self) -> None:
+        """The camera reports its own re-arms: once the count passes the one
+        read before this step asked, capture is gated, and any frame since is
+        the edge. No settle window, so an edge arriving the instant the gate
+        closes is still caught. An edge that arrives while the camera is
+        stopped (before the re-arm completes) can't be seen by anything
+        here — the step waits for the next one."""
+        gate = self._h.trigger_gate()
+        if gate is None:
+            self._halt("the camera stopped reporting its trigger state")
+            return
+        seq, since = gate
+        rearmed = seq > self._gate_seq0
+        if rearmed and since > 0:
+            self._phase = Phase.RUNNING
+            self._step_done = True
+            return
+        waited = self._h.now() - self._trig_t0
+        if not rearmed:
+            limit = min(REARM_TIMEOUT_S, self._trig_timeout)
+            if waited > limit:
+                self._halt(f"the camera did not finish the trigger re-arm "
+                           f"within {limit:g} s")
+        elif waited > self._trig_timeout:
             self._halt(f"no camera trigger within {self._trig_timeout:g} s")
 
     def _tick_move(self) -> None:
@@ -527,6 +574,10 @@ class RoutineEngine:
                 # Ask for the re-arm, then hand `_tick_trigger` a baseline it
                 # will keep moving until the count actually goes still — the
                 # camera almost certainly hasn't stopped yet at this point.
+                # Read BEFORE asking for the re-arm, so the one it asks for
+                # is the one that moves the count.
+                gate = self._h.trigger_gate()
+                self._gate_seq0 = None if gate is None else gate[0]
                 nxt = self._next_record_run()
                 if nxt is not None:
                     self._h.prepare_recording(nxt)

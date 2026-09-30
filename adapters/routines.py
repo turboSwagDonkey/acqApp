@@ -234,6 +234,7 @@ class RoutinesModule(ModuleAdapter):
             led=led.set_led if led is not None else (lambda _on: None),
             puff=puffer.fire if puffer is not None else (lambda: None),
             arm_trigger=arm_trigger,
+            trigger_gate=lambda: self.win.camera_trigger_gate(FRAME_STREAM),
             prepare_recording=prepare_recording,
             begin_recording=self._on_recording_begin,
             end_recording=self._on_recording_end,

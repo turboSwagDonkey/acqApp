@@ -372,6 +372,12 @@ class VoltageCamModule(ModuleAdapter):
         w = self.worker
         return True if w is None else bool(getattr(w, "dcimg_ready", True))
 
+    def trigger_gate(self) -> tuple[int, int] | None:
+        """(re-arms completed, frames since the last), or None if nothing is
+        capturing — see `OrcaFireWorker.trigger_gate`."""
+        w = self.worker
+        return None if w is None else getattr(w, "trigger_gate", None)
+
     def dcimg_frames(self) -> int | None:
         """Frames the .dcimg holds so far, or None if one isn't open — what
         the routine engine counts in place of `Recorder.offered()`, which

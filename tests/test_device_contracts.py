@@ -282,6 +282,7 @@ def main() -> int:
         def routine_arming_trigger(self, on): ...
         def rearm_camera_trigger(self, key): return None
         def arm_camera_with_next_file(self, key): return None
+        def camera_trigger_gate(self, key): return None
         def set_modules(self, keys): return [], []
         def stage_target(self): return None
         def pattern_target(self): return None

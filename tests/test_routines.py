@@ -98,6 +98,16 @@ class FakeRig:
         self.gated = False
         self.rearms = 0
         self._gated_total = 0.0
+        # ── a camera that reports its re-arms (`trigger_gate`) ──
+        # Opt-in: off, `trigger_gate` returns None and the engine uses its
+        # settle heuristic. On, a re-arm lands `rearm_latency` after it is
+        # asked for — the camera keeps streaming until then, like the real
+        # capture thread — and a `fire_trigger` before that is lost.
+        self.report_gate = False
+        self.rearm_latency = 0.0
+        self.gate_seq = 0
+        self._gate_frame0 = 0
+        self._gate_at: float | None = None
 
     # clock + camera
     def now(self) -> float:
@@ -112,6 +122,11 @@ class FakeRig:
         self.t += dt
         if self.gated:
             self._gated_total += dt
+        if self._gate_at is not None and self.t >= self._gate_at:
+            self._gate_at = None
+            self.gated = True
+            self.gate_seq += 1
+            self._gate_frame0 = self.frames() or 0
 
     # external trigger
     def arm_trigger(self) -> None:
@@ -121,7 +136,15 @@ class FakeRig:
         self.log.append(("arm_trigger",))
         if self.fail_arm:
             raise RuntimeError("camera could not be re-armed")
-        self.gated = True
+        if self.report_gate:
+            self._gate_at = self.t + self.rearm_latency
+        else:
+            self.gated = True
+
+    def trigger_gate(self) -> tuple[int, int] | None:
+        if not self.report_gate:
+            return None
+        return self.gate_seq, (self.frames() or 0) - self._gate_frame0
 
     def fire_trigger(self) -> None:
         """The external edge arrives: frames start flowing again."""
@@ -180,6 +203,7 @@ class FakeRig:
                             set_pattern=self.set_pattern, light=self.light,
                             led=self.led, puff=self.puff,
                             arm_trigger=self.arm_trigger,
+                            trigger_gate=self.trigger_gate,
                             prepare_recording=self.prepare_recording,
                             begin_recording=self.begin_recording,
                             end_recording=self.end_recording,
@@ -1046,6 +1070,94 @@ def check_trigger_step(r: Report) -> None:
     r.check(eng4.phase == Phase.PAUSED and "setup failed" in eng4.fault,
             f"a camera that cannot be re-armed pauses the routine "
             f"({eng4.fault!r})")
+
+
+def check_trigger_gate(r: Report) -> None:
+    """A camera that reports its re-arms (`trigger_gate`): one early or
+    missed edge costs that edge, never the rest of the routine.
+
+    The rig bug (2026-09-29): an edge landing just after the re-arm, inside
+    the heuristic's settle window, set the camera free-running; the count
+    never went still, and every later edge was swallowed until the timeout.
+    """
+    LATENCY = 0.9                           # a .dcimg swap's measured stop
+    routine = Routine(
+        steps=[Step(kind="trigger", label="edge"),
+               Step(kind="record", label="capture", length=0.5, unit="seconds")],
+        groups=[Group(start=0, end=1, repeats=3)])
+
+    def rig_and_engine(report_gate: bool):
+        rig = FakeRig(hz=100.0)
+        rig.report_gate = report_gate
+        rig.rearm_latency = LATENCY
+        if not report_gate:
+            # The heuristic's own model: the re-arm is instant, so all the
+            # risk is the settle window.
+            rig.rearm_latency = 0.0
+        eng = RoutineEngine(routine, rig.hooks(), trigger_timeout_s=5.0)
+        eng.start()
+        return rig, eng
+
+    def fire_soon_after_gate(rig, eng, delay: float, limit_s: float = 30.0):
+        """Fire each edge `delay` after the camera gates — edges a stimulus
+        rig on its own schedule can deliver at any moment."""
+        fired, gated_at = 0, None
+        while rig.t < limit_s and eng.phase not in (Phase.DONE, Phase.PAUSED):
+            if eng.phase == Phase.WAITING and rig.gated:
+                gated_at = rig.t if gated_at is None else gated_at
+                if rig.t - gated_at >= delay:
+                    rig.fire_trigger()
+                    fired += 1
+                    gated_at = None
+            rig.advance()
+            eng.tick()
+        return fired
+
+    # 1. Edge 0.1 s after the gate closes — inside the heuristic's 1.5 s
+    #    drain floor. Control first: the heuristic loses the routine.
+    rig, eng = rig_and_engine(report_gate=False)
+    fire_soon_after_gate(rig, eng, delay=0.1)
+    r.check(eng.phase == Phase.PAUSED and rig.begun == [],
+            f"control: without a gate report, an edge 0.1 s after re-arm is "
+            f"taken for leftover frames and the routine stalls "
+            f"({eng.phase}, {len(rig.begun)} recordings)")
+
+    rig, eng = rig_and_engine(report_gate=True)
+    fired = fire_soon_after_gate(rig, eng, delay=0.1)
+    r.check(eng.phase == Phase.DONE and fired == 3 and len(rig.begun) == 3,
+            f"with the gate reported, the same early edges each start their "
+            f"recording ({eng.phase}, fault={eng.fault!r}, edges={fired}, "
+            f"recordings={len(rig.begun)})")
+
+    # 2. Frames still streaming before the re-arm lands are not an edge.
+    rig, eng = rig_and_engine(report_gate=True)
+    for _ in range(int(LATENCY / DT) - 5):
+        rig.advance()
+        eng.tick()
+    r.check(eng.phase == Phase.WAITING and not rig.gated,
+            f"leftover frames before the re-arm lands don't end the step "
+            f"({eng.phase})")
+
+    # 3. An edge while the camera is stopped is lost — the step waits for
+    #    the next one and every later edge still gets its own recording.
+    rig, eng = rig_and_engine(report_gate=True)
+    rig.fire_trigger()                      # the camera can't see this one
+    fired = 1 + fire_soon_after_gate(rig, eng, delay=0.3)
+    r.check(eng.phase == Phase.DONE and len(rig.begun) == 3,
+            f"a missed edge costs one edge, not the routine "
+            f"({eng.phase}, fault={eng.fault!r}, recordings={len(rig.begun)})")
+    r.check(fired == 4,
+            f"…three recordings from four edges, the lost one included "
+            f"({fired})")
+
+    # 4. A re-arm that never lands faults instead of waiting out the long
+    #    edge timeout.
+    rig, eng = rig_and_engine(report_gate=True)
+    rig._gate_at = None                     # the requested re-arm never lands
+    drive(eng, rig, limit_s=60.0)
+    r.check(eng.phase == Phase.PAUSED and "re-arm" in eng.fault,
+            f"a re-arm that never completes pauses, saying so "
+            f"({eng.fault!r})")
 
 
 def check_prepare_recording(r: Report) -> None:
@@ -2674,6 +2786,7 @@ def main() -> int:
         check_transitions(r)
         check_ttl_start_trigger(r)
         check_trigger_step(r)
+        check_trigger_gate(r)
         check_prepare_recording(r)
         check_prepared_adapter(r)
         check_first_file_doomed(r)
