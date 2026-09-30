@@ -25,7 +25,7 @@ from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
     BINNING_OPTIONS,
-    TRIGGER_MODES,
+    EXTERNAL_EDGE, TRIGGER_MODES,
     WRITER_MBPS,
 )
 
@@ -180,6 +180,7 @@ class SettingsPanel(QWidget):
 
         for sig in (self._cmb_preset.currentIndexChanged,
                     self._cmb_binning.currentIndexChanged,
+                    self._cmb_trigger.currentIndexChanged,
                     self._spn_exposure.valueChanged):
             sig.connect(lambda *_: self._refresh_rate())
         self._refresh_rate()
@@ -223,7 +224,12 @@ class SettingsPanel(QWidget):
             self._lbl_rate.setStyleSheet("color:#2e7d32; font-weight:bold;")
             return
         link = LINK_LABEL.get(cfg.link, cfg.link)
-        if cfg.exposure_limited:
+        if cfg.trigger_mode == EXTERNAL_EDGE:
+            self._lbl_rate.setText(
+                f"{cfg.rate_hz:.1f} Hz — External edge: exposure and readout "
+                f"run back to back (Internal would be {cfg.expected_hz:.1f})")
+            self._lbl_rate.setStyleSheet("color:#c47f00; font-weight:bold;")
+        elif cfg.exposure_limited:
             self._lbl_rate.setText(
                 f"{cfg.expected_hz:.1f} Hz — limited by exposure "
                 f"({link} readout allows {cfg.readout_hz:.1f}; "
@@ -244,7 +250,7 @@ class SettingsPanel(QWidget):
         quarter of the data.
         """
         cfg = cfg if cfg is not None else self.get_config()
-        hz = self._measured[0] if self._measured is not None else cfg.expected_hz
+        hz = self._measured[0] if self._measured is not None else cfg.rate_hz
         mbps = cfg.frame_bytes * hz / (1 << 20)
         if mbps <= WRITER_MBPS:
             self._lbl_rec.setText(

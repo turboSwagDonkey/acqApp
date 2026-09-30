@@ -93,7 +93,7 @@ class VoltageCamModule(ModuleAdapter):
         if self._chk_auto_lut is not None:
             self._chk_auto_lut.setChecked(cfg.auto_levels)
         for sig in (self.panel.exposure_changed, self.panel.resolution_changed,
-                    self.panel.binning_changed):
+                    self.panel.binning_changed, self.panel.trigger_changed):
             sig.connect(self._push_rate)
         self._push_rate()
         return self.panel
@@ -157,10 +157,10 @@ class VoltageCamModule(ModuleAdapter):
     def _push_rate(self, *_a) -> None:
         cfg = self.panel.get_config()
         self.win.set_expected_rate(
-            cfg.frame_bytes * cfg.expected_hz / (1 << 20), WRITER_MBPS)
+            cfg.frame_bytes * cfg.rate_hz / (1 << 20), WRITER_MBPS)
 
     def frame_rate_hz(self) -> float | None:
-        return self.panel.get_config().expected_hz
+        return self.panel.get_config().rate_hz
 
     def _on_exposure(self, us: float) -> None:
         if self.worker is not None:

@@ -1089,6 +1089,95 @@ def check_nocamera_retry(r: Report) -> None:
         real_dcam.DCAMCamera = real_ctor
 
 
+def check_edge_rate_reported(r: Report) -> None:
+    """External edge runs at 1/(readout + exposure), not Internal's rate. The
+    panel said "measured by camera" 528 Hz while files came out at 446 (rig,
+    2026-09-30), which read as lost frames."""
+    import io
+    from contextlib import redirect_stdout
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+    from acqApp.devices.voltage_cam.presets import (
+        EXTERNAL_EDGE, master_pulse_interval)
+
+    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=250.0,
+                    trigger_mode=EXTERNAL_EDGE)
+    want = 1.0 / master_pulse_interval(PERIOD, cfg.exposure_us)
+    w = OrcaFireWorker(0, cfg)
+    w._master_pulse = True
+    with redirect_stdout(io.StringIO()):
+        got = w._query_timings(FakeCam(cfg.frame_shape), cfg)
+    r.check(abs(got - FPS) < 1e-6,
+            "the returned rate is still Internal's (the interval is built on it)")
+    r.check(abs(w.achievable_hz - want) < 1e-6,
+            f"External edge reports {w.achievable_hz:.2f} Hz = 1/(period + "
+            f"exposure + pad), {want:.2f}")
+    ctrl = OrcaFireWorker(0, cfg)
+    with redirect_stdout(io.StringIO()):
+        ctrl._query_timings(FakeCam(cfg.frame_shape), cfg)
+    r.check(abs(ctrl.achievable_hz - FPS) < 1e-6,
+            "control: Internal still reports the camera's frame period")
+
+    r.check(cfg.rate_hz < cfg.expected_hz,
+            f"the panel estimate for External edge is below Internal's "
+            f"({cfg.rate_hz:.1f} < {cfg.expected_hz:.1f})")
+    cfg.trigger_mode = "Internal (free-running)"
+    r.check(cfg.rate_hz == cfg.expected_hz,
+            "control: Internal's estimate is unchanged")
+    # The rig's measured spacing: 2.2440 ms at 250 us, 2.4929 ms at 500 us,
+    # the same readout under both (1.894 ms).
+    r.check(abs((master_pulse_interval(1.8940e-3, 500.0)
+                 - master_pulse_interval(1.8940e-3, 250.0)) - 0.25e-3) < 1e-9
+            and abs(master_pulse_interval(1.8940e-3, 250.0) - 2.2440e-3) < 2e-6,
+            "the formula reproduces the rig's measured frame spacing")
+
+
+def check_dcimg_preview_skips_not_drops(r: Report) -> None:
+    """With a .dcimg attached the loop only previews the newest frame, so the
+    ring's skip count grows by design; the recorder writes every frame. Files
+    carried 26-183 "dropped" with 0 gaps in their frame counters (2026-09-30)."""
+    import io
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+
+    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
+
+    class Rec:
+        max_frames = 10 ** 6
+
+        def status(self):
+            return SimpleNamespace(total=5, missing=0, recording=True)
+
+        def close(self):
+            pass
+
+    def run(with_sink: bool) -> int:
+        cam = FakeCam(cfg.frame_shape)
+        w = OrcaFireWorker(0, cfg, cam=cam)
+        t0 = time.perf_counter()
+
+        def newest():
+            cam._idx += BATCH
+            if time.perf_counter() - t0 > 1.3:
+                w._stop = True
+            return np.zeros(cfg.frame_shape, dtype=np.uint16)
+
+        cam.read_newest_image = newest
+        if with_sink:
+            w.set_sink(lambda item: setattr(w, "_stop",
+                                            time.perf_counter() - t0 > 1.3))
+        else:
+            w._dcimg = Rec()
+        with redirect_stdout(io.StringIO()):
+            w._run()
+        return w.skipped_frames
+
+    r.check(run(False) == 0,
+            "a .dcimg under preview reports no drops from the ring's skips")
+    r.check(run(True) == 1,
+            "control: with a sink the same skip count is a real drop")
+
+
 def _part_losses() -> int:
     r = Report("losses")
     qt_app()                            # the camera worker declares pyqtSignals
@@ -1102,6 +1191,8 @@ def _part_losses() -> int:
     check_memory_capped_buffer_is_announced(r)
     check_readout_speed_absence_is_reported(r)
     check_nocamera_retry(r)
+    check_edge_rate_reported(r)
+    check_dcimg_preview_skips_not_drops(r)
     return r.finish()
 
 

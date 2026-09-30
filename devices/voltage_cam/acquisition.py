@@ -11,13 +11,14 @@ import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
 from acqApp.acq.worker import PullWorker, paced
-from .presets import AcqConfig, WRITER_MBPS
+from .presets import (AcqConfig, EXTERNAL_EDGE, WRITER_MBPS,
+                      master_pulse_interval)
 
 # "External edge" is MASTER PULSE, not plain EXTERNAL: EXTERNAL takes one
 # frame per edge, while here one edge starts the camera's own pulse train.
 _TRIGGER_MODE: dict[str, str] = {
     "Internal (free-running)": "int",
-    "External edge":           "master_pulse",
+    EXTERNAL_EDGE:             "master_pulse",
 }
 
 # MODE must be START: CONTINUOUS (the camera default) ignores the line and
@@ -30,16 +31,6 @@ _MP_INTERVAL_PROP     = "MASTER PULSE INTERVAL"     # seconds
 _MP_TRIG_SRC_EXTERNAL = 1
 _MP_MODE_CONTINUOUS   = 1
 _MP_MODE_START        = 2
-
-# In MASTER PULSE mode exposure and readout don't pipeline, so the minimum
-# interval is readout + exposure. Asking for less doesn't cap the rate, it
-# silently HALVES it (probe, 2026-09-28; pad held across 8 configs).
-_MP_INTERVAL_PAD_S = 0.0001
-
-
-def _master_pulse_interval(period_s: float, cfg) -> float:
-    """Minimum MASTER PULSE INTERVAL given the readout period."""
-    return period_s + cfg.exposure_us * 1e-6 + _MP_INTERVAL_PAD_S
 
 _WAIT_TIMEOUT = 0.5
 _WAIT_MSG_EVERY = 5.0
@@ -106,6 +97,7 @@ class OrcaFireWorker(PullWorker):
         self._dcimg_t1: float | None = None
         self._dcimg_full = False
         self._achievable_hz: float = 0.0
+        self._master_pulse = False
         self._skipped: int = 0
         self._last_exp_error: str | None = None
         self._t_offset: float | None = None    # camera clock -> perf_counter
@@ -333,7 +325,8 @@ class OrcaFireWorker(PullWorker):
         return "set"
 
     def _query_timings(self, cam, cfg, verbose: bool = True) -> float:
-        """The camera's own sustainable rate, else the datasheet estimate.
+        """Internal's frame rate, from the camera, else the datasheet. What
+        the panel is told is the rate the trigger mode actually runs at.
         Quiet on the hot exposure path."""
         hz = cfg.expected_hz
         try:
@@ -346,6 +339,9 @@ class OrcaFireWorker(PullWorker):
                 print(f"[voltage_cam] get_frame_timings unavailable ({e}); "
                       f"using datasheet estimate")
         limited = cfg.exposure_limited
+        real = hz
+        if self._master_pulse:
+            real = 1.0 / master_pulse_interval(1.0 / hz, cfg.exposure_us)
         if verbose:
             print(f"[voltage_cam] achievable: {hz:.1f} Hz "
                   f"(readout ceiling {cfg.readout_hz:.1f}, "
@@ -354,8 +350,11 @@ class OrcaFireWorker(PullWorker):
             if limited:
                 print(f"[voltage_cam] shorten exposure to "
                       f"≤{cfg.max_exposure_us:.0f} µs to reach the readout ceiling")
-        self._achievable_hz = hz
-        self.timing_update.emit(hz, limited)
+            if self._master_pulse:
+                print(f"[voltage_cam] External edge: {real:.1f} Hz — exposure "
+                      f"and readout run back to back in this mode")
+        self._achievable_hz = real
+        self.timing_update.emit(real, limited)
         return hz
 
     def _buffer_frames(self, cfg, hz: float) -> int:
@@ -477,6 +476,7 @@ class OrcaFireWorker(PullWorker):
             self._maximise_readout_speed(cam)
 
             mode = _TRIGGER_MODE.get(cfg.trigger_mode, "int")
+            self._master_pulse = mode == "master_pulse"
             try:
                 cam.set_trigger_mode(mode)
                 if mode == "master_pulse":
@@ -493,7 +493,8 @@ class OrcaFireWorker(PullWorker):
                     # recording at 10 Hz.
                     cam.set_attribute_value(
                         _MP_INTERVAL_PROP,
-                        _master_pulse_interval(cam.get_frame_period(), cfg),
+                        master_pulse_interval(cam.get_frame_period(),
+                                              cfg.exposure_us),
                         error_on_missing=False)
                 # Read back, not restated: every one of these was wrong once.
                 print(f"[voltage_cam] trigger: {self._trigger_readback(cam)}")
@@ -571,7 +572,8 @@ class OrcaFireWorker(PullWorker):
                                 # longer exposure brings back the half rate.
                                 cam.set_attribute_value(
                                     _MP_INTERVAL_PROP,
-                                    _master_pulse_interval(1.0 / hz, cfg),
+                                    master_pulse_interval(1.0 / hz,
+                                                          cfg.exposure_us),
                                     error_on_missing=False)
                         except Exception as e:      # noqa: BLE001
                             why = f"{type(e).__name__}: {e}"
@@ -655,9 +657,10 @@ class OrcaFireWorker(PullWorker):
                             self.hz_update.emit(
                                 st.acquired, (st.acquired - n_acquired) / dt)
                             n_acquired = st.acquired
-                            # Preview skips on purpose; only recording loses data.
-                            recording = sink is not None or self._dcimg is not None
-                            if recording and st.skipped != self._skipped:
+                            # Only a sink reads every frame. The .dcimg writes
+                            # behind the preview's skips; its own `missing` is
+                            # its loss (rig 2026-09-30: 146 "drops", 0 gaps).
+                            if sink is not None and st.skipped != self._skipped:
                                 self._skipped = st.skipped
                                 print(self._skip_report(st))
                                 self.drops_update.emit(st.skipped, st.buffer_size)

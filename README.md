@@ -379,7 +379,11 @@ camera's default `CONTINUOUS` free-runs that generator off its own interval
 and never consults the line at all, which read as "the trigger is off but the
 app acts like it's on". `MASTER PULSE INTERVAL` is set from the frame period,
 because in `START` mode it caps the frame rate (the 0.1 s default pins a
-recording to 10 Hz). Polarity is `POSITIVE` via
+recording to 10 Hz). Master pulse can't overlap exposure with readout, so
+External edge runs at 1/(readout + exposure + 0.1 ms), below Internal's rate:
+446 Hz at 250 µs where Internal gives 528 (rig, 2026-09-30, from the
+`.dcimg` frame timestamps). `AcqConfig.rate_hz` and the panel say so.
+Polarity is `POSITIVE` via
 `setup_ext_trigger(invert=True)` — pylablib's `invert=False` default is
 `NEGATIVE`, i.e. start on the trigger going *off*. All four verified against
 the real camera with the line toggled by hand: zero frames while low, first

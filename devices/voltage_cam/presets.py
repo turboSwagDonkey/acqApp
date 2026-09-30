@@ -132,8 +132,20 @@ WRITER_MBPS: float = 1300.0
 BINNING_OPTIONS: List[int] = [1, 2, 4]
 DEFAULT_BINNING: int = 1
 
-TRIGGER_MODES: List[str] = ["Internal (free-running)", "External edge"]
+EXTERNAL_EDGE: str = "External edge"
+TRIGGER_MODES: List[str] = ["Internal (free-running)", EXTERNAL_EDGE]
 DEFAULT_TRIGGER: str = "Internal (free-running)"
+
+# External edge runs off MASTER PULSE, which can't overlap exposure with
+# readout, so its shortest interval is readout + exposure. Asking for less
+# doesn't cap the rate, it silently HALVES it (probe, 2026-09-28; pad held
+# across 8 configs).
+MP_INTERVAL_PAD_S = 0.0001
+
+
+def master_pulse_interval(period_s: float, exposure_us: float) -> float:
+    """Shortest MASTER PULSE INTERVAL for Internal's frame period `period_s`."""
+    return period_s + exposure_us * 1e-6 + MP_INTERVAL_PAD_S
 
 
 @dataclass
@@ -177,6 +189,16 @@ class AcqConfig:
     @property
     def expected_hz(self) -> float:
         return min(self.readout_hz, self.exposure_hz)
+
+    @property
+    def rate_hz(self) -> float:
+        """What this config runs at: External edge is slower than Internal
+        (1/(readout + exposure), rig 2026-09-30: 446 Hz where Internal's
+        figure said 528)."""
+        if self.trigger_mode != EXTERNAL_EDGE:
+            return self.expected_hz
+        return 1.0 / master_pulse_interval(1.0 / self.readout_hz,
+                                           self.exposure_us)
 
     @property
     def exposure_limited(self) -> bool:
