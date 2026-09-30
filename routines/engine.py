@@ -229,6 +229,21 @@ class RoutineEngine:
         """0-based position within `play_order` — tells repeats apart."""
         return self._pos
 
+    @property
+    def edge_ready(self) -> bool:
+        """WAITING with the camera actually gated: an edge now is caught.
+        False while the re-arm (camera stopped) is still in progress."""
+        if self._phase != Phase.WAITING:
+            return False
+        if self._gate_seq0 is not None:
+            gate = self._safe_value(self._h.trigger_gate, None)
+            return gate is not None and gate[0] > self._gate_seq0
+        return self._trig_gated
+
+    @property
+    def has_trigger_steps(self) -> bool:
+        return any(s.kind == "trigger" for s in self._r.steps)
+
     def steps_done(self) -> int:
         return self._steps_completed
 
@@ -275,7 +290,8 @@ class RoutineEngine:
     # ── control ───────────────────────────────────────────────────────────────
     def start(self, trigger: str = "manual") -> None:
         """`trigger="ttl"` arms instead: step 1 waits for a frame the camera
-        didn't have yet."""
+        didn't have yet. Not when the routine has trigger steps: the rig
+        sends one edge per trial, and arming would swallow trial 1's."""
         if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.PAUSED):
             raise RoutineError("already running")
         if not self._r.steps:
@@ -294,7 +310,7 @@ class RoutineEngine:
         self._edges = EdgeGaps()
         self.missed_triggers = 0
         self._started_at = self._safe_value(self._h.now, 0.0)
-        if trigger == "ttl":
+        if trigger == "ttl" and not self.has_trigger_steps:
             self._arm_frame0 = self._frames()
             self._phase = Phase.ARMED
             self._h.log("routine armed — waiting for the camera's TTL trigger")

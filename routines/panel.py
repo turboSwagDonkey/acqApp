@@ -221,10 +221,11 @@ class SettingsPanel(QWidget):
         self._btn_start.setStyleSheet(style.solid_btn("routines"))
         self._btn_start.setToolTip(
             "Check the protocol, put the camera in External edge mode, start "
-            "recording if it is not already running, and ARM the routine: "
-            "step 1 begins on the camera's next triggered frame.\nA recording "
-            "this button started is stopped again when the routine ends; one "
-            "you started yourself is left alone.")
+            "recording if it is not already running, and run. With Trigger "
+            "steps, each one waits for its own edge, from trial 1; without, "
+            "the routine is ARMED and step 1 begins on the first triggered "
+            "frame.\nA recording this button started is stopped again when "
+            "the routine ends; one you started yourself is left alone.")
         self._btn_start.clicked.connect(self.start_requested)
         rlay.addWidget(self._btn_start)
 

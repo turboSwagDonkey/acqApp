@@ -18,13 +18,17 @@ _LOOK = {
     Phase.DONE:    ("FINISHED",              "#455a64"),
 }
 _ABORTED = ("ABORTED", "#b71c1c")
+_REARMING = ("RE-ARMING — DON'T TRIGGER", "#b26a00")
 
 
 def look_for(phase: str, text: str) -> tuple[str, str] | None:
     """(headline, colour) for a state, None for idle. An abort is a pause with
-    the fault "aborted", but reads as its own state."""
+    the fault "aborted", and a re-arm a wait whose edge would be lost; each
+    reads as its own state."""
     if phase == Phase.PAUSED and "abort" in text.lower():
         return _ABORTED
+    if phase == Phase.WAITING and text.startswith("RE-ARMING"):
+        return _REARMING
     return _LOOK.get(phase)
 
 

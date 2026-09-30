@@ -1254,6 +1254,49 @@ def check_missed_edges(r: Report) -> None:
             f"control: no slow re-arm, no misses reported ({calls2})")
 
 
+def check_first_trial_kept(r: Report) -> None:
+    """The rig sends one edge per trial. A routine with trigger steps must not
+    arm on trial 1's edge and then wait for trial 2's."""
+    from acqApp.routines.banner import look_for
+
+    routine = Routine(
+        steps=[Step(kind="trigger"),
+               Step(kind="record", length=0.5, unit="seconds")],
+        groups=[Group(start=0, end=1, repeats=2)])
+    rig = FakeRig(hz=100.0)
+    rig.report_gate = True
+    rig.rearm_latency = 0.5
+    eng = RoutineEngine(routine, rig.hooks())
+    eng.start(trigger="ttl")
+    r.check(eng.phase == Phase.WAITING and rig.rearms == 1,
+            f"with trigger steps, Start goes straight to step 1's own wait "
+            f"({eng.phase}, re-arms {rig.rearms})")
+    r.check(not eng.edge_ready,
+            "…reported not ready while the re-arm is still in progress")
+    while not rig.gated:
+        rig.advance()
+        eng.tick()
+    r.check(eng.edge_ready, "…and ready once the camera is gated")
+    rig.fire_trigger()                       # trial 1's edge
+    drive(eng, rig, until=lambda e: e.phase != Phase.WAITING)
+    rig.advance()
+    eng.tick()
+    r.check(len(rig.begun) == 1,
+            f"trial 1's edge opens the first recording ({len(rig.begun)})")
+
+    plain = RoutineEngine(Routine(steps=[Step(kind="wait", length=1,
+                                              unit="seconds")]),
+                          FakeRig(hz=0.0).hooks())
+    plain.start(trigger="ttl")
+    r.check(plain.phase == Phase.ARMED,
+            "control: a routine without trigger steps still arms")
+
+    r.check(look_for(Phase.WAITING, "RE-ARMING the camera")[0].startswith(
+        "RE-ARMING"), "the banner says RE-ARMING while an edge would be lost")
+    r.check(look_for(Phase.WAITING, "WAITING for the camera's trigger")[0]
+            == "WAITING FOR TRIGGER", "…and WAITING once it's safe")
+
+
 def check_missed_trigger_files(r: Report) -> None:
     """Missed trials get a _VOID folder; the edge's data takes the next
     number. With .dcimg its folder is already open, so it's renamed once
@@ -2914,6 +2957,7 @@ def _part_routines() -> int:
         check_prepare_recording(r)
         check_prepared_adapter(r)
         check_missed_edges(r)
+        check_first_trial_kept(r)
         check_missed_trigger_files(r)
         check_first_file_doomed(r)
         check_arm_camera_trigger(r)

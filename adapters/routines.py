@@ -234,8 +234,12 @@ class RoutinesModule(ModuleAdapter):
         self._engine = RoutineEngine(routine, self._hooks())
         self._engine.start(trigger="ttl")
         self._timer.start()
-        self._status(f"routine '{routine.name}' armed — waiting for "
-                     f"the camera's TTL trigger")
+        if self._engine.phase == Phase.ARMED:
+            self._status(f"routine '{routine.name}' armed — waiting for "
+                         f"the camera's TTL trigger")
+        else:
+            self._status(f"routine '{routine.name}' started — its trigger "
+                         f"steps take every edge, trial 1's included")
 
     def _arm_camera_trigger(self) -> bool:
         """External edge before the recording opens. None (no camera) is not
@@ -560,9 +564,11 @@ class RoutinesModule(ModuleAdapter):
             return
         if eng.phase == Phase.WAITING:
             i, cycle, _ = eng.position
+            what = ("WAITING for the camera's trigger" if eng.edge_ready else
+                    "RE-ARMING the camera — an edge now is lost")
             self.panel.set_state(
                 eng.phase,
-                f"WAITING for the camera's trigger — step {i + 1}/"
+                f"{what} — step {i + 1}/"
                 f"{self._n_steps}  cycle {cycle + 1}{self._repeat_suffix(eng)}",
                 i)
             self.panel.set_progress(eng.overall_progress(),
