@@ -1,21 +1,16 @@
 """
-In vivo acquisition suite — top-level entry point.
+In vivo acquisition suite — entry point.
 
-Wires voltage_cam, pupil_cam, wheel, puffer, stage and dmd around ONE shared
-SessionClock, so every device timestamps against the same origin and one
-Recorder streams the lot into a single HDF5 session file.
+Owns what is session-wide: the clock, the sync/trigger bus, the recorder, the
+save destination, docks and theme. Each instrument is a `ModuleAdapter` in
+`adapters/`; this window only iterates over them.
 
-This file owns only what is session-wide — the clock, the sync/trigger bus, the
-recorder, the save destination, the docks and the theme. Anything specific to
-one instrument is a `ModuleAdapter` in `adapters/`; thowhis window iterates.
+  acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py
+  python acqApp\\main.py                  (re-execs into the venv)
+  python -m acqApp.main --mock
 
-Run it any of these ways — the bootstrap below makes them all work:
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py          (run the file)
-  python acqApp\\main.py                                       (any interpreter)
-  python -m acqApp.main --mock                                 (as a module)
-
-Escape hatches (env vars): ACQAPP_NO_REEXEC=1 skips the venv re-exec,
-ACQAPP_NO_INSTALL=1 skips auto-installing requirements.
+ACQAPP_NO_REEXEC=1 skips the venv re-exec; ACQAPP_NO_INSTALL=1 skips
+installing requirements.
 """
 
 from __future__ import annotations
@@ -28,32 +23,24 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-# A segfault deep in the DCAM SDK can't be caught by try/except — the process
-# just dies. faulthandler dumps the C-level + Python stack on a fatal signal.
+# A segfault in the DCAM SDK can't be caught; this at least dumps the stacks.
 faulthandler.enable()
 
 
-# ── Environment bootstrap (must run before any third-party import) ────────────
+# ── Environment bootstrap (before any third-party import) ─────────────────────
 def _bootstrap() -> None:
-    """
-    Launchable from anywhere, never touching an environment but `acqApp/.venv`:
-      1. parent dir on sys.path, then harden the console — both before any print.
-      2. not in the project venv → create it if missing and re-exec into it.
-      3. a core dependency missing → install requirements.txt, but ONLY from
-         inside the venv, so pip never reaches an unrelated Python.
-    """
+    """Run from anywhere, but only ever inside `acqApp/.venv`: create it and
+    re-exec if needed, and pip-install only from inside it."""
     here = Path(__file__).resolve().parent            # …/acqApp
     scripts = "Scripts" if os.name == "nt" else "bin"
     exe = "python.exe" if os.name == "nt" else "python"
     venv_dir = here / ".venv"
     venv_py = venv_dir / scripts / exe
 
-    # (1) importable, then stdout hardened FIRST, so every print below can use
-    # arrows and symbols without the UnicodeEncodeError that kills device
-    # threads (console.py). That module imports only `sys`, so it's safe here.
     parent = str(here.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
+    # Before any print (console.py imports only sys).
     from acqApp.console import enable_safe_console
     enable_safe_console()
 
@@ -62,7 +49,6 @@ def _bootstrap() -> None:
     except OSError:
         in_venv = False
 
-    # (2) get into the project venv, creating it first if it doesn't exist
     if not in_venv and not os.environ.get("ACQAPP_NO_REEXEC"):
         if not venv_py.exists():
             print(f"[bootstrap] creating project venv at {venv_dir} …")
@@ -72,11 +58,10 @@ def _bootstrap() -> None:
             except (subprocess.CalledProcessError, OSError) as e:
                 sys.exit(f"[bootstrap] couldn't create venv ({e}); create it "
                          f"manually:\n    python -m venv {venv_dir}")
-        os.environ["ACQAPP_NO_REEXEC"] = "1"          # guard against re-exec loops
+        os.environ["ACQAPP_NO_REEXEC"] = "1"          # no re-exec loops
         print(f"[bootstrap] launching under {venv_py}")
         os.execv(str(venv_py), [str(venv_py), str(here / "main.py"), *sys.argv[1:]])
 
-    # (3) install dependencies if a core one is missing — venv only
     try:
         import PyQt6  # noqa: F401
     except ImportError:
@@ -101,29 +86,24 @@ from typing import Any
 from acqApp import config
 
 # ── Hardware pre-init ─────────────────────────────────────────────────────────
-# Open the camera ONCE and keep the handle; the worker reuses it. Re-opening a
-# just-closed DCAM device crashes natively (docs/HANDOFF.md), and a fresh open
-# costs ~6.7 s. Closed in MainWindow.closeEvent.
+# The camera is opened ONCE and the handle reused: re-opening a just-closed
+# DCAM device crashes natively. Closed in MainWindow.closeEvent.
 _cam_info = None
 _cam_handle = None
 _cam_thread = None
-_mock = "--mock" in sys.argv     # start in Emulate mode; real hardware otherwise
+_mock = "--mock" in sys.argv
 
 
 def _open_camera() -> None:
-    """The startup open. Runs on a worker thread; never raises out of it."""
+    """The startup open, on a worker thread; never raises."""
     global _cam_handle, _cam_info
     t0 = time.perf_counter()
     dcam = None
     try:
         from pylablib.devices import DCAM as dcam
         from acqApp.devices.voltage_cam.acquisition import open_camera
-        # Open OPTIMISTICALLY: `get_cameras_number()` re-enumerates on EVERY
-        # call, not once (measured 6.5/5.3/5.3 s), so asking first added ~5.3 s
-        # to every launch. Ask only if the open fails, where it's free.
-        # open_camera() (not a bare DCAMCamera(idx=0)) retries past a
-        # transient DCAMERR_NOCAMERA — the same driver quirk the worker's own-
-        # open fallback in acquisition.py hits, handled in the one place.
+        # Open first, count only on failure: get_cameras_number()
+        # re-enumerates every call (~5 s).
         handle = open_camera(0)
         _cam_info = handle.get_device_info()
         _cam_handle = handle
@@ -138,7 +118,6 @@ def _open_camera() -> None:
             except Exception:
                 pass
         if n == 0:
-            # No silent fallback to fake data — real is the default.
             print("No DCAM camera detected — use Emulate to run without hardware")
         else:
             print(f"Camera unavailable ({type(e).__name__}: {e}) — if HCImage "
@@ -147,31 +126,20 @@ def _open_camera() -> None:
 
 
 if not _mock and "voltage_cam" in config.load_enabled_modules():
-    # Threaded, so the ~7.9 s open overlaps the Qt import and the module
-    # picker. Verified on the real camera: opening on a worker and driving the
-    # handle from the GUI thread works and closes cleanly. The load-bearing
-    # rule is lifetime, not threads — see the pre-init note above.
-    #
-    # Gated on the *last-used* module selection (the picker isn't up yet, so
-    # this run's choice isn't known) — skips probing hardware the operator
-    # doesn't even have loaded. If they re-enable voltage_cam in the picker
-    # this run despite it, the worker just opens its own handle on first
-    # Start instead (OrcaFireWorker's own_cam fallback) — a one-time ~7 s
-    # cost instead of the free overlap, not a correctness issue.
+    # Overlaps the ~8 s open with the Qt import and module picker. Keyed on
+    # the LAST selection; if voltage_cam is enabled only now, the worker opens
+    # its own handle on first Start.
     _cam_thread = threading.Thread(target=_open_camera, name="cam-open")
     _cam_thread.start()
 
 
 def _await_camera() -> None:
-    """Block until the startup open has finished. Safe to call more than once,
-    and a no-op under --mock."""
     if _cam_thread is not None:
         if _cam_thread.is_alive():
             print("Waiting for the camera to finish opening…")
         _cam_thread.join()
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Force pyqtgraph onto PyQt6 (both bindings may be installed in the venv).
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 
 from PyQt6.QtCore import Qt, QTimer, QSettings
@@ -194,105 +162,75 @@ from acqApp.acq.writer import HDF5Writer, SplitWriter
 
 pg.setConfigOptions(imageAxisOrder="row-major")
 
-RING_FRAMES  = 512          # recording ring-buffer item cap (scalar streams)
-# …and a payload cap so full frames can't OOM. 2 GB is 102 full-frame bin-1
-# frames, ~0.97 s of slack. 512 MB (25 frames, 0.24 s) was too tight to ride out
-# a transient writer stall: measured 2026-08-25 over 30 s at 106 Hz, it shed
-# 14-54 frames a run where 2 GB shed none, twice. 4 GB buys nothing more.
+RING_FRAMES  = 512          # ring item cap (scalar streams)
+# Payload cap. 512 MB shed 14-54 frames per 30 s run at 106 Hz on a writer
+# stall; 2 GB shed none; 4 GB buys nothing more.
 RING_BYTES   = 2048 << 20
 
 
 def _sample_nbytes(item) -> int:
-    """Payload bytes of a Recorder ring item (stream, ts, data); 0 for scalars."""
+    """Payload bytes of a ring item (stream, ts, data); 0 for scalars."""
     return getattr(item[2], "nbytes", 0)
 
 
-# The sidebar's Mode dropdown. "None" is a no-op — manual control, whatever
-# the operator already has set — and isn't in modes.json; every other entry
-# comes from config.load_modes(), so adding a mode is editing that file, not
-# this code. See MainWindow.set_mode() for what a recipe's keys mean.
+# "None" leaves everything as set; other modes come from modes.json.
 MODE_NONE = "None"
 
 
 class MainWindow(QMainWindow):
-    """Session-wide shell: clock, triggers, recorder, save target, docks, theme.
-
-    Per-instrument behaviour is NOT here — each subsystem is an
-    `adapters.ModuleAdapter` owning its own panel, worker, display tick, sink
-    and metadata, and this window only iterates. That's why adding an
-    instrument is a new adapter class, not a new branch in four methods.
-    """
+    """Session-wide shell. Implements `acq.devices.ModuleHost`, which
+    documents the services adapters use."""
 
     def __init__(self, cam_info=None, mock=False, enabled: set[str] | None = None,
                  cam_handle=None):
         super().__init__()
-        # Simulated signals; OFF by default, togglable only between sessions.
         self._emulate = mock
         self._session_on = False
         self._enabled = (enabled if enabled is not None
                          else set(config.MODULES)) | config.ALWAYS_ON
         self._cam_info = cam_info
-        # Opened once at startup, reused by every session's worker (see the
-        # pre-init note). None in emulate/no-camera runs.
         self._cam_handle = cam_handle
 
-        # ── The single session-wide clock, shared by sync + recorder + devices ──
         self._clock = SessionClock()
         self._sync  = SyncController(self._clock, tick_ms=DEFAULT_TICK_MS)
         self._sync.tick.connect(self._on_tick)
         self._sync.trigger_fired.connect(self._on_trigger)
 
         self._recorder: Recorder | None = None
-        self._rec_path: Path | None = None      # file the last recording went to
+        self._rec_path: Path | None = None
         self._rec_t0: float = 0.0     # session-clock time Record was pressed
-        # Throttles the file-size stat() in _refresh_rec_readout to ~1 Hz
-        # rather than every 100 ms tick — a stat() on a flaky network share
-        # blocks the GUI thread, and the readout doesn't need finer than 1 Hz.
+        # File size is stat()ed at ~1 Hz: on a network share it can block.
         self._rec_size_t0: float = 0.0
         self._rec_size_txt: str = ""
-        # Repaints `_lbl_rec`'s colour only when the shed/healthy state
-        # actually flips, not on every 100 ms tick — `routines/panel.py`'s
-        # `_set_phase` measured a bare `setStyleSheet` at 26 us/call and a
-        # third of a display tick for exactly this "same string every time"
-        # case.
-        self._rec_warn: bool | None = None
-        # Set by RoutinesModule right before it opens/rolls a recording, read
-        # by _start_recording() below; None means "use the Save tab's own
-        # free-text template", which is what a manual Record press always does.
+        self._rec_warn: bool | None = None     # repaint only on change
+        # Set by the routine before it opens/rolls a file; None = Save tab template.
         self._routine_save_ctx: tuple[str, int, tuple | None] | None = None
-        # See ModuleHost.routine_arming_trigger — guards `_start_session()`'s
-        # own reset-camera-to-manual against undoing a routine's own arm.
         self._routine_arming_trigger = False
         self._save_panel: SavePanel | None = None
-        self._settings_dialog: SettingsDialog | None = None   # built in _build_ui
-        # Modules whose panel is a window of its own, by key. Hidden until the
-        # sidebar item is clicked, and never destroyed while loaded.
+        self._settings_dialog: SettingsDialog | None = None
         self._panel_windows: dict[str, PanelWindow] = {}
         self._devices_dialog: ConnectionMonitor | None = None
-        self._pg_views: list = []      # pyqtgraph views to recolour on theme change
-        # Undo bookkeeping for a module unloaded mid-session. `add_dock` and
-        # `register_pg_view` are called *by* the adapter during its build, and
-        # neither says who is calling, so the window notes whose build is in
-        # progress instead of changing the ModuleHost surface.
+        self._pg_views: list = []      # recoloured on theme change
+        # What each module added to the window, to take back on unload.
+        # add_dock/register_pg_view don't say who's calling, so the window
+        # tracks whose build is running.
         self._building_key: str | None = None
         self._module_docks: dict[str, list] = {}
         self._module_views: dict[str, list] = {}
         self._module_plots: dict[str, QWidget] = {}
         self._central_owner: str | None = None
 
-        # One adapter per loaded instrument, in config.MODULES display order.
         self._modules = adapters.build_adapters(self, self._enabled)
         self._build_ui()
-        # After the UI: controllers are configured from their own panels, so
-        # those must exist before the device is opened.
+        # Controllers are configured from their panels, so after the UI.
         self._build_controllers()
         self._apply_title()
 
         self._disp_timer = QTimer(self)
-        self._disp_timer.setInterval(33)   # ~30 Hz display
+        self._disp_timer.setInterval(33)   # ~30 Hz
         self._disp_timer.timeout.connect(self._display_tick)
 
-    # ── Services the module adapters use ──────────────────────────────────────
+    # ── Services the module adapters use (see ModuleHost) ─────────────────────
 
     @property
     def sync(self) -> SyncController:
@@ -300,87 +238,47 @@ class MainWindow(QMainWindow):
 
     @property
     def cam_handle(self):
-        """The pre-opened DCAM handle, so no worker ever re-opens the device."""
         return self._cam_handle
 
     def status(self, message: str) -> None:
         self.statusBar().showMessage(message)
 
     def module_keys(self) -> list[str]:
-        """The module keys loaded this session, in display order.
-
-        Which modules exist, not the modules themselves — the closed loop uses
-        it to offer only outputs that are actually loaded, since a rule aimed
-        at an absent one would fire onto the bus with nothing listening and
-        look armed and working.
-        """
         return [m.key for m in self._modules]
 
     def signal_sources(self) -> list:
-        """Live scalar signals a closed-loop rule can watch (`SignalSource`s).
-
-        Contributed by the loaded modules, so the loop depends on *a signal*
-        rather than on the wheel: making pupil radius triggerable is one method
-        on that adapter and no change here.
-        """
         return [s for m in self._modules for s in m.signal_sources()]
 
     def stage_target(self):
-        """The loaded module an experiment routine may move, or None.
-
-        Pooled here for the same reason `signal_sources` is: the routine has to
-        reach the stage without importing its adapter, and the stage stays
-        ignorant that routines exist. First one wins — there's one stage.
-        """
         return self._first(lambda m: m.stage_target())
 
     def pattern_target(self):
-        """The loaded module a routine may project through, or None."""
         return self._first(lambda m: m.pattern_target())
 
     def led_target(self):
-        """The loaded module a routine may switch illumination on, or None."""
         return self._first(lambda m: m.led_target())
 
     def puffer_target(self):
-        """The loaded module a routine may fire an air puff through, or None."""
         return self._first(lambda m: m.puffer_target())
 
     def frame_rate_hz(self) -> float | None:
-        """The loaded camera's configured frame rate, or None — for estimates.
-
-        Pooled like the two above: the routine panel says how long a protocol
-        measured in frames will take, without importing a camera.
-        """
         return self._first(lambda m: m.frame_rate_hz())
 
     def active_fov_name(self) -> str:
-        """The name of the FOV the stage is currently sitting at, or "" if
-        none is active or no stage is loaded — for the Save panel's "append
-        active FOV name" option."""
         stage = self.stage_target()
         return stage.active_fov_name() if stage is not None else ""
 
     def dcimg_enabled(self) -> bool:
-        """Whether the ORCA should record through DCAM's own recorder.
-
-        Split mode only: a .dcimg cannot live inside a composite .h5, and the
-        dropdown is disabled without it. The policy lives here because the
-        Save panel owns the choice; adapters only ask.
-        """
+        """Split mode only: a .dcimg can't live inside a composite .h5."""
         sc = self._save_panel.settings
         return bool(sc.split and sc.orca_format == "dcimg")
 
     def dcimg_target(self, stream: str) -> Path | None:
-        """Where `stream` writes its .dcimg for the OPEN recording, or None to
-        record through the normal sink. Named to match SplitWriter's other
-        per-stream files."""
         if not self.dcimg_enabled() or self._rec_path is None:
             return None
         return self._rec_path / f"{self._rec_path.name}_{stream}.dcimg"
 
     def _first(self, ask):
-        """The first loaded module that answers `ask` with something."""
         for m in self._modules:
             got = ask(m)
             if got is not None:
@@ -388,72 +286,41 @@ class MainWindow(QMainWindow):
         return None
 
     def set_live(self, on: bool) -> bool:
-        """Turn the live view on/off for a module that needs frames flowing.
-
-        Returns the PREVIOUS state, so a caller that started it can put it back
-        — the DMD calibration does exactly that. Goes through the button rather
-        than `_start_session` so the UI, the tooltip and the status line all
-        stay in step with reality.
-        """
+        """Through the button, so the UI stays in step. Returns the previous state."""
         was = self._btn_run.isChecked()
         if bool(on) != was:
             self._btn_run.setChecked(bool(on))
         return was
 
     def set_recording(self, on: bool) -> bool:
-        """Start or stop recording for a module that needs a file open.
-
-        The twin of `set_live`, added for the same reason (§5b A4): an
-        experiment routine has to be recording before it can run a step, and
-        making the operator find the Record button in another part of the
-        window — then come back and press Start — is a worse design than
-        letting the panel do it. Returns the PREVIOUS state, so a caller that
-        started the recording can stop it again and leave one it didn't start
-        alone. Goes through the button, so the UI and the status line stay in
-        step with reality; the toggle already starts the session if it isn't
-        running.
-        """
+        """Through the button (which starts the session if needed). Returns
+        the previous state."""
         was = self._btn_rec.isChecked()
         if bool(on) != was:
             self._btn_rec.setChecked(bool(on))
         return was
 
     def is_recording(self) -> bool:
-        """Read-only twin of `set_recording`: whether a session is already
-        saving to disk. A caller that only needs to check must not use
-        `set_recording` for that — passing it the wrong desired state would
-        actually stop a running recording as a side effect of "checking"."""
         return self._btn_rec.isChecked()
 
     def _module(self, key: str):
-        """The loaded module keyed `key`, or None. The one place that scans
-        `self._modules` by key, so `latest_frame`/`camera_preset`/
-        `set_camera_preset` share a single lookup instead of three copies."""
         for m in self._modules:
             if m.key == key:
                 return m
         return None
 
-    def camera_preset(self, key: str) -> str | None:
-        """Module `key`'s current resolution preset, or None if it isn't
-        loaded, or is loaded but has no notion of a preset."""
+    def _call(self, key: str, name: str, *args, default=None):
+        """`module[key].name(*args)`, or `default` if the module isn't loaded
+        or has no such method — modes.json keys are hand-edited."""
         m = self._module(key)
-        return m.preset_key() if m is not None and hasattr(m, "preset_key") else None
+        fn = getattr(m, name, None) if m is not None else None
+        return fn(*args) if fn is not None else default
+
+    def camera_preset(self, key: str) -> str | None:
+        return self._call(key, "preset_key")
 
     def set_camera_preset(self, key: str, preset: str) -> str | None:
-        """Switch module `key`'s resolution preset. Returns the PREVIOUS key
-        so a caller (the DMD calibration, forcing full frame on the voltage
-        camera) can restore it, or None if that module isn't loaded, or is
-        loaded but has no notion of a preset (no `set_preset`) — the same
-        ambiguity `camera_preset()` already carries, and needed here too:
-        `set_mode()`'s recipes come from hand-edited JSON, and a typo'd
-        module key must not raise.
-
-        Structural, like the operator's own combo click: it only takes effect
-        the next time the session (re)starts, so a caller after a LIVE change
-        must stop and restart live view itself (`set_live`) for it to matter —
-        this doesn't touch whether the camera is running.
-        """
+        """Returns the previous preset. Takes effect at the next session start."""
         m = self._module(key)
         if m is None or not hasattr(m, "set_preset"):
             return None
@@ -462,16 +329,10 @@ class MainWindow(QMainWindow):
         return prev
 
     def camera_binning(self, key: str) -> int | None:
-        """Module `key`'s current binning factor, or None if it isn't
-        loaded, or is loaded but has no notion of binning."""
-        m = self._module(key)
-        return m.binning() if m is not None and hasattr(m, "binning") else None
+        return self._call(key, "binning")
 
     def set_camera_binning(self, key: str, n: int) -> int | None:
-        """Switch module `key`'s binning factor. Returns the PREVIOUS value,
-        the same "None means not loaded/no such notion" shape as
-        `set_camera_preset`. Structural, like the operator's own combo
-        click — see `set_camera_preset`."""
+        """Returns the previous value. Takes effect at the next session start."""
         m = self._module(key)
         if m is None or not hasattr(m, "set_binning"):
             return None
@@ -480,110 +341,35 @@ class MainWindow(QMainWindow):
         return prev
 
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
-        """Switch module `key`'s camera into/out of External edge trigger
-        mode; returns whether it ended up there, or None if not loaded or
-        it has no such notion (`set_external_trigger`) — see
-        `acq.devices.ModuleHost.set_camera_trigger`."""
-        m = self._module(key)
-        return (m.set_external_trigger(on)
-               if m is not None and hasattr(m, "set_external_trigger")
-               else None)
+        return self._call(key, "set_external_trigger", on)
 
     def rearm_camera_trigger(self, key: str) -> bool | None:
-        """Re-gate module `key`'s external trigger so the next edge is
-        detectable; None if not loaded or it has no such notion
-        (`rearm_trigger`) — see
-        `acq.devices.ModuleHost.rearm_camera_trigger`."""
-        m = self._module(key)
-        return (m.rearm_trigger()
-               if m is not None and hasattr(m, "rearm_trigger")
-               else None)
+        return self._call(key, "rearm_trigger")
 
     def arm_camera_with_next_file(self, key: str) -> bool | None:
-        """See `acq.devices.ModuleHost.arm_camera_with_next_file`."""
-        m = self._module(key)
-        return (m.arm_with_next_file()
-               if m is not None and hasattr(m, "arm_with_next_file")
-               else None)
+        return self._call(key, "arm_with_next_file")
 
     def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
-        """See `acq.devices.ModuleHost.camera_trigger_gate`."""
-        m = self._module(key)
-        return (m.trigger_gate()
-                if m is not None and hasattr(m, "trigger_gate")
-                else None)
+        return self._call(key, "trigger_gate")
 
     def dcimg_frames(self, key: str) -> int | None:
-        """Frames DCAM's own recorder has written for module `key` so far, or
-        None when it isn't writing one — which is also "count them the normal
-        way" to the routine engine. Refreshed once per captured frame, so it
-        can be counted against the way `Recorder.offered()` is."""
-        m = self._module(key)
-        return (m.dcimg_frames()
-               if m is not None and hasattr(m, "dcimg_frames")
-               else None)
+        return self._call(key, "dcimg_frames")
 
     def camera_ready(self, key: str) -> bool:
-        """Whether module `key`'s capture is actually running for whatever
-        was last asked of it. False only while a `.dcimg` file roll has the
-        camera stopped (~0.9 s) — a routine holds here rather than counting a
-        Wait down against a camera producing nothing. True for anything with
-        no such notion, so a TIFF run never waits."""
-        m = self._module(key)
-        return (m.dcimg_ready()
-               if m is not None and hasattr(m, "dcimg_ready")
-               else True)
+        return self._call(key, "dcimg_ready", default=True)
 
     def set_mode(self, name: str) -> None:
-        """Apply the sidebar's named cross-module preset (the Mode dropdown).
+        """Apply a modes.json recipe. Keys:
+          dmd_all_on: true
+          dmd_sub_sampling: n            (1-10, "1 in n" pixels off; 1 = off)
+          camera_presets: {key: preset}  (a preset key, or "full")
+          camera_exposure_us: {key: us}
+          camera_binning: {key: n}       (1/2/4)
+          camera_trigger: {key: bool}    (True = External edge)
 
-        Recipes come from modes.json (`self._modes`, loaded once at startup
-        — see `config.load_modes`, which also sanitizes a recipe's shape)
-        rather than being hardcoded here, so a new mode is a JSON edit, not
-        a code change. A recipe is a dict of:
-          "dmd_all_on": true                     — DmdModule.set_all_on()
-          "dmd_sub_sampling": n                  — DmdModule.set_sub_sampling(n);
-                                                     n is 1-10, "1 out of n" pixels
-                                                     turned off to cut total light
-                                                     without changing exposure (1 =
-                                                     off — the only DMD today, so
-                                                     flat like dmd_all_on, not a
-                                                     per-module dict)
-          "camera_presets": {module_key: preset}  — set_camera_preset(), one
-                                                     call per entry; a literal
-                                                     preset key, or "full" for
-                                                     voltage_cam's full-frame
-                                                     preset (the only camera
-                                                     with a preset concept
-                                                     today) — see
-                                                     presets.resolve_preset_key
-          "camera_exposure_us": {module_key: us}  — module.set_exposure(us),
-                                                     one call per entry; skipped
-                                                     for a module with no
-                                                     `set_exposure` (no camera
-                                                     concept today besides
-                                                     voltage_cam)
-          "camera_binning": {module_key: n}       — set_camera_binning(), one
-                                                     call per entry; n is 1/2/4
-          "camera_trigger": {module_key: bool}    — set_camera_trigger(), one
-                                                     call per entry; True =
-                                                     External edge, False =
-                                                     Internal (free-running)
-
-        Same "takes effect at the next Display/Start" contract as
-        `set_camera_preset`/`DmdModule.set_all_on` — this doesn't itself
-        start or display anything, UNLESS the DMD panel's own "Live update"
-        toggle is on, in which case `dmd_all_on` still re-projects shortly
-        after (see `DmdModule`/`acqApp.devices.dmd.panel`'s Live update).
-        `camera_trigger` is the one exception: `set_camera_trigger` restarts
-        live view itself if the mode actually needs to change (and refuses,
-        silently, if a recording is already running) — the same behaviour a
-        routine's own TTL-arm sequence already relies on. An unloaded
-        module, or a preset key the target module doesn't recognize, is
-        silently skipped (`set_camera_preset` already no-ops on both,
-        including a module with no preset concept at all) — hand-edited
-        modes.json, so a typo'd module key must not crash the app.
-        """
+        Takes effect at the next Display/Start, except camera_trigger, which
+        restarts live view itself (and is refused while recording). Unknown
+        modules and presets are skipped."""
         from acqApp.devices.voltage_cam.presets import resolve_preset_key
 
         recipe = self._modes.get(name, {})
@@ -597,9 +383,7 @@ class MainWindow(QMainWindow):
         for key, preset in recipe.get("camera_presets", {}).items():
             self.set_camera_preset(key, resolve_preset_key(preset))
         for key, us in recipe.get("camera_exposure_us", {}).items():
-            m = self._module(key)
-            if m is not None and hasattr(m, "set_exposure"):
-                m.set_exposure(us)
+            self._call(key, "set_exposure", us)
         for key, n in recipe.get("camera_binning", {}).items():
             self.set_camera_binning(key, n)
         for key, on in recipe.get("camera_trigger", {}).items():
@@ -607,14 +391,8 @@ class MainWindow(QMainWindow):
         self.status(f"Mode: {name}")
 
     def _save_mode_as(self) -> None:
-        """The sidebar's "Save as preset" button: capture the DMD's and
-        voltage camera's CURRENT settings into a new modes.json entry.
-
-        Reads live state (`panel.mode`, `preset_key()`), not what a prior
-        `set_mode()` call last requested — the whole point is to let the
-        operator hand-tune a setup, then name what they actually ended up
-        with, rather than replay a recipe someone already had to write.
-        """
+        """Capture the DMD's and voltage camera's live settings as a new
+        modes.json entry."""
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
         from acqApp.devices.voltage_cam.presets import (TRIGGER_MODES,
@@ -631,10 +409,7 @@ class MainWindow(QMainWindow):
                                 f"— choose another name.")
             return
 
-        # Re-read from disk now, not the startup-loaded `self._modes`: an
-        # operator may have hand-edited modes.json since this session
-        # started (exactly the workflow the file exists for), and saving
-        # must not silently overwrite that edit with a stale in-memory copy.
+        # Re-read from disk: the file may have been hand-edited since startup.
         modes = config.load_modes()
         if name in modes:
             if QMessageBox.question(
@@ -686,40 +461,25 @@ class MainWindow(QMainWindow):
 
         modes[name] = recipe
         config.save_modes(modes)
-        self._modes = modes             # adopt the merged (not stale) set
+        self._modes = modes
         if self._mode_combo.findText(name) < 0:
             self._mode_combo.addItem(name)
-        self._mode_combo.setCurrentText(name)   # -> set_mode(name), a no-op
-                                                 # re-apply of what was just captured
+        self._mode_combo.setCurrentText(name)
         self.status(f'Saved preset "{name}": {", ".join(captured)}')
 
     def latest_frame(self, key: str):
-        """The newest frame from module `key`'s camera, or None. Why it exists:
-        `devices.ModuleHost`. Why it reads the cache: `ModuleAdapter.last_frame`.
-
-        Never commands the camera. Grabbing on demand would mean deciding when
-        the DMD is all-on, and that's the operator's call, not this method's.
-        """
+        """The cached newest frame; never commands the camera."""
         m = self._module(key)
         return m.last_frame() if m is not None else None
 
     def latest_frame_preset(self, key: str) -> str | None:
-        """The resolution preset `latest_frame(key)` was actually captured
-        under, or None. NOT the same as `camera_preset(key)`: that mirrors
-        the settings combo and can already name a preset switch that hasn't
-        taken effect yet (structural, next-Start-only), while this names
-        whatever produced the frame that's actually buffered right now — the
-        DMD's ROI editor needs this one (`adapters/dmd.py.edit_rois`) to shift
-        a click by the offset the buffered frame's pixel (0, 0) really sits at.
-        """
-        m = self._module(key)
-        return (m.last_frame_preset() if m is not None
-                and hasattr(m, "last_frame_preset") else None)
+        """The preset the cached frame was captured under — not
+        `camera_preset`, which can name a switch not yet in effect."""
+        return self._call(key, "last_frame_preset")
 
     @contextmanager
     def _attributed_to(self, key: str):
-        """Run a block with `self._building_key` set to `key`, so `add_dock`
-        and `register_pg_view` calls inside it are charged to that module."""
+        """Charge add_dock/register_pg_view calls in this block to `key`."""
         self._building_key = key
         try:
             yield
@@ -732,7 +492,6 @@ class MainWindow(QMainWindow):
             self._module_views.setdefault(self._building_key, []).append(view)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
-        """See `devices.ModuleHost.set_expected_rate`."""
         if self._save_panel is not None:
             self._save_panel.set_expected_rate(mbps, writer_mbps)
 
@@ -744,8 +503,6 @@ class MainWindow(QMainWindow):
         return dock
 
     def on_worker_error(self, msg: str) -> None:
-        # A device thread raised. Without this it escapes QThread.run() and
-        # PyQt6 aborts the whole process.
         sender = self.sender()
         name = type(sender).__name__ if sender is not None else "device"
         self.status(f"{name}: {msg}")
@@ -755,17 +512,14 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.resize(1600, 900)
-        # (the app-wide stylesheet is applied once on the QApplication in main())
-        self.setDockNestingEnabled(True)      # docks tabbable and nestable
+        self.setDockNestingEnabled(True)
 
         self._build_central()
         self._build_settings_dialog()
         self._build_plots_dock()
-        for m in self._modules:          # extra docks (e.g. the pupil video box)
+        for m in self._modules:
             self._build_views_for(m)
 
-        # A starting width for the signals column only — dragged from here, and
-        # the layout is remembered across runs.
         self.resizeDocks([self._plots_dock], [420], Qt.Orientation.Horizontal)
 
         self._build_status_bar()
@@ -774,34 +528,24 @@ class MainWindow(QMainWindow):
         self._restore_layout()
 
     def _build_views_for(self, m) -> None:
-        """Run a module's `build_views()` with its docks and views attributed."""
         with self._attributed_to(m.key):
             m.build_views()
 
     def _central_claimant(self):
-        """The first loaded module that wants the centre pane, or None.
-
-        `central_title` is the claim, not `central_widget()`, which can't be
-        asked without building one. `_build_central` is its only caller.
-        """
+        """The first module with a `central_title` (asking `central_widget()`
+        would build one)."""
         for m in self._modules:
             if m.central_title:
                 return m
         return None
 
     def _build_central(self) -> None:
-        """The centre pane belongs to whichever module claims it (the primary
-        camera); a placeholder stands in when that module isn't loaded."""
-        # setCentralWidget DELETES the widget it replaces, so the outgoing
-        # owner's pyqtgraph views have to leave `_pg_views` with it — a dangling
-        # one is a native crash on the next theme toggle.
+        # setCentralWidget DELETES the old widget; its pyqtgraph views must
+        # leave `_pg_views` too, or the next theme toggle crashes natively.
         if self._central_owner is not None:
             for v in self._module_views.pop(self._central_owner, []):
                 if v in self._pg_views:
                     self._pg_views.remove(v)
-        # Ask the claimant only. `central_widget()` BUILDS a view, so calling it
-        # on every module would construct and discard one per module — and each
-        # discarded one registers views that nothing will ever take back.
         owner = self._central_claimant()
         view = None
         if owner is not None:
@@ -828,23 +572,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(wrap)
 
     def _build_settings_dialog(self) -> None:
-        """Build every panel and the window each one lives in — all hidden.
-
-        Built at startup rather than on first click: the module controllers are
-        configured from these panels, so they have to exist before
-        `_build_controllers()` opens any device. Most become pages of the one
-        settings window; a module that asks for `own_window` gets its own
-        instead (`_place_panel`)."""
+        """Every panel, hidden — built now because controllers read them."""
         self._settings_dialog = SettingsDialog(self)
 
-        # Session-wide, not a module's, and the first thing to get right before
-        # recording — so it leads the tabs.
         save_cfg = config.load_dataclass(SaveConfig, "saving")
         if not save_cfg.mouse_id:
-            # Renamed from `subject` (2026-09-14) — carry an already-typed
-            # animal ID across rather than dropping it silently. `session`
-            # has no equivalent in `project`, a different concept, so no
-            # migration for that one.
+            # `subject` was renamed to mouse_id (2026-09-14).
             old_subject = config.load_settings("saving").get("subject")
             if isinstance(old_subject, str) and old_subject.strip():
                 save_cfg.mouse_id = old_subject.strip()
@@ -857,11 +590,6 @@ class MainWindow(QMainWindow):
             self._place_panel(m)
 
     def _place_panel(self, m, index: int | None = None) -> None:
-        """Put a built panel where its adapter says it belongs.
-
-        The one branch on `own_window`; everything else — the sidebar item,
-        unloading, the theme — treats the two the same.
-        """
         if m.panel is None:
             return
         if not m.own_window:
@@ -875,8 +603,6 @@ class MainWindow(QMainWindow):
         self._panel_windows[m.key] = win
 
     def _on_panel_window(self, key: str, visible: bool) -> None:
-        """Keep the sidebar item lit for as long as its own window is open —
-        including when the operator closes it with the window's own X."""
         act = self._page_actions.get(key)
         if act is not None:
             act.setChecked(visible)
@@ -890,7 +616,6 @@ class MainWindow(QMainWindow):
                                            Qt.DockWidgetArea.RightDockWidgetArea)
 
     def _add_plot_tab(self, m, index: int | None = None) -> None:
-        """Build and insert one module's Signals-tab plot, if it has one."""
         pw = m.build_plot()
         if pw is None:
             return
@@ -915,24 +640,15 @@ class MainWindow(QMainWindow):
         self._btn_run.setToolTip("Show live signals from all devices (not saved)")
         self._btn_run.toggled.connect(self._on_run_toggled)
 
-        # Auto-starts live view if needed. Deliberately the largest control
-        # here — it's the only one whose wrong state costs an experiment,
-        # and it used to be the same size as Emulate.
         self._btn_rec = QPushButton("● Record")
         self._btn_rec.setCheckable(True)
         self._btn_rec.setStyleSheet(style.record_btn("puffer"))
         self._btn_rec.setToolTip("Live view and save every stream to disk")
         self._btn_rec.toggled.connect(self._on_record_toggled)
 
-        # Elapsed, size on disk, drops. Not in the status message: that's
-        # transient, and any module calling `status()` wipes it.
+        # Permanent labels, not status(): any status() call would wipe them.
         self._lbl_rec = QLabel("")
         self._lbl_rec.setStyleSheet("color:#9aa0a6;")
-
-        # The session clock, likewise permanent — it used to be routed through
-        # the transient status message every 100 ms tick, which meant a
-        # worker-error or any other status() call was visible for at most
-        # ~100 ms before the next tick clobbered it.
         self._lbl_time = QLabel("")
         self._lbl_time.setStyleSheet("color:#9aa0a6;")
 
@@ -946,42 +662,26 @@ class MainWindow(QMainWindow):
         sb.showMessage("Ready")
 
     def _build_sidebar(self) -> None:
-        """Left side-bar: a 'Settings' tab that pops the settings *window* up,
-        plus the theme toggle, the module picker and the device monitor. The
-        window starts hidden; clicking the tab toggles it open/shut."""
         self._sidebar = QToolBar("Sidebar")
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMovable(False)
         self._sidebar.setOrientation(Qt.Orientation.Vertical)
         self._sidebar.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        # Left-aligned, full-width buttons: a vertical toolbar centres each one
-        # by default, so a list of differently-sized labels comes out ragged and
-        # unreadable as a list.
         self._sidebar.setStyleSheet(
             "QToolButton { text-align:left; padding:4px 10px; }")
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
 
-        # One item per settings PAGE — Save, then a loaded instrument each —
-        # so the sidebar doubles as the list of what is loaded. Filled by
-        # _rebuild_page_actions, which runs again whenever the module set
-        # changes; everything below the separator is fixed.
+        # One item per settings page, above the separator.
         self._page_actions: dict[str, QAction] = {}
         self._sidebar_sep = self._sidebar.addSeparator()
         self._rebuild_page_actions()
-        # Closing the window (✕ or Esc, both of which reach `finished`) has to
-        # un-check whichever page was showing, or its next click does nothing.
+        # ✕ and Esc both reach `finished`; un-check, or the next click does nothing.
         self._settings_dialog.finished.connect(
             lambda _result: self._check_page(None))
-        # Both ways round: the tab bar is still there, so switching page inside
-        # the window has to move the sidebar's highlight with it.
         self._settings_dialog.tabs.currentChanged.connect(
             self._on_settings_tab_changed)
 
-        # Cross-module preset, defined in modes.json (config.load_modes) —
-        # hand-edited and portable between sessions, not hardcoded here. Config
-        # only — like the operator's own settings edits, a mode takes effect
-        # at the next Display/Start, it doesn't itself start anything.
         self._modes = config.load_modes()
         self._sidebar.addWidget(QLabel("  Mode:"))
         self._mode_combo = QComboBox()
@@ -1000,7 +700,6 @@ class MainWindow(QMainWindow):
         self._btn_save_mode.clicked.connect(self._save_mode_as)
         self._sidebar.addWidget(self._btn_save_mode)
 
-        # Dark/light theme toggle (persisted to config; default dark).
         self._theme_action = QAction(self._swatch(None), "☾ Theme", self)
         self._theme_action.setCheckable(True)
         self._theme_action.setChecked(config.get_theme() == "dark")
@@ -1008,19 +707,13 @@ class MainWindow(QMainWindow):
         self._theme_action.toggled.connect(self._on_theme_toggled)
         self._sidebar.addAction(self._theme_action)
 
-        # Load/unload instruments without restarting. Disabled only while
-        # recording — see set_modules.
         self._modules_action = QAction(self._swatch(None), "🧩 Modules", self)
         self._modules_action.setToolTip(
             "Load or unload instruments without restarting the app")
         self._modules_action.triggered.connect(self._open_modules_dialog)
         self._sidebar.addAction(self._modules_action)
 
-        # Device connection monitor (probe-based; safe to open any time).
-        # Checkable purely as an indicator — lit for as long as the monitor
-        # is open, the same way a panel window's own sidebar item is
-        # (`_on_panel_window`), so a monitor left open elsewhere on screen
-        # isn't invisible from here.
+        # Checkable only as an "open" indicator.
         self._devices_action = QAction(self._swatch(None), "🔌 Devices", self)
         self._devices_action.setCheckable(True)
         self._devices_action.setToolTip("Check which devices are detected")
@@ -1045,22 +738,14 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _swatch(key: str | None) -> "QIcon":
-        """A chip in the subsystem's accent for its sidebar item.
-
-        `None` gives a transparent one, which the items below the separator
-        carry so every button lays out the same way: a QToolButton WITHOUT an
-        icon ignores the stylesheet's `text-align:left` and centres its label.
-        """
+        """An accent chip; transparent for None, because a QToolButton without
+        an icon ignores `text-align:left`."""
         pm = QPixmap(12, 12)
         pm.fill(QColor(style.HEX[key]) if key else Qt.GlobalColor.transparent)
         return QIcon(pm)
 
     def _rebuild_page_actions(self) -> None:
-        """One sidebar item per settings page, in `config.MODULES` order.
-
-        Rebuilt wholesale rather than patched: the module set changes rarely and
-        a stale item points at a deleted panel.
-        """
+        """Rebuilt wholesale: a stale item would point at a deleted panel."""
         for act in self._page_actions.values():
             self._sidebar.removeAction(act)
         self._page_actions.clear()
@@ -1083,20 +768,15 @@ class MainWindow(QMainWindow):
             self._page_actions[key] = act
             self._page_panels[key] = panel
         self._stretch_sidebar()
-        # Fresh QActions default to unchecked, so an open window would be left
-        # showing a page nothing in the sidebar is lit for.
+        # New actions start unchecked; re-light whatever is showing.
         if self._settings_dialog.isVisible():
             self._on_settings_tab_changed(0)
         for key, win in self._panel_windows.items():
             self._on_panel_window(key, win.isVisible())
 
     def _stretch_sidebar(self) -> None:
-        """All buttons one width, so the left edges line up.
-
-        A size policy won't do it — `QToolBarLayout` sizes each button to its
-        own content and centres it, whatever the child asks for. Setting the
-        same minimum width on all of them is what actually aligns the labels.
-        """
+        """One minimum width for all buttons: QToolBarLayout centres each at
+        its own size whatever the size policy says."""
         btns = [self._sidebar.widgetForAction(a) for a in self._sidebar.actions()]
         btns = [b for b in btns if b is not None]
         if not btns:
@@ -1107,29 +787,19 @@ class MainWindow(QMainWindow):
 
     def _on_settings_tab_changed(self, _index: int) -> None:
         if not self._settings_dialog.isVisible():
-            return                       # a page removed, not a page chosen
+            return                       # a page removed, not chosen
         panel = self._settings_dialog.current_panel()
         self._check_page(next((k for k, p in self._page_panels.items()
                                if p is panel), None))
 
     def _check_page(self, key: str | None) -> None:
-        """Exactly one settings page item checked — or none, with it shut.
-
-        A module with its own window is skipped: it's lit by whether THAT
-        window is open, which is independent of what page the settings window
-        is showing.
-        """
+        # Own-window modules are lit by their own window instead.
         for k, act in self._page_actions.items():
             if k not in self._panel_windows:
                 act.setChecked(k == key)
 
     def _show_page(self, key: str, panel) -> None:
-        """Open the settings window on this page, or shut it if already there.
-
-        Clicking the page you are on closes the window, which is what the single
-        Settings toggle used to do. A module with its own window toggles that
-        instead — same item, same gesture.
-        """
+        """Open the settings window on this page, or shut it if already there."""
         own = self._panel_windows.get(key)
         if own is not None:
             self._toggle_own_window(own)
@@ -1143,14 +813,12 @@ class MainWindow(QMainWindow):
             return
         self._settings_dialog.show_panel(panel)
         self._settings_dialog.show()
-        # Re-open in front: it may have been left behind the main window.
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
         self._check_page(key)
 
     @staticmethod
     def _toggle_own_window(win: PanelWindow) -> None:
-        """Show it, or shut it if it's already the window in front."""
         if win.isVisible() and win.isActiveWindow():
             win.close()
             return
@@ -1174,8 +842,7 @@ class MainWindow(QMainWindow):
         theme = "dark" if dark else "light"
         config.set_theme(theme)
         style.apply_theme(QApplication.instance(), theme)
-        # Recolour existing pyqtgraph views — setConfigOption only affects new
-        # ones. Axis labels don't repaint live but are right next run.
+        # setConfigOption only reaches new views.
         bg = style.plot_colors(theme)[0]
         for v in self._pg_views:
             try:
@@ -1186,12 +853,10 @@ class MainWindow(QMainWindow):
     # ── Device connection monitor ────────────────────────────────────────────────
 
     def _probe_kwargs(self) -> dict:
-        """Per-module arguments for probe.probe_all (e.g. the stage's port)."""
         return {k: v for m in self._modules for k, v in m.probe_kwargs().items()}
 
     def _show_devices(self) -> None:
         if self._devices_dialog is None:
-            # Probe in load-order, only the modules this session loaded.
             self._devices_dialog = ConnectionMonitor(
                 [m.key for m in self._modules], self._probe_kwargs, parent=self)
             self._devices_dialog.visibility_changed.connect(
@@ -1211,22 +876,13 @@ class MainWindow(QMainWindow):
             self._stop_session()
 
     def _start_session(self) -> None:
-        # A routine leaves the voltage camera in External edge mode for its
-        # own duration (`routine_arming_trigger`); an ordinary Live view or
-        # Record press means the operator wants frames NOW, not a camera
-        # still gated on an edge from whatever the last routine left behind.
-        # Reset the PANEL setting directly, not through `set_camera_trigger`
-        # (which restarts live view to apply a change) — nothing is running
-        # yet at this point in `_start_session()`, so there's no live view to
-        # restart, and calling into that machinery here would re-enter this
-        # same method through `set_live`'s toggle.
+        # A plain Live/Record press resets the camera to Internal, undoing a
+        # previous routine's External edge. Set on the panel directly:
+        # set_camera_trigger would re-enter here through set_live.
         if not self._routine_arming_trigger:
-            vc = self._module("voltage_cam")
-            if vc is not None and hasattr(vc, "set_trigger_mode_manual"):
-                vc.set_trigger_mode_manual()
+            self._call("voltage_cam", "set_trigger_mode_manual")
 
-        # Build the workers but don't start them: the shared clock must reach
-        # t=0 BEFORE any device pushes a timestamped sample.
+        # Build first, start after: the clock must be at t=0 before any sample.
         for m in self._modules:
             m.build_session(self._emulate)
 
@@ -1237,13 +893,11 @@ class MainWindow(QMainWindow):
         self._session_on = True
         self._disp_timer.start()
         self._btn_run.setText("Stop")
-        self._btn_emulate.setEnabled(False)   # can't switch real/mock mid-session
+        self._btn_emulate.setEnabled(False)
 
     def _safe_stop(self, m) -> None:
-        """Stop one module, guarded: teardown touches hardware, and an
-        unguarded raise strands every module after it — threads running,
-        stop_all() skipped, clock alive with the UI saying "Stopped" (and, via
-        closeEvent, the DCAM close skipped — the native crash)."""
+        """Guarded: one raise would strand every later module running (and,
+        via closeEvent, skip the DCAM close)."""
         try:
             m.stop()
         except Exception as e:
@@ -1251,9 +905,8 @@ class MainWindow(QMainWindow):
             print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
 
     def _stop_session(self) -> None:
-        # Ensure recording is closed before tearing down the clock/workers.
         if self._btn_rec.isChecked():
-            self._btn_rec.setChecked(False)   # triggers _on_record_toggled(False)
+            self._btn_rec.setChecked(False)
 
         self._disp_timer.stop()
         for m in self._modules:
@@ -1267,9 +920,8 @@ class MainWindow(QMainWindow):
         self.status("Stopped")
 
     def _on_emulate_toggled(self, on: bool) -> None:
-        # Only togglable between sessions (the button is disabled while running).
         self._emulate = on
-        self._build_controllers()               # swap puffer/LED/DMD real↔mock
+        self._build_controllers()
         self._apply_title()
         self.status("Emulate ON — simulated signals" if on
                     else "Emulate OFF — real hardware")
@@ -1277,19 +929,11 @@ class MainWindow(QMainWindow):
     # ── Loading and unloading instruments in place ───────────────────────────
 
     def set_modules(self, keys) -> tuple[list[str], list[str]]:
-        """Load/unload instruments without restarting → (loaded, unloaded).
-
-        Refused while RECORDING: the file's `modules` attribute is written once
-        at record start, and a stream that appears or vanishes part-way through
-        isn't describable by it. Between sessions and during a live/free run
-        are both fine — a module loaded into a running session builds its worker
-        and starts it against the clock already at t=0, which is safe because
-        workers stamp in `perf_counter` and only the Recorder converts.
-        """
+        """Refused while recording (the file names its modules once). A module
+        loaded mid-session starts against the running clock, which is safe:
+        workers stamp in perf_counter and only the Recorder converts."""
         if self._recorder is not None:
             raise RuntimeError("stop the recording first")
-        # A running routine is the second reason the set must hold still; the
-        # adapter says so, so the window never learns what a routine is.
         for m in self._modules:
             why = m.busy_reason()
             if why:
@@ -1308,15 +952,13 @@ class MainWindow(QMainWindow):
         for key in added:
             self._load_module(key)
 
-        # config.MODULES order is load-bearing: closed_loop is last so that
-        # every source-providing adapter exists before its panel asks.
+        # Order matters: closed_loop is last, after every signal source.
         order = {k: i for i, k in enumerate(config.MODULES)}
         self._modules.sort(key=lambda m: order.get(m.key, len(order)))
 
         self._enabled = {m.key for m in self._modules}
         config.save_enabled_modules(list(self._enabled))
-        # The monitor is built once around a SNAPSHOT of the module keys, so it
-        # has to go rather than list instruments that are no longer loaded.
+        # The monitor snapshots module keys at build.
         if self._devices_dialog is not None:
             self._devices_dialog.close()
             self._devices_dialog.deleteLater()
@@ -1328,9 +970,8 @@ class MainWindow(QMainWindow):
         return added, removed
 
     def _load_module(self, key: str) -> None:
-        """Build one adapter and splice its UI in at the right place."""
         m = adapters.ADAPTERS[key](self)
-        self._modules.append(m)             # sorted into place by the caller
+        self._modules.append(m)             # the caller sorts
 
         m.build_panel()
         self._place_panel(m, index=self._settings_tab_index(key))
@@ -1347,18 +988,14 @@ class MainWindow(QMainWindow):
         m = next((x for x in self._modules if x.key == key), None)
         if m is None:
             return
-        # A raise here would also strand the widgets attached to a dead device.
         self._safe_stop(m)
         m.close_controller()
 
-        # setParent(None) before deleteLater on all three: removeTab and
-        # removeDockWidget only take the widget out of the LAYOUT, leaving it a
-        # child of the window. Deferred deletion then keeps it alive across the
-        # next restoreState(), which would put the dock back.
+        # setParent(None) before deleteLater: removal only leaves the layout,
+        # and a still-parented dock would come back on restoreState().
         win = self._panel_windows.pop(key, None)
         if win is not None:
-            # release() first: a QScrollArea owns its widget, so deleting the
-            # window would take the adapter's panel with it.
+            # A QScrollArea owns its widget; release, or the panel dies too.
             win.release()
             win.setParent(None)
             win.deleteLater()
@@ -1385,12 +1022,8 @@ class MainWindow(QMainWindow):
         self._modules.remove(m)
 
     def _settings_tab_index(self, key: str) -> int:
-        """Where a hot-loaded module's tab goes: after the last page that
-        precedes it in `config.MODULES`.
-
-        Read off the LIVE tab positions rather than counted, because the tabs
-        are draggable — counting assumes an order the operator may have changed.
-        """
+        """After the last page preceding `key` in MODULES, read off the live
+        (draggable) tab positions."""
         dlg = self._settings_dialog
         order = {k: i for i, k in enumerate(config.MODULES)}
         last = dlg.panel_index(self._save_panel) if self._save_panel else -1
@@ -1407,18 +1040,13 @@ class MainWindow(QMainWindow):
                     if k != key and order[k] < order[key]])
 
     def _refresh_central(self) -> None:
-        """Rebuild the centre pane only if its owner changed.
-
-        `central_widget()` builds a fresh view every call, so rebuilding when
-        nothing moved would throw away the live image for no reason.
-        """
+        """Rebuild the centre pane only if its owner changed."""
         claimant = self._central_claimant()
         want = claimant.key if claimant is not None else None
         if want != self._central_owner:
             self._build_central()
 
     def _open_modules_dialog(self) -> None:
-        """The startup picker again, mid-session."""
         if self._recorder is not None:
             self.status("Stop the recording before changing which modules "
                         "are loaded")
@@ -1446,10 +1074,7 @@ class MainWindow(QMainWindow):
                     + (" — running" if self._session_on else ""))
 
     def _build_controllers(self) -> None:
-        """(Re)create the persistent output controllers (puffer, LED, DMD) for
-        the current emulate mode. Real by default; mock when emulating. Real
-        controllers that can't reach their hardware fall back to a mock so the UI
-        stays usable — the Devices monitor is the source of truth for presence."""
+        """(Re)create the output controllers for the current emulate mode."""
         for m in self._modules:
             m.close_controller()
         for m in self._modules:
@@ -1467,10 +1092,9 @@ class MainWindow(QMainWindow):
 
     def _on_record_toggled(self, on: bool) -> None:
         if on:
-            # Record implies live view — start the session if it isn't running.
             if not self._session_on:
-                self._btn_run.setChecked(True)   # → _start_session()
-            if not self._session_on:              # start failed → abort record
+                self._btn_run.setChecked(True)
+            if not self._session_on:              # start failed
                 self._btn_rec.setChecked(False)
                 return
             self._start_recording()
@@ -1480,7 +1104,6 @@ class MainWindow(QMainWindow):
     def _start_recording(self) -> None:
         if self._save_panel is None:
             return
-        # Fail *before* any data is taken, not after it has nowhere to go.
         err = self._save_panel.writable_error()
         if err is not None:
             self.status(f"Cannot record — {err}")
@@ -1490,14 +1113,8 @@ class MainWindow(QMainWindow):
         now = datetime.now()
         sc = self._save_panel.settings
         ctx = self._routine_save_ctx
-        # unique=True: the writer refuses to truncate an existing session
-        # (mode "x"), but failing to record is also a lost session — so take
-        # the next free name rather than raise. Split mode resolves a
-        # session FOLDER (SplitWriter.open() treats `path` as a directory);
-        # composite mode resolves the one .h5 file, unchanged. A routine's
-        # own (FOV, trial) context (set by RoutinesModule) uses the fixed
-        # Project/Mouse ID/Date/FOV_Trial folder scheme instead of the
-        # operator's free-text template — see saving/config.py.
+        # unique=True: take the next free name rather than refuse. A routine's
+        # (FOV, trial) uses the fixed folder scheme, not the template.
         if ctx is not None:
             fov, trial, coords = ctx
             path = (self._save_panel.resolve_routine_dir(fov, trial, now, unique=True)
@@ -1523,34 +1140,23 @@ class MainWindow(QMainWindow):
         try:
             rec.start(path, metadata)
         except OSError as e:
-            # Opening is on this thread, before the writer thread exists: a
-            # full disk, or a name taken between resolve() and open(), must
-            # un-toggle Record rather than leave a half-built Recorder.
             self.status(f"Cannot record → {path}: {e}")
             self._btn_rec.setChecked(False)
             return
         if ctx is not None and ctx[2] is not None:
-            # A routine step typed raw X/Y/Z rather than naming a saved FOV —
-            # "FOVcustom" in the filename alone would lose where that was.
+            # Raw coordinates: "FOVcustom" in the name alone loses them.
             write_routine_fov_sidecar(path, *ctx[2])
         self._recorder = rec
         self._rec_path = path
-        # The session clock may already be running (Live started earlier) — the
-        # readout counts from Record, not from the clock's own origin.
         self._rec_t0 = self._sync.elapsed()
-        # Force an immediate (not up-to-1s-stale) size stat on the next tick.
         self._rec_size_t0 = 0.0
         self._rec_size_txt = ""
-        self._rec_warn = None           # force the next tick to paint a colour
+        self._rec_warn = None
 
-        # The Recorder stamps each sample on the shared clock, so every stream
-        # in the file shares one time origin.
         for m in self._modules:
             m.attach_sink(self._recorder)
 
         self._btn_rec.setText("■ Stop rec")
-        # Greyed rather than left to fail: set_modules refuses while recording,
-        # and a button that explains itself beats an error after the click.
         self._modules_action.setEnabled(False)
         self._modules_action.setToolTip(
             "Not while recording — the file names its modules once, at the start")
@@ -1565,10 +1171,7 @@ class MainWindow(QMainWindow):
         rec = self._recorder
         self._recorder = None
         if rec is not None:
-            # What the run actually did, not how it was configured — a file
-            # that shed samples should say so itself. A callback because the
-            # counts are final only after the drain and before the close, which
-            # only Recorder.stop() can sequence.
+            # A callback: counts are final only between drain and close.
             def final() -> dict[str, Any]:
                 d: dict[str, Any] = {
                     "recorder_dropped_samples":   rec.drop_count,
@@ -1593,16 +1196,8 @@ class MainWindow(QMainWindow):
         self._lbl_rec.setText("")
 
     def roll_recording(self) -> bool:
-        """Close the current recording and immediately open a new one — a
-        routine splitting one continuous capture into several files
-        (`adapters/routines.py`), not an operator action. Goes straight to
-        the underlying start/stop rather than through `set_recording`/the
-        Record button: both calls happen synchronously with no event-loop
-        turn between them, so the button's own checked state and the status
-        line never visibly pass through "stopped" — RoutinesModule guards
-        its own `detach_sink()` against mistaking this for the operator
-        having stopped recording out from under a running routine.
-        """
+        """Close and immediately reopen, for a routine splitting files. No
+        event-loop turn between, so the button never shows "stopped"."""
         self._stop_recording()
         self._start_recording()
         return self._recorder is not None
@@ -1611,42 +1206,28 @@ class MainWindow(QMainWindow):
                                  coords: tuple[float | None, float | None,
                                               float | None] | None = None
                                  ) -> None:
-        """See `ModuleHost.set_routine_save_context` — read by
-        `_start_recording()` above, in place of the Save tab's own
-        free-text template."""
         self._routine_save_ctx = None if fov is None or trial is None \
             else (fov, trial, coords)
 
     def routine_arming_trigger(self, on: bool) -> None:
-        """See `ModuleHost.routine_arming_trigger`."""
         self._routine_arming_trigger = bool(on)
 
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 
     def _on_tick(self, elapsed: float) -> None:
-        # A permanent label, not `status()`: that's transient, and clobbering
-        # it 10x/second (this fires every 100 ms) made a worker-error or any
-        # other status() call unreadable for the whole time a session runs.
         self._lbl_time.setText(f"t = {elapsed:.1f} s")
         self._refresh_rec_readout(elapsed)
         if self._save_panel is not None:
             self._save_panel.set_active_fov(self.active_fov_name())
 
     def _refresh_rec_readout(self, elapsed: float) -> None:
-        """Elapsed / size on disk / drops, while recording.
-
-        The size comes from the file itself rather than from a running total of
-        what was enqueued: those differ exactly when it matters — a ring that's
-        shedding, or a writer that has fallen behind — and the number worth
-        trusting is the one on the disk. HDF5 grows in blocks, so it steps.
-        """
+        """Elapsed / size on disk / drops. Size is from the file, not what was
+        enqueued: they differ exactly when the ring sheds."""
         if self._recorder is None or self._rec_path is None:
             self._lbl_rec.setText("")
             return
         mins, secs = divmod(int(elapsed - self._rec_t0), 60)
         txt = f"● REC  {mins:d}:{secs:02d}"
-        # stat() is a blocking syscall — on a flaky network share it can stall
-        # the GUI thread. Throttled to ~1 Hz; the readout doesn't need finer.
         now = time.monotonic()
         if now - self._rec_size_t0 >= 1.0:
             self._rec_size_t0 = now
@@ -1655,7 +1236,7 @@ class MainWindow(QMainWindow):
                 self._rec_size_txt = (f"   {mb / 1024:.2f} GB" if mb >= 1024
                                       else f"   {mb:.0f} MB")
             except OSError:
-                pass                       # not created yet, or on a flaky share
+                pass
         txt += self._rec_size_txt
         dropped = self._recorder.drop_count + self._recorder.late_count
         warn = bool(dropped)
@@ -1671,13 +1252,9 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             m.on_trigger(name, duration)
 
-    # ── Display tick (preview only; recording is fed straight from the workers) ──
-
     def _display_tick(self) -> None:
         for m in self._modules:
             m.update_display()
-
-    # ── Save configuration ──────────────────────────────────────────────────────
 
     def _save_save_settings(self, *_args) -> None:
         if self._save_panel is not None:
@@ -1687,12 +1264,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_layout()
-        # A top-level settings window outlives the main one and keeps the app
-        # alive with no way back to it.
+        # Top-level windows left open would keep the app alive.
         self._settings_dialog.save_geometry()
         self._settings_dialog.close()
-        # Same reason: a module's own window is top-level too, and one left
-        # open would keep the app alive with no way back to it.
         for win in self._panel_windows.values():
             win.save_geometry()
             win.close()
@@ -1718,15 +1292,12 @@ def main() -> None:
     ap.parse_args()
 
     app = QApplication(sys.argv)
-    style.apply_theme(app, config.get_theme())     # dark by default
+    style.apply_theme(app, config.get_theme())
 
-    # Startup module picker, pre-checked from the last-used selection. The
-    # camera is opening on its thread while this is up.
     dlg = ModuleSelectDialog(config.load_enabled_modules())
     accepted = dlg.exec() == QDialog.DialogCode.Accepted
     if not accepted:
-        # Still join, and release: a half-open camera outliving the process is
-        # the double-open crash waiting for the next launch.
+        # Release the handle anyway, or the next launch double-opens and crashes.
         _await_camera()
         if _cam_handle is not None:
             try:
@@ -1737,7 +1308,7 @@ def main() -> None:
     enabled = dlg.selected()
     config.save_enabled_modules(enabled)
 
-    _await_camera()          # the handle must exist before any adapter asks
+    _await_camera()
     win = MainWindow(cam_info=_cam_info, mock=_mock, enabled=set(enabled),
                      cam_handle=_cam_handle)
     win.show()
