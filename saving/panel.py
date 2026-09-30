@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
@@ -40,6 +40,7 @@ class SavePanel(QWidget):
         self._rate_mbps: float = 0.0        # set by the owner from the cam config
         self._writer_mbps: float = 0.0      # …and what the writer sustains
         self._active_fov: str = ""          # set by the owner (MainWindow), live
+        self._recording = False             # set by the owner; blocks renaming
         self._build()
         self._refresh()
 
@@ -156,9 +157,20 @@ class SavePanel(QWidget):
         self._lbl_space.setWordWrap(True)
         lay.addRow("Capacity:", self._lbl_space)
 
+        align = QGroupBox("Stim rig alignment")
+        al = QVBoxLayout(align)
+        btn_bpod = QPushButton("Match to Bpod…")
+        btn_bpod.setToolTip(
+            "After a routine: match its trigger edges to Bpod's trials, "
+            "renumber trial folders to Bpod's trial numbers and mark missed "
+            "trials VOID. Checks first; changes nothing until you Apply.")
+        btn_bpod.clicked.connect(self._on_match_bpod)
+        al.addWidget(btn_bpod)
+
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
+        root.addRow(align)
 
     def _reload_drives(self) -> None:
         self._cmb_drive.blockSignals(True)
@@ -247,6 +259,11 @@ class SavePanel(QWidget):
         finally:
             self._btn_scan.setEnabled(True)
 
+    def _on_match_bpod(self) -> None:
+        from acqApp.saving.bpod_dialog import BpodMatchDialog
+        BpodMatchDialog(self._cfg, lambda: self._recording,
+                        self.settings_changed.emit, self).exec()
+
     def _on_split_toggled(self, on: bool) -> None:
         self._cmb_orca_format.setEnabled(on)
         self._on_edited()
@@ -313,6 +330,9 @@ class SavePanel(QWidget):
         self._active_fov = name
         self._update_fov_checkbox()
         self._refresh()
+
+    def set_recording_active(self, on: bool) -> None:
+        self._recording = bool(on)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """Data rate of the current acquisition config, for the capacity estimate.

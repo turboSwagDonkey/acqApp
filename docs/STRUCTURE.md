@@ -270,8 +270,9 @@ routines/               experiment routines: atomic steps (move/display/wait/
                         blocks by kind/duration, and recordings as SEPARATE
                         bars (one per repeat, never merged) — view-only
 saving/                 where the session file goes
+  bpod_dialog.py        the Save tab's "Match to Bpod…": Check, then Apply
   bpod_match.py         after a session: align the routine's edge log to Bpod's
-                        trials, renumber folders, VOID missed trials (CLI)
+                        trials, renumber folders, VOID missed trials (CLI too)
   config.py             SaveConfig + path building — no Qt
   panel.py
 docs/

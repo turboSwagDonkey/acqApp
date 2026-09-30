@@ -555,9 +555,30 @@ def _session(n: int, seed: int = 3) -> np.ndarray:
     return 100.0 + np.concatenate([[0.0], np.cumsum(dur[:-1] + 0.3)])
 
 
-def check_bpod_match(r: Report, tmp: Path) -> None:
+def _bpod_fixture(root: Path, bpod: np.ndarray, cam: np.ndarray):
+    """The routine numbered its edges T1..T<n>; Bpod's own numbering differs.
+    -> (trial folder, edge log, Bpod session file)."""
     from scipy.io import savemat
+    base = root / "m1" / "20260930"
+    base.mkdir(parents=True)
+    edges = base / "routine_edges_test.csv"
+    lines = ["edge,session_s,wall_time,fov,trial,path"]
+    for j, t in enumerate(cam):
+        d = base / f"FOV2_T{j + 1}"
+        d.mkdir()
+        (d / f"FOV2_T{j + 1}_voltage_cam.dcimg").write_text(str(j))
+        lines.append(f"{j + 1},{t:.4f},x,2,{j + 1},{d}")
+    edges.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    trials = np.empty(len(bpod), dtype=object)
+    for i in range(len(bpod)):
+        trials[i] = {"States": {"CamTrigger": np.array([0.0002, 0.0102])}}
+    mat = root / "session.mat"
+    savemat(str(mat), {"SessionData": {"TrialStartTimestamp": bpod - 0.0002,
+                                       "RawEvents": {"Trial": trials}}})
+    return base, edges, mat
 
+
+def check_bpod_match(r: Report, tmp: Path) -> None:
     from acqApp.saving import bpod_match as BM
 
     bpod = _session(40)
@@ -583,23 +604,7 @@ def check_bpod_match(r: Report, tmp: Path) -> None:
     r.check("match no Bpod" in m3.problem,
             f"an edge the stim rig never sent is refused ({m3.problem!r})")
 
-    # The files: routine numbered its 38 edges T1..T38; Bpod says otherwise.
-    base = tmp / "bpod" / "m1" / "20260930"
-    base.mkdir(parents=True)
-    edges = base / "routine_edges_test.csv"
-    lines = ["edge,session_s,wall_time,fov,trial,path"]
-    for j, t in enumerate(cam):
-        d = base / f"FOV2_T{j + 1}"
-        d.mkdir()
-        (d / f"FOV2_T{j + 1}_voltage_cam.dcimg").write_text(str(j))
-        lines.append(f"{j + 1},{t:.4f},x,2,{j + 1},{d}")
-    edges.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    trials = np.empty(40, dtype=object)
-    for i in range(40):
-        trials[i] = {"States": {"CamTrigger": np.array([0.0002, 0.0102])}}
-    mat = tmp / "bpod" / "session.mat"
-    savemat(str(mat), {"SessionData": {"TrialStartTimestamp": bpod - 0.0002,
-                                       "RawEvents": {"Trial": trials}}})
+    base, edges, mat = _bpod_fixture(tmp / "bpod", bpod, cam)
     got = BM.load_bpod_triggers(mat)
     r.check(np.allclose(got, bpod),
             "Bpod's session file reads back as trial start + CamTrigger onset")
@@ -626,11 +631,95 @@ def check_bpod_match(r: Report, tmp: Path) -> None:
             f"every change is logged for undoing ({len(log) - 1} rows)")
 
 
+def check_bpod_rollback(r: Report, tmp: Path) -> None:
+    """A folder still open part-way through Apply: the ones already moved
+    go back, and nothing has changed."""
+    from acqApp.saving import bpod_match as BM
+
+    bpod = _session(12)
+    cam = bpod[1:] - 50.0                           # trial 1 missed
+    base, edges, mat = _bpod_fixture(tmp / "rollback", bpod, cam)
+    _lines, pl = BM.check(edges, mat)
+    before = sorted(p.name for p in base.iterdir())
+    held = open(base / "FOV2_T6" / "FOV2_T6_voltage_cam.dcimg")
+    try:
+        try:
+            BM.apply(pl, base)
+            err = ""
+        except BM.ApplyError as e:
+            err = str(e)
+    finally:
+        held.close()
+    r.check("nothing was changed" in err and
+            sorted(p.name for p in base.iterdir()) == before,
+            f"an open file stops Apply with every folder put back ({err!r})")
+
+
+def check_bpod_dialog(r: Report, tmp: Path) -> None:
+    """The Save tab's button: Check shows the plan and enables Apply; any
+    edit disables it again; Apply is refused while recording."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from acqApp.saving import bpod_dialog as BD
+
+    bpod = _session(12)
+    cam = bpod[1:] - 50.0
+    root = tmp / "dialog"
+    cfg = SaveConfig(folder=str(root), mouse_id="m1")
+    today = cfg.routine_base(datetime.now())
+    base, edges, mat = _bpod_fixture(root, bpod, cam)
+    base.rename(today) if not today.exists() else None
+    edges = today / edges.name
+    lines = edges.read_text(encoding="utf-8").replace(str(base), str(today))
+    edges.write_text(lines, encoding="utf-8")
+    r.check(BD.newest_edge_log(cfg) == edges,
+            "the dialog finds today's edge log by itself")
+
+    recording = {"on": True}
+    saved = []
+    dlg = BD.BpodMatchDialog(cfg, lambda: recording["on"],
+                             lambda: saved.append(cfg.bpod_folder))
+    r.check(dlg._ed_edges.text() == str(edges), "…and fills it in")
+    dlg._ed_bpod.setText(str(mat))
+    r.check(not dlg._btn_apply.isEnabled(), "Apply starts disabled")
+    dlg._check()
+    r.check(dlg._btn_apply.isEnabled() and "void    trial 1" in
+            dlg._report.toPlainText(), "Check shows the plan, then allows Apply")
+    dlg._spn_first.setValue(2)
+    r.check(not dlg._btn_apply.isEnabled(), "any edit makes the plan stale")
+    dlg._spn_first.setValue(1)
+    dlg._check()
+
+    warned, asked = [], []
+    QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a))
+    QMessageBox.question = staticmethod(
+        lambda *a, **k: (asked.append(a), QMessageBox.StandardButton.Yes)[1])
+    before = sorted(p.name for p in today.iterdir())
+    dlg._apply()
+    r.check(warned and not asked and
+            sorted(p.name for p in today.iterdir()) == before,
+            "Apply is refused while recording, and changes nothing")
+    recording["on"] = False
+    dlg._apply()
+    names = {p.name for p in today.iterdir() if p.is_dir()}
+    r.check(asked and "FOV2_T1_VOID" in names and "FOV2_T12" in names
+            and "FOV2_T1" not in names,
+            f"after confirming, folders take Bpod's numbers ({sorted(names)[:4]}…)")
+    r.check("Done:" in dlg._report.toPlainText()
+            and not dlg._btn_apply.isEnabled(),
+            "…the report says so, and Apply needs a fresh Check")
+
+
 def _part_bpod() -> int:
+    from _harness import isolate_user_state, qt_app
     r = Report("bpod-match")
+    isolate_user_state()
+    app = qt_app()                               # noqa: F841 — must be held
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_bpod_"))
     try:
         check_bpod_match(r, tmp)
+        check_bpod_rollback(r, tmp)
+        check_bpod_dialog(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()

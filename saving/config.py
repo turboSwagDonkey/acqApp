@@ -107,6 +107,7 @@ class SaveConfig:
     # instead of one .h5.
     split:       bool = False
     orca_format: str  = "tiff"   # "tiff" or "dcimg"; split mode only
+    bpod_folder: str  = ""       # where "Match to Bpod…" last found a file
 
     def resolved_folder(self) -> Path:
         return Path(self.folder).expanduser() if self.folder.strip() \

@@ -1148,6 +1148,7 @@ class MainWindow(QMainWindow):
             write_routine_fov_sidecar(path, *ctx[2])
         self._recorder = rec
         self._rec_path = path
+        self._save_panel.set_recording_active(True)
         self._rec_t0 = self._sync.elapsed()
         self._rec_size_t0 = 0.0
         self._rec_size_txt = ""
@@ -1170,6 +1171,8 @@ class MainWindow(QMainWindow):
             m.detach_sink()
         rec = self._recorder
         self._recorder = None
+        if self._save_panel is not None:
+            self._save_panel.set_recording_active(False)
         if rec is not None:
             # A callback: counts are final only between drain and close.
             def final() -> dict[str, Any]:

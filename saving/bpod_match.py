@@ -174,29 +174,69 @@ def _parent(p: Path) -> Path:
 
 def apply(pl: Plan, log_dir: Path) -> list[tuple[str, str]]:
     """Two-phase rename (every source to a temporary name first, so T19->T20
-    can't collide with the old T20), then the VOID folders. Logged."""
+    can't collide with the old T20), then the VOID folders. Logged. If a
+    first-phase rename fails (a file still open), the ones already moved are
+    put back and the error re-raised: nothing is left half-renumbered."""
     done: list[tuple[str, str]] = []
     staged = []
-    for path, stem in pl.renames:
-        tmp = rename_trial(path, f"{stem}__renumbering")
-        staged.append((path, tmp, stem))
-    for path, tmp, stem in staged:
-        new = rename_trial(tmp, stem)
-        done.append((str(path), str(new)))
-    for folder, _trial, note in pl.voids:
-        if not folder.exists():
-            folder.mkdir(parents=True)
-            (folder / "void.json").write_text(json.dumps(note, indent=2),
-                                              encoding="utf-8")
-        done.append(("", str(folder)))
+    try:
+        for path, stem in pl.renames:
+            tmp = rename_trial(path, f"{stem}__renumbering")
+            staged.append((path, tmp, stem))
+    except OSError as e:
+        for path, tmp, _stem_ in reversed(staged):
+            rename_trial(tmp, _stem(path))
+        raise ApplyError(f"{e}; nothing was changed") from e
     log = log_dir / "renumber_log.csv"
     new_log = not log.exists()
+    # Past here, each change is logged as it lands, so a failure leaves a
+    # record of exactly what moved.
     with open(log, "a", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         if new_log:
             w.writerow(["old", "new"])
-        w.writerows(done)
+        try:
+            for path, tmp, stem in staged:
+                new = rename_trial(tmp, stem)
+                done.append((str(path), str(new)))
+                w.writerow(done[-1])
+            for folder, _trial, note in pl.voids:
+                if not folder.exists():
+                    folder.mkdir(parents=True)
+                    (folder / "void.json").write_text(
+                        json.dumps(note, indent=2), encoding="utf-8")
+                done.append(("", str(folder)))
+                w.writerow(done[-1])
+        except OSError as e:
+            raise ApplyError(f"{e}; stopped part-way — {log.name} lists what "
+                             f"changed, and folders named *__renumbering "
+                             f"still need their final name") from e
     return done
+
+
+class ApplyError(OSError):
+    """Apply stopped; the message says whether anything changed."""
+
+
+def check(edges: Path, bpod_file: Path, first_trial: int = 1,
+          tol: float = TOL_S) -> tuple[list[str], Plan | None]:
+    """-> (report lines, plan). The plan is None when the match is refused,
+    and empty when nothing needs changing."""
+    rows = load_edges(edges)
+    bpod = load_bpod_triggers(bpod_file)
+    m = match([r["session_s"] for r in rows], bpod, tol)
+    lines = [f"{len(bpod)} Bpod trials, {len(rows)} camera edges, "
+             f"{len(m.pairs)} matched; residual {m.rms_s * 1e3:.1f} ms rms, "
+             f"clock drift {m.drift_ppm:+.0f} ppm"]
+    if m.problem:
+        lines.append(f"NOT APPLYING: {m.problem}")
+        return lines, None
+    pl = plan(rows, m, len(bpod), first_trial)
+    lines += [f"  rename  {_stem(p)} -> {stem}" for p, stem in pl.renames]
+    lines += [f"  void    trial {t}: {f.name}" for f, t, _n in pl.voids]
+    if not pl.renames and not pl.voids:
+        lines.append("nothing to change: every trial has its edge, numbered right")
+    return lines, pl
 
 
 def main(argv=None) -> int:
@@ -211,22 +251,11 @@ def main(argv=None) -> int:
     ap.add_argument("--tol", type=float, default=TOL_S)
     args = ap.parse_args(argv)
 
-    rows = load_edges(args.edges)
-    bpod = load_bpod_triggers(args.bpod)
-    m = match([r["session_s"] for r in rows], bpod, args.tol)
-    print(f"{len(bpod)} Bpod trials, {len(rows)} camera edges, "
-          f"{len(m.pairs)} matched; residual {m.rms_s * 1e3:.1f} ms rms, "
-          f"clock drift {m.drift_ppm:+.0f} ppm")
-    if m.problem:
-        print(f"NOT APPLYING: {m.problem}")
+    lines, pl = check(args.edges, args.bpod, args.first_trial, args.tol)
+    print("\n".join(lines))
+    if pl is None:
         return 1
-    pl = plan(rows, m, len(bpod), args.first_trial)
-    for p, stem in pl.renames:
-        print(f"  rename  {_stem(p)} -> {stem}")
-    for folder, trial, _n in pl.voids:
-        print(f"  void    trial {trial}: {folder.name}")
     if not pl.renames and not pl.voids:
-        print("nothing to change: every trial has its edge, numbered right")
         return 0
     if not args.apply:
         print("dry run; add --apply to make these changes")
