@@ -292,6 +292,9 @@ def main() -> int:
         def active_fov_name(self): return ""
         def roll_recording(self): return False
         def set_routine_save_context(self, fov, trial, coords=None): ...
+        def recording_path(self): return None
+        def void_routine_trial(self, fov, trial, info): return None
+        def rename_routine_trial(self, path, fov, trial): return path
         def dcimg_enabled(self): return False
         def dcimg_target(self, stream): return None
         def dcimg_frames(self, stream): return None

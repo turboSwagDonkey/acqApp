@@ -161,6 +161,74 @@ def check_benchmark_drive(r: Report, tmp: Path) -> None:
             f"an unwritable/missing path returns None, not a crash (got {missing!r})")
 
 
+def check_void_and_renumber(r: Report, tmp: Path) -> None:
+    """A missed trigger's _VOID folder, and renumbering a closed trial in each
+    save layout. A file still open must refuse the rename and change nothing."""
+    from acqApp.saving.config import rename_trial
+
+    cfg = SaveConfig(folder=str(tmp / "void"), mouse_id="m1")
+    v = cfg.void_routine_trial("2", 19, WHEN, {"reason": "missed trigger"})
+    r.check(v.name == "FOV2_T19_VOID" and v.parent == cfg.routine_base(WHEN),
+            f"the VOID folder sits beside the trials ({v})")
+    r.check(json.loads((v / "void.json").read_text())["reason"] == "missed trigger",
+            "…with a note saying why")
+    v2 = cfg.void_routine_trial("2", 19, WHEN, {})
+    r.check(v2.name == "FOV2_T19_VOID_001", f"a second one never overwrites ({v2.name})")
+
+    # split folder
+    base = tmp / "split"
+    d = base / "FOV2_T19"
+    d.mkdir(parents=True)
+    for suffix in ("_voltage_cam.dcimg", "_data.csv", "_settings.json"):
+        (d / f"FOV2_T19{suffix}").write_text("x")
+    (d / "fov.json").write_text("{}")
+    new = rename_trial(d, "FOV2_T20")
+    names = sorted(p.name for p in new.iterdir())
+    r.check(new == base / "FOV2_T20" and not d.exists(),
+            f"split: the folder is renumbered ({new.name})")
+    r.check(names == ["FOV2_T20_data.csv", "FOV2_T20_settings.json",
+                      "FOV2_T20_voltage_cam.dcimg", "fov.json"],
+            f"…and every file named after it ({names})")
+
+    # .h5 in its own folder, target taken
+    base = tmp / "sub"
+    (base / "FOV2_T20").mkdir(parents=True)
+    d = base / "FOV2_T19"
+    d.mkdir()
+    (d / "FOV2_T19.h5").write_text("x")
+    new = rename_trial(d / "FOV2_T19.h5", "FOV2_T20")
+    r.check(new == base / "FOV2_T20_001" / "FOV2_T20_001.h5" and new.exists(),
+            f"subfolder .h5: a taken name gets the next free one ({new})")
+
+    # flat .h5 with its sidecar; a neighbour sharing the prefix is untouched
+    base = tmp / "flat"
+    base.mkdir()
+    (base / "FOV2_T19.h5").write_text("x")
+    (base / "FOV2_T19.fov.json").write_text("{}")
+    (base / "FOV2_T190.h5").write_text("x")
+    new = rename_trial(base / "FOV2_T19.h5", "FOV2_T20")
+    r.check(sorted(p.name for p in base.iterdir())
+            == ["FOV2_T190.h5", "FOV2_T20.fov.json", "FOV2_T20.h5"],
+            f"flat .h5: file and sidecar renumbered, T190 untouched "
+            f"({sorted(p.name for p in base.iterdir())})")
+
+    # an open file (the camera still holding its .dcimg)
+    d = tmp / "busy" / "FOV2_T19"
+    d.mkdir(parents=True)
+    held = open(d / "FOV2_T19_voltage_cam.dcimg", "w")
+    try:
+        try:
+            rename_trial(d, "FOV2_T20")
+            refused = False
+        except OSError:
+            refused = True
+        r.check(refused and d.exists() and not (d.parent / "FOV2_T20").exists(),
+                "a folder with a file still open refuses, unchanged")
+    finally:
+        held.close()
+    r.check(rename_trial(d, "FOV2_T20").exists(), "…and succeeds once it's closed")
+
+
 def _part_paths() -> int:
     r = Report("save-paths")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_savepaths_"))
@@ -169,6 +237,7 @@ def _part_paths() -> int:
         check_unique(r, tmp)
         check_writer_refuses(r, tmp)
         check_benchmark_drive(r, tmp)
+        check_void_and_renumber(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()

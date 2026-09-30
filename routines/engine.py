@@ -14,6 +14,8 @@ in a fresh recording run.
 """
 from __future__ import annotations
 
+import statistics
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -35,6 +37,39 @@ REARM_TIMEOUT_S = 30.0
 # indistinguishable from leftovers — the reason `trigger_gate` exists.
 TRIGGER_DRAIN_S = 1.5
 TRIGGER_SETTLE_S = 0.75
+
+# Missed edges are inferred from timing (the line only reaches the camera):
+# a gap over MISS_FACTOR x the step's typical gap hides round(gap/typical)-1
+# edges. Typical = median of recent normal gaps, judged after MISS_MIN_GAPS.
+MISS_FACTOR = 1.5
+MISS_MIN_GAPS = 3
+MISS_HISTORY = 20
+
+
+class EdgeGaps:
+    """Per trigger step: learns the stim rig's period from the run itself."""
+
+    def __init__(self) -> None:
+        self._last: dict[int, float] = {}
+        self._gaps: dict[int, deque] = {}
+
+    def forget_last(self) -> None:
+        """After a pause: a gap spanning it says nothing about the rig."""
+        self._last.clear()
+
+    def edge(self, step: int, t: float) -> tuple[int, float, float]:
+        """-> (edges missed before this one, gap, typical gap)."""
+        last, self._last[step] = self._last.get(step), t
+        if last is None:
+            return 0, 0.0, 0.0
+        gap = t - last
+        hist = self._gaps.setdefault(step, deque(maxlen=MISS_HISTORY))
+        if len(hist) >= MISS_MIN_GAPS:
+            typical = statistics.median(hist)
+            if typical > 0 and gap > MISS_FACTOR * typical:
+                return max(1, round(gap / typical) - 1), gap, typical
+        hist.append(gap)
+        return 0, gap, statistics.median(hist)
 
 
 class Phase:
@@ -74,6 +109,10 @@ class RoutineHooks:
     # (re-arms completed, frames since the last), or None if the camera can't
     # say. Replaces the settle heuristic when present.
     trigger_gate:   Callable[[], tuple[int, int] | None] = lambda: None
+    # (n missed, the record run this edge starts or None, gap, typical gap):
+    # called at an edge that arrived after n edges went unseen.
+    missed_triggers: Callable[[int, "RecordingRun | None", float, float],
+                              None] = _noop
     # Before `arm_trigger` when a `record` step follows: some recorders
     # (.dcimg) bind only while capture is stopped, and the file must exist
     # before the edge.
@@ -160,6 +199,8 @@ class RoutineEngine:
         self._trig_still_since = 0.0
         self._trig_gated = False
         self._gate_seq0: int | None = None       # re-arm count before ours
+        self._edges = EdgeGaps()
+        self.missed_triggers = 0
 
     # ── readout ───────────────────────────────────────────────────────────────
     @property
@@ -250,6 +291,8 @@ class RoutineEngine:
         self._dmd_on = False
         self._open_run = None
         self._open_key = None
+        self._edges = EdgeGaps()
+        self.missed_triggers = 0
         self._started_at = self._safe_value(self._h.now, 0.0)
         if trigger == "ttl":
             self._arm_frame0 = self._frames()
@@ -340,11 +383,22 @@ class RoutineEngine:
             return
 
         if n > self._trig_frame0:
-            self._phase = Phase.RUNNING
-            self._step_done = True
+            self._edge_seen()
             return
         if t - self._trig_t0 > self._trig_timeout:
             self._halt(f"no camera trigger within {self._trig_timeout:g} s")
+
+    def _edge_seen(self) -> None:
+        """The trigger step's edge arrived; report any the gap says were missed."""
+        missed, gap, typical = self._edges.edge(self._i, self._h.now())
+        if missed:
+            self.missed_triggers += missed
+            self._h.log(f"{missed} trigger(s) missed: {gap:.1f} s since the "
+                        f"last edge, typically {typical:.1f} s")
+            self._safe(self._h.missed_triggers, missed,
+                       self._next_record_run(), gap, typical)
+        self._phase = Phase.RUNNING
+        self._step_done = True
 
     def _tick_trigger_gated(self) -> None:
         """Once the re-arm count passes ours, any frame is the edge. An edge
@@ -356,8 +410,7 @@ class RoutineEngine:
         seq, since = gate
         rearmed = seq > self._gate_seq0
         if rearmed and since > 0:
-            self._phase = Phase.RUNNING
-            self._step_done = True
+            self._edge_seen()
             return
         waited = self._h.now() - self._trig_t0
         if not rearmed:
@@ -505,6 +558,7 @@ class RoutineEngine:
     def _halt(self, reason: str) -> None:
         """Fault or operator pause: stop what actuates, keep what captures."""
         self.fault = reason
+        self._edges.forget_last()
         self._safe(self._h.stop_motion)
         self._safe(self._h.light, False)
         if self._open_run is not None:

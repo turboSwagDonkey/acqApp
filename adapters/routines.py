@@ -42,6 +42,9 @@ RATE_EVERY = 30
 # isn't coming back.
 HOLD_TIMEOUT_S = 10.0
 
+# A renumbered .dcimg folder is renamed once the camera lets go of it.
+RENAME_TIMEOUT_S = 30.0
+
 
 class RoutinesModule(ModuleAdapter):
     """Wires `routines/` into this window. Owns no device."""
@@ -72,6 +75,9 @@ class RoutinesModule(ModuleAdapter):
         self._routine_origin = 0.0
         self._hold_t0: float | None = None   # see _holding_for_camera
         self._trial_count: dict[int, int] = {}   # files opened per bracket
+        # (closed-or-closing path, fov, trial, since) awaiting renumbering
+        self._renames: list[tuple[Any, str, int, float]] = []
+        self._voided: list[int] = []             # trial numbers marked _VOID
 
     def _status(self, msg: str) -> None:
         """Status bar, and the console (which the rig actually watches) for
@@ -163,6 +169,7 @@ class RoutinesModule(ModuleAdapter):
             puff=puffer.fire if puffer is not None else (lambda: None),
             arm_trigger=arm_trigger,
             trigger_gate=lambda: self.win.camera_trigger_gate(FRAME_STREAM),
+            missed_triggers=self._on_missed_triggers,
             prepare_recording=self._prepare_recording,
             begin_recording=self._on_recording_begin,
             end_recording=self._on_recording_end,
@@ -197,6 +204,7 @@ class RoutinesModule(ModuleAdapter):
 
             self._routine = routine
             self._trial_count = {}
+            self._voided = []
             if self._rec is None:
                 if self._first_file_is_doomed(routine):
                     self.win.set_routine_save_context(None, None)
@@ -276,7 +284,9 @@ class RoutinesModule(ModuleAdapter):
         self.win.set_routine_save_context(None, None)
         self._own_rec = False            # before: detach_sink re-enters
         self.win.set_recording(False)
-        self.win.set_live(False)
+        self.win.set_live(False)         # the camera has closed any .dcimg
+        if self._renames:
+            self._apply_renames(final=True)
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -326,6 +336,8 @@ class RoutinesModule(ModuleAdapter):
         if eng is None:
             self._stop_ticking()
             return
+        if self._renames:
+            self._apply_renames()
         if self._holding_for_camera(eng):
             return
         try:
@@ -366,6 +378,61 @@ class RoutinesModule(ModuleAdapter):
         self._armed_with_file = True
         self._status("new .dcimg opened before the trigger step re-arms — a "
                      ".dcimg cannot span one")
+
+    def _on_missed_triggers(self, n: int, run, gap: float,
+                            typical: float) -> None:
+        """`n` edges went unseen before this one. Where each edge gets its own
+        file, mark those trials `_VOID` and give this edge's data the trial
+        number after them, so numbering stays matched to the stim rig."""
+        prepared = run is not None and self._prepared == (run.cycle,
+                                                          run.start_index)
+        per_edge = prepared or (run is not None and self._routine is not None
+                                and self._routine.save_mode == "per_repeat")
+        if not per_edge:
+            return
+        fov, _coords = self._fov_for(self._routine, run.start_index)
+        region = run.region
+        if prepared:
+            # The .dcimg for trial `first` is already open and now holds this
+            # edge; it's renumbered once the camera closes it.
+            first = self._trial_count.get(region, 1)
+            path = self.win.recording_path()
+            if path is not None:
+                self._renames.append((path, fov, first + n, time.monotonic()))
+        else:
+            first = self._trial_count.get(region, 0) + 1   # the roll numbers it
+        self._trial_count[region] = first + n - (0 if prepared else 1)
+        info = {"reason": "missed trigger", "fov": fov,
+                "gap_s": round(gap, 3), "typical_gap_s": round(typical, 3),
+                "data_in_trial": first + n,
+                "detected_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        for trial in range(first, first + n):
+            try:
+                path = self.win.void_routine_trial(fov, trial,
+                                                   {**info, "trial": trial})
+                self._voided.append(trial)
+                self._status(f"trial {trial} voided: {path.name}")
+            except OSError as e:
+                self._status(f"could not write the VOID marker for trial "
+                             f"{trial} ({e})")
+
+    def _apply_renames(self, *, final: bool = False) -> None:
+        """Retry each pending renumbering until the file is closed."""
+        pending, self._renames = self._renames, []
+        for path, fov, trial, since in pending:
+            if path == self.win.recording_path():
+                self._renames.append((path, fov, trial, since))
+                continue
+            try:
+                new = self.win.rename_routine_trial(path, fov, trial)
+            except OSError as e:
+                if final or time.monotonic() - since > RENAME_TIMEOUT_S:
+                    self._status(f"could not renumber {path.name} to trial "
+                                 f"{trial} ({e}) — rename it by hand")
+                else:
+                    self._renames.append((path, fov, trial, since))
+                continue
+            self._status(f"{path.name} renumbered to {new.name}")
 
     def _on_recording_begin(self, run) -> None:
         """One `/routine` entry per boundary. The first run just claims the
@@ -460,6 +527,8 @@ class RoutinesModule(ModuleAdapter):
         self._engine = None
         self._own_rec = False
         super().stop()
+        if self._renames:
+            self._apply_renames(final=True)
 
     def on_modules_changed(self) -> None:
         if self.panel is not None:
@@ -588,6 +657,9 @@ class RoutinesModule(ModuleAdapter):
             "routine_fault":             eng.fault if eng.phase == Phase.PAUSED
                                          else "",
             "routine_boundaries":        self._filed,
+            # Inferred from edge timing (whole routine, as of this file).
+            "routine_missed_triggers":   eng.missed_triggers,
+            "routine_voided_trials":     json.dumps(self._voided),
         }
 
 

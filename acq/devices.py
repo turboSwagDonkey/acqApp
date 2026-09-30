@@ -270,3 +270,15 @@ class ModuleHost(Protocol):
         """Name the next file by (FOV, trial); None, None clears. `coords`
         for a "custom" FOV go to a sidecar."""
         ...
+
+    def recording_path(self) -> Any:
+        """The file/folder being recorded to, or None."""
+        ...
+
+    def void_routine_trial(self, fov: str, trial: int, info: dict) -> Any:
+        """Create the `_VOID` marker folder for a trial whose trigger was missed."""
+        ...
+
+    def rename_routine_trial(self, path: Any, fov: str, trial: int) -> Any:
+        """Renumber a closed recording; raises OSError while it's still open."""
+        ...

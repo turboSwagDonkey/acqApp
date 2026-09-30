@@ -140,14 +140,7 @@ class SaveConfig:
                     build: Callable[[Path, str], Path], *, unique: bool) -> Path:
         """With `unique`, append _001, _002, … until the path is free: the
         writer refuses an existing one, and Record must keep working."""
-        path = build(base, stem)
-        if not unique:
-            return path
-        for n in range(1, 1000):
-            if not path.exists():
-                return path
-            path = build(base, f"{stem}_{n:03d}")
-        return build(base, f"{stem}_{datetime.now():%H%M%S_%f}")
+        return _first_free(base, stem, build) if unique else build(base, stem)
 
     def _resolve(self, build: Callable[[Path, str], Path],
                  when: datetime | None, *, unique: bool, fov: str = "") -> Path:
@@ -187,10 +180,64 @@ class SaveConfig:
                                 _routine_stem(fov, trial),
                                 self._dir_for, unique=unique)
 
+    def void_routine_trial(self, fov: str, trial: int, when: datetime | None,
+                           info: dict) -> Path:
+        """A `FOV<fov>_T<trial>_VOID` folder holding `void.json`: the trial
+        whose trigger was missed, so numbering stays matched to the rig's."""
+        path = self._resolve_at(self.routine_base(when),
+                                f"{_routine_stem(fov, trial)}_VOID",
+                                self._dir_for, unique=True)
+        path.mkdir(parents=True)
+        (path / "void.json").write_text(json.dumps(info, indent=2),
+                                        encoding="utf-8")
+        return path
+
+
+def _first_free(base: Path, stem: str,
+                build: Callable[[Path, str], Path]) -> Path:
+    path = build(base, stem)
+    for n in range(1, 1000):
+        if not path.exists():
+            return path
+        path = build(base, f"{stem}_{n:03d}")
+    return build(base, f"{stem}_{datetime.now():%H%M%S_%f}")
+
 
 def _routine_stem(fov: str, trial: int) -> str:
     prefix = "" if fov.lower().startswith("fov") else "FOV"
     return sanitize(f"{prefix}{fov}_T{trial}")
+
+
+routine_stem = _routine_stem
+
+
+def rename_trial(path: Path, new_stem: str) -> Path:
+    """Rename a CLOSED recording and its sidecars to `new_stem` (next free
+    name if taken) -> the new path. Handles a split folder, an .h5 in its own
+    folder, and a flat .h5. Raises OSError, changing nothing, while any file
+    in it is still open: the folder (or .h5) is renamed first."""
+    if path.is_dir():
+        folder, old, kind = path, path.name, "split"
+    elif path.parent.name == path.stem:
+        folder, old, kind = path.parent, path.stem, "subfolder"
+    else:
+        folder, old, kind = None, path.stem, "flat"
+
+    if folder is None:
+        new = _first_free(path.parent, new_stem, lambda b, s: b / f"{s}.h5")
+        path.rename(new)
+        side = path.with_name(f"{old}.fov.json")
+        if side.exists():
+            side.rename(new.with_name(f"{new.stem}.fov.json"))
+        return new
+
+    new_folder = _first_free(folder.parent, new_stem, lambda b, s: b / s)
+    folder.rename(new_folder)
+    stem = new_folder.name
+    for f in new_folder.iterdir():
+        if f.name.startswith((old + "_", old + ".")):
+            f.rename(new_folder / (stem + f.name[len(old):]))
+    return new_folder if kind == "split" else new_folder / f"{stem}.h5"
 
 
 def default_folder() -> Path:
