@@ -1,6 +1,4 @@
-"""
-The DMD projector's adapter: an output that also answers to the trigger bus.
-"""
+"""The DMD projector's adapter: an output that also answers to the trigger bus."""
 from __future__ import annotations
 
 import json
@@ -18,8 +16,7 @@ from acqApp.devices.dmd.control import DmdController, DmdSettings, MockDmdContro
 from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
 
-# The standalone dmdGUI_project app's alignment keys, and the DmdSettings
-# attribute (plus its "_shared_<attr>" provenance key) each tracks.
+# The standalone dmdGUI_project app's alignment keys -> DmdSettings attribute.
 _SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
 
 
@@ -27,21 +24,14 @@ class DmdModule(ModuleAdapter):
     key = "dmd"
     tab_label = "DMD"
 
-    controller: ProjectorController | None   # narrows ModuleAdapter.controller
+    controller: ProjectorController | None
 
-    # Debounce window for "Live update": display() re-uploads the whole
-    # pattern to the ALP (SeqAlloc/SeqPut/Run — not free), and a drag or a
-    # held nudge key can emit many settings_changed ticks a second, so this
-    # coalesces a burst into one re-project shortly after it stops rather
-    # than flooding the device with a re-upload per tick.
+    # Live update coalesces a drag's burst of changes into one re-upload.
     _LIVE_DEBOUNCE_MS = 150
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        # Whether the ALP really opened — not derived from the class, since a
-        # real DmdController that failed and fell back is the case that matters
-        # and only build_controller knows.
-        self._real = False
+        self._real = False              # the ALP really opened (not a fallback)
         self._live_timer = QTimer()
         self._live_timer.setSingleShot(True)
         self._live_timer.setInterval(self._LIVE_DEBOUNCE_MS)
@@ -49,8 +39,7 @@ class DmdModule(ModuleAdapter):
 
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
-        # Via the adapter, not the controller: the controller is rebuilt on
-        # every Emulate toggle, and the panel binds its signals once.
+        # Via the adapter: the controller is rebuilt on every Emulate toggle.
         self.panel.load_requested.connect(self.load)
         self.panel.display_requested.connect(self.display)
         self.panel.stop_requested.connect(self.stop_display)
@@ -61,22 +50,13 @@ class DmdModule(ModuleAdapter):
         return self.panel
 
     def _on_live_toggled(self, on: bool) -> None:
-        """Cancel a pending debounced re-project the instant Live update is
-        turned off — otherwise a change made just before unchecking it still
-        projects ~150 ms later, contradicting the operator's own click."""
+        # Or a change just before unchecking still projects 150 ms later.
         if not on:
             self._live_timer.stop()
 
     # ── the camera↔DMD registration ──
     def calibrate(self) -> None:
-        """Open the sweep dialog: project stripes, image them, fit a transform.
-
-        Here because only the adapter can reach both halves — its own
-        controller and, through the host, the VOLTAGE camera the DMD images
-        through. The dialog drives the camera (`set_live`) and the DMD
-        (`project_frame`) itself, so neither has to be started first; the
-        actuation decision is its button, not whether a preview was running.
-        """
+        """The sweep dialog: project stripes, image them, fit a transform."""
         from PyQt6.QtWidgets import QMessageBox
 
         from acqApp.devices.dmd.sweep import CalibrationDialog
@@ -92,14 +72,8 @@ class DmdModule(ModuleAdapter):
                 "Restart and tick Voltage camera in the startup picker.")
             return
 
-        # A calibration is recorded in the captured frame's OWN pixels, and
-        # both the capture area and the binning change what those are: a crop
-        # shifts the frame's pixel origin off the sensor's, and binning makes
-        # one frame px cover two or four sensor px. Everything downstream —
-        # ROIs, the reachable-field outline, the editor's sensor frame —
-        # speaks unbinned full-sensor px, so measuring under anything else
-        # silently files a fit in units nothing else uses. Forcing full frame
-        # at 1x1 for the measurement removes the whole class of mismatch.
+        # Everything downstream speaks unbinned full-sensor px, so measure at
+        # full frame 1x1: a crop shifts the origin, binning scales the pixels.
         prev_preset = self.win.camera_preset("voltage_cam")
         prev_binning = self.win.camera_binning("voltage_cam")
         cropped = prev_preset is not None and prev_preset != DEFAULT_PRESET
@@ -124,10 +98,7 @@ class DmdModule(ModuleAdapter):
                 "it says in the pixels it was measured in, so this switches "
                 "to full frame at 1x1 for the run and puts the camera back "
                 "the way it was afterwards.")
-            # Both only take effect at the next Start (see
-            # SettingsPanel.set_preset), so live view has to be stopped first
-            # for full frame to actually be what the sweep sees — the dialog
-            # below starts it again itself.
+            # Structural settings: stop live so the dialog restarts it with them.
             was_live = self.win.set_live(False)
             if cropped:
                 self.win.set_camera_preset("voltage_cam", DEFAULT_PRESET)
@@ -151,23 +122,17 @@ class DmdModule(ModuleAdapter):
                 self.win.set_live(was_live)
 
     def _adopt_calibration(self, path: str) -> None:
-        """Point the panel at the calibration the sweep just wrote — otherwise
-        the ROI editor keeps drawing a field outline for the old one."""
         self.panel.set_calib_path(path)
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
-
     # ── photostimulation ROIs ──
     def edit_rois(self) -> None:
-        """Open `RoiEditor` on the voltage camera's newest frame.
-
-        Draws on the frame that already exists — nothing here commands a camera
-        or the projector. Putting the DMD all-on first is the operator's step,
-        and it's the one that emits light.
-        """
+        """`RoiEditor` on the camera's newest frame. Commands nothing: putting
+        the DMD all-on first is the operator's (light-emitting) step."""
         from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
                                      QVBoxLayout)
 
+        from acqApp import style
         from acqApp.devices.dmd.roi import RoiSet
         from acqApp.devices.dmd.roi_panel import RoiEditor
         from acqApp.devices.voltage_cam.presets import PRESETS, SENSOR_H, SENSOR_W
@@ -183,32 +148,15 @@ class DmdModule(ModuleAdapter):
             return
 
         calib, why = self._calibration()
-        # The calibration is always fit against full-frame sensor coordinates
-        # (calibrate() forces that) — if the camera is cropped to a preset with
-        # a non-zero (hpos, vpos), the frame's own pixel (0, 0) isn't the
-        # sensor's, and a click drawn on it must be shifted before it means
-        # what the calibration thinks it means.
-        #
-        # latest_frame_preset(), not camera_preset(): the latter mirrors the
-        # settings combo, which the operator can already have moved on to a
-        # different preset (e.g. full field -> a sub-field band) before the
-        # next Start applies it — using it here shifted ROIs by the NEW
-        # preset's offset while `frame` was still captured under the old one.
+        # The calibration is in full-sensor px; map the frame's px onto it
+        # using the preset the frame was CAPTURED under (the combo may already
+        # name the next one): its (hpos, vpos) offset and its binning.
         preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
         offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
-        # And the same frame's BINNING, as sensor px per frame px. Taken from
-        # the frame itself against the preset that captured it rather than
-        # from the panel's combo, for the reason the preset is: the combo can
-        # already name a binning that only applies at the next Start. Without
-        # it a 2x2-binned frame is drawn at half the sensor area it covers,
-        # and the field outline lands nowhere near the image.
         scale = preset.hsize / frame.shape[1] if preset is not None else 1.0
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
         dlg.resize(1000, 760)
-        # Same accent the settings tab wears (`dialogs.add_panel`), so the DMD's
-        # own windows aren't the only untinted surfaces in the app.
-        from acqApp import style
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
         ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H),
@@ -230,12 +178,7 @@ class DmdModule(ModuleAdapter):
             self.win.status(f"{len(rois)} photostimulation ROI(s) saved")
 
     def _calibration(self):
-        """The saved registration -> (calib | None, complaint).
-
-        Missing isn't fatal — ROIs can still be drawn. But it must not be
-        SILENT: the field outline would just not be drawn, and all would look
-        well.
-        """
+        """-> (calib | None, complaint). Missing is allowed but never silent."""
         path = self.panel.calib_path if self.panel is not None else ""
         if not path:
             return None, ""
@@ -253,20 +196,12 @@ class DmdModule(ModuleAdapter):
                           f"not projected")
 
     def _settings(self) -> DmdSettings:
-        """Saved settings, defaulting to the standalone DMD app's alignment.
-
-        Scale and rotation register the pattern to the optics, and that
-        alignment lives in `dmdGUI_project`. A fresh install at 100 % / 0° would
-        project in the wrong place while looking correctly configured — the same
-        arrangement the stage has with `stage_control/config.json`.
-        """
+        """Saved settings, with scale/rotation re-adopted from the standalone
+        DMD app whenever it has re-aligned since our last save (`_shared_*`
+        records what we last saw)."""
         s = config.load_dataclass(DmdSettings, self.key)
         saved = config.load_settings(self.key)
         shared = alp.sibling_config()
-        # Re-adopt the shared value whenever it has moved since our last save
-        # (the standalone app re-aligned the optics) — not just on a fresh
-        # install — so a saved scale/rotation can't pin a stale alignment
-        # forever. `_shared_*` are provenance only: load_dataclass drops them.
         for shared_key, attr in _SHARED_ALIGNMENT:
             if shared_key in shared:
                 val = float(shared[shared_key])
@@ -277,15 +212,12 @@ class DmdModule(ModuleAdapter):
     def _save(self, s) -> None:
         d = asdict(s)
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
-        d["rois"] = list(s.rois or ())      # JSON has no tuples
+        d["rois"] = list(s.rois or ())
         shared = alp.sibling_config()
         for shared_key, attr in _SHARED_ALIGNMENT:
             if shared_key in shared:
                 d[f"_shared_{attr}"] = float(shared[shared_key])
         config.save_settings(self.key, d)
-        # Live update: (re)start the debounce window rather than display()
-        # directly here — restarting on every tick of a drag/held-key nudge
-        # means the actual re-project only fires once the operator pauses.
         if self.panel is not None and self.panel.live:
             self._live_timer.start()
 
@@ -299,8 +231,7 @@ class DmdModule(ModuleAdapter):
                 self.controller = DmdController(s)
                 real = True
             except Exception as e:      # noqa: BLE001 — any ALP/driver failure
-                # Most often the ALP is still held by the standalone
-                # dmdGUI_project app: only one process can own it.
+                # Usually the standalone app still holds the ALP.
                 print(f"[main] DMD unavailable ({type(e).__name__}: {e}) — "
                       f"using mock. If the standalone DMD app is open, close "
                       f"it and toggle Emulate off again.")
@@ -309,9 +240,8 @@ class DmdModule(ModuleAdapter):
         if self.panel is not None:
             self.panel.set_device(self.controller.device_name,
                                   self.controller.resolution, real)
-        # A pattern the panel is showing must be uploaded to this controller
-        # too, or Display projects the fresh controller's default while the
-        # panel names a file.
+        # Or Display projects the new controller's default while the panel
+        # names a file.
         path = s.pattern_path
         if path is not None and Path(path).is_file():
             self.controller.load_pattern(Path(path))
@@ -321,7 +251,6 @@ class DmdModule(ModuleAdapter):
             self.controller.load_pattern(path)
 
     def display(self) -> None:
-        """Apply the panel's current settings, then start displaying."""
         if self.controller is not None:
             self.controller.apply_settings(self.panel.settings)
             self.controller.display()
@@ -331,26 +260,20 @@ class DmdModule(ModuleAdapter):
             self.controller.stop()
 
     def on_trigger(self, name: str, duration: float) -> None:
-        """Project on a trigger. The ALP has no pulse of its own — it holds
-        until Stop — so a timed stimulus is display-now plus a single-shot
-        stop, and `duration <= 0` leaves the pattern up."""
+        """The ALP holds until Stop, so a timed stimulus is display plus a
+        single-shot stop; `duration <= 0` leaves it up."""
         if name != self.key:
             return
         self.display()
         if duration > 0:
             QTimer.singleShot(int(duration * 1000), self.stop_display)
 
-    # ── what an experiment routine may drive (acq.devices.PatternTarget) ──
+    # ── what a routine may drive ──
     def pattern_target(self):
         return self if self.controller is not None else None
 
     def set_pattern(self, path: str) -> None:
-        """Load a pattern file, or a saved ROI set. Uploads, projects nothing.
-
-        A `.roi.json` is resolved through the panel's own ROI mode (`roi_frame`,
-        `apply_settings`) rather than `load_pattern`, which expects an image —
-        the same route the operator's own Draw/Load already takes.
-        """
+        """Load an image or a `.roi.json`. Uploads, projects nothing."""
         from acqApp.devices.dmd import roi_store
 
         p = Path(path)
@@ -364,51 +287,32 @@ class DmdModule(ModuleAdapter):
             self.load(p)
 
     def set_all_on(self) -> None:
-        """Switch to full-field illumination (every mirror on). Config only,
-        like `set_pattern` — Display (or `set_light(True)`) is still what
-        actually projects it, UNLESS the panel's "Live update" toggle is on,
-        in which case this settings change re-projects on its own shortly
-        after (the debounced `_live_timer`, started from `_save`). Reachable
-        from any modes.json recipe's `dmd_all_on` key via
-        MainWindow.set_mode() — not just a hardcoded "Scan" mode."""
+        """Config only (projects on Display, or at once with Live update)."""
         if self.panel is not None:
             self.panel.set_all_on()
 
     def set_sub_sampling(self, n: int) -> None:
-        """Set how many pixels stay off out of every n (1 = off). Config
-        only, like `set_all_on` — see `DmdSettings.sub_sampling`/
-        `control.subsample_frame`. Reachable from any modes.json recipe's
-        `dmd_sub_sampling` key via MainWindow.set_mode()."""
+        """Config only; n = 1 is off."""
         if self.panel is not None:
             self.panel.set_sub_sampling(n)
 
     def set_light(self, on: bool) -> None:
-        """THE call that emits light. `display()` re-applies the panel's
-        geometry first, so a routine projects where the panel says it does."""
+        """THE call that emits light."""
         self.display() if on else self.stop_display()
 
     def attach_sink(self, rec) -> None:
         if self.controller is not None:
-            # DMD frames are logged straight from its thread (no GUI-thread hop),
-            # stamped on the shared clock like every other stream.
             self.controller.set_sink(lambda idx: rec.put("dmd", float(idx)))
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
         c = self.controller
-        # Both twins declare device_name/resolution/on_pixels
-        # (`ProjectorController`), so these are read, not guessed: the old
-        # `getattr(c, "device_name", "none")` filed a session that really
-        # projected as one that never did (§5b A1).
         w, h = c.resolution if c is not None else (0, 0)
         return {
             "dmd_on_time_ms":  s.on_time_ms,
             "dmd_static_hold": s.static_hold,
             "dmd_trigger":     s.trigger_mode,
             "dmd_repeats":     s.n_repeats,
-            # What was projected, and where: without the geometry a recorded
-            # stimulus can't be located in the FOV afterwards, and without the
-            # name a real session is indistinguishable from a mock one.
             "dmd_device":      c.device_name if c is not None else "none",
             "dmd_width":       w,
             "dmd_height":      h,
@@ -418,22 +322,12 @@ class DmdModule(ModuleAdapter):
             "dmd_offset_x":    s.offset_x,
             "dmd_offset_y":    s.offset_y,
             "dmd_invert":      s.invert,
-            # An all-on frame ignores the pattern and the geometry above, so
-            # without this the recorded scale/rotation would describe a
-            # placement that was never used.
+            # All-on ignores the pattern and geometry above.
             "dmd_all_on":      s.all_on,
             "dmd_fit":         s.fit,
-            # 1 = off. Without this, a session run at reduced light (a
-            # Scan-mode habit, or an operator dimming it by hand) would file
-            # identically to one at full brightness — dmd_on_pixels already
-            # reflects the mask, but not WHY the count is lower.
             "dmd_sub_sampling": s.sub_sampling,
-            # 0 mirrors on is a dark panel — a Display that "worked" and
-            # projected nothing looks identical in every other field here.
+            # 0 = a Display that "worked" and projected nothing.
             "dmd_on_pixels":   c.on_pixels if c is not None else 0,
-            # Photostimulation targets. Recorded as a count plus the JSON,
-            # because "where was the light aimed" can't be recovered later
-            # from anything else in the file.
             "dmd_n_rois":      len(s.rois or ()),
             "dmd_rois":        json.dumps(list(s.rois or ())),
             "dmd_calibration": Path(s.calib_path).name if s.calib_path else "",

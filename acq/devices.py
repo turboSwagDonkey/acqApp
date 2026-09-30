@@ -1,14 +1,8 @@
-"""The interfaces the module adapters program against (§5b A1, A4).
+"""The interfaces the module adapters program against.
 
-Every instrument is a real/mock pair and the adapters are written against
-whichever Emulate built. These replace nine `getattr`/`hasattr` probes, whose
-cost wasn't tidiness: `getattr(c, "device_name", "none")` files a session that
-really projected as one that didn't.
-
-Structural `Protocol`s — nothing inherits, nothing happens at import, and this
-project ships no type checker, so `tests/test_device_contracts.py` is what makes
-them bite. Split rather than fat: the eye-tracking LED has no `set_sink`, so it
-isn't a `RecordingOutput`.
+Structural Protocols: nothing inherits, and `tests/test_device_contracts.py`
+is what enforces them (there's no type checker). They replace getattr probes
+whose defaults once filed a real projection as none.
 """
 from __future__ import annotations
 
@@ -21,8 +15,7 @@ Sink = Callable[[Any], None]
 
 @runtime_checkable
 class DeviceWorker(Protocol):
-    """A per-session acquisition thread. `get_latest()` hands the newest sample
-    out once — the display tick is its consumer."""
+    """A per-session acquisition thread; `get_latest()` hands each sample out once."""
 
     def get_latest(self) -> Any: ...
     def set_sink(self, sink: Sink | None) -> None: ...
@@ -32,26 +25,21 @@ class DeviceWorker(Protocol):
 
 @runtime_checkable
 class TimestampedWorker(DeviceWorker, Protocol):
-    """`"hardware"` = a device clock, `"software"` = a Python loop carrying
-    scheduler jitter. Goes into the file, so a default here would make a
-    synthetic run look measured."""
+    """"hardware" (device clock) or "software" (Python loop, with jitter).
+    Filed, so it has no default."""
 
     timestamp_source: str
 
 
 @runtime_checkable
 class CameraWorker(TimestampedWorker, Protocol):
-    """Frames the device threw away — gone from the file, visible only as a jump
-    in `voltage_cam_index`."""
-
     @property
     def skipped_frames(self) -> int: ...
 
 
 @runtime_checkable
 class ClockedWorker(TimestampedWorker, Protocol):
-    """The rate the device settled on. 119.998 for a requested 120 is normal;
-    the file records what was used, not what was asked for."""
+    """The rate the device settled on (119.998 for 120), which is what's filed."""
 
     @property
     def actual_rate(self) -> float: ...
@@ -59,8 +47,6 @@ class ClockedWorker(TimestampedWorker, Protocol):
 
 @runtime_checkable
 class ExposureControl(Protocol):
-    """A camera worker whose exposure can change while it runs."""
-
     def set_exposure(self, us: float) -> None: ...
 
 
@@ -68,17 +54,11 @@ class ExposureControl(Protocol):
 
 @runtime_checkable
 class OutputController(Protocol):
-    """An always-on output, rebuilt when Emulate is toggled. `apply_settings` is
-    what makes its panel more than decorative (audit #3).
+    """An always-on output, rebuilt when Emulate is toggled.
 
-    Two init-failure conventions, pick by whether `apply_settings` can reopen
-    the underlying resource in place: if it can (puffer re-points its DAQ task
-    to a new line on the same live object), swallow the open failure and stay
-    inert — the caller keeps one object for the module's lifetime. If it can't
-    (LED's controller is simply swapped for a Mock on failure), raise from
-    `__init__` and let the adapter's `build_controller` substitute the mock;
-    do not swallow-and-stay-inert there, or the caller can no longer tell it
-    apart from a live one.
+    On an open failure: if `apply_settings` can reopen in place (the puffer),
+    stay inert; if not (the LED), raise from `__init__` so the adapter swaps
+    in the mock — an inert object would be indistinguishable from a live one.
     """
 
     def apply_settings(self, settings: Any) -> None: ...
@@ -87,22 +67,15 @@ class OutputController(Protocol):
 
 @runtime_checkable
 class RecordingOutput(OutputController, Protocol):
-    """An output whose events belong in the file. Not everything with `close()`
-    is one — see the LED."""
+    """An output whose events belong in the file."""
 
     def set_sink(self, sink: Sink | None) -> None: ...
 
 
 @runtime_checkable
 class RawProjector(Protocol):
-    """Displays a frame at the device's own size, untransformed.
-
-    Split from `ProjectorController` rather than folded into it because the one
-    client is the calibration sweep, and what that client needs is precisely
-    the guarantee that nothing reshapes the frame — `build_frame`'s
-    scale/rotation/offset (and `fit`, which overrides all three) would transform
-    the geometry being measured.
-    """
+    """Displays a frame at device size, untransformed — the calibration sweep
+    needs a guarantee nothing reshapes the geometry it measures."""
 
     @property
     def resolution(self) -> tuple[int, int]: ...
@@ -114,9 +87,7 @@ class RawProjector(Protocol):
 
 @runtime_checkable
 class ProjectorController(RecordingOutput, Protocol):
-    """Describes itself into the file. `device_name` separates a real projection
-    from the mock, `resolution` fixes the panel the geometry is relative to, and
-    `on_pixels` catches every-mirror-off — a legal frame showing nothing."""
+    """`on_pixels` catches an all-off frame: legal, but shows nothing."""
 
     @property
     def device_name(self) -> str: ...
@@ -129,352 +100,173 @@ class ProjectorController(RecordingOutput, Protocol):
 
 
 # ── what a routine may drive ──────────────────────────────────────────────────
-# Declared by the ADAPTER, not the driver: an experiment routine drives the
-# module as it is loaded — its soft limits, mock or real — and adding one of
-# these to an instrument is the whole cost of making it routine-drivable, the
-# way declaring a SignalSource is the whole cost of making a quantity
-# triggerable. Split in two because the stage isn't a projector.
+# Declared by the adapter, so a routine drives the module as loaded (soft
+# limits, mock or real).
 
 @runtime_checkable
 class StageTarget(Protocol):
-    """A module a routine can send to an XY position.
-
-    A move returns at once; `is_moving` is how a routine waits for arrival
-    (`RoutineHooks.moving`), with `settle_s` counted from then.
-    """
+    """`move_to` returns at once; `is_moving` is how a routine waits."""
 
     def move_to(self, x_um: float | None, y_um: float | None,
                z_um: float | None = None) -> None:
-        """Move; None leaves that axis where it is."""
+        """None leaves that axis where it is."""
 
-    def is_moving(self) -> bool:
-        """Whether any axis is still travelling."""
+    def is_moving(self) -> bool: ...
 
     def stop_motion(self) -> None:
-        """Stop both axes. Called on any fault, so it must not raise blindly."""
+        """Called on any fault, so it must not raise blindly."""
 
     def limits_um(self) -> tuple[tuple[float, float] | None,
-                                 tuple[float, float] | None]:
-        """(x, y) soft limits, so a routine is validated before it starts."""
+                                 tuple[float, float] | None]: ...
 
-    def has_z(self) -> bool:
-        """Whether this rig has a Z (focus) axis a routine may move."""
+    def has_z(self) -> bool: ...
 
-    def z_limits_um(self) -> tuple[float, float] | None:
-        """Z soft limits, or None on a rig with no Z stage."""
+    def z_limits_um(self) -> tuple[float, float] | None: ...
 
 
 @runtime_checkable
 class PatternTarget(Protocol):
-    """A module a routine can put a pattern up on and take it down again."""
-
     def set_pattern(self, path: str) -> None: ...
 
     def set_light(self, on: bool) -> None:
-        """The one call that emits light. Everything else here is reversible."""
+        """The one call that emits light."""
 
 
 @runtime_checkable
 class LedTarget(Protocol):
-    """A module a routine can switch illumination on and off on."""
-
     def set_led(self, on: bool) -> None: ...
 
 
 @runtime_checkable
 class PufferTarget(Protocol):
-    """A module a routine can fire an air puff through."""
-
     def fire(self, duration_s: float | None = None) -> None:
-        """Fire once; None uses the puffer's own configured default duration."""
+        """None uses the configured duration."""
 
 
 # ── the host ──────────────────────────────────────────────────────────────────
 
 @runtime_checkable
 class ModuleHost(Protocol):
-    """What an adapter may ask of the window — reaching past it into
-    `win._save_panel` makes `adapters/` and `main.py` one file again.
-
-    A Protocol can't see that, so the test also scans the adapters' source:
-    adding a service is a line here. `Any` at the Qt boundary keeps this
-    importable without PyQt6.
-    """
+    """What an adapter may ask of the window. The contract test also scans
+    adapter source for reaches past it (`win._save_panel`). Methods taking a
+    module `key` return None when it isn't loaded or has no such notion."""
 
     @property
-    def sync(self) -> Any:
-        """Shared trigger bus — a rule-driven puff and a scheduled one are one
-        event."""
+    def sync(self) -> Any: ...
 
     @property
     def cam_handle(self) -> Any:
-        """The DCAM handle opened once at startup, or None. Re-opening a
-        just-closed DCAM device crashes the driver natively."""
+        """The DCAM handle opened once at startup; re-opening crashes natively."""
 
-    def dcimg_enabled(self) -> bool:
-        """Whether the camera records through DCAM's own recorder. The Save
-        panel owns the choice; adapters only ask."""
+    def dcimg_enabled(self) -> bool: ...
 
     def dcimg_target(self, stream: str) -> Any:
-        """Path `stream` records its .dcimg to, or None for the normal sink."""
+        """The .dcimg path, or None for the normal sink."""
 
     def camera_ready(self, stream: str) -> bool:
-        """Whether `stream`'s capture is running for what was last asked of
-        it — False while a .dcimg roll has the camera stopped. True when the
-        module has no such notion, so nothing waits on a TIFF run."""
+        """False while a .dcimg roll has the camera stopped; True with no
+        such notion."""
 
     def dcimg_frames(self, stream: str) -> Any:
-        """Frames DCAM's recorder has written for `stream`, or None when it
-        isn't writing one. The routine engine counts this instead of
-        `Recorder.offered()` when a .dcimg is open — nothing reaches the
-        Recorder to be offered."""
+        """Frames the .dcimg holds, or None if none is open. Stands in for
+        `Recorder.offered()`, which DCAM's own writes never reach."""
 
     def status(self, message: str) -> None: ...
     def add_dock(self, title: str, widget: Any, area: Any,
                  accent: str = "sync") -> Any: ...
 
     def register_pg_view(self, view: Any) -> None:
-        """Track a pyqtgraph view so the theme toggle can recolour it."""
+        """So the theme toggle can recolour it."""
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
-        """Feed the acquisition rate, and what the write path sustains, to the
-        Save tab. Two numbers because the disk fills at the smaller one."""
+        """Two numbers: the disk fills at the smaller one."""
 
-    def on_worker_error(self, msg: str) -> None:
-        """Surface a device thread's exception instead of letting it abort the
-        process."""
+    def on_worker_error(self, msg: str) -> None: ...
 
     def set_modules(self, keys) -> tuple[list[str], list[str]]:
-        """Load/unload instruments in place → (loaded, unloaded).
-
-        Raises RuntimeError while recording: the file's `modules` attribute is
-        written at record start, and a stream that appears or vanishes mid-file
-        isn't describable by it.
-        """
+        """-> (loaded, unloaded). Raises while recording."""
         ...
 
-    def module_keys(self) -> list[str]:
-        """Loaded module keys, in display order."""
-        ...
+    def module_keys(self) -> list[str]: ...
 
-    def signal_sources(self) -> list[Any]:
-        """Every module's `SignalSource`s, pooled for the closed loop."""
-        ...
+    def signal_sources(self) -> list[Any]: ...
 
     def set_live(self, on: bool) -> bool:
-        """Turn the window's live view on or off; returns its PREVIOUS state.
-
-        Added deliberately (§5b A4): the DMD calibration images each pattern
-        with the voltage camera, so it needs frames flowing — and requiring the
-        operator to press Live view first, in another part of the window, before
-        a dialog that then complains, is a worse design than letting the dialog
-        do it and put it back. The return value is what makes putting it back
-        possible.
-        """
+        """Returns the previous state, so a caller can put it back."""
         ...
 
     def set_recording(self, on: bool) -> bool:
-        """Start/stop recording; returns its PREVIOUS state.
-
-        The twin of `set_live`, and the same argument: an experiment routine
-        can't run a step without a file open, and the panel that starts the
-        routine is the right place to open one. The return value is what lets a
-        caller stop only a recording it started itself.
-        """
+        """Returns the previous state, so a caller stops only what it started."""
         ...
 
-    def is_recording(self) -> bool:
-        """Read-only: whether a session is already saving to disk.
+    def is_recording(self) -> bool: ...
 
-        Not `set_recording`'s job — passing it the wrong desired state to
-        "check" would actually stop a running recording as a side effect.
-        """
-        ...
-
-    def camera_preset(self, key: str) -> str | None:
-        """Module `key`'s current resolution preset, or None if it isn't
-        loaded (or has no such notion of a preset)."""
-        ...
+    def camera_preset(self, key: str) -> str | None: ...
 
     def set_camera_preset(self, key: str, preset: str) -> str | None:
-        """Switch module `key`'s resolution preset; returns the PREVIOUS key,
-        or None if the module isn't loaded.
-
-        Added for the DMD calibration, which forces the voltage camera to full
-        frame before measuring (§ PLAN — a calibration measured against a
-        cropped capture area doesn't describe a different one, since the
-        sensor ROI shifts the frame's own pixel origin, not just its size).
-        Structural, like the operator's own combo click: it only takes effect
-        at the next session start, so a caller changing it while live has to
-        restart live view itself for it to matter.
-        """
+        """Returns the previous preset. Applies at the next session start."""
         ...
 
-    def camera_binning(self, key: str) -> int | None:
-        """Module `key`'s current binning factor, or None if it isn't loaded
-        (or has no such notion of binning)."""
-        ...
+    def camera_binning(self, key: str) -> int | None: ...
 
     def set_camera_binning(self, key: str, n: int) -> int | None:
-        """Switch module `key`'s binning factor; returns the PREVIOUS value,
-        or None if the module isn't loaded.
-
-        `set_camera_preset`'s twin, and forced alongside it by the DMD
-        calibration: a fit measured on a binned frame is recorded in binned
-        px, while ROIs and the ROI editor speak unbinned sensor px.
-        Structural in the same way — next session start only.
-        """
+        """Returns the previous value. Applies at the next session start."""
         ...
 
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
-        """Switch module `key`'s camera into (True) or out of (False)
-        External edge trigger mode, restarting live view itself if that
-        requires it. Returns whether it ended up in that mode (`False`
-        means a restart was needed but a recording is already running —
-        refused, unattempted); `None` only if the module isn't loaded or
-        has no such notion at all, which a caller needs to tell apart from
-        a live refusal.
-
-        For a routine's "TTL" start trigger and for any `trigger` step
-        (`adapters/routines.py`), which command this themselves rather than
-        trusting the operator to have set it beforehand — a mode that drifted
-        back to Internal between being set and the routine arming would
-        otherwise wait forever.
-        """
+        """External edge (True) or Internal, restarting live view if needed.
+        False: refused because a recording is running."""
         ...
 
     def routine_arming_trigger(self, on: bool) -> None:
-        """A routine brackets its own `_arm_camera_trigger()`/session-open
-        with this (True around it, False after) — so `_start_session()`'s
-        own reset of the camera to manual (for an ordinary Live view/Record
-        press, in case a PREVIOUS routine left it in External edge) doesn't
-        undo the External edge this routine just asked for, the moment the
-        session it opened actually builds."""
+        """Brackets a routine's arm + session open, so `_start_session()`
+        doesn't reset the camera to Internal under it."""
         ...
 
     def rearm_camera_trigger(self, key: str) -> bool | None:
-        """Re-gate module `key`'s external trigger so the NEXT edge is
-        detectable. True if asked for, False if there's no running worker
-        to ask, None if the module isn't loaded or has no such notion.
-
-        For a routine taking one recording per edge (`routines/settings.py`'s
-        `trigger` step): the camera latches, so without this only the first
-        edge of a run would ever be seen. Cheap and hot, unlike
-        `set_camera_trigger` — it restarts the camera's acquisition inside its
-        own capture thread and leaves the session, the open file and live view
-        alone. Asynchronous: True means queued, not applied.
-        """
+        """Queue a re-gate so the next edge is detectable. False: no worker."""
         ...
 
     def arm_camera_with_next_file(self, key: str) -> bool | None:
-        """Make module `key`'s next file swap also re-arm its external
-        trigger. True if asked for, False if no `.dcimg` is open to swap,
-        None if the module isn't loaded or has no such notion.
-
-        A `.dcimg` recorder dies when capture stops, and re-arming stops it,
-        so a routine's `trigger` step rolls to a new file with the re-arm
-        folded in instead of calling `rearm_camera_trigger`.
-        """
+        """Make the next .dcimg swap re-arm too. False: no .dcimg open."""
         ...
 
     def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
-        """(re-arms completed, frames since the last) for module `key`'s
-        camera, or None if it isn't capturing or can't say. Written by the
-        capture thread as each re-arm lands, so a routine's `trigger` step
-        knows the exact moment a frame starts meaning an edge."""
+        """(re-arms completed, frames since the last)."""
         ...
 
-    def stage_target(self) -> Any:
-        """The loaded module a routine may move, or None.
+    def stage_target(self) -> Any: ...
 
-        Pooled by the window like `signal_sources()`, and for the same reason:
-        the routine must not import the stage adapter, and the stage must not
-        know routines exist.
-        """
-        ...
+    def pattern_target(self) -> Any: ...
 
-    def pattern_target(self) -> Any:
-        """The loaded module a routine may project through, or None."""
-        ...
+    def led_target(self) -> Any: ...
 
-    def led_target(self) -> Any:
-        """The loaded module a routine may switch illumination on, or None."""
-        ...
-
-    def puffer_target(self) -> Any:
-        """The loaded module a routine may fire an air puff through, or None."""
-        ...
+    def puffer_target(self) -> Any: ...
 
     def frame_rate_hz(self) -> float | None:
-        """The loaded camera's configured frame rate, or None.
-
-        Pooled like the two above, and for the same reason: the routine panel
-        estimates how long "100 frames" takes without importing a camera. It is
-        an ESTIMATE — frames and seconds are still never interconverted where a
-        step is recorded (`routines/settings.py`).
-        """
+        """For estimates only."""
         ...
 
     def latest_frame(self, key: str) -> Any:
-        """The newest frame from another module's camera, or None.
-
-        Added deliberately (§5b A4 is the rule this is the case for): the DMD's
-        ROI editor draws on an **ORCA** frame, because the voltage camera is the
-        imaging path the DMD projects into — so a panel in the DMD tab needs a
-        frame owned by `voltage_cam`. Reading it through the host keeps the two
-        modules from importing each other.
-
-        Only the newest frame, never a grab: this must not command a camera,
-        because the operator decides when the DMD is all-on.
-        """
+        """The cached newest frame; never commands the camera."""
         ...
 
     def latest_frame_preset(self, key: str) -> str | None:
-        """The resolution preset `latest_frame(key)` was actually captured
-        under, or None. Distinct from `camera_preset(key)`, which mirrors the
-        settings combo: that can already name a preset switch that hasn't
-        taken effect yet (structural, applies at the next Start), while this
-        names whatever produced the frame that's actually buffered — what the
-        DMD's ROI editor needs to shift a click by the right (hpos, vpos).
-        """
+        """The preset that frame was captured under (`camera_preset` can
+        name one not yet in effect)."""
         ...
 
-    def active_fov_name(self) -> str:
-        """The name of the FOV the stage is currently sitting at, or "" if
-        none is active or no stage is loaded.
-
-        For the Save panel's "append active FOV name" option — reached
-        through the host so `saving/` never has to know the stage exists.
-        """
-        ...
+    def active_fov_name(self) -> str: ...
 
     def roll_recording(self) -> bool:
-        """Close the current recording and immediately open a new one;
-        returns whether the new one actually started.
-
-        For an experiment routine splitting one continuous capture into
-        several files (`routines/settings.py`'s per-repeat/per-group save
-        modes) — not an operator action, and not the same as
-        `set_recording(False)` then `set_recording(True)`, which would go
-        through the Record button and risk `RoutinesModule.detach_sink()`
-        mistaking the gap for the recording having stopped out from under a
-        running routine.
-        """
+        """Close and reopen with no gap the routine could mistake for a stop.
+        Returns whether the new one started."""
         ...
 
     def set_routine_save_context(self, fov: str | None, trial: int | None,
                                  coords: tuple[float | None, float | None,
                                               float | None] | None = None
                                  ) -> None:
-        """The (FOV, trial) label the NEXT `set_recording(True)`/
-        `roll_recording()` should save under — `saving/config.py`'s
-        Project/Mouse ID/Date/FOV_Trial folder scheme, in place of the
-        operator's free-text template. `None, None` clears it, so a manual
-        Record press right after a routine ends is unaffected.
-
-        `coords` is the raw X/Y/Z when `fov` is the generic "custom" (a
-        step that typed a position rather than naming a saved FOV) — kept
-        so a sidecar file can record where that actually was, since the
-        name alone would otherwise lose it.
-        """
+        """Name the next file by (FOV, trial); None, None clears. `coords`
+        for a "custom" FOV go to a sidecar."""
         ...
