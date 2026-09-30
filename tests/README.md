@@ -5,6 +5,7 @@ acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py          # everything
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py -v       # full output
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py session  # one test
 acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py -q # failures only
+acqApp\.venv\Scripts\python.exe acqApp\tests\test_dmd.py --part calib  # one part
 ```
 
 **`-q`** (or `ACQAPP_QUIET=1`) prints only failures and the closing count — 134
@@ -18,11 +19,15 @@ on screen, no reaching for real hardware, ~30 s for the set. Each test is also
 runnable on its own.
 
 Plain scripts, not pytest: pytest is not in `requirements.txt` and the rig
-machine installs only what's there. `run_all.py` gives each test its own process
-(most of them build a `QApplication`, and tearing one down and rebuilding it in
-a single process is not reliable) and prints a summary.
+machine installs only what's there. Each test runs in its own process (most
+build a `QApplication`, and several patch modules at import): `run_all.py` runs
+each file, and a file merged from several (`test_dmd.py`, `test_saving.py`, …)
+runs each *part* in its own process too (`_harness.run_parts`).
 
 ## What each one defends
+
+Rows keep the original test names; since 2026-09-30 most are a `--part` of a
+file merged by area — the section banners in each file say `(was test_x.py)`.
 
 | test | guards |
 |---|---|
