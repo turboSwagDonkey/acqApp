@@ -1402,6 +1402,7 @@ def check_prepared_adapter(r: Report) -> None:
     a._rolling = False
     a._filed_from = 0
     a._file_group_key = (0, None)
+    a._doomed = None
     a._prepared = None
     a._armed_with_file = False
     a._pending_roll_run = None
@@ -1458,6 +1459,62 @@ def check_first_file_doomed(r: Report) -> None:
     r.check(not a._first_file_is_doomed(trigger_then_record),
             "same protocol, TIFF/composite (no .dcimg) -> nothing to roll "
             "away, not doomed")
+
+
+def check_doomed_file_deleted(r: Report, tmp: Path) -> None:
+    """The doomed first file (stage travel, no frames) is deleted at the roll
+    that replaces it — only its own files, and only if it caught no frames."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.routines import RoutinesModule, delete_recording
+
+    def split_dir(name: str) -> Path:
+        d = tmp / name
+        d.mkdir()
+        for suffix in ("_data.csv", "_settings.json", "_voltage_cam.dcimg"):
+            (d / f"{name}{suffix}").write_text("x")
+        return d
+
+    d = split_dir("junk_a")
+    r.check(delete_recording(d) and not d.exists(),
+            "a split recording folder goes, files and folder")
+    d = split_dir("junk_b")
+    (d / "notes.txt").write_text("the operator's")
+    r.check(delete_recording(d) and (d / "notes.txt").exists()
+            and len(list(d.iterdir())) == 1,
+            "a file not named after the recording is left, and so its folder")
+    d = split_dir("junk_c")
+    held = open(d / "junk_c_voltage_cam.dcimg", "rb")
+    try:
+        r.check(not delete_recording(d),
+                "a file still held open (DCAM closing it) reports not-yet")
+    finally:
+        held.close()
+    r.check(delete_recording(d) and not d.exists(), "…and goes once released")
+
+    def roll(frames: int):
+        a = RoutinesModule.__new__(RoutinesModule)
+        path = split_dir(f"doomed_{frames}")
+        a._doomed = path
+        a._routine = None
+        a._engine = SimpleNamespace(runs=[])
+        a._fov_for = lambda _r, _i: ("fov1", None)
+        a._trial_for = lambda _region: 1
+        a._scope_for = lambda _run: {}
+        a._group_key_for = lambda _run: (0, None)
+        a._status = lambda _m: None
+        a.win = SimpleNamespace(dcimg_frames=lambda _k: frames,
+                                set_routine_save_context=lambda *_a: None,
+                                roll_recording=lambda: True)
+        a._roll_for(SimpleNamespace(start_index=0, region=0))
+        return path, a
+
+    path, a = roll(frames=0)
+    r.check(not path.exists() and a._doomed is None,
+            "the first roll deletes Start's empty file")
+    path, a = roll(frames=12)
+    r.check(path.exists() and a._doomed is None,
+            "control: a file that caught frames is kept")
 
 
 def check_arm_camera_trigger(r: Report) -> None:
@@ -2960,6 +3017,7 @@ def _part_routines() -> int:
         check_first_trial_kept(r)
         check_edge_log(r)
         check_first_file_doomed(r)
+        check_doomed_file_deleted(r, tmp)
         check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)
