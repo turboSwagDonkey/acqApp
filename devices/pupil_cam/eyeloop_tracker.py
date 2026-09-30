@@ -1,25 +1,15 @@
 """The only file in acqApp that touches EyeLoop. No Qt.
 
-**EyeLoop is GPL-3.0 and none of it is vendored here.** This module imports it
-from a clone beside the repo, which is why the licence boundary is exactly one
-file wide: nothing in acqApp is a derived work, and vendoring later — if that's
-ever decided — is a change to this file alone. Credit belongs to Arvin et al.
-regardless of licensing; cite doi:10.1101/2020.07.03.186387.
+EyeLoop is GPL-3.0 and imported from a clone beside the repo, never vendored,
+so the licence boundary is this one file. Cite Arvin et al.,
+doi:10.1101/2020.07.03.186387. `ACQAPP_EYELOOP_DIR` overrides the location.
 
-Set `ACQAPP_EYELOOP_DIR` to point somewhere else. Without a clone the tracker
-raises `EyeLoopUnavailable` and rest of the pupil camera is unaffected.
-
-Three things it fixes about driving `Shape` directly, all documented in
-`acqApp/docs/EYELOOP.md`:
-
-- **`params` is never reset on failure.** `Shape.fit()` catches everything and
-  leaves the previous frame's answer in place, so a dead frame silently returns
-  a stale fit. `track()` nulls it first, so None means None.
-- **`center_adj_` blocks forever.** On any fit failure it runs `HoughCircles`
-  and, per circle found, opens a modal window and calls `waitKey(0)`. Bound to
-  a no-op here — the CR branch of `Shape` already does exactly that.
-- **`eyeloop.config` is a process-wide global.** One tracker per process; a
-  second instance would silently share `config.engine`. Guarded, not hidden.
+Three traps in driving `Shape` directly (docs/EYELOOP.md):
+- `fit()` swallows failures and keeps the previous `params`, so a dead frame
+  returns a stale fit. `track()` nulls it first.
+- `center_adj_` opens a modal window and `waitKey(0)` on any failure. Bound to
+  a no-op here.
+- `eyeloop.config` is process-global: one tracker per process.
 """
 from __future__ import annotations
 
@@ -32,8 +22,8 @@ from pathlib import Path
 
 import numpy as np
 
-# …/python/eyeloop — a sibling of the repo, not inside it. Patches to apply to
-# a fresh clone are in acqApp/docs/eyeloop-3.14-patches.diff.
+# A sibling of the repo; patches for a fresh clone are in
+# docs/eyeloop-3.14-patches.diff.
 EYELOOP_DIR = Path(
     os.environ.get("ACQAPP_EYELOOP_DIR")
     or Path(__file__).resolve().parents[3] / "eyeloop")
@@ -41,12 +31,7 @@ EYELOOP_DIR = Path(
 
 @dataclass(frozen=True)
 class PupilFit:
-    """One frame's answer. Widens acqApp's `PupilResult` with the ellipse.
-
-    `PupilResult` carries centre + a single radius; EyeLoop gives the full
-    ellipse for free and pupillometry wants it, so both are kept and `radius`
-    stays the mean of the semi-axes — the mapping the old contract used.
-    """
+    """The full ellipse; `radius` is the mean semi-axis."""
 
     center_x: float
     center_y: float
@@ -60,7 +45,7 @@ class PupilFit:
 
     @property
     def axis_ratio(self) -> float:
-        """1.0 is a circle. Far from it usually means the fit ran into eyelid."""
+        """1.0 is a circle; far from it usually means the eyelid."""
         hi = max(self.semi_major, self.semi_minor)
         return min(self.semi_major, self.semi_minor) / hi if hi else 0.0
 
@@ -71,12 +56,7 @@ class EyeLoopUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class Pin:
-    """A reflection the operator marked. Crop coordinates, like everything here.
-
-    Pinned because it's *stationary*: with the head fixed, the big reflections
-    off the optics don't move, and a fixed thing doesn't need the guards the
-    automatic pass uses to protect itself from unknown bright objects.
-    """
+    """An operator-marked stationary reflection, in crop coordinates."""
 
     cx: float
     cy: float
@@ -85,39 +65,25 @@ class Pin:
 
 @dataclass(frozen=True)
 class GlintRemoval:
-    """Corneal-reflection removal, done here because EyeLoop's own is dead code.
-
-    Upstream has the machinery — `Shape.artefact_` paints a filled circle over
-    the CR — but it's disabled in three places at once: `fit()`'s call is
-    commented out, `Shape.__init__` binds `artefact` to a no-op for *both*
-    types, and `artefact_` writes into `config.engine.pup_source`, which
-    `engine.py` never creates. It has never run.
-
-    What it has to beat, measured on frame 0 of both clips: the pupil interior
-    sits at median 22–23 with p95 ≈ 42, and the glints are saturated at 235 —
-    about 1.3 % of the pupil's pixels. Any threshold in 100–180 selects the
-    same pixels, so this isn't a delicate number.
-    """
+    """Corneal-reflection removal. EyeLoop's own is disabled in three places
+    upstream and has never run. On the test clips the pupil sits at ~22 and
+    glints at 235, so any threshold in 100-180 picks the same pixels."""
 
     enabled: bool = True
     threshold: int = 120
     pad: int = 4            # diffraction spikes are wider than the core
-    max_area: int = 600     # bigger than this is eyelid or fur, not a glint
-    ring: int = 6           # width of the annulus each blob is filled from
-    search_scale: float = 0.95   # how far out to look, as a fraction of radius
-    pins: tuple[Pin, ...] = ()   # operator-marked; exempt from both guards
+    max_area: int = 600     # bigger is eyelid or fur
+    ring: int = 6           # annulus each blob is filled from
+    search_scale: float = 0.95   # fraction of the radius searched
+    pins: tuple[Pin, ...] = ()   # exempt from both guards
 
 
 _ARMED: list[str] = []          # process-wide, because eyeloop.config is
 
 
 class EyeLoopTracker:
-    """Stateful — it walks out from the previous frame's centre.
-
-    Not a pure `detect(frame)`: the old stub's signature can't express this.
-    Whoever owns one must hold it across frames and `reset()` when the seed,
-    the frame size or the operator's patience changes.
-    """
+    """Stateful: walks out from the previous frame's centre. Hold one across
+    frames; `reset()` when the seed or frame size changes."""
 
     def __init__(self, threshold: int = 45, blur: int = 3,
                  model: str = "ellipsoid",
@@ -125,13 +91,11 @@ class EyeLoopTracker:
                  accept_radius: tuple[float, float] = (5.0, 200.0),
                  glint: GlintRemoval | None = None) -> None:
         self.threshold = threshold
-        self.blur = int(blur) | 1      # cv2 kernels must be odd, as in apply_settings
+        self.blur = int(blur) | 1      # cv2 kernels must be odd
         self.model = model
-        # Two different things, and they were one name until it cost an hour:
-        # `walk_radius` bounds Shape's ray walk and is clipped INTO an int
-        # array (`clip_`), so floats there make every frame throw inside the
-        # bare except — i.e. silently zero fits. `accept_radius` is ours, and
-        # only rejects an implausible answer after the fact.
+        # `walk_radius` is clipped INTO an int array by Shape; floats make
+        # every frame throw inside its bare except (silently zero fits).
+        # `accept_radius` is ours: rejects an implausible answer afterwards.
         self.walk_radius = (int(walk_radius[0]), int(walk_radius[1]))
         self.accept_radius = accept_radius
         self.glint = glint if glint is not None else GlintRemoval()
@@ -145,11 +109,7 @@ class EyeLoopTracker:
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def arm(self, width: int, height: int, seed: tuple[float, float]) -> None:
-        """Build the processor for a frame size. Call again if size changes.
-
-        `config.engine.width/height` are read when `reset()` builds the walkout
-        corners, so they must be set before it — not after.
-        """
+        """Build for a frame size; call again if it changes."""
         if str(EYELOOP_DIR) not in sys.path:
             if not (EYELOOP_DIR / "eyeloop").is_dir():
                 raise EyeLoopUnavailable(
@@ -162,8 +122,8 @@ class EyeLoopTracker:
 
         import eyeloop.config as config
 
-        # Stub what Shape reads off the globals. Must precede the import of
-        # processor: Shape.__init__ reads config.arguments.model.
+        # Before importing processor: Shape.__init__ reads these globals,
+        # and reset() reads width/height.
         config.arguments = types.SimpleNamespace(model=self.model)
         config.engine = types.SimpleNamespace(
             dataout={}, width=int(width), height=int(height), angle=0)
@@ -175,9 +135,7 @@ class EyeLoopTracker:
         self._shape.binarythreshold = int(self.threshold)
         self._shape.blur = (self.blur, self.blur)
         self._shape.min_radius, self._shape.max_radius = self.walk_radius
-
-        # The landmine. See module docstring.
-        self._shape.center_adj = lambda: None
+        self._shape.center_adj = lambda: None      # the modal-window trap
 
         self._size = (int(width), int(height))
         self._shape.reset((float(seed[0]), float(seed[1])))
@@ -191,10 +149,10 @@ class EyeLoopTracker:
         _ARMED[:] = [mine]
 
     def reset(self, seed: tuple[float, float]) -> None:
-        """Re-seed without rebuilding. Cheap; call it whenever the fit is lost."""
+        """Re-seed without rebuilding; cheap."""
         if self._shape is None:
             raise RuntimeError("arm() first")
-        self._last_radius = None       # old shape describes the old place
+        self._last_radius = None
         self._last_shape = None
         self._shape.reset((float(seed[0]), float(seed[1])))
 
@@ -210,22 +168,18 @@ class EyeLoopTracker:
 
     def apply_settings(self, threshold: int | None = None,
                        blur: int | None = None) -> None:
-        """Live knobs. Changing these doesn't invalidate the walk."""
+        """Live; doesn't invalidate the walk."""
         if threshold is not None:
             self.threshold = int(threshold)
             if self._shape is not None:
                 self._shape.binarythreshold = int(threshold)
         if blur is not None:
-            self.blur = int(blur) | 1          # cv2 kernels must be odd
+            self.blur = int(blur) | 1
             if self._shape is not None:
                 self._shape.blur = (self.blur, self.blur)
 
     def track(self, gray: np.ndarray) -> PupilFit | None:
-        """One grayscale uint8 frame in, a fit or None out.
-
-        None is genuine: `params` is nulled first, so a stale answer can't be
-        mistaken for a fresh one.
-        """
+        """One uint8 grayscale frame -> a fit, or a genuine None."""
         if self._shape is None:
             raise RuntimeError("arm() first")
         if gray.ndim != 2:
@@ -253,12 +207,8 @@ class EyeLoopTracker:
         return fit
 
     def _deglint(self, gray: np.ndarray) -> np.ndarray:
-        """Blank the corneal reflections before the walk sees them.
-
-        Uses the *previous* frame's centre and radius — the walk is already
-        built on that assumption, and a glint doesn't move far in 1/15 s. The
-        first frame falls back to the seed and the walk's own max radius.
-        """
+        """Blank reflections around the PREVIOUS fit (a glint barely moves
+        between frames); the first frame uses the seed and max radius."""
         self.last_glint_mask, self.last_glint_px = None, 0
         if not self.glint.enabled or self._shape is None:
             return gray
@@ -289,17 +239,13 @@ class EyeLoopTracker:
         r = (vals[2] + vals[3]) / 2.0
         lo, hi = self.accept_radius
         if not (lo <= r <= hi):
-            return None     # a fit far outside the plausible band isn't one
+            return None
         return PupilFit(*vals)
 
 
 def _blank(gray, cleaned, mask, box, blob, cfg, kernel):
-    """Dilate one blob, fill it from its own ring, record it. Box-local.
-
-    Every blob gets its own small box, which is both why this is cheap and why
-    the fill is honest: the ring has to be the pixels around *this* reflection,
-    not the average of the whole eye.
-    """
+    """Dilate one blob and fill it from its own surrounding ring (box-local,
+    so the fill is this reflection's surroundings, not the whole eye's)."""
     import cv2
     y0, y1, x0, x1 = box
     if cfg.pad > 0:
@@ -317,25 +263,13 @@ def remove_glints(gray: np.ndarray, center: tuple[float, float], radius: float,
                   cfg: GlintRemoval,
                   shape: tuple[float, float, float] | None = None
                   ) -> tuple[np.ndarray, np.ndarray]:
-    """Blank the corneal reflections. Returns (cleaned, mask); input untouched.
+    """-> (cleaned, mask); input untouched. Crop coordinates.
 
-    Two passes, and they have different rules on purpose:
-
-    **Automatic** — bright blobs inside the fitted ellipse scaled by
-    `search_scale`, small enough to be a reflection. Both guards exist because
-    the blob is *unknown*: `search_scale` keeps the mask off the eyelash line
-    (the State clip's is covered in specks at 0.80-0.91 r, and masking those
-    erases the pupil boundary and inflates the radius), and `max_area` keeps it
-    off the frame-spanning background component.
-
-    **Pinned** — reflections the operator has marked. A pin says "this is a
-    reflection, it's here, and it stays here", so **neither guard applies**:
-    no reach limit, no area limit. That's the point of pinning. The big
-    stationary reflections are exactly the ones the automatic pass has to be
-    too timid to touch, because from the inside they look like the eyelash
-    line that must not be touched.
-
-    Everything is in the coordinates of the frame passed in, i.e. the crop.
+    Automatic: small bright blobs inside the fitted ellipse x `search_scale`.
+    Both guards matter for an unknown blob — the reach keeps off the lash line
+    (masking it inflates the radius), `max_area` off the background.
+    Pinned: no guards at all; the big stationary reflections are exactly the
+    ones the automatic pass must be too timid to touch.
     """
     import cv2
 
@@ -351,7 +285,6 @@ def remove_glints(gray: np.ndarray, center: tuple[float, float], radius: float,
         return (max(0, int(cy0) - margin), min(h, int(cy1) + margin + 1),
                 max(0, int(cx0) - margin), min(w, int(cx1) + margin + 1))
 
-    # ── pinned: no reach, no area limit ──────────────────────────────────────
     for pin in cfg.pins:
         y0, y1, x0, x1 = box_around(pin.cx - pin.r, pin.cy - pin.r,
                                     pin.cx + pin.r, pin.cy + pin.r)
@@ -364,7 +297,6 @@ def remove_glints(gray: np.ndarray, center: tuple[float, float], radius: float,
         if blob.any():
             hit |= _blank(gray, cleaned, mask, (y0, y1, x0, x1), blob, cfg, kernel)
 
-    # ── automatic: inside the pupil, small enough to be a reflection ─────────
     cx, cy = float(center[0]), float(center[1])
     a, b, phi = shape if shape else (radius, radius, 0.0)
     a = max(4.0, abs(a) * cfg.search_scale)
@@ -407,13 +339,8 @@ def remove_glints(gray: np.ndarray, center: tuple[float, float], radius: float,
 def measure_reflection(gray: np.ndarray, at: tuple[float, float],
                        threshold: int = 120, max_r: float = 80.0,
                        pad: int = 3) -> float:
-    """Radius of the bright blob the operator clicked, for sizing a pin.
-
-    Takes the connected bright component under the click — or the nearest one
-    within a few px, since nobody clicks the centre of a star exactly. Falls
-    back to a small default when the click lands on nothing bright, so a pin
-    always has *some* extent and the operator can see it and move it.
-    """
+    """Radius of the bright blob clicked (or nearest within a few px), for
+    sizing a pin; 8 px if nothing bright is there."""
     import cv2
 
     h, w = gray.shape
@@ -424,7 +351,7 @@ def measure_reflection(gray: np.ndarray, at: tuple[float, float],
     n, labels, stats, _ = cv2.connectedComponentsWithStats(
         (gray >= threshold).astype(np.uint8), 8)
     lab = int(labels[y, x])
-    if lab == 0:                     # clicked just off it — look nearby
+    if lab == 0:
         r = 6
         y0, y1 = max(0, y - r), min(h, y + r + 1)
         x0, x1 = max(0, x - r), min(w, x + r + 1)
@@ -438,4 +365,3 @@ def measure_reflection(gray: np.ndarray, at: tuple[float, float],
     bw = stats[lab, cv2.CC_STAT_WIDTH]
     bh = stats[lab, cv2.CC_STAT_HEIGHT]
     return float(min(max_r, max(6.0, 0.5 * max(bw, bh) + pad)))
-
