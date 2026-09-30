@@ -234,6 +234,8 @@ devices/                one package per instrument
     window.py           the full-screen QWidget the grating paints into
   voltage_cam/
     _check_link.py      script: CoaXPress or USB3? run after any cabling change
+    _probe_burst.py     script: MASTER PULSE BURST — N frames per edge, and
+                        does it re-arm itself? Camera only; acqApp closed
     acquisition.py      ORCA worker + mock twin
     dcimg.py            DCAM's own recorder (dcamrec_*) by hand-written ctypes
                         — pylablib has the structs but binds no functions.
