@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from acqApp.saving.config import rename_trial, routine_stem
+from acqApp.saving.config import BAD_SUFFIX, rename_trial, routine_stem
 
 TOL_S = 0.5            # far below the ~6.7 s shortest trial
 AMBIGUOUS_S = 0.05     # a runner-up alignment this close in rms is refused
@@ -146,6 +146,8 @@ def plan(rows: list[dict], m: Match, n_trials: int,
         if row.get("path"):
             p = Path(row["path"])
             want = routine_stem(row["fov"], trial)
+            if _stem(p).endswith(BAD_SUFFIX):
+                want += BAD_SUFFIX
             if _stem(p) != want:
                 renames.append((p, want))
     placed = [(t, r) for t, r in sorted(by_trial.items()) if r.get("path")]

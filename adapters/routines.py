@@ -7,11 +7,14 @@ engine at loaded modules, via `ModuleHost` targets.
   closes it. A recording the operator started is left alone.
 - A `trigger` step re-arms the camera, which latches after one edge. With
   Trigger→Record pairs the camera bursts that Record's length per edge
-  instead, re-arming itself; the Record ends on the burst.
+  instead, re-arming itself; the Record ends on the burst. Its .dcimg is
+  then sealed, so edges before the next trigger step don't add bursts.
 - `per_repeat`/`per_group` roll to a fresh file at a run boundary. The roll
   is deferred to `_tick`, after `eng.tick()` returns: the begin hook fires
   inside the engine's call stack, and code still to run there would
   overwrite what a re-entrant call did.
+- A file whose every run was interrupted (a short burst, a pause) is renamed
+  *_BAD once closed; the edge log follows the rename.
 """
 from __future__ import annotations
 
@@ -26,13 +29,15 @@ from PyQt6.QtWidgets import QWidget
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.routines.banner import RoutineBanner
-from acqApp.routines.engine import Phase, RoutineEngine, RoutineHooks
+from acqApp.routines.engine import (BURST_STALL_S, Phase, RoutineEngine,
+                                    RoutineHooks)
 from acqApp.devices.voltage_cam.presets import BURST_TIMES_MAX
 from acqApp.routines.estimate import burst_frames, clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS, group_region_at,
                                       group_repeat_at, play_order,
                                       recording_region_at, validate)
+from acqApp.saving.config import BAD_SUFFIX, rename_trial
 
 # Under three frames at 106 Hz; boundaries are stamped from the clock anyway.
 TICK_MS = 25
@@ -42,8 +47,8 @@ FRAME_STREAM = "voltage_cam"
 # Ticks between frame-rate refreshes (each rebuilds another panel's config).
 RATE_EVERY = 30
 
-# A .dcimg roll stops the camera ~0.9 s; ten times that is a camera that
-# isn't coming back.
+# A .dcimg roll stops the camera 0.35 s, or up to 7 s when its file keeps the
+# drive-sized cap (dcimg.py); past this the camera isn't coming back.
 HOLD_TIMEOUT_S = 10.0
 
 EDGE_LOG_HEADER = "edge,session_s,wall_time,fov,trial,path\n"
@@ -52,6 +57,17 @@ EDGE_LOG_HEADER = "edge,session_s,wall_time,fov,trial,path\n"
 # refuses to delete it until then.
 JUNK_RETRY_MS = 500
 JUNK_TRIES = 20
+
+# A burst whose count stands still this many frame periods has stopped short.
+# Floored: the camera thread's count can lag a few hundred ms.
+BURST_STALL_FRAMES = 50
+BURST_STALL_MIN_S = 1.0
+
+
+def burst_stall_s(hz: float | None) -> float:
+    if not hz:
+        return BURST_STALL_S
+    return max(BURST_STALL_MIN_S, BURST_STALL_FRAMES / hz)
 
 
 def delete_recording(path: Path) -> bool:
@@ -101,6 +117,9 @@ class RoutinesModule(ModuleAdapter):
         self._filed_from = 0            # eng.runs[:_filed_from] are in older files
         self._pending_scope: dict[str, Any] = {}   # for the next metadata()
         self._rolling = False           # see detach_sink
+        self._burst_n = 0               # frames per edge; 0 = not burst mode
+        self._seal_after: Path | None = None   # file to seal, acted on in _tick
+        self._sealed = False            # the open file's .dcimg is closed
         self._routine_origin = 0.0
         self._hold_t0: float | None = None   # see _holding_for_camera
         self._trial_count: dict[int, int] = {}   # files opened per bracket
@@ -275,6 +294,9 @@ class RoutinesModule(ModuleAdapter):
         finally:
             self.win.routine_arming_trigger(False)
         self._filed = 0
+        self._burst_n = n_burst
+        self._seal_after = None
+        self._sealed = False
         self._pending_roll_run = None
         self._prepared = None
         self._armed_with_file = False
@@ -285,8 +307,9 @@ class RoutinesModule(ModuleAdapter):
         self._routine_origin = self.win.sync.clock.now()
         self._n_steps = len(routine.steps)
         self._group_repeat = group_repeat_at(routine, play_order(routine))
-        self._engine = RoutineEngine(routine, self._hooks(),
-                                     burst_frames=n_burst)
+        self._engine = RoutineEngine(
+            routine, self._hooks(), burst_frames=n_burst,
+            burst_stall_s=burst_stall_s(self.win.frame_rate_hz()))
         self._engine.start(trigger="ttl")
         if n_burst:
             self._status(f"camera bursts {n_burst} frames per edge")
@@ -346,6 +369,7 @@ class RoutinesModule(ModuleAdapter):
         junk, self._doomed = self._doomed, None
         if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
             junk = None
+        bad = self._bad_file()
         self.win.set_routine_save_context(None, None)
         self._own_rec = False            # before: detach_sink re-enters
         self.win.set_recording(False)
@@ -353,6 +377,8 @@ class RoutinesModule(ModuleAdapter):
         self._flush_pending_edge()
         if junk is not None:
             self._delete_junk(junk, JUNK_TRIES)
+        if bad is not None:
+            self._mark_bad(bad, JUNK_TRIES)
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -420,6 +446,13 @@ class RoutinesModule(ModuleAdapter):
                     self._hold_t0 = time.monotonic()
             else:
                 eng.pause("could not open the next output file")
+        if self._seal_after is not None:
+            # After the tick, so a trigger step's roll has already happened.
+            path, self._seal_after = self._seal_after, None
+            if (eng.phase != Phase.DONE and self.win.recording_path() == path
+                    and self.win.seal_camera_file(FRAME_STREAM) is True):
+                self._sealed = True
+                self._status(f"{path.name}: .dcimg closed after its burst")
         if eng.phase == Phase.DONE:
             self._stop_ticking()
             # Paint DONE first: closing the capture stops the display timer.
@@ -481,19 +514,22 @@ class RoutinesModule(ModuleAdapter):
     def _on_recording_begin(self, run) -> None:
         """One `/routine` entry per boundary. The first run just claims the
         open file; a later one needing a fresh file defers the roll to
-        `_tick`."""
+        `_tick`. A sealed file takes no further run."""
+        self._seal_after = None         # this run keeps the open file
         if self._prepared == (run.cycle, run.start_index):
             self._prepared = None       # its file was opened before the edge
             self._file_group_key = self._group_key_for(run)
         elif self._file_group_key is None:
             self._file_group_key = self._group_key_for(run)
-        elif self._needs_roll(run):
+        elif self._sealed or self._needs_roll(run):
             self._pending_roll_run = run
             return
         self._put(run, opening=True)
 
     def _on_recording_end(self, run) -> None:
         self._put(run, opening=False)
+        if self._burst_n and not run.interrupted:
+            self._seal_after = self.win.recording_path()
 
     def _needs_roll(self, run) -> bool:
         mode = self._routine.save_mode if self._routine is not None else "single"
@@ -518,6 +554,7 @@ class RoutinesModule(ModuleAdapter):
         junk, self._doomed = self._doomed, None
         if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
             junk = None                 # it caught frames after all: keep it
+        bad = self._bad_file()
         fov, coords = self._fov_for(self._routine, run.start_index)
         self.win.set_routine_save_context(fov, self._trial_for(run.region), coords)
         self._pending_scope = self._scope_for(run)
@@ -527,11 +564,53 @@ class RoutinesModule(ModuleAdapter):
         finally:
             self._rolling = False
         if ok:
+            self._sealed = False
             self._filed_from = len(self._engine.runs)
             self._file_group_key = self._group_key_for(run)
             if junk is not None:
                 self._delete_junk(junk, JUNK_TRIES)
+            if bad is not None:
+                self._mark_bad(bad, JUNK_TRIES)
         return ok
+
+    def _bad_file(self) -> Path | None:
+        """The open file, if every run it holds was interrupted."""
+        eng = self._engine
+        runs = eng.runs[self._filed_from:] if eng is not None else []
+        if runs and all(x.interrupted for x in runs):
+            return self.win.recording_path()
+        return None
+
+    def _mark_bad(self, path: Path, tries: int) -> None:
+        """Rename a closed file to *_BAD, retried while DCAM still holds it;
+        the edge log follows so Bpod matching still finds it."""
+        stem = path.name if path.is_dir() else path.stem
+        try:
+            new = rename_trial(path, stem + BAD_SUFFIX)
+        except PermissionError:
+            if tries > 1:
+                QTimer.singleShot(JUNK_RETRY_MS,
+                                  lambda: self._mark_bad(path, tries - 1))
+            else:
+                self._status(f"could not rename {path.name} to *{BAD_SUFFIX} "
+                             f"(still open); its settings record the fault")
+            return
+        except OSError as e:
+            self._status(f"could not rename {path.name} to *{BAD_SUFFIX} ({e})")
+            return
+        self._repath_edge_log(path, new)
+        self._status(f"{path.name}: interrupted — renamed {new.name}")
+
+    def _repath_edge_log(self, old: Path, new: Path) -> None:
+        log = self._edge_log
+        if log is None:
+            return
+        try:
+            text = log.read_text(encoding="utf-8")
+            log.write_text(text.replace(f",{old}\n", f",{new}\n"),
+                           encoding="utf-8")
+        except OSError as e:
+            self._status(f"could not update the edge log for {new.name} ({e})")
 
     def _delete_junk(self, path: Path, tries: int) -> None:
         if delete_recording(path):
@@ -580,6 +659,8 @@ class RoutinesModule(ModuleAdapter):
             self._status("routine aborted — the recording stopped")
         self._own_rec = False
         self._rec = None
+        self._seal_after = None
+        self._sealed = False
         self.win.set_routine_save_context(None, None)
 
     def stop(self) -> None:

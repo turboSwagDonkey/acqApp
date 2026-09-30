@@ -78,6 +78,9 @@ class OrcaFireWorker(PullWorker):
     _BUFFER_MIN     = 16
     _BUFFER_MAX     = 4096
     _WRITER_MBPS    = WRITER_MBPS
+    # A routine's per-trial .dcimg holds one burst; room for a few strays
+    # keeps its cap small, which is what makes the roll fast (dcimg.py).
+    _TRIAL_FILE_BURSTS = 8
 
     def __init__(self, device_index: int = 0, config: AcqConfig | None = None,
                  cam=None):
@@ -239,9 +242,11 @@ class OrcaFireWorker(PullWorker):
             self._rearm_with_file = True
 
     def _swap_dcimg(self, cam, path: Path | None, *,
-                    rearm_nframes: int | None = None) -> None:
+                    rearm_nframes: int | None = None,
+                    cap: int | None = None) -> None:
         """Stop capture, change recorder, restart (gated if `rearm_nframes`).
-        Raises only if the new recording can't open."""
+        `cap`: frames the new file needs at most. Raises only if the new
+        recording can't open."""
         from .dcimg import DcimgRecorder
 
         # Open the file before stopping the camera, to keep the gap short.
@@ -250,7 +255,7 @@ class OrcaFireWorker(PullWorker):
         if path is not None:
             try:
                 w, h = self._frame_shape(cam)
-                rec = DcimgRecorder.for_frames(path, w * h * 2)   # 16-bit
+                rec = DcimgRecorder.for_frames(path, w * h * 2, cap)   # 16-bit
                 rec.open()
             except Exception as e:                   # noqa: BLE001
                 rec, err = None, e
@@ -276,11 +281,19 @@ class OrcaFireWorker(PullWorker):
                 cam.start_acquisition(nframes=rearm_nframes)
             else:
                 cam.start_acquisition()
-        # Split: the stop has measured both 0.9 s and 4.9 s.
+        # Split: the attach dominates when the cap is drive-sized (dcimg.py).
         t2 = time.perf_counter()
         print(f"[voltage_cam] dcimg -> {name or 'closed'}: prep {t1 - t0:.2f} s, "
               f"camera stopped {t2 - t1:.2f} s (stop+close {t_stop - t1:.2f}, "
               f"attach {t_start - t_stop:.2f}, start {t2 - t_start:.2f})")
+
+    def _file_cap(self, rearm_file: bool) -> int | None:
+        """Frames a new .dcimg may need: a routine's per-trial file in burst
+        mode holds a few bursts at most; anything else, the drive."""
+        if not (rearm_file and self._burst_n):
+            return None
+        return self._TRIAL_FILE_BURSTS * burst_pulses(self._burst_n,
+                                                      self._syncreadout)
 
     @staticmethod
     def _frame_shape(cam) -> tuple[int, int]:
@@ -668,7 +681,8 @@ class OrcaFireWorker(PullWorker):
                         try:
                             self._swap_dcimg(
                                 cam, rec_path,
-                                rearm_nframes=nframes if rearm_file else None)
+                                rearm_nframes=nframes if rearm_file else None,
+                                cap=self._file_cap(rearm_file))
                             if rearm_file and self._dcimg is not None:
                                 self._gated()
                                 self._skipped = 0

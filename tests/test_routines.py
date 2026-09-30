@@ -1207,8 +1207,83 @@ def check_burst(r: Report) -> None:
             f"burst: each Record ends when its {N} frames are in "
             f"({[round(x, 2) for x in lengths]} s, {eng.fault!r})")
     eng, _ = run(burst=True, stall_at=40)
-    r.check(eng.phase == Phase.PAUSED and "40/80" in eng.fault,
-            f"a burst that stops short pauses the routine ({eng.fault!r})")
+    r.check(eng.phase == Phase.PAUSED and "40/80" in eng.fault
+            and "retries" in eng.fault,
+            f"a burst that keeps stopping short pauses the routine in the "
+            f"end ({eng.fault!r})")
+
+
+def check_burst_retry(r: Report) -> None:
+    """A short burst (rig, 2026-09-30: an edge during the camera's restart
+    gave 2491/2500) is marked and retried on the next edge, not paused on;
+    the LED is lit from the trigger's arm, so the burst's first frame is."""
+    import dataclasses
+
+    from acqApp.routines.engine import MAX_BURST_RETRIES
+
+    N, HZ = 80, 100.0
+    routine = Routine(
+        steps=[Step(kind="display", pattern="roi.json"),
+               Step(kind="trigger"),
+               Step(kind="record", length=0.8, unit="seconds")],
+        groups=[Group(start=1, end=2, repeats=2)])
+
+    def run(short: set[int], pause_after: bool = False):
+        """`short`: the edges (1-based) whose burst stops at N/2."""
+        rig = FakeRig(hz=HZ)
+        rig.report_gate = True
+        edge = {"t": None, "n": 0}
+        lit_at_edge = []
+
+        def count() -> int:
+            if edge["t"] is None:
+                return 0
+            got = min(N, int((rig.t - edge["t"]) * HZ))
+            return min(got, N // 2) if edge["n"] in short else got
+
+        hooks = dataclasses.replace(rig.hooks(), burst_frames=count)
+        eng = RoutineEngine(routine, hooks, trigger_timeout_s=5.0,
+                            burst_frames=N, burst_stall_s=0.3)
+        eng.start()
+        while rig.t < 30 and eng.phase not in (Phase.DONE, Phase.PAUSED):
+            if eng.phase == Phase.WAITING and rig.gated:
+                rig.fire_trigger()
+                edge["t"], edge["n"] = rig.t, edge["n"] + 1
+                lit_at_edge.append(rig.led_on)
+            rig.advance()
+            eng.tick()
+        return eng, rig, lit_at_edge
+
+    eng, rig, lit = run(short={1})
+    flags = [(x.interrupted, x.fault) for x in eng.runs]
+    r.check(eng.phase == Phase.DONE and len(eng.runs) == 3
+            and flags[0] == (True, "burst stopped at 40/80 frames")
+            and flags[1:] == [(False, "")] * 2,
+            f"a short burst is marked and retried on the next edge; both "
+            f"repeats still record ({flags}, {eng.fault!r})")
+    r.check(eng.steps_done() == 5,
+            f"...and the retried trigger isn't counted twice "
+            f"({eng.steps_done()})")
+    r.check(lit == [True, True, True],
+            f"the LED is already on at every edge ({lit})")
+
+    eng, rig, _ = run(short=set(range(1, MAX_BURST_RETRIES + 2)))
+    r.check(eng.phase == Phase.PAUSED
+            and len(eng.runs) == MAX_BURST_RETRIES + 1
+            and all(x.interrupted for x in eng.runs),
+            f"{MAX_BURST_RETRIES} retries in a row, then it pauses "
+            f"({len(eng.runs)} runs, {eng.fault!r})")
+    r.check(not rig.led_on and not rig.lit,
+            "the pause puts out the LED and the DMD")
+    eng.resume()
+    r.check(rig.lit and eng.phase == Phase.WAITING,
+            "resume re-lights what the Display step left on (rig: FOV3 T19-"
+            "T50 recorded dark after a resume)")
+
+    eng, rig, _ = run(short=set())
+    r.check(eng.phase == Phase.DONE and len(eng.runs) == 2
+            and not any(x.interrupted for x in eng.runs),
+            "control: full bursts, no retries")
 
 
 def check_prepare_recording(r: Report) -> None:
@@ -1406,6 +1481,8 @@ def check_prepared_adapter(r: Report) -> None:
     a._prepared = None
     a._armed_with_file = False
     a._pending_roll_run = None
+    a._seal_after = None
+    a._sealed = False
     a._rec = None
     a._status = lambda m: None
     run = RecordingRun(region=0, start_index=1, end_index=1, cycle=0,
@@ -1427,6 +1504,105 @@ def check_prepared_adapter(r: Report) -> None:
     a._prepare_recording(run)
     r.check(calls == [] and a._prepared is None,
             "control: no .dcimg open -> nothing prepared, the old path runs")
+
+
+def check_seal_after_burst(r: Report) -> None:
+    """Burst mode: the camera re-arms itself, so a finished trial's .dcimg is
+    sealed after the tick its Record ended in — unless that tick already
+    rolled the file. A sealed file takes no further run (rig, 2026-09-30: a
+    Bpod edge during the move to the next FOV added 330 frames to a trial)."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.routines import RoutinesModule
+    from acqApp.routines.engine import RecordingRun
+
+    calls: list = []
+    win = SimpleNamespace(
+        path=Path("FOV1_T2"),
+        seal_camera_file=lambda key: (calls.append("seal") or True),
+        roll_recording=lambda: (calls.append("roll") or True),
+        set_routine_save_context=lambda *a, **k: None,
+        camera_ready=lambda key: True)
+    win.recording_path = lambda: win.path
+
+    def run(i: int, interrupted: bool = False) -> RecordingRun:
+        x = RecordingRun(region=0, start_index=i, end_index=i, cycle=0,
+                         attempt=1, t0=0.0, frame0=None)
+        x.interrupted = interrupted
+        return x
+
+    def adapter(burst_n: int = 2500):
+        a = RoutinesModule.__new__(RoutinesModule)
+        a.win = win
+        a._routine = Routine(steps=[
+            Step(kind="trigger"),
+            Step(kind="record", length=5, unit="seconds"),
+            Step(kind="move", x_um=1.0),
+            Step(kind="record", length=5, unit="seconds")])
+        a._engine = SimpleNamespace(tick=lambda: None, phase=Phase.RUNNING,
+                                    runs=[])
+        a._burst_n = burst_n
+        a._seal_after = None
+        a._sealed = False
+        a._hold_t0 = None
+        a._rec = None
+        a._pending_roll_run = None
+        a._prepared = None
+        a._file_group_key = (0, None)
+        a._trial_count = {}
+        a._pending_scope = {}
+        a._rolling = False
+        a._filed_from = 0
+        a._doomed = None
+        a._timer = None
+        a._status = lambda m: None
+        return a
+
+    def tick(a, *hooks) -> list:
+        """One `_tick` whose engine tick fires `hooks` -> the calls made."""
+        calls.clear()
+        a._engine.tick = lambda: [h() for h in hooks]
+        a._tick()
+        return list(calls)
+
+    a = adapter()
+    got = tick(a, lambda: a._on_recording_end(run(1)))
+    r.check(got == ["seal"] and a._sealed,
+            f"a burst Record ending into a move seals its file ({got})")
+    a._on_recording_begin(run(3))
+    got = tick(a)
+    r.check(got == ["roll"] and not a._sealed,
+            f"...and the next run rolls rather than land in it, even in "
+            f"single mode ({got})")
+
+    def rolled():
+        win.path = Path("FOV1_T3")
+    a = adapter()
+    got = tick(a, lambda: a._on_recording_end(run(1)), rolled)
+    win.path = Path("FOV1_T2")
+    r.check(got == [], f"a trigger step that rolled in the same tick: the "
+                       f"new file is left alone ({got})")
+
+    a = adapter()
+    got = tick(a, lambda: a._on_recording_end(run(1)),
+               lambda: a._on_recording_begin(run(3)))
+    r.check(got == [], f"a run opening in the same file cancels the seal "
+                       f"({got})")
+
+    a = adapter()
+    got = tick(a, lambda: a._on_recording_end(run(1, interrupted=True)))
+    r.check(got == [], f"an interrupted run (a pause) is not sealed ({got})")
+
+    a = adapter()
+    a._engine.phase = Phase.DONE
+    a._close_own_recording = lambda: None
+    a.update_display = lambda: None
+    got = tick(a, lambda: a._on_recording_end(run(1)))
+    r.check(got == [], f"the routine's end closes the file anyway ({got})")
+
+    a = adapter(burst_n=0)
+    got = tick(a, lambda: a._on_recording_end(run(1)))
+    r.check(got == [], f"control: outside burst mode nothing is sealed ({got})")
 
 
 def check_first_file_doomed(r: Report) -> None:
@@ -1498,6 +1674,7 @@ def check_doomed_file_deleted(r: Report, tmp: Path) -> None:
         a._doomed = path
         a._routine = None
         a._engine = SimpleNamespace(runs=[])
+        a._filed_from = 0
         a._fov_for = lambda _r, _i: ("fov1", None)
         a._trial_for = lambda _region: 1
         a._scope_for = lambda _run: {}
@@ -1515,6 +1692,70 @@ def check_doomed_file_deleted(r: Report, tmp: Path) -> None:
     path, a = roll(frames=12)
     r.check(path.exists() and a._doomed is None,
             "control: a file that caught frames is kept")
+
+
+def check_bad_trial_marked(r: Report, tmp: Path) -> None:
+    """A file whose every run was interrupted is renamed *_BAD once closed,
+    the edge log follows, and Bpod renumbering keeps the mark."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.routines import RoutinesModule
+    from acqApp.routines.engine import RecordingRun
+    from acqApp.saving.bpod_match import Match, plan
+
+    def trial(name: str) -> Path:
+        d = tmp / "bad" / name
+        d.mkdir(parents=True)
+        for suffix in ("_data.csv", "_voltage_cam.dcimg"):
+            (d / f"{name}{suffix}").write_text("x")
+        return d
+
+    def run(interrupted: bool) -> RecordingRun:
+        x = RecordingRun(region=0, start_index=1, end_index=1, cycle=0,
+                         attempt=1, t0=0.0, frame0=None)
+        x.interrupted = interrupted
+        return x
+
+    t18, t19 = trial("FOV3_T18"), trial("FOV3_T19")
+    log = tmp / "bad" / "routine_edges.csv"
+    log.write_text("edge,session_s,wall_time,fov,trial,path\n"
+                   f"1,1.0,w,3,18,{t18}\n2,8.0,w,3,19,{t19}\n",
+                   encoding="utf-8")
+    said: list = []
+    a = RoutinesModule.__new__(RoutinesModule)
+    a._edge_log = log
+    a._status = said.append
+    a._filed_from = 0
+    a.win = SimpleNamespace(recording_path=lambda: t18)
+    a._engine = SimpleNamespace(runs=[run(True)])
+    r.check(a._bad_file() == t18, "a file holding only an interrupted run is bad")
+    a._engine.runs = [run(True), run(False)]
+    r.check(a._bad_file() is None, "...one good run in it and it is not")
+    a._engine.runs = []
+    r.check(a._bad_file() is None, "...nor is a file with no runs (stage travel)")
+
+    held = open(t18 / "FOV3_T18_voltage_cam.dcimg", "rb")
+    try:
+        a._mark_bad(t18, 1)
+    finally:
+        held.close()
+    r.check(t18.exists() and "still open" in said[-1],
+            f"still open (DCAM closing it): left alone, and said ({said[-1]!r})")
+    a._mark_bad(t18, 1)
+    bad = tmp / "bad" / "FOV3_T18_BAD"
+    r.check(bad.is_dir() and (bad / "FOV3_T18_BAD_voltage_cam.dcimg").exists()
+            and not t18.exists(),
+            "once closed: folder and files renamed *_BAD")
+    text = log.read_text(encoding="utf-8")
+    r.check(f",{bad}\n" in text and f",{t19}\n" in text,
+            "the edge log follows the rename, other rows untouched")
+
+    import csv
+    rows = list(csv.DictReader(open(log, encoding="utf-8")))
+    pl = plan(rows, Match({0: 18, 1: 19}, 0.0, 0.0), 21)
+    got = {p.name: stem for p, stem in pl.renames}
+    r.check(got == {"FOV3_T18_BAD": "FOV3_T19_BAD", "FOV3_T19": "FOV3_T20"},
+            f"Bpod renumbering keeps the mark ({got})")
 
 
 def check_arm_camera_trigger(r: Report) -> None:
@@ -3012,12 +3253,15 @@ def _part_routines() -> int:
         check_trigger_step(r)
         check_trigger_gate(r)
         check_burst(r)
+        check_burst_retry(r)
         check_prepare_recording(r)
         check_prepared_adapter(r)
+        check_seal_after_burst(r)
         check_first_trial_kept(r)
         check_edge_log(r)
         check_first_file_doomed(r)
         check_doomed_file_deleted(r, tmp)
+        check_bad_trial_marked(r, tmp)
         check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)

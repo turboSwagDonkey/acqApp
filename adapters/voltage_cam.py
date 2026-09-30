@@ -42,6 +42,9 @@ class VoltageCamModule(ModuleAdapter):
         # Fixed at build_session: the panel may already name next session's preset.
         self._last_frame_preset: str | None = None
         self._preview_buf: deque = deque(maxlen=1)
+        # The recording's .dcimg was closed early (`seal_dcimg`); the
+        # recording stays open until the next roll.
+        self._dcimg_sealed = False
 
     def last_frame(self):
         return self._last_frame
@@ -213,12 +216,29 @@ class VoltageCamModule(ModuleAdapter):
         self.worker.rearm_trigger()
         return True
 
+    def _dcimg_recording(self) -> bool:
+        """This recording writes a .dcimg: open, or sealed awaiting its roll."""
+        w = self.worker
+        return w is not None and (self._dcimg_sealed
+                                  or getattr(w, "dcimg_active", False))
+
     def arm_with_next_file(self) -> bool:
-        """False unless a .dcimg is open."""
+        """False unless this recording writes a .dcimg."""
+        if not self._dcimg_recording():
+            return False
+        self.worker.arm_with_next_file()
+        return True
+
+    def seal_dcimg(self) -> bool:
+        """Close the open .dcimg now, leaving the recording open. A burst-mode
+        camera re-arms itself, so an edge before the next roll would add a
+        burst to a finished file (rig, 2026-09-30: 2830 frames for 2500).
+        False if no .dcimg is open."""
         w = self.worker
         if w is None or not getattr(w, "dcimg_active", False):
             return False
-        w.arm_with_next_file()
+        w.set_record_file(None)
+        self._dcimg_sealed = True
         return True
 
     # ── session ──
@@ -282,6 +302,7 @@ class VoltageCamModule(ModuleAdapter):
 
     # ── recording ──
     def attach_sink(self, rec) -> None:
+        self._dcimg_sealed = False
         if self.worker is None:
             return
 
@@ -314,12 +335,13 @@ class VoltageCamModule(ModuleAdapter):
         return None if w is None else getattr(w, "trigger_gate", None)
 
     def dcimg_frames(self) -> int | None:
-        w = self.worker
-        if w is None or not getattr(w, "dcimg_active", False):
+        """Frames in this recording's .dcimg (frozen once sealed)."""
+        if not self._dcimg_recording():
             return None
-        return w.dcimg_frames
+        return self.worker.dcimg_frames
 
     def detach_sink(self) -> None:
+        self._dcimg_sealed = False
         # Base only clears the sink; an attached recorder would keep writing.
         if self.worker is not None and getattr(self.worker, "supports_dcimg", False):
             self.worker.set_record_file(None)

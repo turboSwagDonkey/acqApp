@@ -8,9 +8,12 @@ Recording is an overlay: `recording_run_ids` says which steps a bracket
 covers, `_update_recording` decides when to open/close one. Whether that rolls
 a file is the adapter's business.
 
-A device failure PAUSES (motion stopped, light off, capture untouched). The
-interrupted run is kept and marked; resume repeats the step as a new attempt
-in a fresh recording run.
+A device failure PAUSES (motion stopped, DMD and LED off, capture
+untouched). The interrupted run is kept and marked; resume repeats the step
+as a new attempt in a fresh recording run. A burst that stops short is the
+exception: its run is marked the same way and the routine goes back to that
+burst's trigger step for the next edge, pausing only after MAX_BURST_RETRIES
+in a row.
 """
 from __future__ import annotations
 
@@ -37,7 +40,12 @@ TRIGGER_DRAIN_S = 1.5
 TRIGGER_SETTLE_S = 0.75
 
 # A burst's frame count standing still this long mid-burst: the camera stopped.
+# The adapter passes a tighter one from the frame rate: a stall must be seen
+# before the next edge, whose burst would otherwise complete the count.
 BURST_STALL_S = 5.0
+
+# Short bursts retried in a row before the routine pauses instead.
+MAX_BURST_RETRIES = 3
 
 
 class Phase:
@@ -138,15 +146,19 @@ class RoutineEngine:
                  trigger_timeout_s: float = TRIGGER_TIMEOUT_S,
                  trigger_drain_s: float = TRIGGER_DRAIN_S,
                  trigger_settle_s: float = TRIGGER_SETTLE_S,
-                 burst_frames: int = 0) -> None:
+                 burst_frames: int = 0,
+                 burst_stall_s: float = BURST_STALL_S) -> None:
         """`burst_frames` > 0: the camera captures that many frames per edge,
         so a Record right after a Trigger ends on the burst, not the clock."""
         self._r = routine
         self._burst_n = burst_frames
+        self._burst_stall = burst_stall_s
         self._after_edge = False        # the next step is the edge's burst
         self._in_burst = False          # this Record step is a burst
         self._burst_seen = 0
         self._burst_moved_at = 0.0
+        self._edge_at = (0, 0)          # (order position, cycle) of the last edge
+        self._burst_retries = 0         # short bursts in a row
         self._h = hooks
         self._timeout = move_timeout_s
         self._trig_timeout = trigger_timeout_s
@@ -306,6 +318,10 @@ class RoutineEngine:
         self.fault = ""
         self._attempt += 1
         self._open_key = None
+        self._burst_retries = 0
+        # The pause blanked the DMD; a Move restores it on arrival itself.
+        if self._r.steps[self._i].kind != "move":
+            self._safe(self._h.light, self._dmd_on)
         self._enter_step()
 
     def skip(self) -> None:
@@ -386,6 +402,7 @@ class RoutineEngine:
         self._safe(self._h.edge, self._safe_value(self._h.now, 0.0),
                    self._next_record_run())
         self._after_edge = self._burst_n > 0
+        self._edge_at = (self._pos, self._cycle)
         self._phase = Phase.RUNNING
         self._step_done = True
 
@@ -457,9 +474,30 @@ class RoutineEngine:
         if got != self._burst_seen:
             self._burst_seen, self._burst_moved_at = got, t
         if got >= self._burst_n:
+            self._burst_retries = 0
             self._step_done = True
-        elif t - self._burst_moved_at > BURST_STALL_S:
-            self._halt(f"burst stopped at {got}/{self._burst_n} frames")
+        elif t - self._burst_moved_at > self._burst_stall:
+            self._retry_burst(f"burst stopped at {got}/{self._burst_n} frames")
+
+    def _retry_burst(self, reason: str) -> None:
+        """Mark the short burst's run and wait for the next edge at its
+        trigger step, whose re-arm opens the next file. Out of retries, it
+        pauses there instead, so resume waits for an edge too."""
+        if self._open_run is not None:
+            self._close_recording(self._open_run, interrupted=True,
+                                  fault=reason)
+            self._open_key = None
+        self._pos, self._cycle = self._edge_at
+        self._i = self._order[self._pos]
+        self._steps_completed -= 1      # the trigger step runs again
+        self._attempt = 1
+        self._burst_retries += 1
+        if self._burst_retries > MAX_BURST_RETRIES:
+            self._halt(f"{reason} ({MAX_BURST_RETRIES} retries in a row)")
+            return
+        self._h.log(f"{reason} — marked bad; retrying on the next edge "
+                    f"({self._burst_retries}/{MAX_BURST_RETRIES})")
+        self._enter_step()
 
     # ── step lifecycle ────────────────────────────────────────────────────────
     def _enter_step(self) -> None:
@@ -509,6 +547,10 @@ class RoutineEngine:
                 if nxt is not None:
                     self._h.prepare_recording(nxt)
                 self._h.arm_trigger()
+                if nxt is not None:
+                    # Lit before the edge: the camera starts on it, the
+                    # software only a tick or more later (rig: 18-42 frames).
+                    self._h.led(True)
                 self._trig_t0 = self._trig_still_since = self._h.now()
                 self._trig_gated = False
                 self._trig_frame0 = self._frames()
@@ -573,6 +615,7 @@ class RoutineEngine:
         self.fault = reason
         self._safe(self._h.stop_motion)
         self._safe(self._h.light, False)
+        self._safe(self._h.led, False)      # a trigger step lit it early
         if self._open_run is not None:
             self._close_recording(self._open_run, interrupted=True, fault=reason)
             self._open_key = None

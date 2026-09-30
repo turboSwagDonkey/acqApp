@@ -199,6 +199,9 @@ def _routine_stem(fov: str, trial: int) -> str:
 
 routine_stem = _routine_stem
 
+# Appended to a routine trial whose every run was interrupted.
+BAD_SUFFIX = "_BAD"
+
 
 def rename_trial(path: Path, new_stem: str) -> Path:
     """Rename a CLOSED recording and its sidecars to `new_stem` (next free

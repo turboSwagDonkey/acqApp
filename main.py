@@ -355,6 +355,9 @@ class MainWindow(QMainWindow):
     def arm_camera_with_next_file(self, key: str) -> bool | None:
         return self._call(key, "arm_with_next_file")
 
+    def seal_camera_file(self, key: str) -> bool | None:
+        return self._call(key, "seal_dcimg")
+
     def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
         return self._call(key, "trigger_gate")
 

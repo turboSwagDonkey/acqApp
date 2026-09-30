@@ -240,6 +240,11 @@ class ModuleHost(Protocol):
         """Make the next .dcimg swap re-arm too. False: no .dcimg open."""
         ...
 
+    def seal_camera_file(self, key: str) -> bool | None:
+        """Close the open .dcimg early; the recording stays open until the
+        next roll. False: no .dcimg open."""
+        ...
+
     def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
         """(re-arms completed, frames since the last)."""
         ...

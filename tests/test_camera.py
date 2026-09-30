@@ -414,6 +414,12 @@ def check_cap_guards(r: Report, tmp: Path) -> None:
     fit = DcimgRecorder.for_frames(tmp / "ok", frame_bytes=1 << 20)
     r.check(fit.max_frames >= MIN_FRAMES,
             f"a sane frame size gets a usable cap ({fit.max_frames:,})")
+    capped = DcimgRecorder.for_frames(tmp / "ok", frame_bytes=1 << 10, cap=100)
+    r.check(capped.max_frames == 100,
+            f"a known length caps it below the drive ({capped.max_frames})")
+    r.check(DcimgRecorder.for_frames(tmp / "ok", frame_bytes=1 << 20,
+                                     cap=1 << 40).max_frames == fit.max_frames,
+            "...but never above what the drive holds")
 
     # close() runs on the failure path, so it must never raise or need open().
     fit.close()
@@ -620,7 +626,8 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         max_frames = 10
 
         @classmethod
-        def for_frames(cls, path, bpf):
+        def for_frames(cls, path, bpf, cap=None):
+            calls.append(("cap", cap))
             return cls()
 
         def open(self):
@@ -648,20 +655,30 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         w._rearm_with_file = False
         w._mp_mode = acq._MP_MODE_START
 
-        w._swap_dcimg(FakeCam(), tmp / "a.dcimg", rearm_nframes=59)
-        want = ["open", "stop", ("attach", "H"),
+        w._swap_dcimg(FakeCam(), tmp / "a.dcimg", rearm_nframes=59, cap=800)
+        want = [("cap", 800), "open", "stop", ("attach", "H"),
                 ("set", acq._MP_MODE_CONTINUOUS), ("set", acq._MP_MODE_START),
                 ("start", 59)]
         r.check(calls == want,
-                f"swap with re-arm: open, stop, bind, cycle the pulse, then start "
-                f"({calls})")
+                f"swap with re-arm: open (at its cap), stop, bind, cycle the "
+                f"pulse, then start ({calls})")
 
         calls.clear()
         w._swap_dcimg(FakeCam(), tmp / "b.dcimg")
-        r.check(calls == ["open", "stop", "close", ("attach", "H"),
-                          ("start", None)],
+        r.check(calls == [("cap", None), "open", "stop", "close",
+                          ("attach", "H"), ("start", None)],
                 f"control: a plain swap never touches the master pulse "
                 f"({calls})")
+
+        w._burst_n, w._syncreadout = 2500, True
+        r.check(w._file_cap(True) == 8 * 2501,
+                f"a routine's trial file in burst mode is capped at a few "
+                f"bursts ({w._file_cap(True)})")
+        r.check(w._file_cap(False) is None,
+                "an operator's recording keeps the drive-sized cap")
+        w._burst_n = 0
+        r.check(w._file_cap(True) is None,
+                "control: outside burst mode the length is unknown, no cap")
 
         w.arm_with_next_file()
         r.check(w._rearm_with_file, "arm_with_next_file sets the latch")
@@ -1349,6 +1366,46 @@ def check_burst_gate(r: Report) -> None:
             "control: the burst's own tail is not an edge")
 
 
+def check_seal_dcimg(r: Report) -> None:
+    """A sealed .dcimg is closed but still this recording's: its count stays
+    readable and the next roll may re-arm with it, until the sink changes."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.voltage_cam import VoltageCamModule
+
+    class Worker:
+        supports_dcimg = True
+        dcimg_active = True
+        dcimg_frames = 2500
+
+        def __init__(self):
+            self.files, self.armed = [], 0
+
+        def set_record_file(self, path):
+            self.files.append(path)
+
+        def arm_with_next_file(self):
+            self.armed += 1
+
+    m = VoltageCamModule.__new__(VoltageCamModule)
+    m._dcimg_sealed = False
+    m.worker = w = Worker()
+    r.check(m.seal_dcimg() and w.files == [None],
+            f"sealing asks the worker to close the file ({w.files})")
+    w.dcimg_active = False                       # the worker has closed it
+    r.check(m.dcimg_frames() == 2500,
+            f"a sealed file's count stays readable ({m.dcimg_frames()})")
+    r.check(m.arm_with_next_file() and w.armed == 1,
+            "the next roll can still re-arm with its new file")
+    r.check(not m.seal_dcimg() and w.files == [None],
+            "sealing twice closes nothing more")
+    m.win = SimpleNamespace(dcimg_target=lambda key: None)
+    m.worker.set_sink = lambda sink: None
+    m.attach_sink(None)
+    r.check(m.dcimg_frames() is None and not m.arm_with_next_file(),
+            "control: once the sink changes, no .dcimg is this recording's")
+
+
 def check_burst_panel(r: Report) -> None:
     from acqApp.devices.voltage_cam.panel import SettingsPanel
     pnl = SettingsPanel(AcqConfig(trigger_mode=P.TRIGGER_MODES[0],
@@ -1373,6 +1430,7 @@ def _part_burst() -> int:
     app = qt_app()                      # unassigned, it's collected (PLAN §0)
     check_burst_arithmetic(r)
     check_burst_gate(r)
+    check_seal_dcimg(r)
     check_burst_panel(r)
     del app
     return r.finish()

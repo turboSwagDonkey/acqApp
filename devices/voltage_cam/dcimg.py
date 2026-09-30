@@ -24,7 +24,9 @@ FLAG_RECORDING = 0x01
 # `dcamcap_record` fails with FAILEDWRITEDATA once cap x frame_bytes exceeds
 # the target drive's FREE SPACE (measured 2026-09-23: 1e6 frames of 128 KB
 # bound on D: with 678 GB free, failed on C:; 1e7 failed on both). So the cap
-# is computed per recording, not fixed.
+# is computed per recording, not fixed. DCAM reserves the whole cap at attach,
+# so a drive-sized one costs 4.3-6.7 s there (11M frames, rig 2026-09-30) vs
+# 0.01 s for 10k: a recording whose length is known passes a smaller cap.
 DISK_FRACTION = 0.9         # leave the drive some headroom
 MIN_FRAMES = 16             # refuse to open a recording that can't hold a burst
 
@@ -107,9 +109,13 @@ class DcimgRecorder:
     """
 
     @classmethod
-    def for_frames(cls, path: Path | str, frame_bytes: int) -> DcimgRecorder:
-        """Sized to what the target drive can actually take."""
+    def for_frames(cls, path: Path | str, frame_bytes: int,
+                   cap: int | None = None) -> DcimgRecorder:
+        """Sized to what the target drive can actually take, or to `cap`
+        frames if that's less."""
         n = frames_that_fit(path, frame_bytes)
+        if cap is not None:
+            n = min(n, cap)
         if n < MIN_FRAMES:
             raise DcimgError(
                 f"no room for a .dcimg on {Path(path).drive or Path(path)}: "

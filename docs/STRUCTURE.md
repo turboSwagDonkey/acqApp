@@ -40,6 +40,7 @@ flowchart TD
     adapters --> devices
     adapters --> closed_loop
     adapters --> routines
+    adapters --> saving
     adapters --> acq
     adapters --> config
     adapters --> style
