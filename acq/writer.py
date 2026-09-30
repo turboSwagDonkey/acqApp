@@ -84,6 +84,7 @@ class HDF5Writer(Writer):
     _CHUNK_SCALAR = 1024        # scalar samples per chunk / growth block
     _IMG_CHUNK_BYTES = 8 << 20
     _MIN_GROW_BYTES = 64 << 20
+    _MIN_GROW_FRAMES = 16       # a ~20 MB full frame would resize every 3 frames
 
     def __init__(self, compression: str | None = None,
                  compression_opts: Any = None, overwrite: bool = False) -> None:
@@ -160,7 +161,7 @@ class HDF5Writer(Writer):
                 rdcc_nbytes=max(4 * chunk_bytes, 8 << 20),
                 rdcc_nslots=4093)
             # Grow in large steps: a resize is dataset-wide metadata.
-            grow = max(chunk_frames,
+            grow = max(chunk_frames, self._MIN_GROW_FRAMES,
                        (self._MIN_GROW_BYTES // max(frame_bytes, 1)) or 1)
             grow = (grow // chunk_frames) * chunk_frames or chunk_frames
             st = {"image": True, "shape": shape, "dtype": data.dtype,

@@ -137,3 +137,28 @@ def clock(seconds: float) -> str:
         return f"{m}:{sec:02d} min"
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{sec:02d} h"
+
+
+def burst_frames(routine: Routine, hz: float | None) -> tuple[int, str]:
+    """Frames per edge for a camera in burst mode: the one length every
+    Record right after a Trigger shares, at `hz` for a seconds Record (the
+    camera counts pulses, not time). (0, "") if the routine has no such pair;
+    (0, why) if they disagree."""
+    lengths = set()
+    for a, b in zip(routine.steps, routine.steps[1:]):
+        if a.kind != "trigger" or b.kind != "record":
+            continue
+        if b.unit == "frames":
+            lengths.add(int(round(b.length)))
+        elif hz and hz > 0:
+            lengths.add(int(round(b.length * hz)))
+        else:
+            return 0, "no frame rate to turn a seconds Record into frames"
+    if not lengths:
+        return 0, ""
+    if len(lengths) > 1:
+        return 0, (f"every Record after a Trigger must be the same length "
+                   f"(one burst per edge); these come to "
+                   f"{', '.join(str(n) for n in sorted(lengths))} frames")
+    n = lengths.pop()
+    return (n, "") if n > 0 else (0, "a Record after a Trigger is empty")

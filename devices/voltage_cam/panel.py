@@ -3,14 +3,14 @@ Voltage-imaging camera — settings panel.
 
 SettingsPanel : QWidget that emits a signal per parameter.
                 Resolution/binning/trigger lock while acquisition runs;
-                exposure is hot-changeable at any time. `set_trigger_mode()`
+                capture rate (and so exposure) is hot. `set_trigger_mode()`
                 lets a routine drive the combo itself (adapters/
                 voltage_cam.py's `set_external_trigger`), the same way
                 `set_preset()` already lets the DMD calibration drive the
                 resolution combo.
 
 The owner (MainWindow / toy) reads .get_config() to build an AcqConfig
-before starting the worker, and wires exposure_changed to worker.set_exposure().
+before starting the worker, and wires target_hz_changed to worker.set_rate().
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from acqApp.widgets import spin
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
-    BINNING_OPTIONS,
+    BINNING_OPTIONS, BURST_TIMES_MAX,
     EXTERNAL_EDGE, TRIGGER_MODES,
     WRITER_MBPS,
 )
@@ -33,10 +33,11 @@ from .presets import (
 class SettingsPanel(QWidget):
     """Camera acquisition settings panel."""
 
-    exposure_changed  = pyqtSignal(float)   # µs — hot-changeable
     resolution_changed = pyqtSignal(str)    # preset key
     binning_changed   = pyqtSignal(int)
     trigger_changed   = pyqtSignal(str)
+    burst_changed     = pyqtSignal(int)     # frames per edge; 0 = until re-armed
+    target_hz_changed = pyqtSignal(float)   # capture rate, hot; 0 = Max
     lut_visible_changed = pyqtSignal(bool)  # show/hide the histogram bar
     auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
     preview_avg_changed = pyqtSignal(int)   # frames to average in the preview only
@@ -81,43 +82,37 @@ class SettingsPanel(QWidget):
         )
         lay.addRow("Binning:", self._cmb_binning)
 
-        self._spn_exposure = spin(0.01, 1_000_000.0, self._cfg.exposure_us,
-                                  decimals=1, step=500.0, suffix=" µs")
-        self._spn_exposure.valueChanged.connect(self.exposure_changed)
-        lay.addRow("Exposure:", self._spn_exposure)
-
-        # A frame period can't be shorter than the exposure inside it, so Rate
-        # always caps Exposure's maximum to 1/rate — independent of Link, which
-        # only decides whether moving one *also* moves the other.
-        self._spn_hz = spin(
-            0.001, 100_000.0,
-            1e6 / self._cfg.exposure_us if self._cfg.exposure_us > 0 else 100.0,
-            decimals=3, suffix=" Hz")
-        self._chk_hz_link = QCheckBox("Link")
-        self._chk_hz_link.setToolTip(
-            "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
-        self._chk_hz_link.toggled.connect(self._on_hz_link_toggled)
-        hz_row = QWidget()
-        hz_lay = QHBoxLayout(hz_row)
-        hz_lay.setContentsMargins(0, 0, 0, 0)
-        hz_lay.addWidget(self._spn_hz)
-        hz_lay.addWidget(self._chk_hz_link)
-        lay.addRow("Rate:", hz_row)
-
-        self._hz_syncing = False
-        self._spn_hz.valueChanged.connect(self._on_hz_changed)
-        self._spn_exposure.valueChanged.connect(self._on_exposure_changed_for_hz)
-        self._on_hz_changed(self._spn_hz.value())    # apply the initial cap
-
         self._cmb_trigger = QComboBox()
         self._cmb_trigger.addItems(TRIGGER_MODES)
         self._cmb_trigger.setCurrentText(self._cfg.trigger_mode)
         self._cmb_trigger.currentTextChanged.connect(self.trigger_changed)
         lay.addRow("Trigger:", self._cmb_trigger)
 
-        # Effective frame rate = min(readout ceiling, 1/exposure). Without this
-        # readout the default 10 ms exposure silently caps every preset above
-        # ~4432×256 at 100 Hz, and the preset label looks like a lie.
+        # -1 pulse of headroom: SYNCREADOUT asks for N+1 (presets.burst_pulses).
+        self._spn_burst = spin(
+            0, BURST_TIMES_MAX - 1, self._cfg.burst_frames, step=100,
+            suffix=" frames", track=False,
+            tooltip="External edge only. Each edge captures exactly this many "
+                    "frames, then the camera waits for the next edge with no "
+                    "re-arm.\nOff = one edge starts capture until re-armed.\n"
+                    "A routine sets this from its Record length at Start.")
+        self._spn_burst.setSpecialValueText("Off")
+        self._spn_burst.valueChanged.connect(self.burst_changed)
+        lay.addRow("Frames per edge:", self._spn_burst)
+        self._cmb_trigger.currentTextChanged.connect(self._sync_burst_enabled)
+
+        # The only rate/exposure control: exposure is always the longest this
+        # rate allows (presets.fit_exposure).
+        self._spn_target_hz = spin(
+            0.0, 100_000.0, self._cfg.target_hz, decimals=1, step=50.0,
+            suffix=" Hz", track=False,
+            tooltip="Frames per second. Exposure is set to the longest this "
+                    "rate allows.\n0 = as fast as this resolution allows.\n"
+                    "A rate it can't reach is clamped, and the console says so.")
+        self._spn_target_hz.setSpecialValueText("Max")
+        self._spn_target_hz.valueChanged.connect(self.target_hz_changed)
+        lay.addRow("Capture rate:", self._spn_target_hz)
+
         self._lbl_rate = QLabel()
         lay.addRow("Frame rate:", self._lbl_rate)
 
@@ -176,69 +171,37 @@ class SettingsPanel(QWidget):
         root.addRow(grp)
         root.addRow(led)
 
-        self._locked = [self._cmb_preset, self._cmb_binning, self._cmb_trigger]
+        self._locked = [self._cmb_preset, self._cmb_binning, self._cmb_trigger,
+                        self._spn_burst]
+        self._running = False
+        self._sync_burst_enabled()
 
         for sig in (self._cmb_preset.currentIndexChanged,
                     self._cmb_binning.currentIndexChanged,
                     self._cmb_trigger.currentIndexChanged,
-                    self._spn_exposure.valueChanged):
+                    self._spn_target_hz.valueChanged):
             sig.connect(lambda *_: self._refresh_rate())
         self._refresh_rate()
-
-    def _on_hz_changed(self, hz: float) -> None:
-        """Rate always caps Exposure's ceiling; Link also drives it to the cap."""
-        if self._hz_syncing:
-            return
-        self._hz_syncing = True
-        try:
-            max_us = 1e6 / hz if hz > 0 else self._spn_exposure.maximum()
-            self._spn_exposure.setMaximum(max_us)   # Qt clamps the value too
-            if self._chk_hz_link.isChecked():
-                self._spn_exposure.setValue(max_us)
-        finally:
-            self._hz_syncing = False
-
-    def _on_exposure_changed_for_hz(self, us: float) -> None:
-        """Only Link pulls Rate along; otherwise Rate stays the operator's cap."""
-        if self._hz_syncing or not self._chk_hz_link.isChecked():
-            return
-        self._hz_syncing = True
-        try:
-            self._spn_hz.setValue(1e6 / us if us > 0 else self._spn_hz.maximum())
-        finally:
-            self._hz_syncing = False
-
-    def _on_hz_link_toggled(self, linked: bool) -> None:
-        if linked:
-            self._on_hz_changed(self._spn_hz.value())
 
     def _refresh_rate(self) -> None:
         cfg = self.get_config()
         self._refresh_recordability(cfg)
-        # Prefer the camera's own measured rate once a capture is running — it
-        # can't disagree with the real link the way the datasheet estimate can.
+        exp = f"exposure {cfg.exposure_us:.0f} µs"
+        # The camera's own figure once running beats the datasheet estimate.
         if self._measured is not None:
-            hz, limited = self._measured
-            note = " (exposure-limited)" if limited else ""
-            self._lbl_rate.setText(f"{hz:.1f} Hz — measured by camera{note}")
+            hz, _ = self._measured
+            self._lbl_rate.setText(f"{hz:.1f} Hz — camera · {exp}")
             self._lbl_rate.setStyleSheet("color:#2e7d32; font-weight:bold;")
             return
         link = LINK_LABEL.get(cfg.link, cfg.link)
-        if cfg.trigger_mode == EXTERNAL_EDGE:
-            self._lbl_rate.setText(
-                f"{cfg.rate_hz:.1f} Hz — External edge: exposure and readout "
-                f"run back to back (Internal would be {cfg.expected_hz:.1f})")
-            self._lbl_rate.setStyleSheet("color:#c47f00; font-weight:bold;")
-        elif cfg.exposure_limited:
-            self._lbl_rate.setText(
-                f"{cfg.expected_hz:.1f} Hz — limited by exposure "
-                f"({link} readout allows {cfg.readout_hz:.1f}; "
-                f"use ≤{cfg.max_exposure_us:.0f} µs)")
-            self._lbl_rate.setStyleSheet("color:#c47f00; font-weight:bold;")
-        else:
-            self._lbl_rate.setText(
-                f"{cfg.expected_hz:.1f} Hz — at {link} readout limit")
-            self._lbl_rate.setStyleSheet("color:#2e7d32;")
+        text = (f"{cfg.rate_hz:.1f} Hz · {exp} "
+                f"(max ~{cfg.ceiling_hz:.0f} Hz on {link})")
+        if cfg.rate_unreachable:
+            text += f" · {cfg.target_hz:.0f} REQUESTED — NOT REACHABLE"
+        self._lbl_rate.setText(text)
+        self._lbl_rate.setStyleSheet(
+            "color:#c62828; font-weight:bold;" if cfg.rate_unreachable
+            else "color:#2e7d32;")
 
     def _refresh_recordability(self, cfg: AcqConfig | None = None) -> None:
         """Say whether a recording of this configuration fits the writer.
@@ -262,8 +225,8 @@ class SettingsPanel(QWidget):
         self._lbl_rec.setText(
             f"⚠ {mbps:.0f} MB/s — only ~{100 * keep:.0f}% of frames can be "
             f"written (~{WRITER_MBPS:.0f} MB/s). Live view is unaffected. "
-            f"Use 2×2 binning, a smaller ROI, or cap the rate near "
-            f"{cap:.0f} Hz (exposure ≥ {1e6 / cap:.0f} µs).")
+            f"Use 2×2 binning, a smaller ROI, or a capture rate ≤ "
+            f"{cap:.0f} Hz.")
         self._lbl_rec.setStyleSheet("color:#c62828; font-weight:bold;")
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -283,14 +246,15 @@ class SettingsPanel(QWidget):
         return AcqConfig(
             preset_key   = self._cmb_preset.currentData(),
             binning      = self._cmb_binning.currentData(),
-            exposure_us  = self._spn_exposure.value(),
             trigger_mode = self._cmb_trigger.currentText(),
             link         = self._cfg.link,
+            target_hz    = self._spn_target_hz.value(),
+            burst_frames = self._spn_burst.value(),
             show_lut     = self._chk_lut.isChecked(),
             auto_levels  = self._chk_auto.isChecked(),
             preview_avg  = self._spn_preview_avg.value(),
             led_follow_live = self._chk_led_follow.isChecked(),
-        )
+        ).fit_exposure()
 
     def set_led(self, on: bool) -> None:
         """Sync the checkbox to actual state without re-emitting led_toggled
@@ -302,8 +266,14 @@ class SettingsPanel(QWidget):
 
     def set_running(self, running: bool) -> None:
         """Lock structural settings (resolution/binning/trigger) while running."""
+        self._running = running
         for w in self._locked:
             w.setEnabled(not running)
+        self._sync_burst_enabled()
+
+    def _sync_burst_enabled(self, *_a) -> None:
+        self._spn_burst.setEnabled(
+            not self._running and self._cmb_trigger.currentText() == EXTERNAL_EDGE)
 
     def set_preset(self, key: str) -> None:
         """Programmatically select a resolution preset (e.g. forcing full
@@ -327,12 +297,15 @@ class SettingsPanel(QWidget):
         if mode in TRIGGER_MODES:
             self._cmb_trigger.setCurrentText(mode)
 
-    def set_exposure(self, us: float) -> None:
-        """Programmatically set exposure (e.g. from a Mode preset). Hot, like
-        the operator's own spinbox edit — the spinbox's own range clamps it,
-        and Rate/Link move with it exactly as they would from a manual edit."""
-        self._spn_exposure.setValue(us)
+    def set_burst_frames(self, n: int) -> None:
+        """Frames per edge (a routine sets it). Structural: next Start."""
+        self._spn_burst.setValue(int(n))
+
+    def set_rate(self, hz: float) -> None:
+        """Capture rate (e.g. from a Mode preset); hot, like a manual edit."""
+        self._spn_target_hz.setValue(hz)
 
     @property
-    def exposure_us(self) -> float:
-        return self._spn_exposure.value()
+    def rate_request_hz(self) -> float:
+        """What the box holds; 0 = Max."""
+        return self._spn_target_hz.value()

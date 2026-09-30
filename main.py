@@ -343,6 +343,12 @@ class MainWindow(QMainWindow):
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
         return self._call(key, "set_external_trigger", on)
 
+    def set_camera_burst(self, key: str, n: int) -> bool | None:
+        return self._call(key, "set_burst_frames", n)
+
+    def camera_burst_frames(self, key: str) -> int | None:
+        return self._call(key, "burst_frames_done")
+
     def rearm_camera_trigger(self, key: str) -> bool | None:
         return self._call(key, "rearm_trigger")
 
@@ -363,7 +369,8 @@ class MainWindow(QMainWindow):
           dmd_all_on: true
           dmd_sub_sampling: n            (1-10, "1 in n" pixels off; 1 = off)
           camera_presets: {key: preset}  (a preset key, or "full")
-          camera_exposure_us: {key: us}
+          camera_rate_hz: {key: hz}      (0 = Max; exposure follows)
+          camera_exposure_us: {key: us}  (legacy: read as rate 1e6/us)
           camera_binning: {key: n}       (1/2/4)
           camera_trigger: {key: bool}    (True = External edge)
 
@@ -382,8 +389,11 @@ class MainWindow(QMainWindow):
             dmd.set_sub_sampling(int(sub_sampling))
         for key, preset in recipe.get("camera_presets", {}).items():
             self.set_camera_preset(key, resolve_preset_key(preset))
-        for key, us in recipe.get("camera_exposure_us", {}).items():
-            self._call(key, "set_exposure", us)
+        rates = {k: 1e6 / us for k, us in
+                 recipe.get("camera_exposure_us", {}).items() if us > 0}
+        rates.update(recipe.get("camera_rate_hz", {}))
+        for key, hz in rates.items():
+            self._call(key, "set_rate", hz)
         for key, n in recipe.get("camera_binning", {}).items():
             self.set_camera_binning(key, n)
         for key, on in recipe.get("camera_trigger", {}).items():
@@ -438,9 +448,10 @@ class MainWindow(QMainWindow):
             recipe["camera_presets"] = {"voltage_cam": preset_alias(key)}
             captured.append(f"voltage_cam preset {key!r}")
         if vcam is not None and vcam.panel is not None:
-            us = vcam.panel.exposure_us
-            recipe["camera_exposure_us"] = {"voltage_cam": us}
-            captured.append(f"voltage_cam exposure {us:g} µs")
+            hz = vcam.panel.rate_request_hz
+            recipe["camera_rate_hz"] = {"voltage_cam": hz}
+            captured.append(f"voltage_cam rate {hz:g} Hz" if hz > 0
+                            else "voltage_cam rate Max")
         if vcam is not None and hasattr(vcam, "binning"):
             n = vcam.binning()
             recipe["camera_binning"] = {"voltage_cam": n}

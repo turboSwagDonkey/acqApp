@@ -1132,6 +1132,85 @@ def check_trigger_gate(r: Report) -> None:
             f"({eng.fault!r})")
 
 
+def check_burst(r: Report) -> None:
+    """Burst mode: the camera captures N frames per edge and re-arms itself,
+    so a Record right after a Trigger ends on the burst, not the clock."""
+    import dataclasses
+    from acqApp.routines.estimate import burst_frames
+
+    pair = [Step(kind="trigger"), Step(kind="record", length=3.0, unit="seconds")]
+    r.check(burst_frames(Routine(steps=pair), 500.0) == (1500, ""),
+            f"a 3 s Record at 500 Hz bursts 1500 frames "
+            f"({burst_frames(Routine(steps=pair), 500.0)})")
+    two = Routine(steps=pair + [Step(kind="trigger"),
+                                Step(kind="record", length=1500, unit="frames")])
+    r.check(burst_frames(two, 500.0) == (1500, ""),
+            "seconds and frames Records that agree give one N")
+    odd = Routine(steps=pair + [Step(kind="trigger"),
+                                Step(kind="record", length=2.0, unit="seconds")])
+    n, why = burst_frames(odd, 500.0)
+    r.check(n == 0 and "same length" in why and "1000" in why,
+            f"Records of different lengths are refused ({why!r})")
+    r.check(burst_frames(Routine(steps=pair), None)[0] == 0
+            and burst_frames(Routine(steps=pair), None)[1],
+            "a seconds Record with no frame rate is refused, not guessed")
+    loose = Routine(steps=[Step(kind="trigger"),
+                           Step(kind="wait", length=1.0, unit="seconds")])
+    r.check(burst_frames(loose, 500.0) == (0, ""),
+            "control: no Trigger->Record pair, no burst")
+
+    N, HZ = 80, 100.0                       # 0.8 s of burst vs a 0.5 s Record
+    routine = Routine(
+        steps=[Step(kind="trigger"),
+               Step(kind="record", length=0.5, unit="seconds")],
+        groups=[Group(start=0, end=1, repeats=2)])
+
+    def run(burst: bool, stall_at: int | None = None):
+        rig = FakeRig(hz=HZ)
+        rig.report_gate = True
+        edge = {"t": None}
+
+        def count() -> int:
+            if edge["t"] is None:
+                return 0
+            got = min(N, int((rig.t - edge["t"]) * HZ))
+            return got if stall_at is None else min(got, stall_at)
+
+        hooks = dataclasses.replace(rig.hooks(), burst_frames=count)
+        eng = RoutineEngine(routine, hooks, trigger_timeout_s=5.0,
+                            burst_frames=N if burst else 0)
+        eng.start()
+        lengths, rec_t0 = [], None
+        while rig.t < 30 and eng.phase not in (Phase.DONE, Phase.PAUSED):
+            if eng.phase == Phase.WAITING and rig.gated:
+                rig.fire_trigger()
+                edge["t"] = rig.t
+            step = eng.step
+            if eng.phase == Phase.RUNNING and step is not None                     and step.kind == "record":
+                rec_t0 = rig.t if rec_t0 is None else rec_t0
+            elif rec_t0 is not None:
+                lengths.append(rig.t - rec_t0)
+                rec_t0 = None
+            rig.advance()
+            eng.tick()
+        if rec_t0 is not None:
+            lengths.append(rig.t - rec_t0)
+        return eng, lengths
+
+    eng, lengths = run(burst=False)
+    r.check(eng.phase == Phase.DONE and len(lengths) == 2
+            and all(abs(x - 0.5) < 0.05 for x in lengths),
+            f"control: without burst the Record runs its 0.5 s ({lengths})")
+    eng, lengths = run(burst=True)
+    r.check(eng.phase == Phase.DONE and len(lengths) == 2
+            and all(abs(x - N / HZ) < 0.05 for x in lengths),
+            f"burst: each Record ends when its {N} frames are in "
+            f"({[round(x, 2) for x in lengths]} s, {eng.fault!r})")
+    eng, _ = run(burst=True, stall_at=40)
+    r.check(eng.phase == Phase.PAUSED and "40/80" in eng.fault,
+            f"a burst that stops short pauses the routine ({eng.fault!r})")
+
+
 def check_prepare_recording(r: Report) -> None:
     """A `trigger` step followed by a Record step asks for that recording's
     file BEFORE it re-arms (a .dcimg can only be bound while capture is
@@ -2875,6 +2954,7 @@ def _part_routines() -> int:
         check_ttl_start_trigger(r)
         check_trigger_step(r)
         check_trigger_gate(r)
+        check_burst(r)
         check_prepare_recording(r)
         check_prepared_adapter(r)
         check_first_trial_kept(r)

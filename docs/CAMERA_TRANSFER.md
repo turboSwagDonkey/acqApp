@@ -72,7 +72,9 @@ The venv is created/repaired by `main.py`'s bootstrap on first run. Vendor
 - **GUI pulls** the newest frame with `get_latest()` (returns once, else None).
 - **Recording sink** attached via `set_sink(fn)`; each frame is stamped on the
   shared clock at acquisition time by the `Recorder`.
-- **Exposure** is hot-changeable via `set_exposure()` (queued, applied next loop).
+- **Capture rate** is the one control and is hot via `set_rate()` (queued, applied
+  next loop); exposure is always the longest that rate allows
+  (`presets.fit_exposure`). `set_exposure(us)` remains as rate `1e6/us`.
   Resolution/binning/trigger are structural (locked while running).
 - **`cam=` parameter**: pass an already-open `DCAMCamera` to reuse it (worker
   won't open or close it); omit to have the worker open/close its own by index.

@@ -112,8 +112,11 @@ def preset_alias(key: str) -> str:
 
 def readout_hz(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
     """Datasheet readout ceiling for `rows` rows. Log-log interpolated: below
-    ~128 rows fixed overhead bends the curve off const/rows."""
-    eff = max(1.0, rows / max(binning, 1))
+    ~128 rows fixed overhead bends the curve off const/rows.
+
+    `binning` is IGNORED (kept positional): 512 rows at bin 1/2/4 all read out
+    in 1.893 ms (2026-09-28); dividing by it showed bin 4 at 1980 Hz vs 528."""
+    eff = max(1.0, float(rows))
     tbl = _SORTED[CXP if link == CXP else USB]
     if eff <= tbl[0][0]:
         return tbl[0][1]
@@ -136,25 +139,101 @@ EXTERNAL_EDGE: str = "External edge"
 TRIGGER_MODES: List[str] = ["Internal (free-running)", EXTERNAL_EDGE]
 DEFAULT_TRIGGER: str = "Internal (free-running)"
 
-# External edge runs off MASTER PULSE, which can't overlap exposure with
-# readout, so its shortest interval is readout + exposure. Asking for less
-# doesn't cap the rate, it silently HALVES it (probe, 2026-09-28; pad held
-# across 8 configs).
-MP_INTERVAL_PAD_S = 0.0001
+# External edge runs off MASTER PULSE. Under TRIGGER ACTIVE=EDGE exposure and
+# readout don't overlap, so the shortest interval is readout + exposure; under
+# SYNCREADOUT they pipeline and exposure drops out (2026-09-28: same floor at
+# 200/500/1500 us). Asking for less than the floor doesn't cap the rate, it
+# silently HALVES it. The pad covers a further ~40-57 us the probe found above
+# readout (+ exposure) in all 8 configs (2026-09-28). Was 100 us; 70 leaves
+# 13 us over the worst measured — UNVERIFIED on the rig (2026-09-30).
+MP_INTERVAL_PAD_S = 0.00007
+
+# MASTER PULSE MODE=BURST: one edge -> a fixed pulse count, then quiet and
+# re-armed with no stop. Under SYNCREADOUT a pulse ENDS the running exposure,
+# so the first pulse after a start yields nothing and a later burst's first
+# frame is the exposure left open since the previous burst (probe, 2026-09-30:
+# 900 pulses -> 899 frames, then 900). One extra pulse keeps N real frames.
+BURST_TIMES_MAX = 65535
 
 
-def master_pulse_interval(period_s: float, exposure_us: float) -> float:
-    """Shortest MASTER PULSE INTERVAL for Internal's frame period `period_s`."""
-    return period_s + exposure_us * 1e-6 + MP_INTERVAL_PAD_S
+def burst_pulses(n: int, syncreadout: bool) -> int:
+    return n + 1 if syncreadout else n
+
+
+def burst_stale(index: int, n: int, syncreadout: bool) -> bool:
+    """Frame `index` (since capture start) is a burst's leftover exposure."""
+    return syncreadout and index >= n and (index - n) % (n + 1) == 0
+
+
+def burst_next_boundary(acquired: int, n: int, syncreadout: bool) -> int:
+    """Frame count (since start) at the end of the burst `acquired` is in, or
+    `acquired` itself if it sits between bursts."""
+    if acquired <= 0:
+        return 0
+    if acquired <= n:
+        return n
+    p = burst_pulses(n, syncreadout)
+    return n + -(-(acquired - n) // p) * p
+
+
+def burst_stale_indices(total: int, n: int, syncreadout: bool) -> list[int]:
+    """Every leftover-exposure frame among the first `total` since a start."""
+    return list(range(n, total, n + 1)) if syncreadout and n > 0 else []
+
+
+# Slack on the datasheet ceiling before a requested rate counts as unreachable
+# (512 rows: table 524 Hz, measured 528.2).
+RATE_ESTIMATE_TOLERANCE: float = 1.05
+
+# Exposure floor for the EDGE fallback at its ceiling, where the frame period
+# leaves no room for more.
+MIN_EXPOSURE_US: float = 10.0
+
+
+def master_pulse_interval(period_s: float, exposure_us: float,
+                          syncreadout: bool = False,
+                          target_hz: float = 0.0) -> float:
+    """MASTER PULSE INTERVAL for Internal's frame period `period_s`: the floor,
+    or 1/`target_hz` when that's slower. EDGE (the default) is the safe floor
+    for a camera that refused SYNCREADOUT."""
+    floor = period_s + MP_INTERVAL_PAD_S
+    if not syncreadout:
+        floor += exposure_us * 1e-6
+    return max(floor, 1.0 / target_hz) if target_hz > 0 else floor
+
+
+def fit_exposure(readout_s: float, target_hz: float, master_pulse: bool,
+                 syncreadout: bool = True) -> tuple[float, float]:
+    """(exposure_s, frame period_s): the longest exposure that still holds
+    `target_hz` (0 = as fast as possible), clamped to what the camera can do.
+
+    Internal: the period is max(readout, exposure), so exposure = the period.
+    SYNCREADOUT: exposure overlaps readout, so it gets the whole interval.
+    EDGE: they're back to back, so exposure gets what readout + pad leave."""
+    want = 1.0 / target_hz if target_hz > 0 else 0.0
+    if not master_pulse:
+        t = max(readout_s, want)
+        return t, t
+    floor = readout_s + MP_INTERVAL_PAD_S
+    if syncreadout:
+        t = max(floor, want)
+        return t, t
+    exp = max(want - floor, MIN_EXPOSURE_US * 1e-6)
+    return exp, floor + exp
 
 
 @dataclass
 class AcqConfig:
     preset_key:   str   = DEFAULT_PRESET
     binning:      int   = DEFAULT_BINNING
+    # Derived from target_hz by fit_exposure() — never set by hand.
     exposure_us:  float = 10_000.0
     trigger_mode: str   = DEFAULT_TRIGGER
     link:         str   = DEFAULT_LINK      # for estimates only
+    # Capture rate, both trigger modes; 0 = as fast as this preset allows.
+    target_hz:    float = 0.0
+    # External edge only: frames per edge (BURST); 0 = until re-armed (START).
+    burst_frames: int   = 0
 
     # ── preview (display only; persisted as preferences) ──
     show_lut:     bool = True
@@ -177,10 +256,9 @@ class AcqConfig:
         h, w = self.frame_shape
         return max(int(h) * int(w) * 2, 1)
 
-    # Hz = min(readout, 1/exposure); both surfaced so the UI can say which binds.
     @property
     def readout_hz(self) -> float:
-        return readout_hz(self.preset.vsize, self.binning, self.link)
+        return readout_hz(self.preset.vsize, link=self.link)
 
     @property
     def exposure_hz(self) -> float:
@@ -188,23 +266,45 @@ class AcqConfig:
 
     @property
     def expected_hz(self) -> float:
+        """Internal (free-running) rate at this exposure."""
         return min(self.readout_hz, self.exposure_hz)
 
     @property
+    def master_pulse(self) -> bool:
+        return self.trigger_mode == EXTERNAL_EDGE
+
+    @property
+    def burst(self) -> bool:
+        return self.master_pulse and self.burst_frames > 0
+
+    @property
+    def trigger_hz(self) -> float:
+        """External edge ceiling assuming SYNCREADOUT, so exposure doesn't
+        enter it. A camera that refuses it runs slower; the worker says so."""
+        return 1.0 / master_pulse_interval(
+            1.0 / max(self.readout_hz, 1e-9), self.exposure_us, syncreadout=True)
+
+    @property
+    def ceiling_hz(self) -> float:
+        return self.trigger_hz if self.master_pulse else self.readout_hz
+
+    @property
+    def rate_unreachable(self) -> bool:
+        """`target_hz` beyond the ceiling (with estimate slack): clamped."""
+        return (self.target_hz > 0.0
+                and self.target_hz > self.ceiling_hz * RATE_ESTIMATE_TOLERANCE)
+
+    @property
     def rate_hz(self) -> float:
-        """What this config runs at: External edge is slower than Internal
-        (1/(readout + exposure), rig 2026-09-30: 446 Hz where Internal's
-        figure said 528)."""
-        if self.trigger_mode != EXTERNAL_EDGE:
-            return self.expected_hz
-        return 1.0 / master_pulse_interval(1.0 / self.readout_hz,
-                                           self.exposure_us)
+        """What this config runs at (estimate)."""
+        if self.target_hz > 0.0 and not self.rate_unreachable:
+            return self.target_hz
+        return self.ceiling_hz
 
-    @property
-    def exposure_limited(self) -> bool:
-        return self.exposure_hz < self.readout_hz
-
-    @property
-    def max_exposure_us(self) -> float:
-        """Longest exposure that still reaches the readout ceiling."""
-        return 1e6 / max(self.readout_hz, 1e-9)
+    def fit_exposure(self) -> "AcqConfig":
+        """Set `exposure_us` to the longest the capture rate allows (datasheet
+        estimate; the worker refits from the camera's own readout)."""
+        exp_s, _ = fit_exposure(1.0 / max(self.readout_hz, 1e-9),
+                                self.target_hz, self.master_pulse)
+        self.exposure_us = exp_s * 1e6
+        return self
