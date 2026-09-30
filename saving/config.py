@@ -180,18 +180,6 @@ class SaveConfig:
                                 _routine_stem(fov, trial),
                                 self._dir_for, unique=unique)
 
-    def void_routine_trial(self, fov: str, trial: int, when: datetime | None,
-                           info: dict) -> Path:
-        """A `FOV<fov>_T<trial>_VOID` folder holding `void.json`: the trial
-        whose trigger was missed, so numbering stays matched to the rig's."""
-        path = self._resolve_at(self.routine_base(when),
-                                f"{_routine_stem(fov, trial)}_VOID",
-                                self._dir_for, unique=True)
-        path.mkdir(parents=True)
-        (path / "void.json").write_text(json.dumps(info, indent=2),
-                                        encoding="utf-8")
-        return path
-
 
 def _first_free(base: Path, stem: str,
                 build: Callable[[Path, str], Path]) -> Path:

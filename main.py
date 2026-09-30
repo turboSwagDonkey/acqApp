@@ -1215,13 +1215,8 @@ class MainWindow(QMainWindow):
     def recording_path(self) -> Path | None:
         return self._rec_path if self._recorder is not None else None
 
-    def void_routine_trial(self, fov: str, trial: int, info: dict) -> Path:
-        return self._save_panel.settings.void_routine_trial(
-            fov, trial, datetime.now(), info)
-
-    def rename_routine_trial(self, path: Path, fov: str, trial: int) -> Path:
-        from acqApp.saving.config import rename_trial, routine_stem
-        return rename_trial(path, routine_stem(fov, trial))
+    def routine_folder(self) -> Path:
+        return self._save_panel.settings.routine_base(datetime.now())
 
     # ── Sync callbacks ──────────────────────────────────────────────────────────
 

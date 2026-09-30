@@ -275,10 +275,6 @@ class ModuleHost(Protocol):
         """The file/folder being recorded to, or None."""
         ...
 
-    def void_routine_trial(self, fov: str, trial: int, info: dict) -> Any:
-        """Create the `_VOID` marker folder for a trial whose trigger was missed."""
-        ...
-
-    def rename_routine_trial(self, path: Any, fov: str, trial: int) -> Any:
-        """Renumber a closed recording; raises OSError while it's still open."""
+    def routine_folder(self) -> Any:
+        """Today's folder for routine trials (where the edge log goes)."""
         ...

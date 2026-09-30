@@ -1182,78 +1182,6 @@ def check_prepare_recording(r: Report) -> None:
             f"the last cycle's trigger prepares nothing ({prep3})")
 
 
-def check_missed_edges(r: Report) -> None:
-    """A missed edge is inferred from the gap: the rig's period is learned
-    from the run, and one late edge reports the ones it hid."""
-    from dataclasses import replace
-    from acqApp.routines.engine import EdgeGaps
-
-    g = EdgeGaps()
-    got = [g.edge(0, t)[0] for t in (0.0, 2.0, 4.0, 6.0)]
-    r.check(got == [0, 0, 0, 0], f"regular edges report nothing ({got})")
-    r.check(g.edge(0, 10.0)[0] == 1, "a gap of 2 periods hides 1 edge")
-    r.check(g.edge(0, 16.0)[0] == 2, "…3 periods hide 2")
-    r.check(g.edge(0, 18.9)[0] == 0, "control: 1.45 periods is jitter, not a miss")
-    g.forget_last()
-    r.check(g.edge(0, 60.0)[0] == 0,
-            "a gap spanning a pause is never judged")
-    early = EdgeGaps()
-    got = [early.edge(0, t)[0] for t in (0.0, 2.0, 8.0)]
-    r.check(got == [0, 0, 0],
-            f"nothing is judged before {3} gaps are learned ({got})")
-    h = EdgeGaps()
-    for t in (0.0, 2.0, 4.0, 6.0):
-        h.edge(0, t)
-    r.check(h.edge(1, 100.0)[0] == 0,
-            "each trigger step learns its own period")
-
-    # End to end on the fake rig: edges every 2 s; one re-arm is slow enough
-    # (2.5 s) that its edge arrives while the camera is still stopped.
-    routine = Routine(
-        steps=[Step(kind="trigger"),
-               Step(kind="record", length=0.5, unit="seconds")],
-        groups=[Group(start=0, end=1, repeats=9)])
-
-    def run(slow_arm: int | None):
-        rig = FakeRig(hz=100.0)
-        rig.report_gate = True
-        base_arm = FakeRig.arm_trigger.__get__(rig)
-
-        def arm():
-            rig.rearm_latency = 2.5 if rig.rearms == slow_arm else 0.3
-            base_arm()
-        rig.arm_trigger = arm
-        calls = []
-        hooks = replace(rig.hooks(), missed_triggers=lambda *a: calls.append(a))
-        eng = RoutineEngine(routine, hooks, trigger_timeout_s=30.0)
-        eng.start()
-        edges = [1.0 + 2.0 * k for k in range(14)]
-        while rig.t < 40.0 and eng.phase not in (Phase.DONE, Phase.PAUSED):
-            if edges and rig.t >= edges[0]:
-                edges.pop(0)
-                if rig.gated:
-                    rig.fire_trigger()      # else lost: the camera is stopped
-            rig.advance()
-            eng.tick()
-        return eng, calls
-
-    eng, calls = run(slow_arm=5)
-    r.check(eng.phase == Phase.DONE, f"the routine still finishes ({eng.phase}, "
-                                     f"{eng.fault!r})")
-    r.check(len(calls) == 1 and calls[0][0] == 1,
-            f"the edge after the lost one reports 1 missed ({calls})")
-    if calls:
-        n, nxt, gap, typical = calls[0]
-        r.check(nxt is not None and nxt.region == 0,
-                f"…naming the recording that edge starts ({nxt})")
-        r.check(abs(gap - 4.0) < 0.1 and abs(typical - 2.0) < 0.1,
-                f"…with a 4 s gap against a 2 s period ({gap:.2f}, {typical:.2f})")
-    r.check(eng.missed_triggers == 1, "the engine counts it")
-    eng2, calls2 = run(slow_arm=None)
-    r.check(eng2.phase == Phase.DONE and not calls2,
-            f"control: no slow re-arm, no misses reported ({calls2})")
-
-
 def check_first_trial_kept(r: Report) -> None:
     """The rig sends one edge per trial. A routine with trigger steps must not
     arm on trial 1's edge and then wait for trial 2's."""
@@ -1297,84 +1225,77 @@ def check_first_trial_kept(r: Report) -> None:
             == "WAITING FOR TRIGGER", "…and WAITING once it's safe")
 
 
-def check_missed_trigger_files(r: Report) -> None:
-    """Missed trials get a _VOID folder; the edge's data takes the next
-    number. With .dcimg its folder is already open, so it's renamed once
-    closed, retrying while the camera holds it."""
+def check_edge_log(r: Report) -> None:
+    """Every edge becomes one CSV row, naming the trial file its recording
+    opened: at once with .dcimg (opened before the edge), after the roll
+    with TIFF. The log is what bpod_match aligns to the stim rig's."""
+    import csv
+    from dataclasses import replace
     from types import SimpleNamespace
 
     from acqApp.adapters.routines import RoutinesModule
     from acqApp.routines.engine import RecordingRun
 
-    voids, renamed, busy = [], [], {"n": 1}
-    cur = {"path": Path("FOVcustom_T19")}
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_edgelog_"))
+    cur = {"path": tmp / "FOVcustom_T1"}
+    win = SimpleNamespace(recording_path=lambda: cur["path"],
+                          routine_folder=lambda: tmp)
+    a = RoutinesModule.__new__(RoutinesModule)
+    a.win = win
+    a._routine = Routine(steps=[Step(kind="trigger"),
+                                Step(kind="record", length=1, unit="seconds")])
+    a._trial_count = {0: 1}
+    a._edge_log = None
+    a._edge_n = 0
+    a._pending_edge = None
+    a._rec = SimpleNamespace(put=lambda *_a, **_k: None)
+    a._filed = 0
+    a._status = lambda m: None
 
-    def rename(path, fov, trial):
-        if busy["n"]:
-            busy["n"] -= 1
-            raise PermissionError("still open")
-        renamed.append((path, trial))
-        return Path(f"FOV{fov}_T{trial}")
+    def run(cycle):
+        return RecordingRun(region=0, start_index=1, end_index=1, cycle=cycle,
+                            attempt=1, t0=0.0, frame0=None)
 
-    win = SimpleNamespace(
-        recording_path=lambda: cur["path"],
-        void_routine_trial=lambda fov, t, info: (voids.append((t, info)),
-                                                 Path(f"T{t}_VOID"))[1],
-        rename_routine_trial=rename)
+    a._on_edge(1.25, run(0))
+    a._put(run(0), opening=True)             # T1's file opens
+    cur["path"] = tmp / "FOVcustom_T2"
+    a._trial_count[0] = 2
+    a._on_edge(8.5, run(1))
+    a._put(run(1), opening=True)
+    a._on_edge(15.0, None)                   # a trigger with no record after
+    rows = list(csv.DictReader(open(a._edge_log, encoding="utf-8")))
+    r.check([row["edge"] for row in rows] == ["1", "2", "3"],
+            f"one row per edge ({[row['edge'] for row in rows]})")
+    r.check(rows[0]["trial"] == "1" and rows[0]["path"].endswith("T1")
+            and rows[1]["trial"] == "2" and rows[1]["path"].endswith("T2"),
+            f"…each naming its trial and file ({rows[:2]})")
+    r.check(float(rows[1]["session_s"]) == 8.5 and rows[2]["path"] == "",
+            "…with the edge's time, and no file where none opened")
 
-    def adapter(save_mode: str):
-        a = RoutinesModule.__new__(RoutinesModule)
-        a.win = win
-        a._routine = Routine(steps=[Step(kind="trigger"),
-                                    Step(kind="record", length=1,
-                                         unit="seconds")],
-                             save_mode=save_mode)
-        a._prepared = None
-        a._trial_count = {}
-        a._renames = []
-        a._voided = []
-        a._status = lambda m: None
-        return a
-
-    run = RecordingRun(region=0, start_index=1, end_index=1, cycle=0,
-                       attempt=1, t0=0.0, frame0=None)
-
-    a = adapter("single")
-    a._prepared = (0, 1)                 # .dcimg: T19 opened before the edge
-    a._trial_count = {0: 19}
-    a._on_missed_triggers(1, run, 4.0, 2.0)
-    r.check([t for t, _i in voids] == [19],
-            f".dcimg: the missed trial 19 is voided ({voids})")
-    r.check(voids and voids[0][1]["data_in_trial"] == 20,
-            "…its note says where the data went")
-    r.check(a._trial_count[0] == 20 and a._voided == [19],
-            f"…and the next file will be trial 21 ({a._trial_count})")
-    a._apply_renames()
-    r.check(not renamed and len(a._renames) == 1,
-            "the open folder is not renamed while still recording into it")
-    cur["path"] = Path("FOVcustom_T21")  # rolled on
-    a._apply_renames()
-    r.check(not renamed and len(a._renames) == 1,
-            "a rename refused (camera still holds it) is retried")
-    a._apply_renames()
-    r.check(renamed == [(Path("FOVcustom_T19"), 20)] and not a._renames,
-            f"…then T19's folder becomes trial 20 ({renamed})")
-
-    voids.clear()
-    b = adapter("per_repeat")
-    b._trial_count = {0: 18}             # TIFF: this edge's file opens later
-    b._on_missed_triggers(2, run, 6.0, 2.0)
-    r.check([t for t, _i in voids] == [19, 20] and not b._renames,
-            f"per-repeat TIFF: trials 19-20 voided, nothing to rename ({voids})")
-    r.check(b._trial_for(0) == 21,
-            "…and the roll numbers this edge's file 21")
-
-    voids.clear()
-    c = adapter("single")
-    c._trial_count = {0: 3}
-    c._on_missed_triggers(1, run, 4.0, 2.0)
-    r.check(not voids and c._trial_count == {0: 3},
-            "control: one file for the whole routine voids nothing")
+    # The engine reports every edge, with the run it starts.
+    routine = Routine(steps=[Step(kind="trigger"),
+                             Step(kind="record", length=0.2, unit="seconds")],
+                      groups=[Group(start=0, end=1, repeats=2)])
+    rig = FakeRig(hz=100.0)
+    rig.report_gate = True
+    seen = []
+    eng = RoutineEngine(routine, replace(rig.hooks(),
+                                         edge=lambda t, nxt: seen.append(nxt)))
+    eng.start()
+    for _ in range(4000):
+        if eng.phase == Phase.DONE:
+            break
+        if eng.phase == Phase.WAITING and rig.gated:
+            for _ in range(int(0.3 / DT) + 10):
+                rig.advance()
+                eng.tick()
+            rig.fire_trigger()
+        rig.advance()
+        eng.tick()
+    r.check(len(seen) == 2 and all(n is not None and n.start_index == 1
+                                   for n in seen),
+            f"the engine reports each edge with the record run it starts "
+            f"({len(seen)})")
 
 
 def check_prepared_adapter(r: Report) -> None:
@@ -2956,9 +2877,8 @@ def _part_routines() -> int:
         check_trigger_gate(r)
         check_prepare_recording(r)
         check_prepared_adapter(r)
-        check_missed_edges(r)
         check_first_trial_kept(r)
-        check_missed_trigger_files(r)
+        check_edge_log(r)
         check_first_file_doomed(r)
         check_arm_camera_trigger(r)
         check_estimate(r)

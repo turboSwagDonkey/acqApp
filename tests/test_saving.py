@@ -161,19 +161,10 @@ def check_benchmark_drive(r: Report, tmp: Path) -> None:
             f"an unwritable/missing path returns None, not a crash (got {missing!r})")
 
 
-def check_void_and_renumber(r: Report, tmp: Path) -> None:
-    """A missed trigger's _VOID folder, and renumbering a closed trial in each
-    save layout. A file still open must refuse the rename and change nothing."""
+def check_renumber(r: Report, tmp: Path) -> None:
+    """Renumbering a closed trial in each save layout. A file still open must
+    refuse the rename and change nothing."""
     from acqApp.saving.config import rename_trial
-
-    cfg = SaveConfig(folder=str(tmp / "void"), mouse_id="m1")
-    v = cfg.void_routine_trial("2", 19, WHEN, {"reason": "missed trigger"})
-    r.check(v.name == "FOV2_T19_VOID" and v.parent == cfg.routine_base(WHEN),
-            f"the VOID folder sits beside the trials ({v})")
-    r.check(json.loads((v / "void.json").read_text())["reason"] == "missed trigger",
-            "…with a note saying why")
-    v2 = cfg.void_routine_trial("2", 19, WHEN, {})
-    r.check(v2.name == "FOV2_T19_VOID_001", f"a second one never overwrites ({v2.name})")
 
     # split folder
     base = tmp / "split"
@@ -237,7 +228,7 @@ def _part_paths() -> int:
         check_unique(r, tmp)
         check_writer_refuses(r, tmp)
         check_benchmark_drive(r, tmp)
-        check_void_and_renumber(r, tmp)
+        check_renumber(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
@@ -551,10 +542,105 @@ def _part_chunks() -> int:
     return r.finish()
 
 
+# ═══ bpod (saving/bpod_match.py) ════════════════════════════════════════
+
+def _session(n: int, seed: int = 3) -> np.ndarray:
+    """Bpod trigger times with this task's outcome-dependent trial lengths
+    (hit 6.7-10.2, CR 7.1, FA 9.2-13.2, miss 14.1 s) plus overhead."""
+    rng = np.random.default_rng(seed)
+    kind = rng.choice(4, n)
+    dur = np.where(kind == 0, rng.uniform(6.7, 10.2, n),
+          np.where(kind == 1, 7.1,
+          np.where(kind == 2, rng.uniform(9.2, 13.2, n), 14.1)))
+    return 100.0 + np.concatenate([[0.0], np.cumsum(dur[:-1] + 0.3)])
+
+
+def check_bpod_match(r: Report, tmp: Path) -> None:
+    from scipy.io import savemat
+
+    from acqApp.saving import bpod_match as BM
+
+    bpod = _session(40)
+    missed = {0, 18}                           # Bpod trials 1 and 19
+    kept = [i for i in range(40) if i not in missed]
+    rng = np.random.default_rng(1)
+    cam = (bpod[kept] - 97.0) * (1 + 40e-6) + rng.normal(0, 0.02, len(kept))
+    m = BM.match(cam, bpod)
+    r.check(not m.problem and len(m.pairs) == len(kept),
+            f"every camera edge matches a Bpod trial ({len(m.pairs)}/"
+            f"{len(kept)}, {m.problem!r})")
+    r.check(all(m.pairs[j] == i for j, i in enumerate(kept)),
+            "…the right one, although trial 1 itself was missed")
+    r.check(abs(m.drift_ppm + 40) < 15,
+            f"…with the clock drift recovered ({m.drift_ppm:+.0f} ppm)")
+
+    steady = 100.0 + 7.0 * np.arange(20)
+    m2 = BM.match(steady[1:] - 50.0, steady)
+    r.check(bool(m2.problem),
+            f"control: identical trial lengths with trial 1 missed can't be "
+            f"aligned, and it refuses ({m2.problem!r})")
+    m3 = BM.match(np.append(cam, cam[-1] + 3.0), bpod)
+    r.check("match no Bpod" in m3.problem,
+            f"an edge the stim rig never sent is refused ({m3.problem!r})")
+
+    # The files: routine numbered its 38 edges T1..T38; Bpod says otherwise.
+    base = tmp / "bpod" / "m1" / "20260930"
+    base.mkdir(parents=True)
+    edges = base / "routine_edges_test.csv"
+    lines = ["edge,session_s,wall_time,fov,trial,path"]
+    for j, t in enumerate(cam):
+        d = base / f"FOV2_T{j + 1}"
+        d.mkdir()
+        (d / f"FOV2_T{j + 1}_voltage_cam.dcimg").write_text(str(j))
+        lines.append(f"{j + 1},{t:.4f},x,2,{j + 1},{d}")
+    edges.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    trials = np.empty(40, dtype=object)
+    for i in range(40):
+        trials[i] = {"States": {"CamTrigger": np.array([0.0002, 0.0102])}}
+    mat = tmp / "bpod" / "session.mat"
+    savemat(str(mat), {"SessionData": {"TrialStartTimestamp": bpod - 0.0002,
+                                       "RawEvents": {"Trial": trials}}})
+    got = BM.load_bpod_triggers(mat)
+    r.check(np.allclose(got, bpod),
+            "Bpod's session file reads back as trial start + CamTrigger onset")
+
+    before = sorted(p.name for p in base.iterdir())
+    r.check(BM.main([str(edges), str(mat)]) == 0
+            and sorted(p.name for p in base.iterdir()) == before,
+            "a dry run changes nothing")
+    r.check(BM.main([str(edges), str(mat), "--apply"]) == 0,
+            "--apply runs")
+    names = {p.name for p in base.iterdir() if p.is_dir()}
+    want = ({f"FOV2_T{i + 1}" for i in kept}
+            | {"FOV2_T1_VOID", "FOV2_T19_VOID"})
+    r.check(names == want, f"folders carry Bpod's trial numbers, missed ones "
+                           f"VOID ({sorted(names - want)} / "
+                           f"{sorted(want - names)})")
+    inner = (base / "FOV2_T20" / "FOV2_T20_voltage_cam.dcimg")
+    r.check(inner.exists() and inner.read_text() == "17",
+            "…the data moved with its folder (Bpod 20 = the 18th edge)")
+    r.check(json.loads((base / "FOV2_T19_VOID" / "void.json").read_text())
+            ["bpod_trial"] == 19, "…and each VOID says which trial it was")
+    log = list(csv.reader(open(base / "renumber_log.csv", encoding="utf-8")))
+    r.check(len(log) == 1 + 38 + 2,
+            f"every change is logged for undoing ({len(log) - 1} rows)")
+
+
+def _part_bpod() -> int:
+    r = Report("bpod-match")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_bpod_"))
+    try:
+        check_bpod_match(r, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
 PARTS = {
     "paths": _part_paths,
     "split": _part_split,
     "chunks": _part_chunks,
+    "bpod": _part_bpod,
 }
 
 

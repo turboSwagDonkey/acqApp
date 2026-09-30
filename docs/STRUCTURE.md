@@ -54,6 +54,7 @@ flowchart TD
     routines --> style
     routines --> devices
     routines --> widgets
+    saving --> console
     dialogs --> config
     dialogs --> probe
     dialogs --> style
@@ -269,6 +270,8 @@ routines/               experiment routines: atomic steps (move/display/wait/
                         blocks by kind/duration, and recordings as SEPARATE
                         bars (one per repeat, never merged) — view-only
 saving/                 where the session file goes
+  bpod_match.py         after a session: align the routine's edge log to Bpod's
+                        trials, renumber folders, VOID missed trials (CLI)
   config.py             SaveConfig + path building — no Qt
   panel.py
 docs/

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QTimer
@@ -42,8 +43,7 @@ RATE_EVERY = 30
 # isn't coming back.
 HOLD_TIMEOUT_S = 10.0
 
-# A renumbered .dcimg folder is renamed once the camera lets go of it.
-RENAME_TIMEOUT_S = 30.0
+EDGE_LOG_HEADER = "edge,session_s,wall_time,fov,trial,path\n"
 
 
 class RoutinesModule(ModuleAdapter):
@@ -75,9 +75,10 @@ class RoutinesModule(ModuleAdapter):
         self._routine_origin = 0.0
         self._hold_t0: float | None = None   # see _holding_for_camera
         self._trial_count: dict[int, int] = {}   # files opened per bracket
-        # (closed-or-closing path, fov, trial, since) awaiting renumbering
-        self._renames: list[tuple[Any, str, int, float]] = []
-        self._voided: list[int] = []             # trial numbers marked _VOID
+        # One row per trigger edge, for matching to the stim rig's log.
+        self._edge_log = None                    # Path, created at first edge
+        self._edge_n = 0
+        self._pending_edge = None   # (n, t, wall, (cycle, step)) until its file opens
 
     def _status(self, msg: str) -> None:
         """Status bar, and the console (which the rig actually watches) for
@@ -169,7 +170,7 @@ class RoutinesModule(ModuleAdapter):
             puff=puffer.fire if puffer is not None else (lambda: None),
             arm_trigger=arm_trigger,
             trigger_gate=lambda: self.win.camera_trigger_gate(FRAME_STREAM),
-            missed_triggers=self._on_missed_triggers,
+            edge=self._on_edge,
             prepare_recording=self._prepare_recording,
             begin_recording=self._on_recording_begin,
             end_recording=self._on_recording_end,
@@ -204,7 +205,9 @@ class RoutinesModule(ModuleAdapter):
 
             self._routine = routine
             self._trial_count = {}
-            self._voided = []
+            self._edge_log = None
+            self._edge_n = 0
+            self._pending_edge = None
             if self._rec is None:
                 if self._first_file_is_doomed(routine):
                     self.win.set_routine_save_context(None, None)
@@ -288,9 +291,8 @@ class RoutinesModule(ModuleAdapter):
         self.win.set_routine_save_context(None, None)
         self._own_rec = False            # before: detach_sink re-enters
         self.win.set_recording(False)
-        self.win.set_live(False)         # the camera has closed any .dcimg
-        if self._renames:
-            self._apply_renames(final=True)
+        self.win.set_live(False)
+        self._flush_pending_edge()
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -340,8 +342,6 @@ class RoutinesModule(ModuleAdapter):
         if eng is None:
             self._stop_ticking()
             return
-        if self._renames:
-            self._apply_renames()
         if self._holding_for_camera(eng):
             return
         try:
@@ -383,60 +383,40 @@ class RoutinesModule(ModuleAdapter):
         self._status("new .dcimg opened before the trigger step re-arms — a "
                      ".dcimg cannot span one")
 
-    def _on_missed_triggers(self, n: int, run, gap: float,
-                            typical: float) -> None:
-        """`n` edges went unseen before this one. Where each edge gets its own
-        file, mark those trials `_VOID` and give this edge's data the trial
-        number after them, so numbering stays matched to the stim rig."""
-        prepared = run is not None and self._prepared == (run.cycle,
-                                                          run.start_index)
-        per_edge = prepared or (run is not None and self._routine is not None
-                                and self._routine.save_mode == "per_repeat")
-        if not per_edge:
-            return
-        fov, _coords = self._fov_for(self._routine, run.start_index)
-        region = run.region
-        if prepared:
-            # The .dcimg for trial `first` is already open and now holds this
-            # edge; it's renumbered once the camera closes it.
-            first = self._trial_count.get(region, 1)
-            path = self.win.recording_path()
-            if path is not None:
-                self._renames.append((path, fov, first + n, time.monotonic()))
-        else:
-            first = self._trial_count.get(region, 0) + 1   # the roll numbers it
-        self._trial_count[region] = first + n - (0 if prepared else 1)
-        info = {"reason": "missed trigger", "fov": fov,
-                "gap_s": round(gap, 3), "typical_gap_s": round(typical, 3),
-                "data_in_trial": first + n,
-                "detected_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        for trial in range(first, first + n):
-            try:
-                path = self.win.void_routine_trial(fov, trial,
-                                                   {**info, "trial": trial})
-                self._voided.append(trial)
-                self._status(f"trial {trial} voided: {path.name}")
-            except OSError as e:
-                self._status(f"could not write the VOID marker for trial "
-                             f"{trial} ({e})")
+    def _on_edge(self, t: float, run) -> None:
+        """Log a trigger edge. Missed edges can't be seen live; the log is
+        matched against the stim rig's afterwards (saving/bpod_match.py). The
+        row waits for the file its recording opens, if one follows."""
+        self._flush_pending_edge()
+        self._edge_n += 1
+        wall = time.strftime("%Y-%m-%dT%H:%M:%S")
+        key = None if run is None else (run.cycle, run.start_index)
+        self._pending_edge = (self._edge_n, t, wall, key, run)
+        if run is None:
+            self._flush_pending_edge()
 
-    def _apply_renames(self, *, final: bool = False) -> None:
-        """Retry each pending renumbering until the file is closed."""
-        pending, self._renames = self._renames, []
-        for path, fov, trial, since in pending:
-            if path == self.win.recording_path():
-                self._renames.append((path, fov, trial, since))
-                continue
-            try:
-                new = self.win.rename_routine_trial(path, fov, trial)
-            except OSError as e:
-                if final or time.monotonic() - since > RENAME_TIMEOUT_S:
-                    self._status(f"could not renumber {path.name} to trial "
-                                 f"{trial} ({e}) — rename it by hand")
-                else:
-                    self._renames.append((path, fov, trial, since))
-                continue
-            self._status(f"{path.name} renumbered to {new.name}")
+    def _flush_pending_edge(self, run=None) -> None:
+        """Write the pending edge; with `run`, as opening that run's file."""
+        if self._pending_edge is None:
+            return
+        n, t, wall, key, edge_run = self._pending_edge
+        self._pending_edge = None
+        fov, trial, path = "", "", ""
+        if run is not None and edge_run is not None:
+            fov = self._fov_for(self._routine, run.start_index)[0]
+            trial = self._trial_count.get(run.region, "")
+            path = self.win.recording_path() or ""
+        try:
+            if self._edge_log is None:
+                folder = Path(self.win.routine_folder())
+                folder.mkdir(parents=True, exist_ok=True)
+                self._edge_log = folder / (
+                    f"routine_edges_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+                self._edge_log.write_text(EDGE_LOG_HEADER, encoding="utf-8")
+            with open(self._edge_log, "a", encoding="utf-8") as fh:
+                fh.write(f"{n},{t:.4f},{wall},{fov},{trial},{path}\n")
+        except OSError as e:
+            self._status(f"could not write the edge log ({e})")
 
     def _on_recording_begin(self, run) -> None:
         """One `/routine` entry per boundary. The first run just claims the
@@ -502,6 +482,9 @@ class RoutinesModule(ModuleAdapter):
         edge = float(run.region + 1)
         rec.put("routine", edge if opening else -edge)
         self._filed += 1
+        if (opening and self._pending_edge is not None
+                and self._pending_edge[3] == (run.cycle, run.start_index)):
+            self._flush_pending_edge(run)
 
     # ── session / recording ──
     def attach_sink(self, rec) -> None:
@@ -531,8 +514,7 @@ class RoutinesModule(ModuleAdapter):
         self._engine = None
         self._own_rec = False
         super().stop()
-        if self._renames:
-            self._apply_renames(final=True)
+        self._flush_pending_edge()
 
     def on_modules_changed(self) -> None:
         if self.panel is not None:
@@ -663,9 +645,8 @@ class RoutinesModule(ModuleAdapter):
             "routine_fault":             eng.fault if eng.phase == Phase.PAUSED
                                          else "",
             "routine_boundaries":        self._filed,
-            # Inferred from edge timing (whole routine, as of this file).
-            "routine_missed_triggers":   eng.missed_triggers,
-            "routine_voided_trials":     json.dumps(self._voided),
+            "routine_edge_log":          (self._edge_log.name
+                                          if self._edge_log else ""),
         }
 
 
