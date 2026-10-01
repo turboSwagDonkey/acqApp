@@ -41,6 +41,8 @@ class PupilSettings:
     cr_reach:         float = 0.70
     # (x, y, r) in full-frame px. Rig geometry: clear when the optics move.
     cr_pins:          list[tuple[float, float, float]] = field(default_factory=list)
+    # Unused: what removal blanks is always shown while it is on. Kept so
+    # older saved settings still load.
     cr_show_mask:     bool = False
 
     # ── preview ──

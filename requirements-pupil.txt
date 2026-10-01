@@ -1,0 +1,9 @@
+# Just the pupil review tool (run_pupil_review.py installs these itself).
+# No DAQ, camera or DMD packages: the tool only reads a recorded clip.
+PyQt6
+pyqtgraph
+numpy
+opencv-python   # EyeLoop imports cv2
+PyYAML          # EyeLoop's package __init__ imports it
+h5py            # opening acqApp session files
+tifffile        # ...and split sessions' TIFF stacks

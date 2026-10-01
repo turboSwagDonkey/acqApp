@@ -91,8 +91,8 @@ def main() -> int:
     # Record, so the trace covers the file.
     pupil_panel = mod["pupil_cam"].panel
     pupil_panel.set_limit(60.0, 20.0, 260.0, 220.0)
-    pupil_panel._chk_track.setChecked(True)
-    pupil_panel._spn_thr.setValue(PUPIL_THRESHOLD)
+    pupil_panel.tracking._chk_track.setChecked(True)
+    pupil_panel.tracking._spn_thr.setValue(PUPIL_THRESHOLD)
     r.check(mod["pupil_cam"].panel.settings.track, "pupil tracking is on")
 
     r.check(len(mod["voltage_cam"]._y) > 0, "voltage-cam ΔF/F reached the plot")

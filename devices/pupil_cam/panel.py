@@ -1,5 +1,9 @@
 """Pupil camera — the Qt settings panel. The model is in `settings.py`.
 
+Top to bottom in the order you use it: camera, recorded clips, then the
+tracking controls (`tracking_panel.TrackingControls`, the same widget Pupil
+review shows), then the LED.
+
 The adapter persists exactly `settings`: a knob not read back there is lost
 at the next launch. That has happened; keep them in step.
 """
@@ -9,12 +13,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import spin
+from acqApp import style
+from acqApp.widgets import SegmentedSwitch, sections_help, spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
+from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
 
 _VIDEO_FILTER = "Uncompressed AVI (*.avi);;All files (*)"
 
@@ -25,6 +31,9 @@ class SettingsPanel(QWidget):
     led_intensity_changed = pyqtSignal(float)  # 0..1
     # Not the LED on/off: restoring it at launch would light an empty rig.
     settings_changed = pyqtSignal(object)  # PupilSettings
+    mode_changed     = pyqtSignal(str)     # "live" | "review" (a click)
+    auto_requested   = pyqtSignal()        # suggest tracking parameters
+    region_wanted    = pyqtSignal()        # "Eye region" ticked, none to restore
 
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
@@ -32,14 +41,32 @@ class SettingsPanel(QWidget):
         # (hz, exposure_limited) from the running camera; None before Start.
         self._measured: tuple[float, bool] | None = None
         self._video = self._s.video_path
-        self._pins = list(self._s.cr_pins)      # placed on the preview
         # Widgets emit as they're built; `settings` needs all of them.
         self._ready = False
         self._build()
+        # Help on the section titles only, not on every control.
+        sections_help(self)
         self._ready = True
 
     def _build(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        # Live or Review: the same tab either way; Review swaps the camera
+        # and LED sections for the clip's, and the host fills that page.
+        self.mode = SegmentedSwitch([("Live", "live"), ("Review", "review")],
+                                    style.HEX["pupil_cam"])
+        self.mode.changed.connect(self.mode_changed)
+        outer.addWidget(self.mode)
+        self._pages = QStackedWidget()
+        outer.addWidget(self._pages, 1)
+        live = QWidget()
+        self._pages.addWidget(live)
+        self.review_page = QWidget()
+        rl = QVBoxLayout(self.review_page)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self._pages.addWidget(self.review_page)
+
+        root = QVBoxLayout(live)
         root.setContentsMargins(0, 0, 0, 0)
 
         # ── Camera ──────────────────────────────────────────────────────────
@@ -56,8 +83,7 @@ class SettingsPanel(QWidget):
         self._spn_hz = spin(1.0, 200.0, self._s.rate_hz,
                             decimals=2, suffix=" Hz")
         self._chk_hz_link = QCheckBox("Link")
-        self._chk_hz_link.setToolTip(
-            "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
+        self._chk_hz_link.setToolTip("Exposure = 1 / Rate")
         self._chk_hz_link.toggled.connect(self._on_hz_link_toggled)
         hz_row = QWidget()
         hz_lay = QHBoxLayout(hz_row)
@@ -75,32 +101,14 @@ class SettingsPanel(QWidget):
         self._spn_exp.valueChanged.connect(self._on_exposure_changed_for_hz)
         self._on_hz_changed(self._spn_hz.value())    # apply the initial cap
 
-        # ── Frame source ────────────────────────────────────────────────────
-        self._lbl_vid = QLabel()
-        self._lbl_vid.setWordWrap(True)
-        self._chk_video = QCheckBox("Use sample video")
-        self._chk_video.setToolTip(
-            "Replay a recorded clip instead of the camera.\nUncompressed AVI "
-            "only (IYUV/I420/YV12, Y800 or BI_RGB) — this venv has no decoder.\n"
-            "Takes effect on next Live view; a session recorded from a clip "
-            "is flagged in the file's metadata.")
-        self._chk_video.toggled.connect(self._on_video_toggled)
-        cl.addRow("Source:", self._chk_video)
-        cl.addRow("", self._lbl_vid)
-        self._show_video()
-
         self._chk_lut = QCheckBox("Show LUT")
         self._chk_lut.setChecked(self._s.show_lut)
-        self._chk_lut.setToolTip(
-            "Show or hide the histogram/contrast bar beside the preview.")
+        self._chk_lut.setToolTip("The brightness/contrast bar.")
         self._chk_lut.toggled.connect(self._emit)
 
         self._chk_auto = QCheckBox("Auto contrast")
         self._chk_auto.setChecked(self._s.auto_levels)
-        self._chk_auto.setToolTip(
-            "On: levels are recomputed from each frame's own brightness "
-            "range.\nOff: the LUT is pinned to 0-255 and you drag "
-            "its handles yourself — the app leaves them alone.")
+        self._chk_auto.setToolTip("Off: drag the bar's handles. Display only.")
         self._chk_auto.toggled.connect(self._emit)
 
         disp_row = QWidget()
@@ -109,12 +117,24 @@ class SettingsPanel(QWidget):
         disp_lay.addWidget(self._chk_lut)
         disp_lay.addWidget(self._chk_auto)
         cl.addRow("Display:", disp_row)
+
+        # ── Frame source ────────────────────────────────────────────────────
+        self._lbl_vid = QLabel()
+        self._lbl_vid.setWordWrap(True)
+        self._chk_video = QCheckBox("Replay a clip instead")
+        self._chk_video.setToolTip("Uncompressed AVI, from the next Live "
+                                   "view. Flagged in the session file.")
+        self._chk_video.toggled.connect(self._on_video_toggled)
+        cl.addRow("Source:", self._chk_video)
+        cl.addRow("", self._lbl_vid)
+        self._show_video()
         root.addWidget(cam)
 
-        root.addWidget(self._build_limit())
-        root.addWidget(self._build_track())
-        root.addWidget(self._build_blink())
-        root.addWidget(self._build_cr())
+        self.tracking = TrackingControls(self._s, live=True)
+        self.tracking.changed.connect(self._emit)
+        self.tracking.auto_requested.connect(self.auto_requested)
+        self.tracking.region_wanted.connect(self.region_wanted)
+        root.addWidget(self.tracking)
 
         # ── Illumination ────────────────────────────────────────────────────
         led = QGroupBox("Illumination")
@@ -123,9 +143,8 @@ class SettingsPanel(QWidget):
         self._chk_led.toggled.connect(self.led_toggled)
         self._chk_led_follow = QCheckBox("Follow Live view")
         self._chk_led_follow.setChecked(self._s.led_follow_live)
-        self._chk_led_follow.setToolTip(
-            "Turn the LED on when Live view/Record starts and off when it "
-            "stops. The checkbox above still overrides it at any time.")
+        self._chk_led_follow.setToolTip("On with Live view/Record, off "
+                                        "after.")
         self._chk_led_follow.toggled.connect(self._emit)
         ll.addWidget(self._chk_led)
         ll.addWidget(self._chk_led_follow)
@@ -136,9 +155,7 @@ class SettingsPanel(QWidget):
         il.addWidget(QLabel("Intensity:"))
         self._spn_intensity = spin(
             0.0, 100.0, self._s.led_intensity * 100.0, decimals=0, suffix=" %",
-            tooltip="0-100% of the LEDD1B's MOD full-scale. Applied live while "
-                    "the LED is on; otherwise just the level the next on() "
-                    "will use.")
+            tooltip="Of the LED driver's full scale.")
         self._spn_intensity.valueChanged.connect(
             lambda pct: self.led_intensity_changed.emit(pct / 100.0))
         self._spn_intensity.valueChanged.connect(self._emit)
@@ -205,265 +222,32 @@ class SettingsPanel(QWidget):
         self._measured = None if hz is None else (float(hz), bool(exposure_limited))
         self._refresh_rate()
 
-    # ── eye region ───────────────────────────────────────────────────────────
-    def _build_limit(self) -> QGroupBox:
-        """The eye region's numbers; it's drawn on the preview."""
-        box = QGroupBox("Eye region")
-        box.setToolTip(
-            "The eye only ever appears in one part of the frame on a head-fixed "
-            "animal. An empty box (X1<=X0 or Y1<=Y0) = no region.")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
-
-        hint = QLabel("Drag it on the pupil preview — the buttons above the "
-                      "image. These are for typing an exact box.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#9aa0a6;")
-        vb.addWidget(hint)
-
-        self._spn_lx0, self._spn_ly0, self._spn_lx1, self._spn_ly1 = (
-            self._px_spin(v) for v in
-            (self._s.limit_x0, self._s.limit_y0, self._s.limit_x1, self._s.limit_y1))
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        for label, w in (("X0", self._spn_lx0), ("Y0", self._spn_ly0),
-                         ("X1", self._spn_lx1), ("Y1", self._spn_ly1)):
-            row.addWidget(QLabel(label))
-            row.addWidget(w, 1)
-        self._btn_limit_clear = QPushButton("Clear")
-        self._btn_limit_clear.setToolTip("No region.")
-        self._btn_limit_clear.clicked.connect(self.clear_limit)
-        row.addWidget(self._btn_limit_clear)
-        vb.addLayout(row)
-
-        for w in (self._spn_lx0, self._spn_ly0, self._spn_lx1, self._spn_ly1):
-            w.valueChanged.connect(self._limit_edited)
-        self._limit_edited()
-        return box
-
-    # ── tracking ─────────────────────────────────────────────────────────
-    def _build_track(self) -> QGroupBox:
-        """EyeLoop knobs. Threshold sets the radius (60% swing over 25-60 on
-        the rig clips) at an unchanged 151/151 fit rate."""
-        box = QGroupBox("Pupil tracking")
-        box.setToolTip(
-            "Fits an ellipse to the pupil inside the eye region, which is the "
-            "crop it needs — without a region nothing is tracked.")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
-
-        self._chk_track = QCheckBox("Track the pupil")
-        self._chk_track.setChecked(self._s.track)
-        self._chk_track.setToolTip(
-            "Needs an EyeLoop clone beside the repo (docs/EYELOOP.md). Without "
-            "one the camera runs exactly as before and the preview says so.")
-        vb.addWidget(self._chk_track)
-
-        form = QFormLayout()
-        form.setSpacing(4)
-        self._spn_thr = self._int_spin(self._s.track_threshold, 1, 254)
-        self._spn_thr.setToolTip(
-            "Pixels darker than this are pupil. THE consequential number: it "
-            "sets the radius, and a wrong one still fits every frame.")
-        form.addRow("Threshold:", self._spn_thr)
-
-        self._spn_blur = self._int_spin(self._s.track_blur, 1, 21, step=2)
-        self._spn_blur.setToolTip("Blur kernel before thresholding; odd only.")
-        form.addRow("Blur:", self._spn_blur)
-
-        self._cmb_model = QComboBox()
-        for label, key in (("Ellipse", "ellipsoid"), ("Circle", "circular")):
-            self._cmb_model.addItem(label, key)
-        i = self._cmb_model.findData(self._s.track_model)
-        self._cmb_model.setCurrentIndex(i if i >= 0 else 0)
-        self._cmb_model.setToolTip(
-            "Circle is ~2.5x cheaper and just as steady on the test clips; the "
-            "ellipse is what EyeLoop was adopted for.")
-        form.addRow("Model:", self._cmb_model)
-        vb.addLayout(form)
-
-        self._chk_smooth = QCheckBox("Stabilize outline")
-        self._chk_smooth.setChecked(self._s.smooth)
-        self._chk_smooth.setToolTip(
-            "Averages the last N fits together, trading frame-to-frame jitter "
-            "in the outline for lag. Affects the recorded trace too, so what "
-            "was looked at is what was saved.")
-        vb.addWidget(self._chk_smooth)
-
-        smooth_form = QFormLayout()
-        smooth_form.setSpacing(4)
-        self._spn_smooth_win = self._int_spin(self._s.smooth_window, 1, 30)
-        self._spn_smooth_win.setSuffix(" frames")
-        self._spn_smooth_win.setToolTip(
-            "1 = no averaging. Higher trims more jitter but lags further behind "
-            "a real, fast pupil movement.")
-        smooth_form.addRow("Average over:", self._spn_smooth_win)
-        vb.addLayout(smooth_form)
-
-        self._chk_track.toggled.connect(self._emit)
-        self._cmb_model.currentIndexChanged.connect(self._emit)
-        self._chk_smooth.toggled.connect(self._emit)
-        for w in (self._spn_thr, self._spn_blur, self._spn_smooth_win):
-            w.valueChanged.connect(self._emit)
-        return box
-
-    # ── blink detection ─────────────────────────────────────────────────────
-    def _build_blink(self) -> QGroupBox:
-        """A sudden radius drop against a rolling baseline, on the raw fit."""
-        box = QGroupBox("Blink detection")
-        box.setToolTip(
-            "Flags a frame whose radius has suddenly dropped, likely a "
-            "closing eyelid rather than the pupil itself. Shown as a shaded "
-            "band on the radius plot and recorded alongside the trace.")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
-
-        self._chk_blink = QCheckBox("Detect blinks")
-        self._chk_blink.setChecked(self._s.blink_detect)
-        vb.addWidget(self._chk_blink)
-
-        form = QFormLayout()
-        form.setSpacing(4)
-        self._spn_blink_drop = spin(
-            0.05, 0.90, self._s.blink_drop_frac, decimals=2, step=0.05,
-            track=False,
-            tooltip="Fraction the radius must drop below its recent baseline "
-                    "to count as a blink. Lower catches more (and more false "
-                    "positives); higher misses partial/quick blinks.")
-        form.addRow("Drop threshold:", self._spn_blink_drop)
-
-        self._spn_blink_win = self._int_spin(self._s.blink_baseline_window, 3, 60)
-        self._spn_blink_win.setSuffix(" frames")
-        self._spn_blink_win.setToolTip(
-            "How many recent non-blink frames set the baseline the drop is "
-            "measured against. Shorter adapts faster to real, slow changes in "
-            "pupil size; longer is steadier against noise.")
-        form.addRow("Baseline over:", self._spn_blink_win)
-        vb.addLayout(form)
-
-        self._chk_blink.toggled.connect(self._emit)
-        for w in (self._spn_blink_drop, self._spn_blink_win):
-            w.valueChanged.connect(self._emit)
-        return box
-
-    # ── corneal reflection ───────────────────────────────────────────────
-    def _build_cr(self) -> QGroupBox:
-        """IR reflection removal (EyeLoop's own is disabled upstream).
-        Clip-dependent: 0.9 px less radius scatter on one rig clip, no reach
-        on the other; defaults chosen not to inflate the radius."""
-        box = QGroupBox("Corneal reflection")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
-
-        self._chk_cr = QCheckBox("Remove reflections")
-        self._chk_cr.setChecked(self._s.cr_remove)
-        vb.addWidget(self._chk_cr)
-
-        form = QFormLayout()
-        form.setSpacing(4)
-        self._spn_cr_thr = self._int_spin(self._s.cr_threshold, 1, 254)
-        self._spn_cr_thr.setToolTip(
-            "Brighter than this is a reflection. Not a delicate number: the "
-            "pupil sits near 22 and the glints saturate at 235.")
-        form.addRow("Threshold:", self._spn_cr_thr)
-
-        self._spn_cr_pad = self._int_spin(self._s.cr_pad, 0, 20)
-        self._spn_cr_pad.setToolTip(
-            "Grow each blob — the spikes are wider than the core.")
-        form.addRow("Pad:", self._spn_cr_pad)
-
-        self._spn_cr_ring = self._int_spin(self._s.cr_ring, 1, 40)
-        self._spn_cr_ring.setToolTip(
-            "Width of the annulus each blob is filled from.")
-        form.addRow("Ring:", self._spn_cr_ring)
-
-        self._spn_cr_reach = spin(
-            0.10, 1.20, self._s.cr_reach, decimals=2, step=0.05, track=False,
-            tooltip="How far out to look, as a fraction of the fitted ellipse. "
-                    "Past ~0.85 it masks the rim, which erases the pupil "
-                    "boundary and INFLATES the radius — the failure looks "
-                    "like a good fit.")
-        form.addRow("Reach:", self._spn_cr_reach)
-        vb.addLayout(form)
-
-        self._chk_cr_mask = QCheckBox("Show what was removed")
-        self._chk_cr_mask.setChecked(self._s.cr_show_mask)
-        self._chk_cr_mask.setToolTip(
-            "Paints the removed pixels red on the preview. This is how the "
-            "threshold is set.")
-        vb.addWidget(self._chk_cr_mask)
-
-        # This group has no add button; without the hint that read as "pins
-        # can't be added".
-        pin_hint = QLabel("Add one with Pin reflection, above the pupil preview.")
-        pin_hint.setWordWrap(True)
-        pin_hint.setStyleSheet("color:#9aa0a6;")
-        vb.addWidget(pin_hint)
-
-        prow = QHBoxLayout()
-        prow.setContentsMargins(0, 0, 0, 0)
-        self._lbl_pins = QLabel()
-        self._lbl_pins.setStyleSheet("color:#9aa0a6;")
-        self._btn_pins_clear = QPushButton("Clear pins")
-        self._btn_pins_clear.setToolTip(
-            "Pinned reflections are rig geometry — clear them when the optics "
-            "move, or they mark places nothing reflects any more.")
-        self._btn_pins_clear.clicked.connect(self.clear_pins)
-        prow.addWidget(self._lbl_pins, 1)
-        prow.addWidget(self._btn_pins_clear)
-        vb.addLayout(prow)
-        self._show_pins()
-
-        self._chk_cr.toggled.connect(self._emit)
-        self._chk_cr_mask.toggled.connect(self._emit)
-        for w in (self._spn_cr_thr, self._spn_cr_pad, self._spn_cr_ring,
-                  self._spn_cr_reach):
-            w.valueChanged.connect(self._emit)
-        return box
-
-    # ── pins (placed on the preview) ─────────────────────────────────────
-    def set_pins(self, pins) -> None:
-        """From the preview, as ONE settings change."""
-        self._pins = [tuple(float(v) for v in pin) for pin in pins]
-        self._show_pins()
-        self._emit()
-
-    def clear_pins(self) -> None:
-        self.set_pins([])
-
-    def _show_pins(self) -> None:
-        n = len(self._pins)
-        self._lbl_pins.setText(
-            "no pinned reflections" if not n
-            else f"{n} pinned reflection{'s' if n > 1 else ''}")
-        self._btn_pins_clear.setEnabled(bool(n))
-
-    @staticmethod
-    def _int_spin(value: int, lo: int, hi: int, step: int = 1) -> QSpinBox:
-        return spin(lo, hi, value, step=step, track=False)
-
-    @staticmethod
-    def _px_spin(value: float) -> QDoubleSpinBox:
-        # Untracked: typing "150" would otherwise emit at 1, 15 and 150.
-        return spin(0.0, 20_000.0, value, decimals=0, suffix=" px", track=False)
-
-    def _limit_edited(self, *_a) -> None:
-        self._btn_limit_clear.setEnabled(
-            self._spn_lx1.value() > self._spn_lx0.value()
-            and self._spn_ly1.value() > self._spn_ly0.value())
-        self._emit()
-
+    # ── the tracking controls (shared with Pupil review) ─────────────────────
     def set_limit(self, x0: float, y0: float, x1: float, y1: float) -> None:
         """From the preview, as ONE settings change."""
-        for w, v in ((self._spn_lx0, x0), (self._spn_ly0, y0),
-                     (self._spn_lx1, x1), (self._spn_ly1, y1)):
-            w.blockSignals(True)
-            w.setValue(float(v))
-            w.blockSignals(False)
-        self._limit_edited()
+        self.tracking.set_limit(x0, y0, x1, y1)
 
     def clear_limit(self) -> None:
-        self.set_limit(0.0, 0.0, 0.0, 0.0)
+        self.tracking.clear_limit()
+
+    def set_pins(self, pins) -> None:
+        """From the preview, as ONE settings change."""
+        self.tracking.set_pins(pins)
+
+    def clear_pins(self) -> None:
+        self.tracking.clear_pins()
+
+    def apply_auto(self, s: PupilSettings) -> None:
+        """Suggested tracking values as ONE settings change."""
+        self.tracking.apply_auto(s)
+
+    def show_mode(self, mode: str) -> None:
+        """Show the Live or the Review page (the host decides if allowed)."""
+        self.mode.set_value(mode)
+        self._pages.setCurrentIndex(0 if mode == "live" else 1)
+
+    def set_auto_busy(self, busy: bool) -> None:
+        self.tracking.set_auto_busy(busy)
 
     def _emit(self, *_a) -> None:
         if not self._ready:
@@ -497,7 +281,6 @@ class SettingsPanel(QWidget):
     def _show_video(self) -> None:
         self._lbl_vid.setText(Path(self._video).name if self._video
                               else "camera (live)")
-        self._lbl_vid.setToolTip(self._video)
         self._chk_video.blockSignals(True)
         self._chk_video.setChecked(bool(self._video))
         self._chk_video.blockSignals(False)
@@ -505,35 +288,15 @@ class SettingsPanel(QWidget):
     @property
     def settings(self) -> PupilSettings:
         """Everything the panel holds; the adapter persists exactly this."""
-        return PupilSettings(
+        return self.tracking.settings_into(PupilSettings(
             exposure_us=self._spn_exp.value(),
             rate_hz=self._spn_hz.value(),
-            limit_x0=self._spn_lx0.value(),
-            limit_y0=self._spn_ly0.value(),
-            limit_x1=self._spn_lx1.value(),
-            limit_y1=self._spn_ly1.value(),
             video_path=self._video,
-            track=self._chk_track.isChecked(),
-            track_threshold=self._spn_thr.value(),
-            track_blur=self._spn_blur.value(),
-            track_model=self._cmb_model.currentData(),
-            smooth=self._chk_smooth.isChecked(),
-            smooth_window=self._spn_smooth_win.value(),
-            blink_detect=self._chk_blink.isChecked(),
-            blink_drop_frac=self._spn_blink_drop.value(),
-            blink_baseline_window=self._spn_blink_win.value(),
-            cr_remove=self._chk_cr.isChecked(),
-            cr_threshold=self._spn_cr_thr.value(),
-            cr_pad=self._spn_cr_pad.value(),
-            cr_ring=self._spn_cr_ring.value(),
-            cr_reach=self._spn_cr_reach.value(),
-            cr_pins=list(self._pins),
-            cr_show_mask=self._chk_cr_mask.isChecked(),
             show_lut=self._chk_lut.isChecked(),
             auto_levels=self._chk_auto.isChecked(),
             led_follow_live=self._chk_led_follow.isChecked(),
             led_intensity=self._spn_intensity.value() / 100.0,
-        )
+        ))
 
     def set_led(self, on: bool) -> None:
         """Show the LED's state without re-emitting `led_toggled`."""

@@ -15,6 +15,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from PyQt6.QtCore import pyqtSignal
+
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking import PupilTracking
@@ -202,3 +204,20 @@ class PupilTrackWorker(PullWorker):
                 sink = self._fit_sink
                 if sink is not None:
                     sink(fit, is_blink, at)
+
+
+class AutoTuneWorker(PullWorker):
+    """`autotune.autotune` off the GUI thread (seconds on a full rig frame).
+    `done` carries an `AutoTune`, or None when no pupil was found."""
+
+    done = pyqtSignal(object)
+
+    def __init__(self, frames: list, region=None, seeds=None) -> None:
+        super().__init__()
+        self._frames = frames
+        self._region = region
+        self._seeds = seeds
+
+    def _run(self) -> None:
+        from acqApp.devices.pupil_cam.autotune import autotune
+        self.done.emit(autotune(self._frames, self._region, self._seeds))

@@ -27,6 +27,7 @@ flowchart TD
     style["style.py"]
     console["console.py"]
     widgets["widgets.py<br/><i>shared panel widgets</i>"]
+    run_pupil_review["run_pupil_review.py<br/><i>pupil review tool, alone</i>"]
 
     main --> adapters
     main --> saving
@@ -57,6 +58,8 @@ flowchart TD
     dialogs --> widgets
     probe --> devices
     probe --> config
+    run_pupil_review --> console
+    run_pupil_review --> devices
 ```
 
 Six edges surprise people, so they are drawn rather than explained away:
@@ -183,12 +186,22 @@ devices/                one package per instrument
     control.py
   pupil_cam/
     acquisition.py      Basler worker + mock twin
+    autotune.py         Auto: suggest threshold/blur/reflection (+ eye region)
+                        from a few frames; own segmentation, no EyeLoop, no Qt
     avi.py              uncompressed-AVI reader (no Qt); there is no decoder here
+    clip.py             review's readers: AVI, a session .h5's pupil stream, TIFF
     control.py          eye-tracking LED
     eyeloop_tracker.py  the ONLY file that touches EyeLoop (GPL-3.0, not vendored)
     panel.py
+    review.py           offline review model: track a whole clip, hand edits kept
+                        apart from auto fits, sidecar save/load (no Qt)
+    review_app.py       the review window as its own program (QApplication + main)
+    review_dialog.py    ReviewWidget: the clip review (Review mode of the Pupil tab,
+                        or its own window via review_app); scrub, fix, apply
     settings.py         camera, eye region, tracking + corneal-reflection knobs
     track_worker.py     tracking on its own thread; sole consumer of the frames
+    tracking_panel.py   the tracking controls (region, fit, blinks, reflections),
+                        one widget shared by panel.py and review_dialog.py
     tracking.py         settings + a frame in, a PupilFit out; no Qt, no EyeLoop
     video.py            third frame source: replay recorded footage
   stage/
@@ -303,7 +316,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_encoder.py             position -> speed/distance, hardware-timed reads
   test_modules.py             every module subset; loading/unloading in place
   test_pickers.py             the saved-ROI and saved-FOV pickers
-  test_pupil.py               EyeLoop seam, tracking, eye region, clip replay
+  test_pupil.py               EyeLoop seam, tracking, eye region, clip replay, offline review, Auto, review/live mirror
   test_routines.py            routine engine/adapter/panel, and the timeline
   test_saving.py              save paths, split writer, direct-chunk HDF5 write
   test_session_recording.py
@@ -319,6 +332,9 @@ config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
 dialogs.py              module picker (startup + sidebar), device monitor,
                         settings dialog
+run_pupil_review.py     launcher for the pupil review tool alone: makes its own venv,
+                        fetches EyeLoop, runs from this checkout (stdlib only)
+requirements-pupil.txt  the pupil tool's few dependencies (no DAQ/camera/DMD)
 modes.json              named mode recipes (camera preset/exposure, DMD
                         all-on) main.py applies on selection
 rigs.json               per-rig hardware profiles (NI device, DAQ channels,

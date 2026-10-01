@@ -25,3 +25,5 @@ nidaqmx
 pylablib
 pyserial
 matplotlib
+opencv-python  # pupil_cam: EyeLoop imports cv2 (clone beside the repo too)
+PyYAML         # EyeLoop's package __init__ imports it

@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
-                             QVBoxLayout, QWidget)
+                             QStackedWidget, QVBoxLayout, QWidget)
 
 from acqApp import config
 from acqApp.acq.devices import ExposureControl
@@ -21,7 +21,9 @@ from acqApp.devices.pupil_cam.acquisition import (MockPupilCameraWorker,
 from acqApp.devices.pupil_cam.control import LedController, MockLedController
 from acqApp.devices.pupil_cam.panel import SettingsPanel as PupilSettingsPanel
 from acqApp.devices.pupil_cam.settings import PupilSettings
-from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker
+from acqApp.devices.pupil_cam.autotune import NEEDS_HELP
+from acqApp.devices.pupil_cam.review import PupilReview
+from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker, PupilTrackWorker
 from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
 
 
@@ -48,6 +50,17 @@ class PupilCamModule(ModuleAdapter):
         self._last_img_rect: QRectF | None = None
         # ── tracking ──
         self._track: PupilTrackWorker | None = None
+        # Review mode: the clip review, built on first use; the dock's stack.
+        self._review = None
+        self._last_recording = None     # the newest session with pupil frames
+        self._view_stack: QStackedWidget | None = None
+        # Auto: frames gathered from the preview, then the tuning thread.
+        # When Auto is unsure, the user clicks the pupil on a few frames:
+        # (frame, (x, y, None)) per click, None when not asking.
+        self._seed_clicks: list | None = None
+        self._auto_frames: list | None = None
+        self._auto_tick = 0
+        self._auto_worker: AutoTuneWorker | None = None
         self._fit_curve = None
         self._pin_curve = None
         self._mask_img = None
@@ -68,8 +81,158 @@ class PupilCamModule(ModuleAdapter):
         self.panel.led_toggled.connect(self._on_led)
         self.panel.led_intensity_changed.connect(self._on_led_intensity)
         self.panel.settings_changed.connect(self._on_settings)
+        self.panel.mode_changed.connect(self._set_mode)
+        self.panel.auto_requested.connect(self._on_auto_requested)
+        self.panel.region_wanted.connect(self._want_region)
         self._settings = self.panel.settings
         return self.panel
+
+    # ── Live / Review ──
+    def mode(self) -> str:
+        return "review" if (self._view_stack is not None
+                            and self._view_stack.currentIndex() == 1) else "live"
+
+    def _set_mode(self, mode: str) -> None:
+        """Review swaps the camera for a saved clip in the same tab: the panel
+        shows the clip's controls and the dock the clip, playback and trace.
+        Not while the camera runs (EyeLoop is shared, and so is the screen)."""
+        if mode == "review" and self.worker is not None:
+            self.panel.show_mode("live")
+            self.win.status("pupil: stop Live view to review a clip")
+            return
+        if mode == "review" and self._review is None:
+            if self._view_stack is None:        # no dock (views not built)
+                self.panel.show_mode("live")
+                return
+            from acqApp.devices.pupil_cam.review_dialog import ReviewWidget
+            self._review = ReviewWidget(settings=self._settings,
+                                        busy=self._live_tracking, embedded=True)
+            self.panel.review_page.layout().addWidget(self._review.side_widget)
+            self._view_stack.addWidget(self._review.view_widget)
+        if mode == "live" and self._review is not None:
+            self._review.pause()
+        self.panel.show_mode(mode)
+        if self._view_stack is not None:
+            self._view_stack.setCurrentIndex(1 if mode == "review" else 0)
+        if mode == "review":
+            self._open_latest_recording()
+
+    def _open_latest_recording(self) -> None:
+        """Review opens the clip recorded last in this run of the app, unless
+        it is already open or the open one has unsaved edits."""
+        from acqApp.devices.pupil_cam.clip import recorded_clip
+        clip = recorded_clip(self._last_recording)
+        rv = self._review
+        if clip is None or rv is None:
+            return
+        if rv.review is not None and rv.review.video == clip:
+            return
+        if rv._dirty:
+            self.win.status(f"pupil: newest recording is {clip.name} — save or "
+                            f"discard this clip's edits, then Open recording")
+            return
+        if rv.open_video(str(clip)):
+            self.win.status(f"pupil review: opened the newest recording, {clip.name}")
+
+    def _live_tracking(self) -> bool:
+        return (self._track is not None and self._track.isRunning()
+                and self._settings is not None and self._settings.track)
+
+    # ── Auto (suggested tracking parameters) ──
+    _AUTO_FRAMES = 16          # gathered from the preview...
+    _AUTO_EVERY = 3            # ...one in this many displayed frames
+
+    def _want_region(self) -> None:
+        """'Eye region' ticked with none set: arm the drag on the preview."""
+        if self._btn_limit is not None:
+            self._btn_limit.setChecked(True)
+            self.win.status("drag a box around the eye on the preview")
+
+    def _on_auto_requested(self) -> None:
+        if self._seed_clicks is not None:          # pressed again: cancel
+            self._end_seeding("pupil Auto cancelled")
+            return
+        if self._track is None or not self._track.isRunning():
+            self.win.status("pupil Auto: start Live view first — it tunes on "
+                            "the camera's frames")
+            return
+        if self._auto_frames is not None or self._auto_worker is not None:
+            return
+        self._auto_frames, self._auto_tick = [], 0
+        self.panel.set_auto_busy(True)
+        self.win.status("pupil Auto: watching the eye for a moment…")
+
+    def _gather_auto(self, frame) -> None:
+        """Called per displayed frame while Auto is gathering."""
+        self._auto_tick += 1
+        if self._auto_tick % self._AUTO_EVERY:
+            return
+        self._auto_frames.append(np.array(frame))   # a copy, not the buffer
+        if len(self._auto_frames) < self._AUTO_FRAMES:
+            return
+        frames, self._auto_frames = self._auto_frames, None
+        region = self._settings.search_limit() if self._settings else None
+        self._auto_worker = AutoTuneWorker(frames, region)
+        self._auto_worker.done.connect(self._on_auto_done)
+        self._auto_worker.error.connect(self._on_auto_failed)
+        self._auto_worker.start()
+
+    _SEED_CLICKS = 3
+
+    def _on_auto_done(self, res) -> None:
+        seeded = self._seed_clicks is not None
+        self._end_auto()
+        if not seeded and (res is None or res.confidence < NEEDS_HELP):
+            self._seed_clicks = []
+            self.panel.tracking.set_auto_busy(True, text="click pupil")
+            self.win.status(f"pupil Auto needs help: click the pupil's centre on "
+                            f"the preview {self._SEED_CLICKS} times, a moment "
+                            f"apart (Auto again cancels)")
+            return
+        self._seed_clicks = None
+        if res is None:
+            self.win.status("pupil Auto: still no pupil found there")
+            return
+        self.panel.apply_auto(res.apply(self.panel.settings))
+        self.win.status(f"pupil Auto: {res.notes} — check the outline")
+
+    def _on_auto_failed(self, msg: str) -> None:
+        self._seed_clicks = None
+        self._end_auto()
+        self.win.status(f"pupil Auto failed: {msg}")
+
+    def _seed_click(self, ev) -> None:
+        if (self._last_frame is None
+                or not self._vb.sceneBoundingRect().contains(ev.scenePos())):
+            return
+        p = self._vb.mapSceneToView(ev.scenePos())
+        self._seed_clicks.append((np.array(self._last_frame), (p.x(), p.y(), None)))
+        left = self._SEED_CLICKS - len(self._seed_clicks)
+        if left > 0:
+            self.win.status(f"pupil Auto: {left} more")
+            return
+        frames = [f for f, _ in self._seed_clicks]
+        seeds = [sd for _, sd in self._seed_clicks]
+        self.panel.tracking.set_auto_busy(True)
+        region = self._settings.search_limit() if self._settings else None
+        self._auto_worker = AutoTuneWorker(frames, region, seeds)
+        self._auto_worker.done.connect(self._on_auto_done)
+        self._auto_worker.error.connect(self._on_auto_failed)
+        self._auto_worker.start()
+
+    def _end_seeding(self, msg: str) -> None:
+        self._seed_clicks = None
+        if self.panel is not None:
+            self.panel.set_auto_busy(False)
+        self.win.status(msg)
+
+    def _end_auto(self) -> None:
+        self._auto_frames = None
+        if self._auto_worker is not None:
+            self._auto_worker.wait(5000)
+            self._auto_worker = None
+        if self.panel is not None:
+            self.panel.set_auto_busy(False)
 
     def build_plot(self) -> QWidget:
         pw, self._curve = _plot("Pupil radius", "Radius", "px", "Frame", self.key)
@@ -142,12 +305,19 @@ class PupilCamModule(ModuleAdapter):
         col.setSpacing(3)
         col.addWidget(self._build_limit_bar())
         col.addWidget(row, 1)
-        self.win.add_dock("Pupil cam", host, Qt.DockWidgetArea.RightDockWidgetArea,
-                          accent=self.key)
+        self._view_stack = QStackedWidget()
+        self._view_stack.addWidget(host)
+        if self._review is not None:        # views rebuilt: keep the review
+            self._view_stack.addWidget(self._review.view_widget)
+        self.win.add_dock("Pupil cam", self._view_stack,
+                          Qt.DockWidgetArea.RightDockWidgetArea, accent=self.key)
 
     def _on_click(self, ev) -> None:
-        """Place a pin (the region uses a drag)."""
+        """Place a pin or an Auto seed (the region uses a drag)."""
         if self.panel is None or self._vb is None:
+            return
+        if self._seed_clicks is not None:
+            self._seed_click(ev)
             return
         if self._btn_pin is None or not self._btn_pin.isChecked():
             return
@@ -165,9 +335,7 @@ class PupilCamModule(ModuleAdapter):
 
         self._btn_limit = QPushButton("Set eye region")
         self._btn_limit.setCheckable(True)
-        self._btn_limit.setToolTip(
-            "Press and drag a box around the eye. While armed, drag draws the "
-            "box instead of panning; wheel-zoom still works.")
+        self._btn_limit.setToolTip("Then drag a box around the eye.")
         self._btn_limit.toggled.connect(self._arm_limit)
 
         self._btn_limit_off = QPushButton("Clear")
@@ -179,11 +347,8 @@ class PupilCamModule(ModuleAdapter):
         self._lbl_limit.setMinimumWidth(1)      # clip, don't widen the dock
         self._btn_pin = QPushButton("Pin reflection")
         self._btn_pin.setCheckable(True)
-        self._btn_pin.setToolTip(
-            "Click a fixed reflection to mark it, and click a marked one again "
-            "to remove it.\nPinned reflections are removed without the guards "
-            "the automatic pass needs — they are rig geometry, so clear them "
-            "when the optics move.")
+        self._btn_pin.setToolTip("Then click a fixed reflection to pin it; "
+                                 "click again to unpin.")
         self._btn_pin.toggled.connect(self._arm_pin)
 
         self._cmb_view = QComboBox()
@@ -191,9 +356,7 @@ class PupilCamModule(ModuleAdapter):
                            ("Full, no overlay", "bare"),
                            ("Cropped to region", "crop")):
             self._cmb_view.addItem(label, key)
-        self._cmb_view.setToolTip(
-            "How the preview shows the frame — the region itself is unchanged "
-            "by this, only how it's displayed.")
+        self._cmb_view.setToolTip("Display only.")
         self._cmb_view.currentIndexChanged.connect(self._on_view_mode_changed)
 
         lay.addWidget(QLabel("Eye:"))
@@ -375,6 +538,8 @@ class PupilCamModule(ModuleAdapter):
                                              rate_hz=s.rate_hz))
 
     def start(self) -> None:
+        if self.mode() == "review":         # Live view takes the tab back
+            self._set_mode("live")
         super().start()
         if self._track is not None:
             self._track.start()
@@ -382,6 +547,10 @@ class PupilCamModule(ModuleAdapter):
             self._apply_led_follow(True)
 
     def stop(self) -> None:
+        if self._auto_frames is not None:   # gathering needs the feed
+            self._end_auto()
+        if self._seed_clicks is not None:   # so does clicking on it
+            self._end_seeding("pupil Auto cancelled")
         if self._track is not None:     # consumer before producer
             self._track.stop()
             self._track = None
@@ -413,6 +582,8 @@ class PupilCamModule(ModuleAdapter):
         if tr is None:
             return
         self._last_frame = tr.frame
+        if self._auto_frames is not None:
+            self._gather_auto(tr.frame)
         shown, rect = self._display_frame(tr.frame)
         self._paint(shown, self._settings is not None
                     and self._settings.auto_levels)
@@ -459,13 +630,21 @@ class PupilCamModule(ModuleAdapter):
         return self._last_frame
 
     def _say_tracker_state(self) -> None:
-        """Say once why nothing is tracked; otherwise there's just no ellipse."""
+        """Say once why nothing is tracked, or why the fits can't be trusted;
+        otherwise there's just no ellipse."""
         msg = self._track.track_error
+        if msg:
+            msg = f"pupil tracking off: {msg}"
+        elif (self._settings is not None and self._settings.track
+                and PupilReview.fitting()):
+            msg = ("pupil tracking: a clip is being fitted in Pupil review — "
+                   "live fits are unreliable until it finishes (shared EyeLoop "
+                   "state)")
         if msg == self._said:
             return
         self._said = msg
         if msg:
-            self.win.status(f"pupil tracking off: {msg}")
+            self.win.status(msg)
 
     def _draw_fit(self, fit) -> None:
         if self._fit_curve is None:
@@ -486,7 +665,7 @@ class PupilCamModule(ModuleAdapter):
         if self._mask_img is None:
             return
         show = (tr.mask is not None and tr.box is not None
-                and self._settings is not None and self._settings.cr_show_mask)
+                and self._settings is not None and self._settings.cr_remove)
         if not show:
             self._mask_img.clear()
             return
@@ -508,6 +687,10 @@ class PupilCamModule(ModuleAdapter):
     def attach_sink(self, rec) -> None:
         if self.worker is not None:
             self.worker.set_sink(lambda fr: rec.put("pupil_cam", fr))
+            # Remembered for Review, which opens the newest one by itself.
+            path = getattr(self.win, "recording_path", lambda: None)()
+            if path is not None:
+                self._last_recording = path
         if self._track is not None:
             self._track.set_fit_sink(
                 lambda fit, is_blink, at: self._record_fit(rec, fit, is_blink, at))
@@ -566,3 +749,14 @@ class PupilCamModule(ModuleAdapter):
         if s.blink_detect:
             out["pupil_blinks_flagged"] = self._track.blinks
         return out
+
+    # ── lifecycle of the review ──
+    def busy_reason(self) -> str:
+        if self._review is not None and self._review._worker is not None:
+            return "Pupil review is fitting a clip"
+        return ""
+
+    def close_controller(self) -> None:
+        if self._review is not None:
+            self._review.shutdown()
+        super().close_controller()
