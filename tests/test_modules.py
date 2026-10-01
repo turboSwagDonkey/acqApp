@@ -23,8 +23,8 @@ SUBSETS = [
     ["puffer", "dmd"],                  # controllers only, no workers
     ["voltage_cam", "wheel"],
     ["pupil_cam", "wheel", "stage"],
-    ["closed_loop"],                    # a rule with no signal and no output
-    ["wheel", "closed_loop"],           # a signal but nothing to fire
+    ["vis_stim"],                       # visuomotor with no wheel to read
+    ["wheel", "vis_stim"],              # a signal and its consumer
 ]
 
 
@@ -176,16 +176,17 @@ def check_empty_set(r: Report, win) -> None:
 
 def check_order(r: Report, win) -> None:
     """A module loaded later still lands in config.MODULES order."""
-    win.set_modules(["closed_loop", "voltage_cam"])
-    r.check(_keys(win)[-1] == "closed_loop",
-            f"closed_loop is last when loaded FIRST ({_keys(win)})")
-    win.set_modules(["closed_loop", "voltage_cam", "wheel"])
+    win.set_modules(["mirror", "voltage_cam"])
+    got = _keys(win)
+    r.check(got.index("voltage_cam") < got.index("mirror"),
+            f"mirror sorts after the camera though loaded FIRST ({got})")
+    win.set_modules(["mirror", "voltage_cam", "wheel"])
     order = list(config.MODULES)
     got = _keys(win)
     r.check(got == sorted(got, key=order.index),
-            f"a module added after closed_loop still sorts before it ({got})")
-    # CONTROL: imposed, not inherited — the argument put closed_loop first.
-    r.check(got.index("wheel") < got.index("closed_loop"),
+            f"a module added after mirror still sorts before it ({got})")
+    # CONTROL: imposed, not inherited — the argument put mirror first.
+    r.check(got.index("wheel") < got.index("mirror"),
             f"…and that is not the order it was asked for ({got})")
 
 
@@ -238,7 +239,7 @@ def check_sidebar_follows(r: Report, win) -> None:
     r.check(dead not in win._sidebar.actions(),
             "…and the item really is off the toolbar, not just out of the dict")
 
-    win.set_modules(["closed_loop", "wheel", "voltage_cam"])
+    win.set_modules(["mirror", "wheel", "voltage_cam"])
     labels = [a.text() for a in win._sidebar.actions()
               if a in win._page_actions.values()]
     r.check(labels[0] == "Save", f"Save leads ({labels})")
@@ -306,19 +307,21 @@ def check_recording_refused(r: Report, win) -> None:
             f"control: the same change works with no recorder ({removed})")
 
 
-def check_closed_loop_offers(r: Report, win) -> None:
-    """The closed loop's source list is rebuilt when its neighbours change."""
-    win.set_modules(["closed_loop", "voltage_cam"])
-    loop = next(m for m in win._modules if m.key == "closed_loop")
-    without = set(loop._sources)
-    win.set_modules(["closed_loop", "voltage_cam", "wheel"])
-    with_wheel = set(loop._sources)
-    r.check(len(with_wheel) > len(without),
-            f"loading the wheel adds its signal to the loop's offers "
+def check_signal_offers(r: Report, win) -> None:
+    """Signal sources follow the loaded modules: visuomotor looks the wheel
+    up per call, so a stale offer would read an unloaded worker."""
+    def offered() -> set[str]:
+        return {s.key for s in win.signal_sources()}
+    win.set_modules(["vis_stim", "voltage_cam"])
+    without = offered()
+    win.set_modules(["vis_stim", "voltage_cam", "wheel"])
+    with_wheel = offered()
+    r.check("wheel_speed_live" in with_wheel - without,
+            f"loading the wheel adds its signal to the offers "
             f"({sorted(without)} -> {sorted(with_wheel)})")
-    win.set_modules(["closed_loop", "voltage_cam"])
-    r.check(set(loop._sources) == without,
-            f"unloading it takes the offer away again ({sorted(loop._sources)})")
+    win.set_modules(["vis_stim", "voltage_cam"])
+    r.check(offered() == without,
+            f"unloading it takes the offer away again ({sorted(offered())})")
 
 
 def check_camera_handle_survives(r: Report, win) -> None:
@@ -485,7 +488,7 @@ def _part_hotload() -> int:
         check_theme_toggle_survives(r, win)
         check_central_pane(r, win)
         check_recording_refused(r, win)
-        check_closed_loop_offers(r, win)
+        check_signal_offers(r, win)
         check_devices_monitor(r, win)
         check_camera_handle_survives(r, win)
         check_live_session(r, win)

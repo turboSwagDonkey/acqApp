@@ -18,7 +18,6 @@ flowchart TD
     main["main.py<br/><i>window · session · docks</i>"]
     adapters["adapters/<br/><i>one file per instrument</i>"]
     devices["devices/<br/><i>the six instruments</i>"]
-    closed_loop["closed_loop/<br/><i>fire an output from a signal</i>"]
     routines["routines/<br/><i>run a protocol step by step</i>"]
     saving["saving/<br/><i>where the file goes</i>"]
     acq["acq/<br/><i>clock · recorder · ring · writer · protocols</i>"]
@@ -38,7 +37,6 @@ flowchart TD
     main --> console
     main --> devices
     adapters --> devices
-    adapters --> closed_loop
     adapters --> routines
     adapters --> saving
     adapters --> acq
@@ -49,9 +47,6 @@ flowchart TD
     devices --> style
     devices --> config
     devices --> widgets
-    closed_loop --> acq
-    closed_loop --> style
-    closed_loop --> widgets
     routines --> style
     routines --> devices
     routines --> widgets
@@ -64,8 +59,8 @@ flowchart TD
     probe --> config
 ```
 
-Seven edges surprise people, so they are drawn rather than explained away:
-`devices → widgets`, and `closed_loop`/`routines → widgets` with it
+Six edges surprise people, so they are drawn rather than explained away:
+`devices → widgets`, and `routines → widgets` with it
 (`widgets.spin()` builds the configured spin boxes every settings panel wants
 — range-before-value, suffix, keyboard tracking; that is what `widgets.py` is
 for, and the alternative was the same six lines a hundred times over),
@@ -76,8 +71,7 @@ module scope, so `probe.py` stays runnable as a plain script and the test
 harness can re-point config's file first), `devices → config`
 (`devices/dmd/sweep.py`'s Calibration dialog seeds its Model/cross-length
 controls from the active rig's `dmd_calibration` profile — a steeply tilted
-camera needs the same fit every run, not a re-pick), `adapters → closed_loop`
-(the loop is a module like any other, and its adapter is what arms it), and
+camera needs the same fit every run, not a re-pick), and
 `routines → devices` (a
 step's pattern picker opens `devices/dmd/roi_picker.py` to choose a saved ROI
 set, and its FOV picker opens `devices/stage/fov_picker.py` the same way —
@@ -124,11 +118,18 @@ archive/                removed-but-kept code; nothing here is imported
     tests/
       test_pupil_fits.py
       test_pupil_tracking_thread.py
+  closed_loop/          fire an output from a live signal, retired 2026-10-01
+    README.md           why it went, how to restore it
+    adapter.py          was adapters/closed_loop.py
+    panel.py
+    settings.py         LoopRule / LoopSettings — no Qt
+    worker.py
+    tests/
+      test_closed_loop.py
 adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
                         display tick, recording sink, metadata
   __init__.py           the registry (ADAPTERS) and the lifecycle table
   base.py               ModuleAdapter itself + the two shared widget builders
-  closed_loop.py
   dmd.py
   mirror.py
   puffer.py
@@ -138,10 +139,6 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
   vis_stim.py
   voltage_cam.py
   wheel.py
-closed_loop/            phase 5: watch one module's signal, fire another's output
-  panel.py
-  settings.py           LoopRule / LoopSettings — no Qt
-  worker.py
 devices/                one package per instrument
   dmd/
     _roi_editor.py      script: open roi_panel's editor alone, no rig, no light
@@ -299,7 +296,6 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   README.md             the two conventions: isolate user state, include a control
   run_all.py            the suite: run this
   test_camera.py              readout table, frame timestamps, .dcimg, recording losses
-  test_closed_loop.py
   test_config.py              rigs.json, modes.json, settings persistence, mirror default
   test_console_safety.py
   test_device_contracts.py    the Protocols in acq/devices.py, both directions
@@ -344,7 +340,7 @@ Not listed and deliberately so: `.venv/`, `__pycache__/`, `sessions/` (recording
 `routine_templates/` (the operator's saved protocols, written by `routines/templates.py`),
 anything else gitignored, and the per-package `__init__.py` — every package has
 one, and only the two carrying logic are called out above (the adapter registry,
-and the lazy PEP 562 re-exports in `closed_loop/`, `routines/` and `saving/`). Raw rig captures live **outside** the repo in
+and the lazy PEP 562 re-exports in `routines/` and `saving/`). Raw rig captures live **outside** the repo in
 `../../rig_captures/`.
 
 ## Adding a module

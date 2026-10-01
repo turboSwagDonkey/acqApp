@@ -10,9 +10,9 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from acqApp import config, style
-from acqApp.closed_loop import SignalSource
-from acqApp.acq.devices import (DeviceWorker, LedTarget, ModuleHost, OutputController,
-                            PatternTarget, PufferTarget, RecordingOutput, StageTarget)
+from acqApp.acq.devices import (DeviceWorker, LedTarget, ModuleHost,
+                                OutputController, PatternTarget, PufferTarget,
+                                RecordingOutput, SignalSource, StageTarget)
 
 
 PLOT_HISTORY = 600          # samples kept in each rolling plot

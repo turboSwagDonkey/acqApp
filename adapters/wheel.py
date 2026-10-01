@@ -1,4 +1,4 @@
-"""The running wheel's adapter; also a closed-loop signal source."""
+"""The running wheel's adapter; also offers its speed as a SignalSource."""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -7,8 +7,7 @@ from typing import Any
 from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
-from acqApp.closed_loop import SignalSource
-from acqApp.acq.devices import ClockedWorker
+from acqApp.acq.devices import ClockedWorker, SignalSource
 from acqApp.adapters.base import PLOT_HISTORY, ModuleAdapter, _plot
 from acqApp.devices.wheel.acquisition import EncoderWorker, MockEncoderWorker
 from acqApp.devices.wheel.panel import SettingsPanel as WheelSettingsPanel
@@ -115,7 +114,7 @@ class WheelModule(ModuleAdapter):
             self._title_text = text
             self._plot_w.setTitle(text)
 
-    # ── closed loop ──
+    # ── live signal (visuomotor) ──
     def signal_sources(self) -> list[SignalSource]:
         """Both speeds: the recorded one matches the file but is ~1 s late;
         the live EMA is noisier but current. Non-consuming reads."""

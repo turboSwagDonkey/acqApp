@@ -6,9 +6,21 @@ none.)
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
 Sink = Callable[[Any], None]
+
+
+@dataclass(frozen=True)
+class SignalSource:
+    """A live scalar one module offers another (the wheel's speed, for
+    visuomotor). `read()` -> (value, acquired_at) or None while not running;
+    must not consume. `acquired_at` is perf_counter at acquisition."""
+    key:   str
+    label: str
+    units: str
+    read:  Callable[[], tuple[float, float] | None]
 
 
 # ── acquisition ───────────────────────────────────────────────────────────────
@@ -188,7 +200,7 @@ class ModuleHost(Protocol):
 
     def module_keys(self) -> list[str]: ...
 
-    def signal_sources(self) -> list[Any]: ...
+    def signal_sources(self) -> list[SignalSource]: ...
 
     def set_live(self, on: bool) -> bool:
         """Returns the previous state, so a caller can put it back."""

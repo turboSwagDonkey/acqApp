@@ -65,7 +65,6 @@ def main() -> int:
     from acqApp.devices.puffer.control import PufferController, MockPufferController
     from acqApp.devices.dmd.control import DmdController, MockDmdController
     from acqApp.devices.stage.acquisition import StagePollWorker
-    from acqApp.closed_loop import ClosedLoopWorker
 
     # ── 1. conformance ───────────────────────────────────────────────────────
     CONFORM = [
@@ -80,7 +79,6 @@ def main() -> int:
         (MockPupilCameraWorker,   DeviceWorker),
         (VideoFileCameraWorker,   DeviceWorker),
         (StagePollWorker,         DeviceWorker),
-        (ClosedLoopWorker,        DeviceWorker),
         (PufferController,        RecordingOutput),
         (MockPufferController,    RecordingOutput),
         (DmdController,           ProjectorController),

@@ -21,8 +21,6 @@ MODULES: dict[str, str] = {
     "vis_stim":    "Visual stim",
     "mirror":      "PMT/camera mirror",
     "routines":    "Experiment routines",
-    # Last: its panel asks which signal sources exist.
-    "closed_loop": "Closed loop",
 }
 
 # No picker checkbox; owns no device, so unticking it would only lose the

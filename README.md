@@ -13,12 +13,11 @@ runs and records seven subsystems against a single shared session clock:
 | DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
 | Visual stim  | `vis_stim/`    | Drifting sinusoidal grating on a display screen, gated by the shared session clock |
 
-…plus two that own no device: **Experiment routines** (`routines/`), which
-executes a protocol of stage positions and DMD patterns step by step, and
-**Closed loop** (`closed_loop/`), which watches one subsystem's live signal and
-fires another's output. Both are described below. Routines is **always loaded
-and opens in a window of its own**; the closed loop is a settings tab like the
-instruments.
+…plus one that owns no device: **Experiment routines** (`routines/`), which
+executes a protocol of stage positions and DMD patterns step by step,
+described below. It is **always loaded and opens in a window of its own**.
+(A closed-loop module was retired unused on 2026-10-01; it is kept in
+`archive/closed_loop/`.)
 
 > **What has actually run.** Every subsystem has a real driver path and a mock
 > twin, and the whole suite is verified against the mocks (`tests/`). Two have
@@ -476,45 +475,6 @@ routine holds an index into it.
 > timebase), not the filename — the existing `_NNN` auto-numbering already
 > gives distinct, chronologically-sortable names for free.
 
-### Closed loop
-
-Another tab that owns no device. It watches one live scalar and
-fires one output when a condition on it holds — the behavioural counterpart to
-the scheduled triggers, which fire at a *time* on the session clock rather than
-at a *state* of the animal.
-
-The rule is: *when `<signal>` goes `above`/`below` `<threshold>` and holds for
-`<hold>`, fire the `<puffer|DMD>` for `<duration>`* — plus a minimum gap between
-fires, an optional "one event per bout" mode, and a session-wide fire ceiling.
-Each gate is there because a bare threshold on a real signal fires hundreds of
-times a second; `tests/test_closed_loop.py` carries an ungated control that does
-exactly that.
-
-The wheel offers **two** speeds and they are not interchangeable. `wheel_speed`
-is the recorded one — a least-squares slope centred ~1 s in the past, so it
-matches the trace in the file but a rule on it acts about a second after the
-animal starts running. `wheel_speed_live` is the EMA velocity behind it: noisier,
-but current. The file records which was used (`loop_source`).
-
-Evaluation runs on its own thread at 200 Hz, *watching* the wheel through a
-non-consuming snapshot rather than pulling from it — the display tick is already
-the consumer, and a second one would take samples away from the plot. The
-decision is made on that thread but the actuation is not: a fire is handed to the
-ordinary trigger bus, so a rule-driven puff takes the identical path to a
-scheduled one.
-
-**Arming is never persisted**, for the same reason the eye-tracking LED isn't:
-restoring an armed rule would mean the app firing the puffer at the next launch,
-in an empty rig, before anyone had looked at the threshold. Disarmed, the rule
-still evaluates and the tab still shows whether the condition is met, so a
-threshold can be set against a live animal without actuating anything.
-
-Every fire is recorded to `/closed_loop` — the value that crossed, stamped at the
-instant of the sample that caused it — alongside `loop_armed`, `loop_source`,
-`loop_threshold`, `loop_target` and the rest of the rule, and `loop_fires` when
-the file closes. `loop_armed` is what tells a rule that was never armed from one
-that was armed and never met its condition; both leave `/closed_loop` empty.
-
 Each device worker pushes into a bounded ring buffer; a single writer thread
 drains it to disk (acquisition threads never touch disk I/O). The buffer is
 bounded by both item count **and** payload bytes, so full-frame images can't
@@ -643,9 +603,8 @@ actions. In short:
 - ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
 - ✅ Pupil tracking moved off the GUI thread; encoder on the DAQ's sample clock
 - ✅ DMD projecting for real (ALP-4.2), verified on the hardware
-- ✅ Closed loop: trigger the DMD / puffer from live wheel speed (mock-verified)
+- Closed loop (DMD / puffer from live wheel speed): built and mock-verified, retired unused 2026-10-01
 - ✅ Experiment routines: stage + DMD protocol executed step by step (mock-verified)
 - Encoder scaling measured on the rig (`volts_per_rev`, wheel diameter)
 - Camera throughput measured on the rig — the number that sizes the ring buffer
-- Closed loop tried on the rig, with the threshold set against a real animal
 - Hardware sync upgrade: `DaqClock` on the PCIe-6363, hardware-triggered ORCA

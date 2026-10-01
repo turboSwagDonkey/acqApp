@@ -99,10 +99,6 @@ def _dmd() -> ProbeResult:
                              f"one process at a time")
 
 
-def _closed_loop() -> ProbeResult:
-    return ProbeResult("stub", "software rule — no device of its own")
-
-
 def _vis_stim() -> ProbeResult:
     return ProbeResult("stub", "shows on a display screen, gated by the "
                               "shared session clock — no device of its own")
@@ -132,8 +128,6 @@ def probe(module: str, *, ni_device: str | None = None,
             return _vis_stim()
         if module == "mirror":
             return _mirror()
-        if module == "closed_loop":
-            return _closed_loop()
         return ProbeResult("error", "unknown module")
     except Exception as e:                       # belt-and-braces
         return ProbeResult("error", str(e))

@@ -12,7 +12,6 @@ HEX = {
     "dmd":         "#d6459b",   # magenta
     "vis_stim":    "#22c7d6",   # cyan
     "mirror":      "#ff4fa3",   # pink
-    "closed_loop": "#9ecf2a",   # chartreuse
     "routines":    "#6f7bf7",   # indigo
     "sync":        "#8844cc",   # purple (session-wide controls)
     "saving":      "#c9a227",   # gold

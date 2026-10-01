@@ -22,7 +22,7 @@ SKIP_DIRS = {".venv", "__pycache__", ".git", "sessions", "routine_templates",
             "rois", "fov_library", ".vs"}
 KEEP_SUFFIX = {".py", ".json", ".txt", ".md"}
 # Root modules are their own node; these packages are one node each.
-PACKAGES = {"acq", "adapters", "closed_loop", "devices", "routines", "saving"}
+PACKAGES = {"acq", "adapters", "devices", "routines", "saving"}
 # tests/ imports everything by design and is not drawn; archive/ is dead code
 # kept for reference and is not part of the layering.
 UNDRAWN = {"tests", "archive"}

@@ -42,7 +42,6 @@ TESTS = [
     ("routines",  "test_routines.py"),
     ("pupil",     "test_pupil.py"),
     ("camera",    "test_camera.py"),
-    ("closed-loop", "test_closed_loop.py"),
     ("modules",   "test_modules.py"),
     ("session",   "test_session_recording.py"),
 ]

@@ -985,7 +985,6 @@ class MainWindow(QMainWindow):
         for key in added:
             self._load_module(key)
 
-        # Order matters: closed_loop is last, after every signal source.
         self._modules.sort(key=lambda m: _rank(m.key))
 
         self._enabled = {m.key for m in self._modules}
