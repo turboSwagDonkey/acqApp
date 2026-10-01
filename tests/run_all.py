@@ -8,6 +8,9 @@ Run the acqApp test suite.
 Each test (and each part of a multi-part file) runs in its own process:
 QApplications and module patches don't mix in one, and a hard crash reports as
 a failure instead of ending the run. Emulate mode against fakes only.
+
+Quiet by default: only failing tests print, and only their FAIL lines and
+tracebacks — a full run's output costs an AI session thousands of tokens.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from pathlib import Path
 import _harness  # noqa: F401  (imported for its console hardening)
 
 HERE = Path(__file__).resolve().parent
+MAX_FAIL_LINES = 40         # per failing test, without -v
 
 # Cheapest and most diagnostic first: a console-guard failure would fail the
 # GUI tests for an unrelated reason.
@@ -45,6 +49,29 @@ TESTS = [
     ("modules",   "test_modules.py"),
     ("session",   "test_session_recording.py"),
 ]
+
+
+def _failure_lines(out: str) -> list[str]:
+    """FAIL lines with their indented detail, part summaries, tracebacks."""
+    keep, in_tb, after_fail = [], False, False
+    for line in out.splitlines():
+        if line.startswith("Traceback"):
+            in_tb = True
+        if in_tb:
+            keep.append(line)
+            if line and not line.startswith((" ", "Traceback")):
+                in_tb = False           # the exception line ends it
+            continue
+        if "FAIL" in line:
+            keep.append(line)
+            after_fail = True
+        elif after_fail and line.startswith("       "):
+            keep.append(line)           # a FAIL's `info` detail
+        else:
+            after_fail = False
+            if line.lstrip().startswith("- "):
+                keep.append(line)       # the part's failure list
+    return keep
 
 
 def main() -> int:
@@ -77,14 +104,18 @@ def main() -> int:
         results.append((name, ok, n_ok, dt))
 
         status = "PASS" if ok else "FAIL"
-        print(f"  {status}  {name:<12} {n_ok:>3} checks  {dt:5.1f}s")
         if verbose or not ok:
-            # Drop only the passing lines; keep FAILs, `info`, tracebacks.
-            print("  " + "-" * 68)
+            print(f"  {status}  {name:<12} {n_ok:>3} checks  {dt:5.1f}s")
+        if verbose:
             for line in out.splitlines():
-                if verbose or not line.startswith("  ok   "):
-                    print("  | " + line)
-            print("  " + "-" * 68)
+                print("  | " + line)
+        elif not ok:
+            lines = _failure_lines(out)
+            for line in lines[:MAX_FAIL_LINES]:
+                print("  | " + line)
+            if len(lines) > MAX_FAIL_LINES:
+                print(f"  | … {len(lines) - MAX_FAIL_LINES} more; rerun "
+                      f"{script} directly for all of it")
 
     failed = [n for n, ok, _, _ in results if not ok]
     print(f"\n{'=' * 72}")

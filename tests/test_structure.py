@@ -20,7 +20,7 @@ DOC = APP_DIR / "docs" / "STRUCTURE.md"
 # sessions/ — their contents are not part of the tree.
 SKIP_DIRS = {".venv", "__pycache__", ".git", "sessions", "routine_templates",
             "rois", "fov_library", ".vs"}
-KEEP_SUFFIX = {".py", ".json", ".txt", ".md"}
+KEEP_SUFFIX = {".py", ".json", ".txt", ".md", ".ps1"}
 # Root modules are their own node; these packages are one node each.
 PACKAGES = {"acq", "adapters", "devices", "routines", "saving"}
 # tests/ imports everything by design and is not drawn; archive/ is dead code
@@ -66,6 +66,20 @@ def real_paths() -> set[str]:
             continue
         out.add(p.relative_to(APP_DIR).as_posix())
     return out - _inits(out)
+
+
+def _git_ignored(paths: set[str]) -> set[str]:
+    """Rig-local leftovers (calibration dumps, backups) aren't the tree; the
+    private notes files are listed anyway, but not required."""
+    import subprocess
+    # -z bytes: text mode on Windows would send "\r\n" and match nothing.
+    try:
+        res = subprocess.run(["git", "check-ignore", "--stdin", "-z"],
+                             cwd=APP_DIR, capture_output=True, timeout=30,
+                             input="\0".join(sorted(paths)).encode("utf-8"))
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return {p for p in res.stdout.decode("utf-8").split("\0") if p}
 
 
 def _inits(paths: set[str]) -> set[str]:
@@ -123,7 +137,8 @@ def check_tree(r: Report, text: str) -> None:
     doc, real = documented_paths(text), real_paths()
     doc -= _inits(doc)
     r.check(len(doc) > 60, f"the tree block parses ({len(doc)} entries)")
-    for label, missing in (("every file on disk is in STRUCTURE.md", real - doc),
+    unlisted = real - doc - _git_ignored(real - doc)
+    for label, missing in (("every file on disk is in STRUCTURE.md", unlisted),
                            ("every entry in STRUCTURE.md exists", doc - real)):
         r.check(not missing, f"{label} ({len(missing)} off)")
         for m in sorted(missing):

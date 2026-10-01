@@ -10,7 +10,7 @@ projected — and a fit off stale planes comes back confident and wrong, since a
 rms of 0.4 px on garbage looks like one on a registration. `FreshGrabber` makes
 the project→grab pairing mean what it says.
 
-Nothing here decides to actuate; `CalibrationDialog` asks (PLAN §2).
+Nothing here decides to actuate; `CalibrationDialog` asks (docs/REFERENCE.md §2).
 """
 from __future__ import annotations
 
@@ -311,7 +311,7 @@ class CalibrationDialog(QDialog):
         """Project all-on, grab a frame, and let the operator drag the fit's
         corners onto the lit field.
 
-        Its own actuation, on this button's click only (PLAN §2): the sweep's
+        Its own actuation, on this button's click only (REFERENCE §2): the sweep's
         consent covered measuring, not a further frame to review the result.
         """
         if self._calib is None:
