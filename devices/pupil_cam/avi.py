@@ -1,17 +1,13 @@
 """Uncompressed-AVI reader — enough of RIFF to replay recorded pupil footage.
 
-Not a video library — only the formats the rig's capture software writes, all
-of which store raw pixels per frame, so the "decode" is a reshape:
+Only raw-pixel formats, so the "decode" is a reshape:
 
     IYUV / I420 / YV12   planar YUV 4:2:0 — the Y plane IS the grayscale frame
     Y800 / GREY / Y8     8-bit luma, already what the tracker wants
     BI_RGB 8/24/32       uncompressed DIB, bottom-up, BGR → luma
 
-Anything genuinely compressed (MJPG, H.264, …) raises with FourCC named:
-on 3.14 cv2 has no wheels and imageio/av are absent, so there's nothing to
-hand it to.
-
-numpy memmap, so a 500 MB clip costs nothing to open and frames are views.
+Compressed video raises, naming the FourCC: on 3.14 cv2 has no wheels and
+imageio/av are absent. A memmap, so a 500 MB clip costs nothing to open.
 """
 from __future__ import annotations
 
@@ -20,12 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
-# Y-plane-first planar YUV: 4:2:0 chroma follows and is ignored.
-_PLANAR_Y = {b"IYUV", b"I420", b"YV12"}
-# 8-bit luma FourCCs — stored top-down, unlike BI_RGB below.
-_GRAY = {b"Y800", b"GREY", b"Y8  "}
-# BI_RGB: compression 0, and the only layout here that is bottom-up.
-_BI_RGB = b"\x00\x00\x00\x00"
+_PLANAR_Y = {b"IYUV", b"I420", b"YV12"}   # Y plane first, chroma ignored
+_GRAY = {b"Y800", b"GREY", b"Y8  "}       # top-down
+_BI_RGB = b"\x00\x00\x00\x00"             # the only bottom-up layout
 
 
 class AviReader:
@@ -55,24 +48,23 @@ class AviReader:
         self._ybytes = self.width * self.height
         if self.fourcc in _PLANAR_Y:
             self._kind = "planar"
-            self._need = self._ybytes          # Y first; chroma follows, ignored
+            self._need = self._ybytes
         elif self.fourcc in _GRAY or self.fourcc == _BI_RGB:
             if bits not in (8, 24, 32):
                 raise ValueError(f"{self.path.name}: uncompressed {bits}-bit "
                                  f"is not supported")
             self._kind = "dib"
             self._px = bits // 8
-            # DIB rows pad up to a 4-byte boundary, so stride equals width*px
-            # only when that's already aligned. Assuming it always is shears
-            # the image progressively — invisible at a width like 96, wrong
-            # at 97.
+            # DIB rows pad to 4 bytes; assuming stride == width*px shears the
+            # image — invisible at width 96, wrong at 97.
             self._stride = ((self.width * self._px + 3) // 4) * 4
             self._need = self._stride * self.height
         else:
+            name = self.fourcc.decode(errors="replace")
             raise ValueError(
-                f"{self.path.name}: compressed video ({self.fourcc.decode(errors='replace')})"
-                f" — this venv has no decoder (no cv2/imageio/av, no ffmpeg). "
-                f"Re-export as uncompressed/IYUV, or install imageio-ffmpeg.")
+                f"{self.path.name}: compressed video ({name}) — this venv has "
+                f"no decoder (no cv2/imageio/av, no ffmpeg). Re-export as "
+                f"uncompressed/IYUV, or install imageio-ffmpeg.")
 
         self._offsets = self._index()
         if not self._offsets:
@@ -102,7 +94,7 @@ class AviReader:
         pos, stop = movi
         while pos + 8 <= stop:
             sz = self._u32(pos + 4)
-            # `##db`/`##dc` = a stream's data chunk; skip index and any junk.
+            # `##db`/`##dc` = a stream's data chunk; anything else is skipped.
             if self._tag(pos)[2:] in (b"db", b"dc") and sz >= need:
                 offs.append(pos + 8)
             pos += 8 + sz + (sz & 1)
@@ -119,11 +111,11 @@ class AviReader:
 
         rows = self._buf[o:o + self._need].reshape(self.height, self._stride)
         if self._px == 1:
-            f = rows[:, :self.width]                    # drop the row padding
+            f = rows[:, :self.width]
         else:
             bgr = rows[:, :self.width * self._px].reshape(
                 self.height, self.width, self._px)[:, :, :3]
-            # Rec.601 luma in uint8, integer weights to stay off floats.
+            # Rec.601 luma, integer weights.
             f = ((bgr[:, :, 0].astype(np.uint16) * 29
                   + bgr[:, :, 1].astype(np.uint16) * 150
                   + bgr[:, :, 2].astype(np.uint16) * 77) >> 8).astype(np.uint8)

@@ -42,9 +42,7 @@ class VoltageCamModule(ModuleAdapter):
         # Fixed at build_session: the panel may already name next session's preset.
         self._last_frame_preset: str | None = None
         self._preview_buf: deque = deque(maxlen=1)
-        # The recording's .dcimg was closed early (`seal_dcimg`); the
-        # recording stays open until the next roll.
-        self._dcimg_sealed = False
+        self._dcimg_sealed = False      # see seal_dcimg
 
     def last_frame(self):
         return self._last_frame
@@ -283,7 +281,7 @@ class VoltageCamModule(ModuleAdapter):
         small = f[::DISP_DS, ::DISP_DS]
 
         # Preview-only averaging; the trace and the file use unaveraged frames.
-        if self._preview_buf.maxlen and self._preview_buf.maxlen > 1:
+        if self._preview_buf.maxlen > 1:
             self._preview_buf.append(small)
             disp = (np.mean(self._preview_buf, axis=0, dtype=np.float32)
                      .astype(small.dtype, copy=False))

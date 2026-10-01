@@ -12,6 +12,7 @@ trims them.
 """
 from __future__ import annotations
 
+import json
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -56,7 +57,6 @@ class Writer(ABC):
     @abstractmethod
     def write(self, stream: str, timestamp: float, data: Any) -> None:
         """`data` is an ndarray (image) or a scalar."""
-        ...
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
         """Add or overwrite metadata after open(). Optional."""
@@ -74,7 +74,7 @@ class HDF5Writer(Writer):
 
         `dset[i] = frame`              1304 MB/s
         direct chunk write             2696 MB/s
-        + Recorder/ring, 106 Hz        2225 MB/s   100 % kept (was 59)
+        + Recorder/ring, 106 Hz        2225 MB/s   100 % kept (59 via dset[i])
         + Recorder/ring, saturated     2464 MB/s
 
     Cache size, growth block, preallocation, alignment, VFD and multi-frame
@@ -149,8 +149,8 @@ class HDF5Writer(Writer):
             dtype="float64", chunks=(self._CHUNK_SCALAR,), fillvalue=np.nan)
         if is_image:
             shape = tuple(data.shape)
-            frame_bytes = data.dtype.itemsize * int(np.prod(shape))
-            chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // max(frame_bytes, 1)))
+            frame_bytes = max(data.nbytes, 1)
+            chunk_frames = max(1, min(16, self._IMG_CHUNK_BYTES // frame_bytes))
             chunk_bytes = chunk_frames * frame_bytes
             # A multi-frame chunk is touched once per frame; cache a few.
             dset = g.create_dataset(
@@ -162,8 +162,8 @@ class HDF5Writer(Writer):
                 rdcc_nslots=4093)
             # Grow in large steps: a resize is dataset-wide metadata.
             grow = max(chunk_frames, self._MIN_GROW_FRAMES,
-                       (self._MIN_GROW_BYTES // max(frame_bytes, 1)) or 1)
-            grow = (grow // chunk_frames) * chunk_frames or chunk_frames
+                       self._MIN_GROW_BYTES // frame_bytes)
+            grow = (grow // chunk_frames) * chunk_frames
             st = {"image": True, "shape": shape, "dtype": data.dtype,
                   "ts": ts, "data": dset, "idx": 0, "cap": 0, "block": grow,
                   "direct": chunk_frames == 1 and self._compression is None,
@@ -258,7 +258,6 @@ class SplitWriter(Writer):
         self._write_json()
 
     def _write_json(self) -> None:
-        import json
         p = self._dir / f"{self._stem}_settings.json"
         with open(p, "w", encoding="utf-8") as f:
             json.dump({k: _json_value(v) for k, v in self._metadata.items()},

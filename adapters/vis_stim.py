@@ -1,27 +1,10 @@
-"""
-Visual stim's adapter — drifting-grating stimulus, ported from visStimCode's
-guiVisStimDAQ.m/runStimManager.m.
+"""Visual stim's adapter (visStimCode's guiVisStimDAQ.m/runStimManager.m).
 
-The .m code gated blank/stim phases on pulses from an external MCC DAQ line;
-this rig has no such line, so this adapter feeds the controller the shared
-session clock's own tick instead (`self.win.sync.tick` — `acq/sync.py`,
-10 Hz by default), the same timing sequence every other module already uses.
-That tick only runs while the session is live, so Run puts live view on
-itself if it isn't already (mirrors adapters/routines.py's `_open_recording`
-doing the same for the record button) and only turns it back off once the run
-finishes if it's the one that turned it on.
-
-Otherwise unlike a camera or encoder module, vis_stim owns no per-session
-acquisition worker: the run state machine is always-on, built in
-build_controller like puffer/DMD's controllers, matching guiVisStimDAQ.m
-building its own state at GUI construction.
-
-The Visuomotor trial type additionally needs the wheel's live speed
-(`_read_wheel_speed`) to drive the grating's drift — pooled through
-`self.win.signal_sources()`, the same mechanism closed_loop uses, rather
-than reaching for `devices/wheel` directly, so vis_stim depends on *a
-signal* and works (drift just stays at zero) whether or not the wheel
-module happens to be loaded.
+The controller's trigger is the shared clock tick (`win.sync.tick`), which
+only runs while live, so Run turns live view on if needed and off again only
+if it did. No per-session worker: the controller is always-on, built in
+build_controller. Visuomotor reads the wheel through `win.signal_sources()`,
+so without a wheel the drift just stays at zero.
 """
 from __future__ import annotations
 
@@ -40,19 +23,15 @@ from acqApp.devices.vis_stim.settings import VisStimSettings
 class VisStimModule(ModuleAdapter):
     key = "vis_stim"
     tab_label = "Visual stim"
-    # The run/progress status should stay visible while operator is on a
-    # camera's settings page — the same reasoning RoutinesModule documents
-    # for its own window.
-    own_window = True
+    own_window = True       # progress stays visible from other pages
 
     controller: VisStimController | None   # narrows ModuleAdapter.controller
 
     def __init__(self, win) -> None:
         super().__init__(win)
         self._rec = None
-        # True only when Run turned live view on itself — the twin of
-        # RoutinesModule's `_own_rec`, and for the same reason: "stop what you
-        # started" differs from "stop the operator's live view".
+        # Run turned live view on, so it turns it off (RoutinesModule's
+        # `_own_rec` twin).
         self._own_live = False
 
     # ── construction ──
@@ -75,19 +54,15 @@ class VisStimModule(ModuleAdapter):
     def build_controller(self, emulate: bool) -> None:
         s = self.panel.settings if self.panel is not None else VisStimSettings()
         self.controller = VisStimController(s, wheel_speed=self._read_wheel_speed)
-        # One shared-clock tick = one "trigger" pulse (see control.py).
+        # One shared-clock tick = one trigger pulse.
         self.win.sync.tick.connect(self.controller.on_tick)
         self.controller.progress_changed.connect(self.panel.set_progress)
         self.controller.run_state_changed.connect(self._on_run_state)
         self.controller.trial_boundary.connect(self._on_trial_boundary)
 
     def _read_wheel_speed(self) -> tuple[float, float] | None:
-        """The Visuomotor trial's drift source — looked up fresh on every
-        call (not cached at build_controller time) via the same
-        `signal_sources()` pool closed_loop reads from, so this stays
-        correct whether the wheel module is loaded, hot-unloaded, or never
-        loaded at all. `wheel_speed_live` (the EMA, not the ~1 s-lagged
-        recorded one) so the coupling to locomotion feels immediate."""
+        """Looked up per call, so a hot-unloaded wheel is seen. The live
+        EMA, not the ~1 s-lagged recorded speed."""
         for src in self.win.signal_sources():
             if src.key == "wheel_speed_live":
                 return src.read()
@@ -134,11 +109,8 @@ class VisStimModule(ModuleAdapter):
         self._rec = None
 
     def _on_trial_boundary(self, index: int, opening: bool, _payload) -> None:
-        """+index on the way in, -(index+1) on the way out — one scalar
-        stream carries both edges, same convention as
-        adapters/routines.py's `_put`. The trial's params and outcome go into
-        final_metadata() instead: Writer.write() coerces every scalar stream
-        via float(), so nothing but a number can go through rec.put()."""
+        """+(index+1) opening, -(index+1) closing, as routines' `_put`.
+        Params and outcome go to final_metadata(): rec.put() takes floats."""
         rec = self._rec
         if rec is None:
             return
@@ -151,8 +123,7 @@ class VisStimModule(ModuleAdapter):
             "vis_stim_trial_type":        d["trial_type"],
             "vis_stim_screen_index":      d["screen_index"],
             "vis_stim_stretch_to_screen": d["stretch_to_screen"],
-            # The protocol as configured, in full — "which orientation was
-            # trial 4" can't be recovered from the file any other way.
+            # The only record of e.g. "which orientation was trial 4".
             "vis_stim_params":            json.dumps(d["params"]),
             "vis_stim_loops":             json.dumps(d["loops"]),
             "vis_stim_started":           False,
@@ -167,7 +138,6 @@ class VisStimModule(ModuleAdapter):
             "vis_stim_trials_total":     stats.get("trials_total", 0),
             "vis_stim_trials_completed": stats.get("trials_completed", 0),
             "vis_stim_aborted":          stats.get("aborted", False),
-            # Every trial actually run, with its params and outcome — the
-            # same role adapters/routines.py's `routine_runs` plays for steps.
+            # Every trial run, with params and outcome.
             "vis_stim_trials":           json.dumps(log),
         }

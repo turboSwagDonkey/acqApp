@@ -1,26 +1,17 @@
 """
-Device connection probes.
+Device connection probes: enumeration only, never open, so safe mid-session
+with a worker holding the device. Qt-free, so it runs from a plain script.
 
-Enumeration only — never open, hold or reconfigure — so these are safe
-mid-session, with a worker already holding the camera / DAQ / serial port.
-
-Each returns a ProbeResult(status, detail):
+ProbeResult.status:
     "ok"      device detected
     "missing" driver present but no device found
     "error"   couldn't check (driver/import missing, or the check raised)
-    "stub"    no hardware path exists yet (DMD)
-
-Qt-free, so it runs from a plain script.
+    "stub"    module has no device of its own
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Fallback only: the real device name comes from the active rig's profile
-# (config.rig_device()), resolved lazily at each call rather than baked into
-# a default argument here — the test harness re-points config's file *after*
-# importing this module, and an import-time read would miss that.
-DEFAULT_NI_DEVICE = "Dev3"
 DEFAULT_STAGE_PORT = "COM54"
 
 
@@ -31,11 +22,9 @@ class ProbeResult:
 
 
 def _voltage_cam(cam_open: bool = False) -> ProbeResult:
-    """`cam_open` short-circuits the enumeration when the app already holds the
-    camera — faster and truer. `DCAM.get_cameras_number()` costs ~6.5 s on
-    *every* call (it re-enumerates, it isn't one-time DLL init) and this runs
-    on the GUI thread; the handle we hold is the one a session will use.
-    """
+    """`cam_open`: the app holds the camera, so skip enumeration —
+    `DCAM.get_cameras_number()` costs ~6.5 s on every call, on the GUI
+    thread."""
     if cam_open:
         return ProbeResult("ok", "open and held by this app")
     try:
@@ -53,7 +42,6 @@ def _pupil_cam() -> ProbeResult:
         from pypylon import pylon
         devices = pylon.TlFactory.GetInstance().EnumerateDevices()
         if devices:
-            # Model name comes from the enumeration info — no Open() needed.
             names = ", ".join(d.GetModelName() for d in devices[:2])
             return ProbeResult("ok", names)
         return ProbeResult("missing", "no Basler camera (check USB 3.0 port)")
@@ -62,6 +50,8 @@ def _pupil_cam() -> ProbeResult:
 
 
 def _ni_device(name: str | None = None) -> ProbeResult:
+    # Per call, not a default arg: the test harness re-points config's file
+    # after this module is imported.
     if name is None:
         from acqApp import config
         name = config.rig_device()
@@ -93,13 +83,8 @@ def _stage(port: str = DEFAULT_STAGE_PORT) -> ProbeResult:
 
 
 def _dmd() -> ProbeResult:
-    """The ALP *API*, not the device.
-
-    Opening the ALP is the only way to know a DMD is there, and it takes the USB
-    from whoever holds it — a running session, or dmdGUI_project. So this
-    reports what can be checked without connecting; the DMD tab answers "is a
-    real one attached", because it's the code that opened it.
-    """
+    """The ALP API only: opening the ALP is the only way to find a DMD, and it
+    takes the USB from whoever holds it (a session, dmdGUI_project)."""
     try:
         import ALP4  # noqa: F401     (import only — the DLL loads on construction)
     except Exception as e:
@@ -107,7 +92,7 @@ def _dmd() -> ProbeResult:
     try:
         from acqApp.devices.dmd import alp
         lib_dir, source = alp.resolve_lib_dir()
-    except Exception as e:                       # pragma: no cover — import guard
+    except Exception as e:                       # pragma: no cover
         return ProbeResult("error", f"ALP API lookup failed ({e})")
     return ProbeResult("ok", f"ALP4 API via {source} "
                              f"({lib_dir or 'registry'}); not opened — "
@@ -115,22 +100,15 @@ def _dmd() -> ProbeResult:
 
 
 def _closed_loop() -> ProbeResult:
-    """No device of its own: it watches one module and fires another."""
     return ProbeResult("stub", "software rule — no device of its own")
 
 
 def _vis_stim() -> ProbeResult:
-    """No DAQ line either: gating rides the shared session clock's own tick
-    (acq/sync.py), not hardware this module reads itself."""
     return ProbeResult("stub", "shows on a display screen, gated by the "
                               "shared session clock — no device of its own")
 
 
 def _mirror() -> ProbeResult:
-    """Manual only (PLAN.md §6): ThorImage drives the real switch over a
-    serial port it holds exclusively, so acqApp has nothing of its own to
-    probe here — see devices/mirror/_scan_chips.py for how the physical
-    chip was identified offline."""
     return ProbeResult("stub", "operator-asserted state — no device of its "
                               "own (ThorImage owns the real switch)")
 
@@ -164,8 +142,7 @@ def probe(module: str, *, ni_device: str | None = None,
 def probe_all(modules, *, ni_device: str | None = None,
               stage_port: str = DEFAULT_STAGE_PORT,
               cam_open: bool = False) -> dict[str, ProbeResult]:
-    # wheel and puffer share one NI device — probe it once, not twice, when
-    # both are requested together (each enumeration is a real driver call).
+    # wheel and puffer share one NI device: enumerate it once.
     ni_result: ProbeResult | None = None
     out: dict[str, ProbeResult] = {}
     for m in modules:

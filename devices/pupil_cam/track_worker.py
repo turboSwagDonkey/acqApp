@@ -1,9 +1,9 @@
-"""Pupil tracking on its own thread (a fit is 1-2 ms, but a lost pupil takes
-longer, and the preview shares its tick with the voltage camera).
+"""Pupil tracking on its own thread (a fit is 1-2 ms, a lost pupil longer,
+and the preview shares its tick with the voltage camera).
 
 Sole consumer of the camera's `get_latest()`, republishing each frame with its
-fit so the ellipse always belongs to the frame under it. Frames arriving
-mid-fit are dropped: `frames_seen` vs `fits` says how many.
+fit so the ellipse belongs to the frame under it. Frames arriving mid-fit are
+dropped.
 """
 from __future__ import annotations
 

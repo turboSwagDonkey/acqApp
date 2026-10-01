@@ -1,12 +1,8 @@
 """Drawing and editing stimulation ROIs over a snapshot. Model: `roi.py`.
 
-Owns its image view rather than reaching into the voltage camera's dock. The
-snapshot is handed in (`set_image`), so this never knows which camera took it
-and the DMD adapter can host it without the two modules importing each other.
-
-The reachable field is outlined — not clamped: an ROI can be dragged outside
-it, and the only feedback is `_refresh_status()` naming it below the list.
-An ROI outside it is not a small error, it's a stimulus that never arrives.
+The snapshot is handed in (`set_image`), so this never knows which camera
+took it. The reachable field is outlined, not clamped: an ROI outside it is
+only named by `_refresh_status()` — a stimulus that never arrives.
 """
 from __future__ import annotations
 
@@ -24,13 +20,10 @@ from acqApp.devices.dmd.calibration import DmdCalibration
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet
 from acqApp.devices.dmd.roi_picker import RoiSetPicker
 
-# The reachable field is the DMD's own boundary, so it wears the DMD accent —
-# the same magenta the tab, its buttons and the panel preview use. The ROI pens
-# stay independent colours: they must read against a grey camera frame AND be
-# told apart from the field outline they sit inside.
+# The field wears the DMD accent; ROI pens must read against a grey frame
+# and stay distinct from it.
 _FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
-# A different colour AND dash from the field outline: it marks a different
-# claim (dim, not unreachable) and the two circles/rectangles can overlap.
+# Distinct colour AND dash: dim, not unreachable, and it can overlap the field.
 _VIGNETTE_PEN = pg.mkPen(style.WARN, width=2, style=Qt.PenStyle.DotLine)
 _ROI_PEN = pg.mkPen("#00d0ff", width=2)
 _ROI_HOVER = pg.mkPen("#4dff88", width=3)
@@ -38,21 +31,22 @@ _BAND_PEN = pg.mkPen("#00d0ff", width=1, style=Qt.PenStyle.DashLine)
 _BAND_FILL = pg.mkBrush(0, 208, 255, 40)
 
 
+def snapshot_levels(frame: np.ndarray) -> tuple[float, float]:
+    """1st/99th-percentile contrast, not pyqtgraph's min/max autoLevels: an
+    ORCA frame's signal is ~800 of 65535 counts, so two hot pixels black it
+    out. Strided 4x4: a full-frame percentile sorts, 87 ms."""
+    lo, hi = np.percentile(frame[::4, ::4], (1, 99))
+    if hi <= lo:                        # a flat frame — fall back to the range
+        lo, hi = float(frame.min()), float(frame.max()) or 1.0
+    return float(lo), float(hi)
+
+
 class _DrawViewBox(pg.ViewBox):
     """A ViewBox where a left-drag can mean "make an ROI here", not "pan".
 
-    Placing an ROI used to take four gestures — pick a shape, press Add, drag it
-    out of the middle of the field, size a handle — and it always started
-    somewhere nobody asked for. Dragging where you want it is one.
-
-    Gated on a toggle rather than a modifier key: panning and zooming a 4432 px
-    frame is how you find the target in the first place, so the two can't both
-    own an unqualified left-drag.
-
-    The rubber band is not decoration. Without it the drag produced nothing
-    until release, so there was no way to tell whether the mode was even armed
-    until after committing an ROI — and it's drawn in the SAME shape the
-    release will create, so what's dragged is what appears.
+    Gated on a toggle, not a modifier: panning a 4432 px frame is how the
+    target is found. The rubber band shows the mode is armed, in the SAME
+    shape the release creates.
     """
 
     drawn = pyqtSignal(object, object)      # (x0, y0), (x1, y1) in image px
@@ -123,16 +117,10 @@ class RoiEditor(QWidget):
                  offset: tuple[float, float] = (0.0, 0.0),
                  sensor: tuple[float, float] | None = None,
                  scale: float = 1.0):
-        """`offset` is the active camera preset's (hpos, vpos): the sensor
-        pixel the displayed frame's (0, 0) actually is. `scale` is how many
-        sensor px one frame px covers — the binning factor. The model (and
-        every calibration, which is always measured full-frame) stays in
-        absolute sensor coordinates; only the on-screen frame and pyqtgraph
-        items are in preset-local ones, so this is the one seam that converts
-        between them — get either wrong and an ROI lands (hpos, vpos) away
-        from where it was clicked, or the frame is drawn at a fraction of the
-        sensor area it covers, with the field outline around it looking
-        `scale` times too big.
+        """`offset` = the capture preset's (hpos, vpos), the sensor px of the
+        frame's (0, 0); `scale` = sensor px per frame px (binning). The model
+        and calibration are in sensor px, pyqtgraph items preset-local: this
+        is the one seam converting between them.
         """
         super().__init__(parent)
         self._calib = calib
@@ -166,8 +154,6 @@ class RoiEditor(QWidget):
         self._vb.addItem(self._vignette)
         self._vb.drawn.connect(self._on_drawn)
 
-        # A LUT bar, as the live preview has. The percentile default is right
-        # far more often than not, but a dim ROI still needs a drag to find.
         self._hist = pg.HistogramLUTWidget()
         self._hist.setImageItem(self._img)
         self._hist.setFixedWidth(86)
@@ -216,8 +202,6 @@ class RoiEditor(QWidget):
 
         self._list = QListWidget()
         self._list.currentRowChanged.connect(self._on_row)
-        # An index, not the main event: it used to take half the window while
-        # the image it describes was squeezed into the top.
         self._list.setMaximumHeight(110)
         root.addWidget(self._list)
 
@@ -229,33 +213,16 @@ class RoiEditor(QWidget):
 
     # ── inputs ───────────────────────────────────────────────────────────────
     def set_image(self, frame: np.ndarray) -> None:
-        """Show the snapshot ROIs are drawn on (taken with the DMD all-on).
-
-        Contrast from the 1st/99th percentile, NOT pyqtgraph's autoLevels,
-        which stretches to min/max: on a real ORCA frame the signal lives in
-        ~800 counts of 65535, so two hot pixels at 65000 collapse the image to
-        black. That's why the editor looked far worse than the view it was
-        opened from.
-        """
+        """Show the snapshot ROIs are drawn on (taken with the DMD all-on)."""
         self._image = np.asarray(frame)
-        # Strided, not the whole frame: np.percentile sorts, and at full
-        # frame that's 87 ms for a contrast estimate. 1/16 of 10.5 Mpx is
-        # still 650k samples, and the live preview does the same.
-        lo, hi = np.percentile(self._image[::4, ::4], (1, 99))
-        if hi <= lo:                    # a flat frame — fall back to the range
-            lo, hi = float(self._image.min()), float(self._image.max()) or 1.0
-        self._img.setImage(self._image, autoLevels=False,
-                           levels=(float(lo), float(hi)))
-        # Drawn at its SENSOR extent, not its own pixel count: a binned frame
-        # is half (or a quarter) the px of the area it covers, and everything
-        # else here — the ROIs, the field outline, the sensor frame — is in
-        # sensor px.
+        lo, hi = snapshot_levels(self._image)
+        self._img.setImage(self._image, autoLevels=False, levels=(lo, hi))
+        # At its SENSOR extent: a binned frame has fewer px than it covers.
         h, w = self._image.shape[:2]
         self._img.setRect(QRectF(0.0, 0.0, w * self._scale, h * self._scale))
-        self._hist.setLevels(float(lo), float(hi))
+        self._hist.setLevels(lo, hi)
         self._vb.autoRange()
         self._refresh_status()
-
 
     @property
     def roi_set(self) -> RoiSet:
@@ -300,9 +267,11 @@ class RoiEditor(QWidget):
     def _on_add(self) -> None:
         cx, cy, s = self._default_centre()
         if self._cmb.currentText().startswith("rect"):
-            roi = RectRoi(x=cx, y=cy, w=2 * s, h=2 * s)
+            self._add(RectRoi(x=cx, y=cy, w=2 * s, h=2 * s))
         else:
-            roi = CircleRoi(x=cx, y=cy, r=s)
+            self._add(CircleRoi(x=cx, y=cy, r=s))
+
+    def _add(self, roi) -> None:
         self._set.add(roi)
         self._rebuild_items()
         self._list.setCurrentRow(len(self._set) - 1)
@@ -317,16 +286,11 @@ class RoiEditor(QWidget):
             return
         cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
         if self._cmb.currentText().startswith("rect"):
-            roi = RectRoi(x=cx, y=cy, w=w, h=h)
+            self._add(RectRoi(x=cx, y=cy, w=w, h=h))
         else:
-            # (w + h) / 4, matching the band exactly — the radius the drag
-            # previewed is the radius it makes. max() would overflow the drag
-            # on the short side and min() would collapse a sloppy one.
-            roi = CircleRoi(x=cx, y=cy, r=(w + h) / 4.0)
-        self._set.add(roi)
-        self._rebuild_items()
-        self._list.setCurrentRow(len(self._set) - 1)
-        self._emit()
+            # (w + h) / 4, the band's radius: max() overflows the drag on the
+            # short side, min() collapses a sloppy one.
+            self._add(CircleRoi(x=cx, y=cy, r=(w + h) / 4.0))
 
     def _on_delete(self) -> None:
         i = self._list.currentRow()
@@ -438,8 +402,7 @@ class RoiEditor(QWidget):
             self._status.setText(f"{self._calib.describe()} — no ROIs yet")
             return
         self._sync_from_items()
-        # Estimates on purpose: this runs on every drag for a whole-number
-        # percentage. `dmd_frame` is the exact answer, on the projection path.
+        # Estimates: this runs on every drag for a whole-number percentage.
         outside = self._set.outside(self._calib)
         dim = self._set.dim(self._calib)
         kept = self._set.reach_fraction(self._calib)

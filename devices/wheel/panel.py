@@ -33,8 +33,7 @@ class SettingsPanel(QWidget):
                               suffix=" Hz")
         lay.addRow("Sample rate:", self._spn_rate)
 
-        # Both of these read 0 as "not calibrated", which is what the special
-        # value text says in place of a meaningless 0.000.
+        # 0 means "not calibrated" (None in the settings).
         self._spn_vpr = spin(0.0, 20.0, self._s.volts_per_rev or 0.0,
                              decimals=3, suffix=" V/rev")
         self._spn_vpr.setSpecialValueText("— (raw V)")
@@ -45,14 +44,13 @@ class SettingsPanel(QWidget):
         self._spn_dia.setSpecialValueText("— (no linear)")
         lay.addRow("Wheel dia:", self._spn_dia)
 
-        # valueChanged, not editingFinished: the spin arrows don't count as
-        # "editing finished", so a V/rev nudged with the arrows and then left
-        # alone never reached the worker — or the saved settings.
+        # valueChanged, not editingFinished: arrow-key nudges never "finish"
+        # editing, so they never reached the worker or the saved settings.
         for w in (self._spn_rate, self._spn_vpr, self._spn_dia):
             w.valueChanged.connect(self._emit)
         self._edt_chan.currentTextChanged.connect(self._emit)
 
-        # Live derived readout (speed + cumulative distance), driven from the GUI.
+        # Live speed + net distance, set by the adapter.
         self._lbl_readout = QLabel("speed —   distance —")
         f = self._lbl_readout.font()
         f.setPointSize(f.pointSize() + 1)

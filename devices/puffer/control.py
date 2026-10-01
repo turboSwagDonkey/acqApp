@@ -1,10 +1,5 @@
-"""
-Air puffer — NI DAQ digital output controller + settings panel.
-
-PufferController  : fires a TTL pulse on a digital output line.
-MockPufferController: prints to stdout, no hardware needed.
-SettingsPanel     : QWidget for channel, duration, test-fire and puff scheduling.
-"""
+"""Air puffer: a TTL pulse on an NI DAQ digital line (PufferController), its
+mock, and the settings panel (channel, duration, test fire, schedule)."""
 
 from __future__ import annotations
 import time
@@ -23,36 +18,29 @@ from acqApp.widgets import spin
 
 @dataclass
 class PufferSettings:
-    # NI DAQ digital line — line7 on this rig (operator-confirmed). NOTE:
-    # keep distinct from the pupil-cam LED (line0, devices/pupil_cam/
-    # control.py) and the primary LED (line2, devices/voltage_cam/led.py) —
-    # two tasks may not own the same physical line. Picking line0 or line2
-    # here is a real hardware conflict, not just an unused default.
+    # line7 on this rig (operator-confirmed). line0 is the pupil-cam LED and
+    # line2 the primary LED: two tasks can't own one physical line.
     channel:     str   = "Dev3/port0/line7"
-    duration_s:  float = 0.100                 # default puff duration
+    duration_s:  float = 0.100
 
 
 class PufferController(QObject):
-    """Fires a TTL pulse on a NI DAQ digital output line.
-
-    Holds the settings the panel is showing, so "Test puff" uses the duration
-    on screen and re-pointing the DO channel actually moves the line.
-    """
+    """Fires a TTL pulse on an NI DAQ digital output line, using the
+    panel's current settings (duration and line)."""
     puff_fired = pyqtSignal(float, float)   # (timestamp, duration_s)
 
     def __init__(self, settings: PufferSettings | None = None, parent=None):
         super().__init__(parent)
         self._s    = settings or PufferSettings()
         self._task = None
-        # The pulse runs on its own thread and the channel can be re-pointed (or
-        # the app closed) while it's mid-pulse, so every touch of _task is
-        # guarded and the pulse re-checks that its task is still the live one.
+        # The pulse thread can outlive its task (line re-pointed, or app
+        # closed mid-pulse), so _task is guarded and the pulse re-checks it.
         self._task_lock = threading.Lock()
         self._sink: Callable[[float], None] | None = None
         self._open()
 
     def set_sink(self, sink: Callable[[float], None] | None) -> None:
-        """Attach (or clear) an event sink; receives the puff duration_s."""
+        """Attach (or clear) a sink; it receives each puff's duration_s."""
         self._sink = sink
 
     def apply_settings(self, settings: PufferSettings) -> None:
@@ -68,9 +56,7 @@ class PufferController(QObject):
         return self._s
 
     def _open(self) -> None:
-        # config.load_dataclass blanks the channel when the active rig's
-        # profile says no puffer is fitted. Skip the DAQ entirely rather than
-        # open a line that isn't there — fire() already no-ops on a None task.
+        # A blank channel is config.load_dataclass's "no puffer on this rig".
         if not self._s.channel:
             print("[puffer] not fitted on this rig — fire() will be a no-op")
             with self._task_lock:
@@ -105,9 +91,7 @@ class PufferController(QObject):
         with self._task_lock:
             task = self._task
         if task is None:
-            # DAQ never opened (busy line, wrong device name) or no puffer is
-            # fitted on this rig — nothing fires, so don't emit/log a puff that
-            # never happened (see _open()'s print).
+            # Nothing fires, so emit/log nothing.
             where = (f" on {self._s.channel}" if self._s.channel
                      else " — not fitted on this rig")
             print(f"[puffer] fire() ignored — no open DAQ task{where}")
@@ -139,8 +123,8 @@ class PufferController(QObject):
 
 
 class MockPufferController(QObject):
-    """Prints to stdout; no hardware. Same settings contract as the real one, so
-    the panel's channel/duration behave identically in Emulate mode."""
+    """Prints to stdout; no hardware. Same settings contract as the real
+    one."""
     puff_fired = pyqtSignal(float, float)
 
     def __init__(self, settings: PufferSettings | None = None, parent=None):
@@ -187,7 +171,7 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ── Connection + default duration ───────────────────────────────────────
+        # ── Connection + default duration ──────────────────────────────────
         grp = QGroupBox("Puffer settings")
         lay = QFormLayout(grp)
         lay.setSpacing(4)
@@ -207,8 +191,7 @@ class SettingsPanel(QWidget):
                              decimals=3, step=0.010, suffix=" s")
         lay.addRow("Duration:", self._spn_dur)
 
-        # Push edits straight to the controller: without this the panel is
-        # decorative — the puff keeps using whatever the controller started with.
+        # Without these the controller keeps the settings it started with.
         self._cmb_chan.currentTextChanged.connect(self._emit)
         self._spn_dur.valueChanged.connect(self._emit)
 
@@ -218,7 +201,7 @@ class SettingsPanel(QWidget):
         lay.addRow(btn_test)
         root.addWidget(grp)
 
-        # ── Scheduled puffs (fire at t = N s after session Start) ───────────────
+        # ── Scheduled puffs (fire at t = N s after session Start) ──────────
         sgrp = QGroupBox("Scheduled puffs")
         sl = QVBoxLayout(sgrp)
         sl.setSpacing(4)
@@ -246,10 +229,8 @@ class SettingsPanel(QWidget):
         self.settings_changed.emit(self.settings)
 
     def _on_test_clicked(self) -> None:
-        """Confirm before an immediate, manually-triggered puff — matching
-        the stage's confirm-before-move pattern for physical actuation.
-        Scheduled puffs (`_schedule`) are a deliberate act of their own and
-        fire later, mid-session; they aren't gated here."""
+        """Confirm before a manual puff. Scheduled puffs are their own
+        deliberate act and aren't gated here."""
         dur = self._spn_dur.value()
         if QMessageBox.question(
             self, "Test puff",

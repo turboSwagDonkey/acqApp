@@ -172,7 +172,7 @@ class WheelModule(ModuleAdapter):
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        # Never defaulted: 0.0 Hz would read as a measured stall.
+        # No worker: "unknown" keeps the 0.0 Hz from reading as a stall.
         if self.worker is None:
             return {"wheel_timestamp_source": "unknown",
                     "wheel_rate_actual_hz":   0.0}

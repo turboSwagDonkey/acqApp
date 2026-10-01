@@ -42,32 +42,26 @@ class RingBuffer:
         with self._lock:
             self._q.append((item, size))
             self._bytes += size
-            # Count cap: frames first, same rule as the byte cap. Dropping the
-            # oldest outright would discard exactly the events the byte cap
-            # protects — and this cap bites first, 512 items being about a
-            # second of writer stall at full frame rate.
+            # Count cap: frames first too, or it would discard the events the
+            # byte cap protects. It bites first: 512 items is about a second
+            # of writer stall at full frame rate.
             while len(self._q) > self._maxlen and len(self._q) > 1:
                 if self._evict_oldest_sized():
                     continue
                 _old, osize = self._q.popleft()     # backlog really is events
                 self._bytes -= osize
                 self.drop_count += 1
-            # Byte cap: shed the oldest *sized* item (a frame); leave scalar
-            # events in place. Stops if nothing sized remains to drop.
             while (self._maxbytes is not None and self._bytes > self._maxbytes
                    and len(self._q) > 1 and self._evict_oldest_sized()):
                 pass
             self._not_empty.notify()
 
     def _evict_oldest_sized(self) -> bool:
-        """Remove the oldest item with a nonzero payload (an image frame).
-        Returns False if every buffered item is zero-byte (nothing to shed)."""
+        """Drop the oldest frame (nonzero payload); False if there is none."""
         for i, (_it, sz) in enumerate(self._q):
             if sz > 0:
-                self._q.rotate(-i)          # bring index i to the front
-                _it2, sz2 = self._q.popleft()
-                self._q.rotate(i)           # restore original order (minus it)
-                self._bytes -= sz2
+                del self._q[i]
+                self._bytes -= sz
                 self.drop_count += 1
                 return True
         return False
@@ -80,19 +74,19 @@ class RingBuffer:
         with self._not_empty:
             if not self._q:
                 self._not_empty.wait(timeout)
-            if not self._q:
-                raise queue.Empty
-            item, size = self._q.popleft()
-            self._bytes -= size
-            return item
+            return self._pop()
 
     def get_nowait(self) -> Any:
         with self._lock:
-            if not self._q:
-                raise queue.Empty
-            item, size = self._q.popleft()
-            self._bytes -= size
-            return item
+            return self._pop()
+
+    def _pop(self) -> Any:
+        """Caller holds the lock."""
+        if not self._q:
+            raise queue.Empty
+        item, size = self._q.popleft()
+        self._bytes -= size
+        return item
 
     def __len__(self) -> int:
         with self._lock:

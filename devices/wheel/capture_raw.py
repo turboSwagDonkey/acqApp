@@ -1,13 +1,9 @@
 r"""
 Wheel raw-voltage capture — diagnostic for the distance/speed derivation.
 
-Records the RAW analog voltage on the encoder channel at a high sample rate while
-you spin the wheel, so we can see what the signal actually looks like (smooth
-ramp? sawtooth wrap? fast pulse train? tiny swing?) and fix the conversion.
-
-Run it, then spin the wheel a few full turns — forward and back — during the
-capture. It prints live min/max so you can confirm the number is moving, saves a
-CSV, and prints a compact summary you can paste back.
+Records the RAW encoder voltage, hardware-clocked at a high rate, while you
+spin the wheel a few full turns forward and back. Prints live min/max, saves
+a CSV, and prints a summary of the signal's shape.
 
   ..\..\.venv\Scripts\python.exe wheel\capture_raw.py
   ..\..\.venv\Scripts\python.exe wheel\capture_raw.py --seconds 30 --rate 2000
@@ -53,8 +49,6 @@ def main() -> None:
             terminal_config=TerminalConfiguration.RSE,
             min_val=-10.0, max_val=10.0,
         )
-        # Hardware-clocked continuous acquisition — clean, evenly spaced samples
-        # (unlike the app's 50 Hz software loop, which can alias a fast signal).
         task.timing.cfg_samp_clk_timing(
             args.rate, sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=int(args.rate))
@@ -91,7 +85,7 @@ def main() -> None:
     np.savetxt(out, np.column_stack([t, v]), delimiter=",",
                header="t_s,voltage", comments="")
 
-    big = int(np.count_nonzero(np.abs(np.diff(v)) > 0.5))  # sample-to-sample >0.5 V
+    big = int(np.count_nonzero(np.abs(np.diff(v)) > 0.5))
     print("\n─── summary ───────────────────────────────────────────────")
     print(f"saved         {out.resolve()}")
     print(f"samples       {n}  ({n / args.rate:.1f} s @ {args.rate:.0f} Hz)")
@@ -100,8 +94,7 @@ def main() -> None:
     print(f"mean / std    {v.mean():+.4f} / {v.std():.4f} V")
     print(f"step |Δ|>0.5V  {big} sample(s)   (wraps or glitches show up here)")
 
-    # Coarse trace: mean voltage per 0.5 s bucket, so the shape (ramp? sawtooth?
-    # steps? flat + spikes?) is visible in the paste.
+    # Mean V per 0.5 s, so the shape shows in a pasted summary.
     bucket = max(1, int(args.rate * 0.5))
     nb = n // bucket
     if nb:
@@ -114,9 +107,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # Make the console unable to raise on this script's own output before it
-    # prints anything (see acqApp/console.py -- a UnicodeEncodeError from a
-    # diagnostic print is otherwise indistinguishable from a device failure).
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))

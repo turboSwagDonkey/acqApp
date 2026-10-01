@@ -1,11 +1,5 @@
-"""
-The DMD's settings panel.
-
-Split from `control.py`, which keeps `DmdSettings` and the real/mock
-controllers. Nothing here talks to the device: the panel emits, the adapter
-routes, and the controller projects — which is why the controller is rebuilt on
-every Emulate toggle while the panel is built once.
-"""
+"""The DMD's settings panel. Never talks to the device: the panel emits, the
+adapter routes, the controller (rebuilt on every Emulate toggle) projects."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,17 +20,12 @@ from acqApp.widgets import spin
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
-                                        subsample_frame)
+                                        roi_frame, subsample_frame)
 
 
 class _DraggablePreview(QLabel):
-    """The preview label — click-drag nudges the pattern's offset (device
-    px), the mouse-driven twin of the arrow-key nudge. `dragged` carries the
-    delta in PREVIEW px; the panel converts to device px (it alone knows the
-    current preview-to-device scale) and only when dragging is meaningful
-    (Image mode, Fit off) — see `SettingsPanel._on_preview_dragged` and
-    `set_draggable`.
-    """
+    """The preview label; click-drag nudges the pattern's offset. `dragged`
+    is in PREVIEW px — the panel converts (it knows the scale)."""
     dragged = pyqtSignal(float, float)   # (dx, dy) in PREVIEW px
 
     def __init__(self, *a, **kw):
@@ -81,13 +70,11 @@ class SettingsPanel(QWidget):
     load_requested   = pyqtSignal(object)   # emits Path
     display_requested = pyqtSignal()
     stop_requested    = pyqtSignal()
-    # The adapter opens both: it's the only side that can reach the voltage
-    # camera's frame (`ModuleHost.latest_frame`) and the live controller.
+    # The adapter opens both: only it reaches the camera frame and controller.
     rois_edit_requested = pyqtSignal()
     calibrate_requested = pyqtSignal()
-    # So the adapter can cancel a pending debounced re-project the instant
-    # Live update is turned off — settings_changed alone can't do that: it
-    # doesn't fire just from unchecking a box that isn't itself a setting.
+    # Cancels a pending debounced re-project; Live isn't a setting, so
+    # settings_changed doesn't fire for it.
     live_toggled = pyqtSignal(bool)
 
     def __init__(self, settings: DmdSettings | None = None, parent=None):
@@ -97,21 +84,13 @@ class SettingsPanel(QWidget):
         self._pattern_path: Path | None = (
             Path(self._s.pattern_path) if self._s.pattern_path else None)
         self._pattern_cache: tuple[tuple, np.ndarray] | None = None
-        # The transformed (scale/rotation/offset-applied) frame, keyed on
-        # everything that changes it. A plain widget resize changes only the
-        # preview label's size, not this key, so it reuses the built frame
-        # instead of re-running alp.build_frame() (2026-08-27).
+        # The built frame, keyed on what changes it (not the label size, so a
+        # resize skips alp.build_frame, 2026-08-27).
         self._frame_cache: tuple[tuple, np.ndarray] | None = None
-        # Device px per preview px, refreshed by `_update_preview` — how a
-        # drag delta (measured in preview px) converts to an offset_x/y
-        # delta (device px). 1.0 until the first real render.
-        self._preview_scale: float = 1.0
-        # Plain state, not widget values: a list of ROI dicts and a path.
+        self._preview_scale: float = 1.0    # device px per preview px
         self._rois: tuple = tuple(self._s.rois or ())
         self._calib_path: str = self._s.calib_path or ""
-        # Set only when a routine step loaded a saved ROI set, so `_show_rois`
-        # can name it; the editor clears it (an edited set is no longer "the
-        # file", the way `set_pattern_path` overwrites in the other mode).
+        # Name of a saved set a routine loaded; cleared once hand-edited.
         self._roi_pattern_name: str = ""
         self._shortcuts: list[QShortcut] = []
         self._build()
@@ -127,7 +106,6 @@ class SettingsPanel(QWidget):
         res_str = f"{w}x{h}"
         dev_label = name if res_str in name else f"{name} · {res_str}"
         dev_label += "" if real else " · nothing will be projected"
-        
         self._lbl_dev.setText(dev_label)
         self._lbl_dev.setStyleSheet(
             f"color:{style.HEX['dmd'] if real else style.WARN};")
@@ -142,7 +120,7 @@ class SettingsPanel(QWidget):
         self._lbl_dev.setWordWrap(True)
         lay.addRow("Device:", self._lbl_dev)
 
-        # ── Inline Pattern + Browse Row ──────────────────────────────────────
+        # ── pattern + browse ─────────────────────────────────────────────────
         pat_w = QWidget()
         pat_lay = QHBoxLayout(pat_w)
         pat_lay.setContentsMargins(0, 0, 0, 0)
@@ -163,9 +141,7 @@ class SettingsPanel(QWidget):
         lay.addRow("Pattern:", pat_w)
 
         # ── what to display ──────────────────────────────────────────────────
-        # Three exclusive sources, shown together rather than hidden in a combo:
-        # which one is live decides what Display emits — worth reading at a
-        # glance on a rig.
+        # Radios, not a combo: what Display emits should read at a glance.
         mode_w = QWidget()
         mode_lay = QHBoxLayout(mode_w)
         mode_lay.setContentsMargins(0, 0, 0, 0)
@@ -188,7 +164,7 @@ class SettingsPanel(QWidget):
             rb.toggled.connect(self._on_mode_changed)
         lay.addRow("Display:", mode_w)
 
-        # ── Live preview box ─────────────────────────────────────────────────
+        # ── preview ──────────────────────────────────────────────────────────
         self._preview = _DraggablePreview("No preview")
         self._preview.setMinimumSize(200, 180)
         self._preview.setMaximumHeight(240)
@@ -202,11 +178,10 @@ class SettingsPanel(QWidget):
         self._preview.dragged.connect(self._on_preview_dragged)
         lay.addRow(self._preview)
 
-        # ── Pattern Alignment (Geometry Card) ────────────────────────────────
+        # ── alignment ────────────────────────────────────────────────────────
         geom_grp = QGroupBox("Pattern Alignment")
         geom_lay = QGridLayout(geom_grp)
         geom_lay.setSpacing(6)
-        
         geom_lay.setColumnStretch(1, 1)
         geom_lay.setColumnStretch(3, 1)
 
@@ -274,11 +249,7 @@ class SettingsPanel(QWidget):
         self._cmb_trig.setCurrentText(self._s.trigger_mode)
         lay.addRow("Trigger:", self._cmb_trig)
 
-        # Live update: every change (spinbox, drag, mode switch, ...) re-
-        # projects, debounced (adapters/dmd.py), instead of waiting for
-        # Display. Off by default — this actually emits light, unprompted,
-        # so it must be an opt-in the operator turns on deliberately each
-        # session, never something that could linger on from a saved setting.
+        # Emits light unprompted, so never persisted: off every session.
         self._chk_live = QCheckBox("Live update (project every change)")
         self._chk_live.setToolTip(
             "While on, every change here re-projects onto the DMD a moment "
@@ -320,11 +291,8 @@ class SettingsPanel(QWidget):
 
     # ── photostimulation ROIs ────────────────────────────────────────────────
     def _build_rois(self) -> QGroupBox:
-        """Draw ROIs on a camera frame and project only those mirrors.
-
-        The editor is a separate window (`roi_panel.RoiEditor`) rather than a
-        row here: it's an image view, and this tab lives in a scroll area.
-        """
+        """ROI + calibration controls. The editor itself is a separate
+        window: it's an image view, and this tab lives in a scroll area."""
         box = QGroupBox("Photostimulation ROIs")
         box.setToolTip(
             "Draw regions on a snapshot from the VOLTAGE camera — that's the "
@@ -398,7 +366,7 @@ class SettingsPanel(QWidget):
         start = str(Path(self._calib_path).parent) if self._calib_path else ""
         path, _ = QFileDialog.getOpenFileName(
             self, "DMD calibration", start, "Calibration (*.json);;All files (*)")
-        if path:                        # empty = cancelled, which must not clear
+        if path:                        # empty = cancelled; must not clear
             self._set_calib(path)
 
     def _set_calib(self, path: str) -> None:
@@ -411,14 +379,9 @@ class SettingsPanel(QWidget):
         self._set_calib(path)
 
     def set_pattern_path(self, path: Path) -> None:
-        """Adopt a pattern an experiment routine chose, and switch to Image.
-
-        The panel has to follow, not just the controller: `display()` re-applies
-        these settings, so a routine that loaded a file while the panel still
-        named the old one would project the old one back. The mode goes with it
-        for the same reason — naming a pattern file while the panel sits in
-        All ON or ROIs would project neither the file nor an error.
-        """
+        """Adopt a routine's pattern and switch to Image: `display()`
+        re-applies the panel's settings, so a stale path or mode here would
+        project the old thing."""
         self._pattern_path = Path(path)
         if not self._rb[MODE_PATTERN].isChecked():
             self._rb[MODE_PATTERN].setChecked(True)   # -> _on_mode_changed
@@ -433,11 +396,8 @@ class SettingsPanel(QWidget):
         self._emit()
 
     def set_roi_pattern(self, name: str, rois: list) -> None:
-        """Adopt a saved ROI set an experiment routine chose, and switch to ROIs.
-
-        Mirrors `set_pattern_path`: the mode has to follow the data, or Display
-        re-applies the panel's old mode and projects the wrong thing.
-        """
+        """Adopt a routine's ROI set and switch to ROIs (see
+        `set_pattern_path`)."""
         self._rois = tuple(rois)
         self._roi_pattern_name = name
         self._show_rois()
@@ -447,21 +407,15 @@ class SettingsPanel(QWidget):
             self._emit()
 
     def set_all_on(self) -> None:
-        """Switch to All ON — every mirror on, full field. Mirrors
-        `set_pattern_path`/`set_roi_pattern`: toggling the radio drives
-        `_on_mode_changed` -> `_emit`, so the next Display projects it —
-        or, if "Live update" is on, the adapter's debounced re-project
-        does, shortly after (see `adapters/dmd.py`)."""
+        """Switch to All ON; projects on the next Display (or Live update)."""
         if not self._rb[MODE_ALL_ON].isChecked():
             self._rb[MODE_ALL_ON].setChecked(True)   # -> _on_mode_changed -> _emit
         else:
             self._emit()
 
     def set_sub_sampling(self, n: int) -> None:
-        """Programmatically set the sub-sampling factor (e.g. from a Mode
-        preset). Applies to whatever is already loaded (All ON, an image, or
-        ROIs) — see `control.subsample_frame`. Takes effect at the next
-        Display, or immediately if Live update is on."""
+        """Set 1-in-N sub-sampling for any mode; projects on the next
+        Display (or Live update)."""
         self._spn_subsample.setValue(n)
 
     def _show_rois(self) -> None:
@@ -476,7 +430,6 @@ class SettingsPanel(QWidget):
         self._btn_calib_clear.setEnabled(bool(self._calib_path))
 
     def _init_shortcuts(self) -> None:
-        """Configures keyboard shortcuts for alignment nudging."""
         def add_sc(key_seq: str, callback: Callable[[], None]) -> None:
             sc = QShortcut(QKeySequence(key_seq), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -531,62 +484,37 @@ class SettingsPanel(QWidget):
         self.settings_changed.emit(self.settings)
 
     def _on_mode_changed(self, checked: bool = True) -> None:
-        """Only the image mode uses the pattern file and the alignment.
-
-        Greyed rather than hidden: an operator who set a 104 % scale wants to
-        see it's still there when they switch to ROIs and back.
-
-        Each radio's `toggled` is wired here, so a mode switch fires it twice
-        — False for the outgoing button, True for the incoming one. Without
-        this guard, one click rebuilt the preview and emitted settings twice.
-        """
+        """Alignment is greyed, not hidden, outside Image mode, so a set scale
+        stays visible. A switch fires `toggled` twice (off, then on); only
+        the incoming button acts."""
         if not checked:
             return
-        pattern = self.mode == MODE_PATTERN
-        # ROIs mode gets the browse button too — it opens a saved ROI set
-        # instead of a pattern file, the same shortcut `set_pattern()` gives
-        # a routine's own pattern picker.
-        self._btn_browse.setEnabled(pattern or self.mode == MODE_ROI)
+        mode = self.mode
+        pattern = mode == MODE_PATTERN
+        # In ROIs mode Browse opens a saved ROI set.
+        self._btn_browse.setEnabled(pattern or mode == MODE_ROI)
         self._chk_fit.setEnabled(pattern)
         self._chk_invert.setEnabled(pattern)
-        fit_active = self._chk_fit.isChecked()
-        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
-            w.setEnabled(pattern and not fit_active)
-        self._preview.set_draggable(pattern and not fit_active)
+        self._set_alignment_enabled(pattern and not self._chk_fit.isChecked())
         self._update_preview()
         self.settings_changed.emit(self.settings)
 
     def _on_fit_toggled(self, on: bool) -> None:
-        if self.mode != MODE_PATTERN:
-            return
+        # The preview follows from `_emit`, also wired to this toggle.
+        if self.mode == MODE_PATTERN:
+            self._set_alignment_enabled(not on)
+
+    def _set_alignment_enabled(self, on: bool) -> None:
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
-            w.setEnabled(not on)
-        self._preview.set_draggable(not on)
-        self._update_preview()
+            w.setEnabled(on)
+        self._preview.set_draggable(on)
 
     def _on_preview_dragged(self, dx: float, dy: float) -> None:
-        """A preview-px drag delta -> an offset_x/y nudge (device px) —
-        the mouse-driven twin of `_nudge_spn`'s arrow keys. `_preview_scale`
-        (set by `_update_preview`) is device px per preview px, and both
-        axes carry the same sign: `alp.build_frame` places the pattern by
-        pasting at `(width/2 + offset_x - pw/2, height/2 + offset_y - ph/2)`
-        — ordinary image coordinates, +x right / +y down — which is exactly
-        how Qt reports mouse deltas, so dragging right/down moves the
-        pattern right/down with no sign flip.
+        """Preview-px drag -> device-px offset; same sign as Qt's deltas.
 
-        Reads `_preview_scale` ONCE, before either `setValue()` call: the
-        first one's `valueChanged` -> `_emit()` -> `_update_preview()` can
-        itself change `_preview_scale` (a layout reflow from the pattern
-        label's text changing width), which would otherwise scale the two
-        axes by two different factors from a single drag gesture.
-
-        Blocks `_spn_dx`'s signal while setting it, so only `_spn_dy`'s
-        `valueChanged` fires `_emit()` — one full settings-changed pipeline
-        (a disk write, a possible live-update re-project, a preview rebuild)
-        per drag tick, reading both updated values, rather than two. A
-        mouseMoveEvent stream can fire many ticks a second, exactly what the
-        adapter's live-update debounce exists to absorb — doubling the work
-        behind every tick works against that, not with it."""
+        Scale is read once: the first setValue's `_emit` can reflow the
+        layout and change it. `_spn_dx` is blocked so one tick fires one
+        `_emit` (disk write, live re-project), not two."""
         scale = self._preview_scale
         self._spn_dx.blockSignals(True)
         try:
@@ -596,9 +524,7 @@ class SettingsPanel(QWidget):
         self._spn_dy.setValue(self._spn_dy.value() + dy * scale)
 
     def _browse(self) -> None:
-        """In ROIs mode this opens a saved ROI set instead of a pattern file —
-        the same file `set_pattern()` accepts from a routine's own picker, so
-        an operator gets there without a trip through Edit ROIs… -> Load…."""
+        """A pattern file, or in ROIs mode a saved ROI set."""
         if self.mode == MODE_ROI:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Select ROI set", str(roi_store.SESSION_DIR),
@@ -617,12 +543,8 @@ class SettingsPanel(QWidget):
             self._emit()
 
     def _pattern_array(self, p: Path) -> np.ndarray:
-        """The pattern file, decoded once. Keyed on path + mtime + size.
-
-        Every scale/rotation/offset step rebuilds the preview, and passing the
-        Path made `build_frame` reopen and re-decode the file each time: 4.7 ms
-        of the 21.8, and 20 disk reads/s while an arrow is held (2026-08-25).
-        """
+        """The pattern file, decoded once per path + mtime + size: re-decoding
+        per nudge was 4.7 ms of 21.8 and 20 disk reads/s (2026-08-25)."""
         from PIL import Image
         st = p.stat()
         key = (str(p), st.st_mtime_ns, st.st_size)
@@ -631,7 +553,6 @@ class SettingsPanel(QWidget):
         return self._pattern_cache[1]
 
     def _update_preview(self) -> None:
-        """Renders the pattern array with a padded dashed magenta border around DMD bounds."""
         pw = self._preview.width()
         ph = self._preview.height()
         if pw <= 1 or ph <= 1:
@@ -646,11 +567,7 @@ class SettingsPanel(QWidget):
             frame = subsample_frame(np.full((h, w), 255, dtype=np.uint8),
                                     self._spn_subsample.value())
         elif mode == MODE_ROI:
-            # The real mask needs the calibration and the ROI geometry, which
-            # `control.roi_frame` already assembles — reuse it rather than
-            # keeping a second, subtly different renderer in the panel.
             n = len(self._rois)
-            from acqApp.devices.dmd.control import roi_frame
             frame = roi_frame(self.settings, w, h)
             if frame is None:
                 frame = np.zeros((h, w), dtype=np.uint8)
@@ -672,25 +589,16 @@ class SettingsPanel(QWidget):
             try:
                 arr = self._pattern_array(p)
                 s = self.settings
-                # `pw`/`ph` (the preview LABEL's size) are deliberately not in
-                # this key — only what actually changes the built frame is.
-                # `_update_preview` also runs on plain widget resize
-                # (resizeEvent) and on every arrow-key nudge, and re-running
-                # alp.build_frame() (a PIL resize+rotate, ~17ms) for a resize
-                # that changed nothing about the pattern was most of that cost
-                # (2026-08-27).
-                key = (self._pattern_cache[0], w, h, s.scale_pct, s.rotation_deg,
-                      s.offset_x, s.offset_y, s.invert, s.fit, s.sub_sampling)
+                # No pw/ph: a resize must not re-run build_frame (~17 ms).
+                key = (self._pattern_cache[0], w, h, s.scale_pct,
+                       s.rotation_deg, s.offset_x, s.offset_y, s.invert,
+                       s.fit, s.sub_sampling)
                 if self._frame_cache is None or self._frame_cache[0] != key:
                     built = subsample_frame(alp.build_frame(
-                        arr, w, h,
-                        scale_pct=s.scale_pct,
-                        rotation_deg=s.rotation_deg,
-                        offset_x=s.offset_x,
-                        offset_y=s.offset_y,
-                        invert=s.invert,
-                        fit=s.fit
-                    ), s.sub_sampling)
+                        arr, w, h, scale_pct=s.scale_pct,
+                        rotation_deg=s.rotation_deg, offset_x=s.offset_x,
+                        offset_y=s.offset_y, invert=s.invert, fit=s.fit),
+                        s.sub_sampling)
                     self._frame_cache = (key, built)
                 frame = self._frame_cache[1]
             except Exception as e:
@@ -699,50 +607,33 @@ class SettingsPanel(QWidget):
 
         frame = np.ascontiguousarray(frame)
         qimg = QImage(frame.data, w, h, w, QImage.Format.Format_Grayscale8)
-        dmd_pixmap = QPixmap.fromImage(qimg)
 
-        # 2px padding prevents painter stroke clipping on edges
-        pad = 2
-        avail_w = max(1, pw - 2 * pad)
-        avail_h = max(1, ph - 2 * pad)
+        pad = 2                         # keeps the border stroke unclipped
+        target = QSize(w, h).scaled(max(1, pw - 2 * pad), max(1, ph - 2 * pad),
+                                    Qt.AspectRatioMode.KeepAspectRatio)
+        self._preview_scale = w / max(1, target.width())
+        scaled = QPixmap.fromImage(qimg).scaled(
+            target, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
 
-        target_size = QSize(w, h).scaled(avail_w, avail_h, Qt.AspectRatioMode.KeepAspectRatio)
-        # Device px per preview px — a drag of N preview px must move the
-        # pattern by the N DMD px it visually appears to move.
-        self._preview_scale = w / max(1, target_size.width())
-        scaled_dmd = dmd_pixmap.scaled(
-            target_size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-
-        # Base preview canvas with transparent background so the tab gray shows through
         canvas = QPixmap(pw, ph)
-        canvas.fill(QColor(0, 0, 0, 0))
-
+        canvas.fill(QColor(0, 0, 0, 0))         # the tab's grey shows through
+        rect = QRect((pw - target.width()) // 2, (ph - target.height()) // 2,
+                     target.width(), target.height())
         painter = QPainter(canvas)
-
-        x = (pw - target_size.width()) // 2
-        y = (ph - target_size.height()) // 2
-        dmd_rect = QRect(x, y, target_size.width(), target_size.height())
-
-        painter.drawPixmap(dmd_rect, scaled_dmd)
-
-        magenta_color = QColor(style.HEX.get("dmd", "#e040fb"))
-        pen = QPen(magenta_color, 1.5, Qt.PenStyle.DashLine)
-        pen.setDashPattern([4, 4])  # 4px dash, 4px space
+        painter.drawPixmap(rect, scaled)
+        pen = QPen(QColor(style.HEX.get("dmd", "#e040fb")), 1.5,
+                   Qt.PenStyle.DashLine)
+        pen.setDashPattern([4, 4])
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(dmd_rect.adjusted(0, 0, -1, -1))
-
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
         painter.end()
-
         self._preview.setPixmap(canvas)
 
     @property
     def live(self) -> bool:
-        """Whether "Live update" is on — never persisted (see the checkbox's
-        construction comment): always starts unchecked each session."""
+        """Whether Live update is on; never persisted, so off at start."""
         return self._chk_live.isChecked()
 
     @property

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import faulthandler
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -31,7 +32,7 @@ faulthandler.enable()
 def _bootstrap() -> None:
     """Run from anywhere, but only ever inside `acqApp/.venv`: create it and
     re-exec if needed, and pip-install only from inside it."""
-    here = Path(__file__).resolve().parent            # …/acqApp
+    here = Path(__file__).resolve().parent
     scripts = "Scripts" if os.name == "nt" else "bin"
     exe = "python.exe" if os.name == "nt" else "python"
     venv_dir = here / ".venv"
@@ -52,7 +53,6 @@ def _bootstrap() -> None:
     if not in_venv and not os.environ.get("ACQAPP_NO_REEXEC"):
         if not venv_py.exists():
             print(f"[bootstrap] creating project venv at {venv_dir} …")
-            import subprocess
             try:
                 subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
             except (subprocess.CalledProcessError, OSError) as e:
@@ -72,7 +72,6 @@ def _bootstrap() -> None:
                      "yourself — refusing to pip-install into an unknown Python.")
         if os.environ.get("ACQAPP_NO_INSTALL"):
             raise
-        import subprocess
         req = here / "requirements.txt"
         print(f"[bootstrap] installing dependencies into the venv from {req} …")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(req)])
@@ -138,6 +137,14 @@ def _await_camera() -> None:
         if _cam_thread.is_alive():
             print("Waiting for the camera to finish opening…")
         _cam_thread.join()
+
+
+def _close_camera(handle) -> None:
+    if handle is not None:
+        try:
+            handle.close()
+        except Exception:
+            pass
 # ─────────────────────────────────────────────────────────────────────────────
 
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
@@ -175,6 +182,14 @@ def _sample_nbytes(item) -> int:
 
 # "None" leaves everything as set; other modes come from modes.json.
 MODE_NONE = "None"
+
+_MODULES_TIP = "Load or unload instruments without restarting the app"
+
+
+def _rank(key: str) -> int:
+    """Position in config.MODULES; unknown keys sort last."""
+    keys = list(config.MODULES)
+    return keys.index(key) if key in config.MODULES else len(keys)
 
 
 class MainWindow(QMainWindow):
@@ -250,19 +265,19 @@ class MainWindow(QMainWindow):
         return [s for m in self._modules for s in m.signal_sources()]
 
     def stage_target(self):
-        return self._first(lambda m: m.stage_target())
+        return self._first("stage_target")
 
     def pattern_target(self):
-        return self._first(lambda m: m.pattern_target())
+        return self._first("pattern_target")
 
     def led_target(self):
-        return self._first(lambda m: m.led_target())
+        return self._first("led_target")
 
     def puffer_target(self):
-        return self._first(lambda m: m.puffer_target())
+        return self._first("puffer_target")
 
     def frame_rate_hz(self) -> float | None:
-        return self._first(lambda m: m.frame_rate_hz())
+        return self._first("frame_rate_hz")
 
     def active_fov_name(self) -> str:
         stage = self.stage_target()
@@ -278,9 +293,9 @@ class MainWindow(QMainWindow):
             return None
         return self._rec_path / f"{self._rec_path.name}_{stream}.dcimg"
 
-    def _first(self, ask):
+    def _first(self, name: str):
         for m in self._modules:
-            got = ask(m)
+            got = getattr(m, name)()
             if got is not None:
                 return got
         return None
@@ -319,26 +334,25 @@ class MainWindow(QMainWindow):
     def camera_preset(self, key: str) -> str | None:
         return self._call(key, "preset_key")
 
+    def _swap(self, key: str, get: str, put: str, value):
+        """`module[key].put(value)`; returns the `get()` from before."""
+        m = self._module(key)
+        if m is None or not hasattr(m, put):
+            return None
+        prev = getattr(m, get)()
+        getattr(m, put)(value)
+        return prev
+
     def set_camera_preset(self, key: str, preset: str) -> str | None:
         """Returns the previous preset. Takes effect at the next session start."""
-        m = self._module(key)
-        if m is None or not hasattr(m, "set_preset"):
-            return None
-        prev = m.preset_key()
-        m.set_preset(preset)
-        return prev
+        return self._swap(key, "preset_key", "set_preset", preset)
 
     def camera_binning(self, key: str) -> int | None:
         return self._call(key, "binning")
 
     def set_camera_binning(self, key: str, n: int) -> int | None:
         """Returns the previous value. Takes effect at the next session start."""
-        m = self._module(key)
-        if m is None or not hasattr(m, "set_binning"):
-            return None
-        prev = m.binning()
-        m.set_binning(n)
-        return prev
+        return self._swap(key, "binning", "set_binning", n)
 
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
         return self._call(key, "set_external_trigger", on)
@@ -377,9 +391,10 @@ class MainWindow(QMainWindow):
           camera_binning: {key: n}       (1/2/4)
           camera_trigger: {key: bool}    (True = External edge)
 
-        Takes effect at the next Display/Start, except camera_trigger, which
-        restarts live view itself (and is refused while recording). Unknown
-        modules and presets are skipped."""
+        DMD keys, presets and binning take effect at the next DMD Display /
+        session start; the rate applies at once; camera_trigger restarts live
+        view itself (refused while recording). Unknown modules and presets
+        are skipped."""
         from acqApp.devices.voltage_cam.presets import resolve_preset_key
 
         recipe = self._modes.get(name, {})
@@ -446,23 +461,25 @@ class MainWindow(QMainWindow):
                 captured.append(f"DMD sub-sampling 1 in {n}")
 
         vcam = self._module("voltage_cam")
-        if vcam is not None and hasattr(vcam, "preset_key"):
-            key = vcam.preset_key()
-            recipe["camera_presets"] = {"voltage_cam": preset_alias(key)}
-            captured.append(f"voltage_cam preset {key!r}")
-        if vcam is not None and vcam.panel is not None:
-            hz = vcam.panel.rate_request_hz
-            recipe["camera_rate_hz"] = {"voltage_cam": hz}
-            captured.append(f"voltage_cam rate {hz:g} Hz" if hz > 0
-                            else "voltage_cam rate Max")
-        if vcam is not None and hasattr(vcam, "binning"):
-            n = vcam.binning()
-            recipe["camera_binning"] = {"voltage_cam": n}
-            captured.append(f"voltage_cam binning {n}x{n}")
-        if vcam is not None and vcam.panel is not None:
-            mode = vcam.panel.get_config().trigger_mode
-            recipe["camera_trigger"] = {"voltage_cam": mode == TRIGGER_MODES[1]}
-            captured.append(f"voltage_cam trigger {mode!r}")
+        if vcam is not None:
+            if hasattr(vcam, "preset_key"):
+                key = vcam.preset_key()
+                recipe["camera_presets"] = {"voltage_cam": preset_alias(key)}
+                captured.append(f"voltage_cam preset {key!r}")
+            if vcam.panel is not None:
+                hz = vcam.panel.rate_request_hz
+                recipe["camera_rate_hz"] = {"voltage_cam": hz}
+                captured.append(f"voltage_cam rate {hz:g} Hz" if hz > 0
+                                else "voltage_cam rate Max")
+            if hasattr(vcam, "binning"):
+                n = vcam.binning()
+                recipe["camera_binning"] = {"voltage_cam": n}
+                captured.append(f"voltage_cam binning {n}x{n}")
+            if vcam.panel is not None:
+                mode = vcam.panel.get_config().trigger_mode
+                recipe["camera_trigger"] = {
+                    "voltage_cam": mode == TRIGGER_MODES[1]}
+                captured.append(f"voltage_cam trigger {mode!r}")
 
         if not captured:
             QMessageBox.information(
@@ -483,8 +500,7 @@ class MainWindow(QMainWindow):
 
     def latest_frame(self, key: str):
         """The cached newest frame; never commands the camera."""
-        m = self._module(key)
-        return m.last_frame() if m is not None else None
+        return self._call(key, "last_frame")
 
     def latest_frame_preset(self, key: str) -> str | None:
         """The preset the cached frame was captured under — not
@@ -591,7 +607,7 @@ class MainWindow(QMainWindow):
 
         save_cfg = config.load_dataclass(SaveConfig, "saving")
         if not save_cfg.mouse_id:
-            # `subject` was renamed to mouse_id (2026-09-14).
+            # Legacy key: `subject` became mouse_id on 2026-09-14.
             old_subject = config.load_settings("saving").get("subject")
             if isinstance(old_subject, str) and old_subject.strip():
                 save_cfg.mouse_id = old_subject.strip()
@@ -722,8 +738,7 @@ class MainWindow(QMainWindow):
         self._sidebar.addAction(self._theme_action)
 
         self._modules_action = QAction(self._swatch(None), "🧩 Modules", self)
-        self._modules_action.setToolTip(
-            "Load or unload instruments without restarting the app")
+        self._modules_action.setToolTip(_MODULES_TIP)
         self._modules_action.triggered.connect(self._open_modules_dialog)
         self._sidebar.addAction(self._modules_action)
 
@@ -967,8 +982,7 @@ class MainWindow(QMainWindow):
             self._load_module(key)
 
         # Order matters: closed_loop is last, after every signal source.
-        order = {k: i for i, k in enumerate(config.MODULES)}
-        self._modules.sort(key=lambda m: order.get(m.key, len(order)))
+        self._modules.sort(key=lambda m: _rank(m.key))
 
         self._enabled = {m.key for m in self._modules}
         config.save_enabled_modules(list(self._enabled))
@@ -999,7 +1013,7 @@ class MainWindow(QMainWindow):
 
     def _unload_module(self, key: str) -> None:
         """Stop one adapter and take back everything it put on the window."""
-        m = next((x for x in self._modules if x.key == key), None)
+        m = self._module(key)
         if m is None:
             return
         self._safe_stop(m)
@@ -1039,19 +1053,16 @@ class MainWindow(QMainWindow):
         """After the last page preceding `key` in MODULES, read off the live
         (draggable) tab positions."""
         dlg = self._settings_dialog
-        order = {k: i for i, k in enumerate(config.MODULES)}
         last = dlg.panel_index(self._save_panel) if self._save_panel else -1
         for m in self._modules:
-            if m.key == key or m.panel is None:
-                continue
-            if order[m.key] < order[key]:
+            if (m.key != key and m.panel is not None
+                    and _rank(m.key) < _rank(key)):
                 last = max(last, dlg.panel_index(m.panel))
         return last + 1
 
     def _plot_tab_index(self, key: str) -> int:
-        order = {k: i for i, k in enumerate(config.MODULES)}
-        return len([k for k in self._module_plots
-                    if k != key and order[k] < order[key]])
+        return sum(1 for k in self._module_plots
+                   if k != key and _rank(k) < _rank(key))
 
     def _refresh_central(self) -> None:
         """Rebuild the centre pane only if its owner changed."""
@@ -1125,18 +1136,18 @@ class MainWindow(QMainWindow):
             return
 
         now = datetime.now()
-        sc = self._save_panel.settings
+        sp = self._save_panel
+        sc = sp.settings
         ctx = self._routine_save_ctx
         # unique=True: take the next free name rather than refuse. A routine's
         # (FOV, trial) uses the fixed folder scheme, not the template.
         if ctx is not None:
-            fov, trial, coords = ctx
-            path = (self._save_panel.resolve_routine_dir(fov, trial, now, unique=True)
-                    if sc.split else
-                    self._save_panel.resolve_routine(fov, trial, now, unique=True))
+            resolve = (sp.resolve_routine_dir if sc.split
+                       else sp.resolve_routine)
+            path = resolve(ctx[0], ctx[1], now, unique=True)
         else:
-            path = (self._save_panel.resolve_dir(now, unique=True) if sc.split
-                    else self._save_panel.resolve(now, unique=True))
+            resolve = sp.resolve_dir if sc.split else sp.resolve
+            path = resolve(now, unique=True)
         metadata = {
             "created":  now.strftime("%Y%m%d_%H%M%S"),
             "emulated": self._emulate,
@@ -1162,7 +1173,7 @@ class MainWindow(QMainWindow):
             write_routine_fov_sidecar(path, *ctx[2])
         self._recorder = rec
         self._rec_path = path
-        self._save_panel.set_recording_active(True)
+        sp.set_recording_active(True)
         self._rec_t0 = self._sync.elapsed()
         self._rec_size_t0 = 0.0
         self._rec_size_txt = ""
@@ -1179,8 +1190,7 @@ class MainWindow(QMainWindow):
 
     def _stop_recording(self) -> None:
         self._modules_action.setEnabled(True)
-        self._modules_action.setToolTip(
-            "Load or unload instruments without restarting the app")
+        self._modules_action.setToolTip(_MODULES_TIP)
         for m in self._modules:
             m.detach_sink()
         rec = self._recorder
@@ -1223,8 +1233,8 @@ class MainWindow(QMainWindow):
                                  coords: tuple[float | None, float | None,
                                               float | None] | None = None
                                  ) -> None:
-        self._routine_save_ctx = None if fov is None or trial is None \
-            else (fov, trial, coords)
+        self._routine_save_ctx = (None if fov is None or trial is None
+                                  else (fov, trial, coords))
 
     def routine_arming_trigger(self, on: bool) -> None:
         self._routine_arming_trigger = bool(on)
@@ -1297,12 +1307,8 @@ class MainWindow(QMainWindow):
             self._stop_session()
         for m in self._modules:
             m.close_controller()
-        if self._cam_handle is not None:
-            try:
-                self._cam_handle.close()
-            except Exception:
-                pass
-            self._cam_handle = None
+        _close_camera(self._cam_handle)
+        self._cam_handle = None
         event.accept()
 
 
@@ -1318,15 +1324,10 @@ def main() -> None:
     style.apply_theme(app, config.get_theme())
 
     dlg = ModuleSelectDialog(config.load_enabled_modules())
-    accepted = dlg.exec() == QDialog.DialogCode.Accepted
-    if not accepted:
+    if dlg.exec() != QDialog.DialogCode.Accepted:
         # Release the handle anyway, or the next launch double-opens and crashes.
         _await_camera()
-        if _cam_handle is not None:
-            try:
-                _cam_handle.close()
-            except Exception:
-                pass
+        _close_camera(_cam_handle)
         return
     enabled = dlg.selected()
     config.save_enabled_modules(enabled)

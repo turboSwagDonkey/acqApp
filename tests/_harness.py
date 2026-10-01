@@ -1,13 +1,10 @@
-"""Shared scaffolding for the acqApp tests.
+"""Shared scaffolding for the acqApp tests (plain scripts: the rig installs
+only `requirements.txt`, which has no pytest).
 
-Plain scripts, not pytest — the rig installs only `requirements.txt`. Each test
-runs on its own; `run_all.py` runs the set.
-
-The important part is `isolate_user_state()`. The GUI tests drive the REAL
-MainWindow, which persists as a side effect of ordinary use — the Save tab
-writes `acqapp_local.json` on every field change, closing writes the dock layout
-to QSettings — so without it the tests overwrite the operator's save folder,
-mouse ID and panel layout. Every test that builds a window calls it.
+`isolate_user_state()` is the important part: the REAL MainWindow persists as
+a side effect of ordinary use (the Save tab on every edit, the dock layout on
+close), so without it a test overwrites the operator's save folder, mouse ID
+and panel layout. Every test that builds a window calls it.
 """
 from __future__ import annotations
 
@@ -17,12 +14,9 @@ import tempfile
 import types
 from pathlib import Path
 
-# Run windowless by default — a test suite should not throw six windows across
-# the operator's screen. Must be set before the first Qt import. Override it
-# (QT_QPA_PLATFORM=windows) when you actually want to watch a test run.
+# Windowless unless QT_QPA_PLATFORM=windows; before the first Qt import.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-# Make `import acqApp…` work no matter where the test was launched from.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -31,21 +25,16 @@ APP_DIR = REPO_ROOT / "acqApp"
 
 from acqApp.console import enable_safe_console       # noqa: E402
 
-# Test output is as exposed to the console-encoding trap as the app is, and
-# these scripts are themselves run from arbitrary shells.
+# Test output hits the console-encoding trap as the app's does.
 enable_safe_console()
 
 
 # ── isolation ─────────────────────────────────────────────────────────────────
 
 class MemorySettings:
-    """Stand-in for QSettings, in-process only.
-
-    QSettings cannot be redirected on Windows: `setPath` is IniFormat-only and
-    `setDefaultFormat` applies only to `QSettings(parent)`, so
-    `QSettings("acqApp", "acqApp")` reaches HKEY_CURRENT_USER regardless. The
-    only reliable isolation is substituting the class before `main` imports it.
-    """
+    """In-process QSettings. On Windows `QSettings("acqApp", "acqApp")`
+    reaches HKEY_CURRENT_USER whatever `setPath`/`setDefaultFormat` say, so
+    the class itself is substituted before `main` imports it."""
 
     store: dict[str, object] = {}
 
@@ -63,12 +52,8 @@ class MemorySettings:
 
 
 class _BlockedDriver(types.ModuleType):
-    """A vendor driver module that refuses to do anything.
-
-    Importing succeeds — the app's `import nidaqmx` lines are inside methods —
-    but touching anything raises, which every device path already treats as "no
-    hardware" and falls back from.
-    """
+    """Imports fine; touching anything raises, which every device path
+    already treats as "no hardware"."""
 
     def __getattr__(self, name):
         raise RuntimeError(
@@ -77,13 +62,9 @@ class _BlockedDriver(types.ModuleType):
 
 
 def block_real_devices(*names: str) -> None:
-    """Stand refusing stubs in front of the vendor drivers.
-
-    `test_module_subsets` toggles **Emulate off**, rebuilding the real output
-    controllers — the suite really was opening the DMD attached to this machine,
-    and on the rig that is a DO task on the puffer's line with an animal in
-    front of it. Tests that drive a fake device install their own module.
-    """
+    """Stand refusing stubs in front of the vendor drivers. Toggling Emulate
+    off rebuilds the real controllers: the suite really did open this rig's
+    DMD, and the puffer's DO line may have an animal in front of it."""
     for name in (names or ("ALP4", "nidaqmx", "pylablib", "pypylon")):
         sys.modules[name] = _BlockedDriver(name)
     if not names:
@@ -91,9 +72,8 @@ def block_real_devices(*names: str) -> None:
 
 
 def _block_stage() -> None:
-    """The stage's auto-detect enumerates the MCM301 through its vendor DLL,
-    OPENS one if found, and probes the serial port for an MCM6101. Both entry
-    points go through `backend` (imported at call time), so refuse there."""
+    """Stage auto-detect OPENS an MCM301 via its DLL and probes serial for an
+    MCM6101; both go through `backend` (imported at call time)."""
     from acqApp.devices.stage import backend
 
     def refuse(*_a, **_k):
@@ -105,34 +85,25 @@ def _block_stage() -> None:
 
 
 def isolate_user_state() -> Path:
-    """Redirect every persistent store the app writes, and return the temp dir.
-
-    `acqapp_local.json` (theme, modules, panel settings), QSettings (the dock
-    layout — substituted wholesale, since on Windows it is the registry), and
-    the vendor drivers. Call BEFORE importing `acqApp.main`, which binds
-    `QSettings` at import time.
-    """
+    """Redirect every persistent store the app writes (and block the vendor
+    drivers); return the temp dir. Call BEFORE importing `acqApp.main`, which
+    binds `QSettings` at import time."""
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_test_"))
     block_real_devices()
 
     from acqApp import config
     config._CONFIG_PATH = tmp / "acqapp_local.json"
 
-    # The routine template library is a folder of files beside the package; an
-    # unisolated run would save into, and delete from, the operator's own.
+    # Unisolated, a run writes, deletes and rotates the operator's own files.
     from acqApp.routines import templates
     templates.DIR = tmp / "routine_templates"
 
-    # Same reason: an unisolated run would rotate/write into the operator's
-    # own rois/session and rois/archive folders.
     from acqApp.devices.dmd import roi_store
     roi_store.SESSION_DIR = tmp / "rois" / "session"
     roi_store.ARCHIVE_DIR = tmp / "rois" / "archive"
     roi_store._rotated = False
 
-    # The FOV library is the same store shape and was NOT redirected here until
-    # a picker test saved two bookmarks straight into the operator's own
-    # fov_library/session and rotated their real ones into archive.
+    # Missing here once, a picker test rotated the operator's real FOVs.
     from acqApp.devices.stage import fov_store
     fov_store.SESSION_DIR = tmp / "fovs" / "session"
     fov_store.ARCHIVE_DIR = tmp / "fovs" / "archive"
@@ -141,9 +112,7 @@ def isolate_user_state() -> Path:
     MemorySettings.store = {}
     import PyQt6.QtCore
     PyQt6.QtCore.QSettings = MemorySettings
-    # `from PyQt6.QtCore import QSettings` binds its own reference, so patching
-    # the source misses anything already imported. Both write: `main` the dock
-    # layout, `dialogs` the settings window's geometry.
+    # Modules already imported hold their own reference; both write.
     for name in ("acqApp.main", "acqApp.dialogs"):
         mod = sys.modules.get(name)
         if mod is not None and hasattr(mod, "QSettings"):
@@ -154,16 +123,10 @@ def isolate_user_state() -> Path:
 # ── reporting ─────────────────────────────────────────────────────────────────
 
 class Report:
-    """Collects pass/fail lines and returns a process exit code.
+    """Collects pass/fail lines and returns a process exit code. Not
+    assert-based: one run should report every failure, not the first.
 
-    Not assert-based on purpose: stopping at the first failure hides the other
-    five, and these tests are slow enough that one run should tell you all of it.
-
-    **`-q` prints only what went wrong**, plus the closing summary. The passing
-    lines are the point when a human reads a run — each one states a property in
-    a sentence — but they are 50-130 lines of "ok" that a caller who only needs
-    the verdict pays for. A failure prints in full either way.
-    """
+    `-q` prints only failures plus the closing summary."""
 
     QUIET = "-q" in sys.argv or os.environ.get("ACQAPP_QUIET") == "1"
 
@@ -232,8 +195,7 @@ def qt_app():
 
 
 def pump(app, seconds: float) -> None:
-    """Run the Qt event loop for `seconds` without blocking it — the workers are
-    real QThreads on real signals, so the loop has to actually turn."""
+    """Turn the Qt event loop for `seconds`: the workers are real QThreads."""
     import time
     end = time.perf_counter() + seconds
     while time.perf_counter() < end:

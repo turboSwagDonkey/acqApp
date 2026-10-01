@@ -1,11 +1,8 @@
-"""Shared aperture geometry for the circle-in-a-region trial types (tuning,
-contrast, and eventually size). No Qt.
+"""Aperture geometry for the circle-in-a-region trials (tuning, contrast,
+size). No Qt.
 
-A circle sits at one of regions.py's 9 regions (selected 1-indexed, to match
-the operator's "region 1-9" language), diameter equal to that region's
-WIDTH (not height — the operator's spec). Which parameter the circle's
-*content* sweeps (orientation, contrast, ...) is each trial type's own
-concern (tuning.py, contrast.py); this only answers "where is the circle".
+Regions are 1-indexed (the operator's "region 1-9"); the diameter is the
+region's WIDTH, not height (the operator's spec).
 """
 from __future__ import annotations
 

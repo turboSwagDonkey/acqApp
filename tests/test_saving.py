@@ -4,21 +4,22 @@
 """
 from __future__ import annotations
 
+import csv
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+
+import h5py
+import numpy as np
+import tifffile
 from _harness import Report, run_parts
 from acqApp.acq.writer import (HDF5Writer, LongCsvWriter, SplitWriter,
                                TiffFileWriter)
 from acqApp.saving import SaveConfig, benchmark_drive, sanitize
-import csv
-import json
-import numpy as np
-import tifffile
-import subprocess
-import h5py
 
 
 # ═══ paths (was test_save_paths.py) ═════════════════════════════════════
@@ -27,14 +28,13 @@ WHEN = datetime(2026, 8, 12, 14, 30, 5)
 
 
 def check_stem(r: Report) -> None:
-    """Token substitution and sanitisation — the inputs are operator free text."""
+    """Token substitution and sanitisation of operator free text."""
     cfg = SaveConfig(mouse_id="m17", project="run2",
                      template="{mouse_id}_{project}_{date}_{time}")
     r.check(cfg.stem(WHEN) == "m17_run2_20260812_143005",
             f"all four tokens substituted (got {cfg.stem(WHEN)!r})")
 
-    # A path separator in the mouse ID would otherwise create a directory, or
-    # escape the save folder entirely.
+    # A separator would create a directory, or escape the save folder.
     cfg = SaveConfig(mouse_id=r"m17/../x", template="{mouse_id}")
     r.check("/" not in cfg.stem(WHEN) and "\\" not in cfg.stem(WHEN),
             f"path separators sanitised out of the mouse ID "
@@ -42,12 +42,10 @@ def check_stem(r: Report) -> None:
     r.check(sanitize("") == "session" and sanitize("  ..  ") == "session",
             "empty/degenerate names fall back rather than producing ''")
 
-    # An unfilled token must not leave a dangling separator.
     cfg = SaveConfig(mouse_id="m17", project="", template="{mouse_id}_{project}")
     r.check(cfg.stem(WHEN) == "m17", f"empty token tidied (got {cfg.stem(WHEN)!r})")
 
-    # The active FOV name is a plain suffix, not a template token — opt-in via
-    # `fov=`, appended after everything else, sanitised the same way.
+    # The active FOV name is an opt-in suffix, not a template token.
     cfg = SaveConfig(mouse_id="m17", template="{mouse_id}")
     r.check(cfg.stem(WHEN) == cfg.stem(WHEN, fov=""),
             "no FOV is a no-op — today's plain stem, unchanged")
@@ -58,14 +56,12 @@ def check_stem(r: Report) -> None:
             == "m17_a_b",
             f"the FOV name is sanitised too (got {cfg.stem(WHEN, fov='a/b')!r})")
 
-    # A routine trial is FOV<name>_T<n>, but a FOV already named "fov…" must
-    # not read "FOVfov1".
+    # FOV<name>_T<n>, but a FOV named "fov…" must not read "FOVfov1".
     for fov, want in (("1", "FOV1_T2"), ("fov1", "fov1_T2"),
                       ("FOV3", "FOV3_T2"), ("custom", "FOVcustom_T2")):
         got = cfg.resolve_routine(fov, 2, WHEN).stem
         r.check(got == want, f"routine stem for FOV {fov!r} (got {got!r})")
 
-    # No project means no project folder level.
     p = SaveConfig(mouse_id="m17", project="").routine_base(WHEN)
     r.check(p.parent.name == "m17"
             and p.parent.parent == SaveConfig(mouse_id="m17").resolved_folder(),
@@ -106,8 +102,7 @@ def check_unique(r: Report, tmp: Path) -> None:
         r.check(first.read_bytes() == b"first recording",
                 f"[{label}] the original file was never touched")
 
-        # unique=False is still the plain path — the preview and the metadata
-        # both rely on that staying deterministic.
+        # The preview and the metadata rely on this staying deterministic.
         r.check(cfg.resolve(WHEN) == first,
                 f"[{label}] unique=False is unchanged")
 
@@ -131,7 +126,6 @@ def check_writer_refuses(r: Report, tmp: Path) -> None:
         r.check(False, "HDF5Writer.open OVERWROTE an existing file")
     r.check(path.stat().st_size == size, "the existing file is byte-for-byte intact")
 
-    # A fresh path still works, and the deliberate-clobber escape hatch works.
     fresh = tmp / "existing" / "session_001.h5"
     w = HDF5Writer()
     w.open(fresh, {"subject": "m17"})
@@ -147,8 +141,7 @@ def check_writer_refuses(r: Report, tmp: Path) -> None:
 
 
 def check_benchmark_drive(r: Report, tmp: Path) -> None:
-    """The Save panel's drive-scan button (SavePanel._on_scan_drives) trusts
-    this for a real number — it must actually measure, not just succeed."""
+    """The Save panel's drive scan trusts this for a real number."""
     mbps = benchmark_drive(str(tmp), 2 << 20)      # 2 MB — fast, not realistic
     r.check(mbps is not None and mbps > 0,
             f"a writable folder returns a positive rate (got {mbps!r})")
@@ -162,8 +155,8 @@ def check_benchmark_drive(r: Report, tmp: Path) -> None:
 
 
 def check_renumber(r: Report, tmp: Path) -> None:
-    """Renumbering a closed trial in each save layout. A file still open must
-    refuse the rename and change nothing."""
+    """Renumbering a closed trial in each save layout; an open file refuses
+    and changes nothing."""
     from acqApp.saving.config import rename_trial
 
     # split folder
@@ -259,9 +252,8 @@ def check_tiff_roundtrip(r: Report, tmp: Path) -> None:
 
 
 def check_csv_routine_step(r: Report, tmp: Path) -> None:
-    """Not just the routine stream's own rows: every OTHER stream's row in
-    the open window is tagged too, and rows outside any step read "" —
-    the control that proves the tagging isn't vacuously always-on."""
+    """Every stream's row inside an open step is tagged; rows outside read ""
+    (the control against tagging being always on)."""
     p = tmp / "data.csv"
     w = LongCsvWriter(p)
     w.write("wheel", 0.0, 1.5)                 # before any step: untagged
@@ -305,8 +297,7 @@ def check_split_writer_routes(r: Report, tmp: Path) -> None:
 
     tiff_path = session / "sess_001_voltage_cam.tiff"
     r.check(tiff_path.is_file(), "the image stream got its own TIFF")
-    # A single-page stack reads back 2-D (tifffile squeezes the page axis),
-    # not (1, H, W) — reshape rather than index [0] into the wrong axis.
+    # tifffile squeezes a single page to 2-D; [0] would index the wrong axis.
     got = tifffile.imread(tiff_path).reshape(frame.shape)
     r.check(np.array_equal(got, frame), "…with the right frame data")
 
@@ -329,8 +320,7 @@ def check_split_writer_routes(r: Report, tmp: Path) -> None:
 
 
 def check_refuses_existing_folder(r: Report, tmp: Path) -> None:
-    """Mirrors HDF5Writer's mode 'x': an existing session is hours of
-    animal time with no undo."""
+    """As HDF5Writer's mode 'x': a session is animal time with no undo."""
     session = tmp / "sess_002"
     session.mkdir()
     w = SplitWriter()
@@ -357,14 +347,13 @@ def _part_split() -> int:
 
 # ═══ chunks (was test_writer_chunks.py) ═════════════════════════════════
 
-# Small enough to be fast, >8 MB so chunk_frames is 1 and the direct path is
-# chosen — the same branch the 4432x2368 camera frame takes.
+# >8 MB, so chunk_frames is 1 and the direct path is taken, as for the
+# 4432x2368 camera frame.
 BIG = (2048, 2048)          # uint16 -> 8.4 MB
 SMALL = (64, 64)            # uint16 -> 8 KB, so 16 frames share a chunk
 
-# Run as a child by check_guard_rejects: half-fills a uint16 chunk with uint8
-# bytes exactly as an unguarded direct write would, then reads it back. It is
-# expected NOT to reach the last line.
+# Run as a child: an unguarded direct write of uint8 bytes into a uint16
+# chunk, then a read. Expected NOT to reach the last line.
 DEMO_SRC = '''
 import sys
 import numpy as np
@@ -404,8 +393,6 @@ def check_direct_roundtrip(r: Report, tmp: Path) -> None:
     p = tmp / "direct.h5"
     direct = _write(p, frames)
 
-    # The control for everything below: if this is False the round trips still
-    # pass, but they are testing the old slice assignment and prove nothing.
     r.check(direct, "a full-size frame takes the direct-chunk path "
                     "(if this fails, the round-trip checks are vacuous)")
 
@@ -424,8 +411,7 @@ def check_guard_rejects(r: Report, tmp: Path) -> None:
     """A frame the direct write would corrupt goes the slow way instead."""
     base = _frames(BIG, 3)
 
-    # Non-C-contiguous: a transpose has the right shape and dtype, and only its
-    # memory layout is wrong.
+    # A transpose: right shape and dtype, wrong memory layout.
     view = np.ascontiguousarray(base[0]).T
     r.check(not view.flags.c_contiguous, "the transposed frame really is "
                                          "non-contiguous (control)")
@@ -435,10 +421,7 @@ def check_guard_rejects(r: Report, tmp: Path) -> None:
         r.check(np.array_equal(f["cam/frames"][0], view),
                 "a non-contiguous frame still round-trips (slice fallback)")
 
-    # The two rejected cases fail in DIFFERENT ways, and the difference is the
-    # point. Contiguity: the buffer cannot even be taken, so bypassing the
-    # guard raises inside the writer thread — a lost recording, not a lost
-    # frame.
+    # Unguarded, contiguity raises in the writer thread: a lost recording.
     try:
         memoryview(view).cast("B")
         raised = False
@@ -447,12 +430,9 @@ def check_guard_rejects(r: Report, tmp: Path) -> None:
     r.check(raised, "a non-contiguous frame cannot be cast to a byte buffer at "
                     "all, so the guard prevents a raise (control)")
 
-    # dtype: the bad one. uint8 bytes into a uint16 chunk fill half of it and
-    # HDF5 accepts them — the write returns, the file closes, and the damage
-    # only lands on whoever opens it. Measured 2026-08-25: reading that file
-    # back does not raise, it takes the process out with an access violation
-    # (0xC0000005). So this control runs in a CHILD process; in-process it
-    # would abort the suite, which is the finding.
+    # Unguarded, a dtype mismatch writes and closes cleanly, then the READER
+    # dies with an access violation (0xC0000005, measured 2026-08-25) — hence
+    # a child process.
     demo = tmp / "demo_corrupt.py"
     demo.write_text(DEMO_SRC, encoding="utf-8")
     proc = subprocess.run([sys.executable, str(demo), str(tmp / "corrupt.h5")],
@@ -471,8 +451,6 @@ def check_dtype_change(r: Report, tmp: Path) -> None:
     first = _frames(BIG, 1)[0]
     w.write("cam", 0.0, first)
     r.check(w._streams["cam"]["direct"], "stream opened on the direct path")
-    # uint8 into a uint16 dataset: 8.4 MB of bytes where 16.8 MB belong. A raw
-    # write would half-fill the chunk and leave the rest stale.
     odd = (first // 16).astype(np.uint8)
     w.write("cam", 0.01, odd)
     w.close()
@@ -485,7 +463,7 @@ def check_dtype_change(r: Report, tmp: Path) -> None:
 
 def check_path_disabled(r: Report, tmp: Path) -> None:
     """Where the direct write is invalid it must be off, and data still land."""
-    # Multi-frame chunks: the offset arithmetic assumes one frame per chunk.
+    # The offset arithmetic assumes one frame per chunk.
     small = _frames(SMALL, 20)
     p = tmp / "small.h5"
     direct = _write(p, small)
@@ -497,8 +475,7 @@ def check_path_disabled(r: Report, tmp: Path) -> None:
         r.check(all(np.array_equal(d[i], small[i]) for i in range(20)),
                 "all 20 small frames round-trip")
 
-    # Compression: a raw write would store uncompressed bytes under a filter
-    # that says they are deflated, and the file would not read back at all.
+    # Raw bytes under a deflate filter would not read back at all.
     big = _frames(BIG, 2)
     p = tmp / "gzip.h5"
     direct = _write(p, big, compression="gzip", compression_opts=1)
@@ -626,14 +603,14 @@ def check_bpod_match(r: Report, tmp: Path) -> None:
             "…the data moved with its folder (Bpod 20 = the 18th edge)")
     r.check(json.loads((base / "FOV2_T19_VOID" / "void.json").read_text())
             ["bpod_trial"] == 19, "…and each VOID says which trial it was")
-    log = list(csv.reader(open(base / "renumber_log.csv", encoding="utf-8")))
+    with open(base / "renumber_log.csv", encoding="utf-8") as fh:
+        log = list(csv.reader(fh))
     r.check(len(log) == 1 + 38 + 2,
             f"every change is logged for undoing ({len(log) - 1} rows)")
 
 
 def check_bpod_rollback(r: Report, tmp: Path) -> None:
-    """A folder still open part-way through Apply: the ones already moved
-    go back, and nothing has changed."""
+    """A file open part-way through Apply: the moved folders go back."""
     from acqApp.saving import bpod_match as BM
 
     bpod = _session(12)
@@ -668,7 +645,8 @@ def check_bpod_dialog(r: Report, tmp: Path) -> None:
     cfg = SaveConfig(folder=str(root), mouse_id="m1")
     today = cfg.routine_base(datetime.now())
     base, edges, mat = _bpod_fixture(root, bpod, cam)
-    base.rename(today) if not today.exists() else None
+    if not today.exists():
+        base.rename(today)
     edges = today / edges.name
     lines = edges.read_text(encoding="utf-8").replace(str(base), str(today))
     edges.write_text(lines, encoding="utf-8")
@@ -714,7 +692,7 @@ def _part_bpod() -> int:
     from _harness import isolate_user_state, qt_app
     r = Report("bpod-match")
     isolate_user_state()
-    app = qt_app()                               # noqa: F841 — must be held
+    app = qt_app()                               # noqa: F841 — held
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_bpod_"))
     try:
         check_bpod_match(r, tmp)

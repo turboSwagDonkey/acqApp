@@ -77,10 +77,8 @@ class ClosedLoopModule(ModuleAdapter):
         self.panel.clear_readout()
 
     def _on_fired(self, target: str, duration: float, value: float) -> None:
-        """Arrives queued on the GUI thread only because `connect()` ran there
-        (this adapter isn't a QObject); moving that connect would make it a
-        cross-thread call. So: one emit, and the status line lives in
-        update_display."""
+        """Queued onto the GUI thread only because `connect()` ran there (not a
+        QObject); keep it to one call, the status line is in update_display."""
         self.win.sync.fire(target, duration)
 
     # ── display ──
@@ -130,7 +128,7 @@ class ClosedLoopModule(ModuleAdapter):
         if self.worker is None:
             return {"loop_fires": 0, "loop_fires_session": 0}
         return {
-            "loop_fires":         self.worker.recorded_fires,   # handed to the sink
-            # Larger if it fired during Live view before Record: actuated, unfiled.
+            "loop_fires":         self.worker.recorded_fires,
+            # Larger if it fired under Live view: actuated, unfiled.
             "loop_fires_session": self.worker.n_fires,
         }

@@ -1,19 +1,13 @@
 """Experiment routines — run a protocol step by step, unattended.
 
-"Move here, start displaying this pattern, wait 100 frames while a Recording
-bracket captures them, puff, repeat." `settings.py` is the protocol
-(`Step`/`Group`/`Recording`/`Routine`) and its validation (Qt-free),
-`engine.py` the executor over callables (Qt-free), `panel.py` and `table.py`
-the widgets — `adapters/routines.py` owns the QTimer that ticks it.
-
-**It's the first feature whose whole purpose is to actuate**, so the split is
-the point: everything that decides is in the two Qt-free halves and is driven
-against fakes by `tests/test_routines.py`; only the adapter's hooks touch a
-real stage or projector.
+`settings.py` is the protocol and its validation, `engine.py` the executor
+over callables; both are Qt-free and driven against fakes by
+`tests/test_routines.py`. `panel.py`/`table.py` are the widgets, and only
+`adapters/routines.py` (which owns the ticking QTimer) touches real devices.
+The split matters because this feature's whole purpose is to actuate.
 
 Re-exported lazily (PEP 562), as in `closed_loop/`: an eager re-export would
-pull PyQt6 in through the parent package and cost the Qt-free halves their
-whole point.
+pull PyQt6 in through the parent package.
 """
 from __future__ import annotations
 

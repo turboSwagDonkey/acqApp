@@ -1,11 +1,6 @@
-"""PMT/camera mirror — settings tab.
-
-Manual only (PLAN.md S6): two switches in ThorImage move together (the
-galvo in/out, the visualizer path camera/PMT), driven by ThorImage and held
-on a serial port acqApp can't share, so there's nothing here to read
-live — one button for both, and the operator tells acqApp which way they
-set them, logged to `/mirror` like `/dmd`'s boundaries — a record of what
-was asserted, not a measurement.
+"""PMT/camera mirror — settings tab. Manual only: the operator says which
+way they set both ThorImage switches (see settings.py); logged to `/mirror`
+as an assertion, not a measurement.
 """
 from __future__ import annotations
 

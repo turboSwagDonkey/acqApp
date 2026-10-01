@@ -106,8 +106,8 @@ class PupilCamModule(ModuleAdapter):
         self._img.setLevels((0, 255))
         hist.setHistogramRange(0, 255)
         hist.setLevels(0, 255)
-        if self.panel is not None:
-            s = self.panel.settings
+        s = self.panel.settings if self.panel is not None else None
+        if s is not None:
             hist.setVisible(s.show_lut)
             self._chk_auto_lut.setChecked(s.auto_levels)
         self.win.register_pg_view(hist)
@@ -131,9 +131,9 @@ class PupilCamModule(ModuleAdapter):
         self._vb, self._gv = vb, gv
         vb.scene().sigMouseClicked.connect(self._on_click)
         vb.dragged.connect(self._on_limit_drag)
-        if self.panel is not None:
-            self._draw_limit(self.panel.settings)
-            self._draw_pins(self.panel.settings)
+        if s is not None:
+            self._draw_limit(s)
+            self._draw_pins(s)
             self._apply_view_mode()
 
         host = QWidget()
@@ -176,7 +176,7 @@ class PupilCamModule(ModuleAdapter):
 
         self._lbl_limit = QLabel()
         self._lbl_limit.setStyleSheet("color:#9aa0a6;")
-        self._lbl_limit.setMinimumWidth(1)      # clip rather than widen the dock
+        self._lbl_limit.setMinimumWidth(1)      # clip, don't widen the dock
         self._btn_pin = QPushButton("Pin reflection")
         self._btn_pin.setCheckable(True)
         self._btn_pin.setToolTip(
@@ -361,17 +361,14 @@ class PupilCamModule(ModuleAdapter):
         self._reset_levels()
 
     def _build_camera(self, s, emulate: bool):
-        if s.video_path:
-            # A replayed clip, in emulate or not.
+        if s.video_path:                # emulate or not
             try:
-                return self._adopt(VideoFileCameraWorker(s.video_path, rate_hz=s.rate_hz))
+                return self._adopt(
+                    VideoFileCameraWorker(s.video_path, rate_hz=s.rate_hz))
             except Exception as e:
                 print(f"[main] pupil video {s.video_path!r} unusable ({e}) "
                       f"— falling back to the camera")
                 self.win.status(f"pupil video unusable: {e}")
-                return self._adopt(
-                    MockPupilCameraWorker(rate_hz=s.rate_hz) if emulate
-                    else PupilCameraWorker(exposure_us=s.exposure_us, rate_hz=s.rate_hz))
         if emulate:
             return self._adopt(MockPupilCameraWorker(rate_hz=s.rate_hz))
         return self._adopt(PupilCameraWorker(exposure_us=s.exposure_us,
@@ -419,8 +416,7 @@ class PupilCamModule(ModuleAdapter):
         shown, rect = self._display_frame(tr.frame)
         self._paint(shown, self._settings is not None
                     and self._settings.auto_levels)
-        # Place the image at its full-frame coordinates, so overlays align
-        # even when cropped.
+        # Full-frame coordinates, so overlays align even when cropped.
         if rect != self._last_img_rect:
             self._img.setRect(rect)
             self._last_img_rect = rect
@@ -497,7 +493,8 @@ class PupilCamModule(ModuleAdapter):
         if self._mask_rgba is None or self._mask_rgba.shape[:2] != tr.mask.shape:
             self._mask_rgba = np.zeros(tr.mask.shape + (4,), np.uint8)
             self._mask_rgba[..., 0] = 255
-        self._mask_rgba[..., 3] = np.where(tr.mask, 140, 0)
+        np.multiply(tr.mask, 140, out=self._mask_rgba[..., 3],
+                    casting="unsafe")
         x0, y0, x1, y1 = tr.box
         self._mask_img.setImage(self._mask_rgba, autoLevels=False)
         self._mask_img.setRect(QRectF(x0, y0, x1 - x0, y1 - y0))

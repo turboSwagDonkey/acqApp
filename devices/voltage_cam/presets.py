@@ -70,13 +70,13 @@ LINK_LABEL = {USB: "USB3", CXP: "CoaXPress"}
 DEFAULT_LINK: str = CXP
 
 _ROWS_HZ_USB: List[tuple[int, float]] = [(r, u) for r, u, _c in _ROWS_HZ_BOTH]
-_ROWS_HZ_CXP: List[tuple[int, float]] = [(r, c) for r, _u, c in _ROWS_HZ_BOTH]
-_SORTED = {USB: sorted(_ROWS_HZ_USB), CXP: sorted(_ROWS_HZ_CXP)}
+_SORTED = {USB: sorted(_ROWS_HZ_USB),
+           CXP: sorted((r, c) for r, _u, c in _ROWS_HZ_BOTH)}
 
 
 def _label(rows: int, hz_usb: float, hz_cxp: float) -> str:
     dims = f"{SENSOR_W}×{rows}"
-    tag = "Full Frame " + f"({dims})" if rows == SENSOR_H else dims
+    tag = f"Full Frame ({dims})" if rows == SENSOR_H else dims
     return f"{tag} · {hz_usb:g} USB / {hz_cxp:g} CXP Hz"
 
 
@@ -114,8 +114,8 @@ def readout_hz(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
     """Datasheet readout ceiling for `rows` rows. Log-log interpolated: below
     ~128 rows fixed overhead bends the curve off const/rows.
 
-    `binning` is IGNORED (kept positional): 512 rows at bin 1/2/4 all read out
-    in 1.893 ms (2026-09-28); dividing by it showed bin 4 at 1980 Hz vs 528."""
+    `binning` is ignored: binning doesn't speed readout (512 rows read in
+    1.893 ms at bin 1/2/4, 2026-09-28)."""
     eff = max(1.0, float(rows))
     tbl = _SORTED[CXP if link == CXP else USB]
     if eff <= tbl[0][0]:
@@ -128,8 +128,8 @@ def readout_hz(rows: int, binning: int = 1, link: str = DEFAULT_LINK) -> float:
             return math.exp(math.log(f0) + w * (math.log(f1) - math.log(f0)))
     return tbl[-1][1]
 
-# Sustained end-to-end write rate, MiB/s. The old ~510 was the SATA save drive;
-# the NVMe (D:) measured 1533 without the GUI. Raise once confirmed in-app.
+# Sustained end-to-end write rate, MiB/s. The NVMe (D:) measured 1533 without
+# the GUI; raise once confirmed in-app.
 WRITER_MBPS: float = 1300.0
 
 BINNING_OPTIONS: List[int] = [1, 2, 4]
@@ -144,8 +144,8 @@ DEFAULT_TRIGGER: str = "Internal (free-running)"
 # SYNCREADOUT they pipeline and exposure drops out (2026-09-28: same floor at
 # 200/500/1500 us). Asking for less than the floor doesn't cap the rate, it
 # silently HALVES it. The pad covers a further ~40-57 us the probe found above
-# readout (+ exposure) in all 8 configs (2026-09-28). Was 100 us; 70 leaves
-# 13 us over the worst measured — UNVERIFIED on the rig (2026-09-30).
+# readout (+ exposure) in all 8 configs (2026-09-28); 70 us leaves 13 over the
+# worst measured — UNVERIFIED on the rig (2026-09-30).
 MP_INTERVAL_PAD_S = 0.00007
 
 # MASTER PULSE MODE=BURST: one edge -> a fixed pulse count, then quiet and

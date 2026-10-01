@@ -1,16 +1,13 @@
 """Every name the app uses resolves to something.
 
-Guards the moved-code defect: a file is split, the new module's imports miss a
-name the moved code used, and the NameError waits on a path the suite never
-calls. Happened 2026-08-13 (six names, `devices/stage/settings.py` and `devices/dmd/control.py`).
-
+A split file's new module misses an import, and the NameError waits on a path
+the suite never calls (2026-08-13: six names, in stage/settings.py and
+dmd/control.py).
 `symtable` does the scoping; this asks whether what's left lands on a
 module-level binding or a builtin. Nothing is imported or executed.
 
-Boundary: under `from __future__ import annotations` the annotations are strings
-and out of scope, so an annotation-only import is not defended. Asserted below.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_undefined_names.py
+Boundary, asserted below: under `from __future__ import annotations`,
+annotations are strings, so an annotation-only import is not defended.
 """
 from __future__ import annotations
 
@@ -211,10 +208,7 @@ def check_controls(r: Report) -> None:
         "from os.path import *\ndef f():\n    return join('a', 'b')\n", "star")
     r.check(status == "star" and not hits, "an `import *` file reports as skipped")
 
-    # Boundary, asserted not just described: under `from __future__ import
-    # annotations` (most files here) annotations are strings and invisible to
-    # this scan — `adapters/base.py` imports `Any` on exactly those terms.
-    # Without it they are live expressions and are checked.
+    # The boundary: `adapters/base.py` imports `Any` on exactly these terms.
     fut = "from __future__ import annotations\n"
     _, quiet = scan_source(fut + "def f(x: Missing) -> None: pass\n", "ann")
     _, live = scan_source("def f(x: Missing) -> None: pass\n", "ann-live")
@@ -228,8 +222,6 @@ def check_injection(r: Report) -> None:
                 "devices/dmd/control.py", "devices/stage/panel.py",
                 "devices/pupil_cam/acquisition.py", "closed_loop/worker.py"):
         if not (APP_DIR / rel).is_file():
-            # Report, don't crash: a moved file must fail this test loudly, not
-            # take the run down with a traceback.
             r.check(False, f"[{rel}] target has moved — update this list")
             continue
         src = (APP_DIR / rel).read_text(encoding="utf-8")
@@ -248,11 +240,8 @@ def check_injection(r: Report) -> None:
 
 
 def _drop_a_runtime_import(src: str) -> tuple[str | None, list[str]]:
-    """Blank the first module-level import read at runtime.
-
-    Runtime, not merely present: `adapters/base.py`'s `Any` is annotation-only,
-    so dropping it is not a defect and the scan is right to stay quiet.
-    """
+    """Blank the first module-level import read at runtime (not merely present:
+    an annotation-only import like base.py's `Any` is no defect to drop)."""
     tree = ast.parse(src)
     used = _runtime_loads(tree)
     for node in tree.body:

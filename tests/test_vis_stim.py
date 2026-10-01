@@ -1,9 +1,6 @@
-"""
-Visual stim: trial expansion, grating/aperture geometry, settings round-trip,
-the shared-clock-tick-driven priming/gating state machine, and hot-load/
-unload — ported from visStimCode's .m files.
-
-    acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_vis_stim.py
+"""Visual stim (ported from visStimCode's .m files): trial expansion,
+grating/aperture geometry, settings round-trip, the clock-tick-driven
+priming/gating state machine, and hot-load/unload.
 """
 from __future__ import annotations
 
@@ -117,8 +114,7 @@ def check_regions(r: Report) -> None:
 
 
 def check_tick_driven_map_run(r: Report) -> None:
-    """A map trial completes on ticks alone — no painted frames needed,
-    unlike the grating (check_tick_driven_run), so this needs no pump()."""
+    """Completes on ticks alone — unlike the grating, no pump()."""
     from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
     from acqApp.devices.vis_stim.regions import N_REGIONS
     from acqApp.devices.vis_stim.settings import (TRIAL_MAP, StimParams,
@@ -158,8 +154,7 @@ def check_tick_driven_map_run(r: Report) -> None:
 
 
 def check_circle_geometry(r: Report) -> None:
-    """circle.py is shared by tuning/contrast/(eventually size) — tested
-    once here rather than duplicated per trial type."""
+    """circle.py, shared by the region trial types."""
     from acqApp.devices.vis_stim.circle import circle_geometry
     from acqApp.devices.vis_stim.tuning import N_ORIENTATIONS, N_PRETRIALS, \
         orientations
@@ -186,8 +181,7 @@ def check_circle_geometry(r: Report) -> None:
 
 
 def check_tick_driven_tuning_run(r: Report) -> None:
-    """A tuning trial is also entirely tick-driven — 2 pretrials then the
-    8-step orientation sweep — no pump() needed, same as map."""
+    """2 pretrials, then the 8-step orientation sweep; ticks alone."""
     from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
     from acqApp.devices.vis_stim.settings import (TRIAL_TUNING, StimParams,
                                                    VisStimSettings)
@@ -234,8 +228,7 @@ def check_tick_driven_tuning_run(r: Report) -> None:
 
 
 def check_tick_driven_contrast_run(r: Report) -> None:
-    """A contrast trial is also entirely tick-driven — 2 pretrials then the
-    contrast-level sweep — no pump() needed, same shape as tuning."""
+    """2 pretrials, then the contrast-level sweep; ticks alone."""
     from acqApp.devices.vis_stim.contrast import (CONTRAST_LEVELS, N_LEVELS,
                                                    N_PRETRIALS)
     from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
@@ -287,10 +280,8 @@ def check_tick_driven_contrast_run(r: Report) -> None:
 
 
 def check_tick_driven_size_run(r: Report) -> None:
-    """A size trial is also entirely tick-driven — 2 pretrials then the
-    size-fraction sweep — no pump() needed, same shape as tuning/contrast.
-    Unlike tuning/contrast, the swept quantity is the aperture's own
-    diameter, so this also checks the aperture actually shrinks."""
+    """2 pretrials, then the size-fraction sweep; ticks alone. The swept
+    quantity is the aperture's own diameter, so check it shrinks."""
     from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
     from acqApp.devices.vis_stim.settings import (TRIAL_SIZE, StimParams,
                                                    VisStimSettings)
@@ -337,17 +328,13 @@ def check_tick_driven_size_run(r: Report) -> None:
 
 
 def check_visuomotor_run(r: Report, app) -> None:
-    """Visuomotor's own thing: drift comes from a wheel-speed reader x Gain
-    each painted frame instead of a fixed temporal frequency, and the trial
-    ends on VisuomotorDurationTicks instead of PeriodsToShow — blank/stim
-    gating and geometry are otherwise the plain grating path."""
+    """Drift is wheel speed x Gain per painted frame, and the trial ends on
+    VisuomotorDurationTicks; otherwise the plain grating path."""
     from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
     from acqApp.devices.vis_stim.settings import (TRIAL_VISUOMOTOR, StimParams,
                                                    VisStimSettings)
 
-    # No wheel_speed source injected (the default) — the common case when
-    # the wheel module isn't loaded — must degrade to a static grating,
-    # not crash.
+    # No wheel_speed source (wheel not loaded): a static grating, no crash.
     params = StimParams(WaitTrigger=1, TriggersBlank=1, TriggersStim=1,
                         VisuomotorDurationTicks=100000, VisuomotorGain=2.0,
                         WaveSpPeriod=1000.0)
@@ -361,8 +348,6 @@ def check_visuomotor_run(r: Report, app) -> None:
             "no wheel_speed source -> the grating never drifts (stays static)")
     c.close()
 
-    # A fixed live wheel speed injected: drift should actually move, and
-    # scale with VisuomotorGain rather than WaveTempPeriodInHz (unused here).
     params2 = StimParams(WaitTrigger=1, TriggersBlank=1, TriggersStim=1,
                          VisuomotorDurationTicks=100000, VisuomotorGain=1.0,
                          WaveSpPeriod=1_000_000.0)
@@ -376,8 +361,6 @@ def check_visuomotor_run(r: Report, app) -> None:
             f"({c2._xoffset})")
     c2.close()
 
-    # VisuomotorDurationTicks ends the trial on a tick count, since there's
-    # no PeriodsToShow/WaveTempPeriodInHz to count cycles of.
     params3 = StimParams(WaitTrigger=1, TriggersBlank=100000,
                          TriggersStim=100000, VisuomotorDurationTicks=2)
     s3 = VisStimSettings(trial_type=TRIAL_VISUOMOTOR, params=params3)
@@ -393,9 +376,7 @@ def check_visuomotor_run(r: Report, app) -> None:
 
 
 def check_tick_driven_run(r: Report, app) -> None:
-    """The whole priming -> per-trial gating -> finish flow, driven entirely
-    by direct on_tick() calls — deterministic, no real DAQ or sleep-based
-    simulation needed now that a "trigger" is just the shared clock's tick."""
+    """Priming -> per-trial gating -> finish, driven by on_tick() calls."""
     from acqApp.devices.vis_stim.control import IDLE, PRIMING, RUNNING, \
         VisStimController
     from acqApp.devices.vis_stim.settings import LoopVar, StimParams, \
@@ -429,8 +410,7 @@ def check_tick_driven_run(r: Report, app) -> None:
     c.on_tick(0.4)
     r.check(not c._is_visible, "a further tick (TriggersStim=1) returns to blank")
 
-    # Pump the real Qt event loop so the display's own paint timer actually
-    # advances frames and the two trials (PeriodsToShow=2 each) complete.
+    # The display's paint timer advances the frames that finish the trials.
     pump(app, 5.0)
     r.check(c.phase == IDLE, f"back to idle once both trials finish ({c.phase})")
     r.check(c.last_run_stats == {"trials_total": 2, "trials_completed": 2,
@@ -441,12 +421,8 @@ def check_tick_driven_run(r: Report, app) -> None:
 
 
 def check_loops_dont_multiply_region_trials(r: Report) -> None:
-    """Loop variables are a Grating/Visuomotor-only concept — Map/Tuning/
-    Contrast/Size each run their own dedicated internal sweep already, so
-    leftover Loop variables (e.g. from a prior Grating session, since they
-    persist in settings regardless of trial type — see
-    check_settings_roundtrip) must not multiply a region trial into several
-    duplicate runs of that same internal sweep."""
+    """Loop variables persist across trial types, but only Grating and
+    Visuomotor use them; a region trial runs its own sweep once."""
     from acqApp.devices.vis_stim.control import VisStimController
     from acqApp.devices.vis_stim.settings import (LoopVar, StimParams,
                                                    TRIAL_TUNING,
@@ -499,7 +475,7 @@ def main() -> int:
     check_settings_roundtrip(r)
 
     isolate_user_state()
-    app = qt_app()          # keep the reference: a GC'd QApplication aborts
+    app = qt_app()          # held: a collected QApplication aborts
     check_tick_driven_run(r, app)
     check_tick_driven_map_run(r)
     check_tick_driven_tuning_run(r)

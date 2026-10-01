@@ -1,9 +1,7 @@
-"""Visual stim settings. No Qt.
+"""Visual stim settings, from visStimCode's getDefaultParams. No Qt.
 
-Ported from visStimCode's getDefaultParams. Only a drifting sinusoid is
-rendered; the MATLAB wave/flash/LUT fields were dropped, and stale saved
-values for them are ignored by `from_dict`. Nested, so it has its own
-to_dict/from_dict rather than config.load_dataclass.
+The MATLAB wave/flash/LUT fields were dropped; `from_dict` ignores stale
+saved values. Nested, so not config.load_dataclass.
 """
 from __future__ import annotations
 

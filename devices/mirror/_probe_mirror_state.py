@@ -1,42 +1,30 @@
 """
-Read chip 7 on the MCM6101 stage controller -- ThorImage's PMT/camera
-mirror switch -- using the actual mirror-state protocol, one snapshot at a
-time.
+One read-only snapshot of chip 7 on the MCM6101 (ThorImage's PMT/camera
+mirror switch): sends only REQ_MIRROR_STATE, never SET.
 
     acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\mirror\\_probe_mirror_state.py [COM54]
 
-Replaces `_read_mirror_axis.py` (deleted): that script queried
-MOT_REQ_STATUSUPDATE, the stepper-axis status message -- chip 7 is a
-Slider_IO_type (LightPath) card, not a stepper, and never answers it (see
-PLAN.md S6/S7 2026-09-10 (bn)). The real messages, recovered from
-ThorImageLS's own ThorMCM6000 driver source (APT.h/APT.cpp,
-MCM6000.cpp: MoveMirror/GetStatusAllBoards): MGMSG_MCM_REQ_MIRROR_STATE
-(0x4088) per channel, answered by MGMSG_MCM_GET_MIRROR_STATE (0x4089).
+Chip 7 is a Slider_IO_type (LightPath) card, not a stepper, so it never
+answers MOT_REQ_STATUSUPDATE (PLAN.md S6/S7 2026-09-10 (bn)). It answers
+MGMSG_MCM_REQ_MIRROR_STATE (0x4088) per channel with
+MGMSG_MCM_GET_MIRROR_STATE (0x4089), per ThorImageLS's ThorMCM6000 source
+(APT.h/APT.cpp, MCM6000.cpp: MoveMirror/GetStatusAllBoards).
 
-ThorImage holds COM54 exclusively for as long as it's open, so this script
-and ThorImage can never have the port at once -- run it only when ThorImage
-is closed.
+ThorImage holds COM54 exclusively while open: run this only with it closed.
 
-Read-only -- sends only REQ_MIRROR_STATE, never SET_MIRROR_STATE. One
-snapshot and exit.
-
-**Why this script needs to be run once before any auto-actuation is wired
-up**: ThorImage's own source comments "New MCM6000 cards reverse camera
-lightpath positions" and applies a flip to the CAMERA channel (not GR) at
-its own API layer. Which raw value (MIRROR_OUT=0 vs MIRROR_IN=1) means
-"routed to camera" on *this* card's revision is unconfirmed. To find out:
-  1. Open ThorImage, set the light path to Camera (what acqApp calls the
-     safe/epi default), close ThorImage.
-  2. Run this script -- note the GR and CAMERA channel raw states.
-  3. In ThorImage, switch to the PMT/scanning path, close ThorImage.
-  4. Run this script again -- compare. Whichever raw values corresponded to
-     step 2 is “camera routed” on this card.
+ThorImage's source flips the CAMERA channel for "New MCM6000 cards", so
+which raw value means "camera" depends on the card. To check (done
+2026-09-11, see startup.py):
+  1. In ThorImage set the light path to Camera, then close it.
+  2. Run this; note the GR and CAMERA raw states.
+  3. In ThorImage switch to PMT/scanning, then close it.
+  4. Run this again. Step 2's raw values are "camera routed".
 """
 from __future__ import annotations
 import sys
 
 CHIP = 7
-AXIS = CHIP - 1        # chip N = axis N-1 on this rig -- see driver.py
+AXIS = CHIP - 1        # chips are 1-indexed, axes 0-indexed (driver.py)
 
 
 def main() -> int:

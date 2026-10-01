@@ -1,11 +1,9 @@
-"""Save/load for named FOV (field-of-view) bookmarks: a stage position plus a
-camera snapshot, so the operator can recognize a saved spot later by eye. No
-Qt — the picker is `fov_picker.py`.
+"""Named FOV bookmarks: a stage position plus an optional camera snapshot
+(sibling PNG). No Qt; the picker is `fov_picker.py`.
 
-Modeled on `devices/dmd/roi_store.py`: the same `session/`/`archive/`
-split and per-process rotation (see that file's docstring for why). New here:
-each save also writes a sibling PNG thumbnail, moved alongside its JSON by
-the same rotation step.
+Same `session/`/`archive/` split and per-process rotation as
+`devices/dmd/roi_store.py` (see its docstring for why); the PNG rotates with
+its JSON.
 """
 from __future__ import annotations
 
@@ -25,6 +23,10 @@ IMG_SUFFIX = ".fov.png"
 _rotated = False
 
 
+def _img_for(path: Path) -> Path:
+    return path.with_name(path.name[:-len(SUFFIX)] + IMG_SUFFIX)
+
+
 def _rotate_once() -> None:
     global _rotated
     if _rotated:
@@ -37,11 +39,10 @@ def _rotate_once() -> None:
         if dest.exists():           # same name from an earlier run — keep both
             stem = p.name[:-len(SUFFIX)]
             dest = ARCHIVE_DIR / f"{stem}_{datetime.now():%Y%m%d_%H%M%S}{SUFFIX}"
-        img = p.with_name(p.name[:-len(SUFFIX)] + IMG_SUFFIX)
-        dest_img = dest.with_name(dest.name[:-len(SUFFIX)] + IMG_SUFFIX)
+        img = _img_for(p)
         shutil.move(str(p), str(dest))
         if img.exists():
-            shutil.move(str(img), str(dest_img))
+            shutil.move(str(img), str(_img_for(dest)))
 
 
 class SavedFov(NamedTuple):
@@ -57,8 +58,7 @@ class SavedFov(NamedTuple):
 
 def save(name: str, x_um: float, y_um: float, z_um: float | None = None,
         camera_preset: str | None = None, png_bytes: bytes | None = None) -> Path:
-    """Write a named FOV (+ optional PNG snapshot) into the session folder,
-    -> the JSON path used."""
+    """Write a named FOV (+ PNG) into the session folder -> its JSON path."""
     _rotate_once()
     stem = "".join(c if c.isalnum() or c in "-_ " else "_"
                    for c in name).strip() or "fov"
@@ -68,8 +68,7 @@ def save(name: str, x_um: float, y_um: float, z_um: float | None = None,
         n += 1
         path = SESSION_DIR / f"{stem}_{n}{SUFFIX}"
     if png_bytes is not None:
-        img_path = path.with_name(path.name[:-len(SUFFIX)] + IMG_SUFFIX)
-        img_path.write_bytes(png_bytes)
+        _img_for(path).write_bytes(png_bytes)
     payload = {"name": name,
               "saved_at": datetime.now().isoformat(timespec="seconds"),
               "x_um": x_um, "y_um": y_um, "z_um": z_um,
@@ -81,7 +80,7 @@ def save(name: str, x_um: float, y_um: float, z_um: float | None = None,
 def load(path: str | Path) -> SavedFov:
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
-    img = path.with_name(path.name[:-len(SUFFIX)] + IMG_SUFFIX)
+    img = _img_for(path)
     z = data.get("z_um")
     return SavedFov(
         path=path,

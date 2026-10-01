@@ -42,21 +42,14 @@ class FreshGrabber:
     """`grab()` = the first camera frame that arrived AFTER the last `project()`.
 
     Identity, not a frame counter: the display tick replaces the array object
-    once per frame, so `f is not last` is exactly "a new frame has been
-    displayed" — and a counter would mean widening `ModuleHost` again, which
-    §5b A4 makes a deliberate act rather than a convenience.
+    once per frame, and a counter would widen `ModuleHost` (§5b A4).
 
-    `settle` frames are DISCARDED before the one that counts. The frame in
-    flight when `project()` returns may have been exposed across the mirror
-    flip, and one such frame per plane is a decode error on every pixel. Two is
-    cheap insurance at ~100 ms a plane.
+    `settle` frames are DISCARDED first: the one in flight when `project()`
+    returns may straddle the mirror flip. Two is cheap at ~100 ms a plane.
 
-    **It fails the safe way round.** The adapter reassigns `_last_frame` only
-    when the display tick consumed a new frame (`get_latest()` returns
-    None otherwise), so identity can't change without a real exposure. If a
-    driver ever handed back one reused array object per frame, this would time
-    out with the message below rather than quietly registering stale frames —
-    a stopped sweep, not a wrong calibration.
+    **Fails safe:** `_last_frame` is reassigned only on a real new frame, so a
+    driver reusing one array object would time out here, not register stale
+    frames.
     """
 
     def __init__(self, source: Callable[[], object], *, settle: int = 2,
@@ -107,18 +100,13 @@ class CalibrationDialog(QDialog):
         self._proj = projector
         self._source = grab_source
         self._on_saved = on_saved
-        # Starts the camera itself rather than telling the operator to go and
-        # press Live view in another part of the window. Restored afterwards to
-        # whatever it was, so this leaves the rig as it found it.
-        self._set_live = set_live
+        self._set_live = set_live       # started for a run, then restored
         self._calib: DmdCalibration | None = None
         self._cancel = False
         self._running = False
         self.setWindowTitle("DMD calibration")
         self.resize(760, 520)
-        # The settings tabs get their subsystem accent from `dialogs.add_panel`;
-        # a standalone dialog has to ask for it, or the DMD's own windows are
-        # the only untinted surfaces in the app.
+        # A standalone dialog doesn't inherit the tab's accent.
         self.setStyleSheet(style.accent_panel("dmd"))
         self._build(real)
 
@@ -153,10 +141,8 @@ class CalibrationDialog(QDialog):
             warn.setStyleSheet(f"color:{style.WARN};")
             root.addWidget(warn)
 
-        # Seeded from this rig's profile (a stable fact — how the camera is
-        # mounted — not something to re-pick every run), but left editable:
-        # the right cross-length for a given tilt is found by looking at THIS
-        # rig's own sweep log, not guessed once and frozen.
+        # Seeded from the rig profile, left editable: the right cross-length
+        # comes from reading this rig's sweep log.
         geom = QGroupBox("Geometry")
         gform = QFormLayout(geom)
         seed = config.rig_dmd_calibration()
@@ -193,9 +179,7 @@ class CalibrationDialog(QDialog):
 
         self._bar = QProgressBar()
         self._bar.setRange(0, n)
-        # Explicitly 0: a QProgressBar starts at -1 and draws an empty strip
-        # with no text, which reads as a broken widget rather than "not started".
-        self._bar.setValue(0)
+        self._bar.setValue(0)           # starts at -1: an empty, textless bar
         self._bar.setFormat("%v / %m exposures")
         root.addWidget(self._bar)
 
@@ -225,6 +209,8 @@ class CalibrationDialog(QDialog):
         row.addStretch()
         row.addWidget(self._btn_close)
         root.addLayout(row)
+        self._actions = (self._btn_run, self._btn_adjust, self._btn_save,
+                         self._btn_close)
 
     # ── logging ──────────────────────────────────────────────────────────────
     def log(self, msg: str) -> None:
@@ -236,24 +222,40 @@ class CalibrationDialog(QDialog):
         self.log("[sweep] stopping at the next exposure…")
 
     def _pump(self) -> None:
-        """Keep the event loop turning while the sweep blocks on a frame.
-
-        The camera delivers into the GUI thread, so a sweep that blocked it
-        would wait forever for the frame it's blocking. Cancellation is checked
-        here because this is the one place that runs on every exposure.
-        """
+        """Keep the GUI thread turning while blocked on a frame: the camera
+        delivers into it. Cancel is checked here as it runs every exposure."""
         QApplication.processEvents()
         if self._cancel:
             raise SweepCancelled("stopped by the operator")
 
     # ── running ──────────────────────────────────────────────────────────────
+    def _start_live(self, why: str) -> bool:
+        """Start the camera if needed -> whether it was already live."""
+        if self._set_live is None:
+            return True
+        was_live = bool(self._set_live(True))
+        if not was_live:
+            self.log(f"[sweep] started the live view {why}")
+        return was_live
+
+    def _go_dark(self, was_live: bool) -> None:
+        """Always end dark (a held stripe is light still on the sample), and
+        put the camera back."""
+        try:
+            self._proj.stop()
+        except Exception as e:                      # noqa: BLE001
+            self.log(f"[sweep] could not stop the projector: {e}")
+        if self._set_live is not None and not was_live:
+            self._set_live(False)
+            self.log("[sweep] live view stopped again")
+
     def _run(self) -> None:
         if self._running:
             return
         self._running = True
         self._cancel = False
         self._calib = None
-        for b in (self._btn_run, self._btn_adjust, self._btn_save, self._btn_close):
+        for b in self._actions:
             b.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._cmb_model.setEnabled(False)
@@ -264,16 +266,9 @@ class CalibrationDialog(QDialog):
         model = self._cmb_model.currentData()
         cross_frac = self._spn_cross.value() / 100.0
 
-        # Start the camera if it isn't already running; remember whether we
-        # did, so the finally block can put it back.
-        was_live = True
-        if self._set_live is not None:
-            was_live = bool(self._set_live(True))
-            if not was_live:
-                self.log("[sweep] started the live view for this run")
+        was_live = self._start_live("for this run")
 
-        # A longer timeout on the first grab: a camera that has just been told
-        # to start has to build its worker and deliver a frame.
+        # Long timeout: a just-started camera has to build its worker first.
         grabber = FreshGrabber(self._source, timeout_s=12.0, pump=self._pump)
 
         def project(frame) -> None:
@@ -299,15 +294,7 @@ class CalibrationDialog(QDialog):
         except Exception as e:                      # noqa: BLE001
             self.log(f"FAILED ({type(e).__name__}): {e}")
         finally:
-            # Always leave the panel dark: a run that ends holding its last
-            # stripe is a projector still on the sample.
-            try:
-                self._proj.stop()
-            except Exception as e:                  # noqa: BLE001
-                self.log(f"[sweep] could not stop the projector: {e}")
-            if self._set_live is not None and not was_live:
-                self._set_live(False)
-                self.log("[sweep] live view stopped again")
+            self._go_dark(was_live)
             self.log(f"[sweep] {grabber.n_grabs} exposures in "
                      f"{time.monotonic() - t0:.1f} s "
                      f"({1000 * grabber.waited_s / max(1, grabber.n_grabs):.0f} "
@@ -321,23 +308,17 @@ class CalibrationDialog(QDialog):
 
     # ── manual corner adjustment ────────────────────────────────────────────
     def _adjust_corners(self) -> None:
-        """Project all-on, grab one more frame, and let the operator drag the
-        fit's four corners onto where the field actually lands in it.
+        """Project all-on, grab a frame, and let the operator drag the fit's
+        corners onto the lit field.
 
-        A second, explicit actuation — separate from the sweep's, and only on
-        this button's own click (PLAN §2): the sweep's consent covered
-        projecting stripes to MEASURE a registration, not a further frame to
-        review one already measured.
+        Its own actuation, on this button's click only (PLAN §2): the sweep's
+        consent covered measuring, not a further frame to review the result.
         """
         if self._calib is None:
             return
-        for b in (self._btn_run, self._btn_adjust, self._btn_save, self._btn_close):
+        for b in self._actions:
             b.setEnabled(False)
-        was_live = True
-        if self._set_live is not None:
-            was_live = bool(self._set_live(True))
-            if not was_live:
-                self.log("[sweep] started the live view for corner adjustment")
+        was_live = self._start_live("for corner adjustment")
         self.log("[sweep] projecting all-on to show the field for corner adjustment")
 
         frame = None
@@ -349,14 +330,8 @@ class CalibrationDialog(QDialog):
         except CalibrationError as e:
             self.log(f"[sweep] could not get a frame for corner adjustment: {e}")
         finally:
-            try:
-                self._proj.stop()
-            except Exception as e:                  # noqa: BLE001
-                self.log(f"[sweep] could not stop the projector: {e}")
-            if self._set_live is not None and not was_live:
-                self._set_live(False)
-                self.log("[sweep] live view stopped again")
-            for b in (self._btn_run, self._btn_adjust, self._btn_save, self._btn_close):
+            self._go_dark(was_live)
+            for b in self._actions:
                 b.setEnabled(True)
 
         if frame is None:

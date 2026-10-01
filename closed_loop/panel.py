@@ -133,13 +133,8 @@ class SettingsPanel(QWidget):
 
     # ── sources ──────────────────────────────────────────────────────────────
     def set_sources(self, sources: list[SignalSource]) -> None:
-        """Fill source list from what loaded modules offer.
-
-        Keeps selected key if it's still on offer. Combo is rebuilt
-        whenever a session starts (units follow wheel's scaling), and
-        falling back to index 0 there would silently repoint a configured rule
-        at a different signal.
-        """
+        """Keeps the selected key if still offered: rebuilt every session
+        start, and falling back to index 0 would silently repoint a rule."""
         want = self.selected_source() or self._s.source
         self._sources = list(sources)
         blocked = self._cmb_source.blockSignals(True)
@@ -155,13 +150,11 @@ class SettingsPanel(QWidget):
         return self._cmb_source.currentData() or ""
 
     def set_targets(self, keys) -> None:
-        """Restrict output list to modules actually loaded.
-
-        A rule pointed at an unloaded module fires onto the trigger bus and
-        nothing listens — it would look armed and working and do nothing.
-        """
+        """Loaded modules only: a fire at an unloaded one looks armed and
+        does nothing."""
         want = self._cmb_target.currentData() or self._s.target
-        allowed = [k for k in TARGETS if k in set(keys)]
+        keys = set(keys)
+        allowed = [k for k in TARGETS if k in keys]
         blocked = self._cmb_target.blockSignals(True)
         self._cmb_target.clear()
         for key in allowed:
@@ -171,8 +164,9 @@ class SettingsPanel(QWidget):
         self._cmb_target.blockSignals(blocked)
 
     def _units(self) -> str:
+        key = self.selected_source()
         for s in self._sources:
-            if s.key == self.selected_source():
+            if s.key == key:
                 return s.units
         return ""
 
@@ -202,9 +196,8 @@ class SettingsPanel(QWidget):
         self._lbl_readout.setText(
             f"{v}   ·   condition {'MET' if met else 'not met'}   ·   "
             f"{n_fires} fired{'' if armed else '   (disarmed)'}")
-        # Only on a change: this runs every display tick, and setStyleSheet
-        # repolishes the widget against the window's whole cascade to re-apply
-        # an identical string (269 calls in a 6 s session, 2026-08-26 sweep).
+        # Only on a change: setStyleSheet repolishes against the whole
+        # cascade even for an identical string (269 calls in 6 s, 2026-08-26).
         lit = met and armed
         if lit is not self._lit:
             self._lbl_readout.setStyleSheet(
@@ -214,7 +207,7 @@ class SettingsPanel(QWidget):
     def clear_readout(self) -> None:
         self._lbl_readout.setText("—")
         self._lbl_readout.setStyleSheet("")
-        self._lit = None                   # written out of band; force a repaint
+        self._lit = None                   # force the next restyle
 
     # ── settings ─────────────────────────────────────────────────────────────
     def _emit(self, *_a) -> None:

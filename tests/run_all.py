@@ -17,15 +17,14 @@ import sys
 import time
 from pathlib import Path
 
-# This runner relays the tests' own output, which contains the very characters
-# ("Δ", "≤", "→") that kill a print on a non-UTF-8 console — importing the
-# harness hardens stdout. Yes, that bug caught this file first.
+# Relays "Δ", "≤", "→", which kill a print on a non-UTF-8 console (this file
+# hit that first); importing the harness hardens stdout.
 import _harness  # noqa: F401  (imported for its console hardening)
 
 HERE = Path(__file__).resolve().parent
 
-# Cheapest and most diagnostic first: if the console guard fails, the GUI tests
-# are about to fail for a reason that has nothing to do with what they test.
+# Cheapest and most diagnostic first: a console-guard failure would fail the
+# GUI tests for an unrelated reason.
 TESTS = [
     ("console",   "test_console_safety.py"),
     ("undefined", "test_undefined_names.py"),
@@ -62,9 +61,7 @@ def main() -> int:
     results, total_ok = [], 0
     t_start = time.perf_counter()
 
-    # The child must print its passing lines: this counts them. A caller with
-    # ACQAPP_QUIET set in their environment would otherwise silently zero every
-    # count here.
+    # The children's passing lines are counted, so never pass ACQAPP_QUIET.
     env = {k: v for k, v in os.environ.items() if k != "ACQAPP_QUIET"}
 
     for name, script in tests:
@@ -83,9 +80,7 @@ def main() -> int:
         status = "PASS" if ok else "FAIL"
         print(f"  {status}  {name:<12} {n_ok:>3} checks  {dt:5.1f}s")
         if verbose or not ok:
-            # A failing test's own passing lines are not why it failed, and
-            # there can be 130 of them. Everything else — the FAIL lines, the
-            # measured `info` numbers beside them, any traceback — is kept.
+            # Drop only the passing lines; keep FAILs, `info`, tracebacks.
             print("  " + "-" * 68)
             for line in out.splitlines():
                 if verbose or not line.startswith("  ok   "):

@@ -4,10 +4,15 @@
 """
 from __future__ import annotations
 
+import csv
+import dataclasses
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+
 from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
                       run_parts)
 from acqApp.routines.engine import (Phase, RoutineEngine, RoutineError,
@@ -18,21 +23,15 @@ from acqApp.routines.settings import (KINDS, UNITS, Group, Recording,
 from acqApp.routines.timeline import _group_spans, _layout, _recording_runs
 
 
-# ═══ routines (was test_routines.py) ════════════════════════════════════
+# ═══ routines ═══════════════════════════════════════════════════════════
 
 FULL_RIG = RigLimits(x_um=(-5000.0, 5000.0), y_um=(-5000.0, 5000.0),
                      has_stage=True, has_dmd=True, has_frames=True,
                      has_puffer=True)
-# The same rig, but with a Z (focus) axis too — most rigs don't have one,
-# which is why FULL_RIG above stays Z-less as the common case.
+# FULL_RIG plus a Z axis; most rigs have none.
 Z_RIG = RigLimits(x_um=FULL_RIG.x_um, y_um=FULL_RIG.y_um,
                   z_um=(-500.0, 500.0), has_stage=True, has_z=True,
                   has_dmd=True, has_frames=True, has_puffer=True)
-# Same rig, but with a camera loaded — the one condition a TTL start trigger
-# needs at validation time (arming the camera itself is `adapters/
-# routines.py`'s job now, not something validate() checks for statically).
-TTL_RIG = RigLimits(x_um=FULL_RIG.x_um, y_um=FULL_RIG.y_um, has_stage=True,
-                    has_dmd=True, has_frames=True, has_puffer=True)
 DT = 0.01                      # the worker's tick, near enough
 
 
@@ -40,10 +39,7 @@ DT = 0.01                      # the worker's tick, near enough
 
 class FakeRig:
     """A stage, a projector, a puffer and a camera, on a clock the test drives.
-
-    Records every actuating call in `log`, which is how the ordering checks
-    (light off before a move, light on only while displaying) are made at all.
-    """
+    Every actuating call lands in `log`, which the ordering checks read."""
 
     def __init__(self, hz: float = 106.0, travel_s: float = 0.0) -> None:
         self.t = 0.0
@@ -61,20 +57,14 @@ class FakeRig:
         self.puffed = 0
         self.begun: list = []
         self.ended: list = []
-        # ── external trigger ──
-        # `gated` is the camera sitting in External edge mode with no edge yet:
-        # the clock keeps running but no frames are produced. That is what a
-        # `trigger` step waits out, and `_gated_total` is the frame-time lost
-        # to it, so `frames()` still matches `t` exactly whenever nothing ever
-        # gated — which is every pre-existing test in this file.
+        # `gated`: External edge mode, no edge yet — the clock runs, no frames.
+        # `_gated_total` is the frame-time lost to it.
         self.gated = False
         self.rearms = 0
         self._gated_total = 0.0
-        # ── a camera that reports its re-arms (`trigger_gate`) ──
-        # Opt-in: off, `trigger_gate` returns None and the engine uses its
-        # settle heuristic. On, a re-arm lands `rearm_latency` after it is
-        # asked for — the camera keeps streaming until then, like the real
-        # capture thread — and a `fire_trigger` before that is lost.
+        # Opt-in `trigger_gate`: off, the engine uses its settle heuristic. On,
+        # a re-arm lands `rearm_latency` after the ask (frames keep streaming
+        # until then) and a `fire_trigger` before that is lost.
         self.report_gate = False
         self.rearm_latency = 0.0
         self.gate_seq = 0
@@ -102,8 +92,7 @@ class FakeRig:
 
     # external trigger
     def arm_trigger(self) -> None:
-        """What the camera adapter does: re-gate, so the next edge shows up as
-        frames starting again."""
+        """Re-gate, so the next edge shows up as frames starting again."""
         self.rearms += 1
         self.log.append(("arm_trigger",))
         if self.fail_arm:
@@ -194,6 +183,13 @@ def drive(eng: RoutineEngine, rig: FakeRig, *, limit_s: float = 60.0,
         eng.tick()
 
 
+def ticks(eng: RoutineEngine, rig: FakeRig, n: int = 1) -> None:
+    """Advance the fake clock and tick the engine `n` times, no stop test."""
+    for _ in range(n):
+        rig.advance()
+        eng.tick()
+
+
 # ── validation ────────────────────────────────────────────────────────────────
 
 def check_validation(r: Report, tmp: Path) -> None:
@@ -210,9 +206,9 @@ def check_validation(r: Report, tmp: Path) -> None:
             "accepted")
 
     r.check(validate(Routine(steps=[Step(kind="wait", length=1,
-                                        unit="seconds")]), TTL_RIG) == [],
-            "control: every routine arms on Start now, and is accepted once "
-            "a camera is loaded to receive that arm")
+                                        unit="seconds")]), FULL_RIG) == [],
+            "control: every routine arms on Start, and is accepted once a "
+            "camera is loaded to receive that arm")
 
     cases = [
         ("a move step outside the soft limits",
@@ -275,8 +271,7 @@ def check_validation(r: Report, tmp: Path) -> None:
                     tall) != [],
             "…and the same number on the narrow axis still is")
 
-    # A Z target inside Z's own limits, on a rig that has one, is accepted —
-    # the control for the two Z refusal cases above.
+    # The control for the two Z refusal cases above.
     r.check(validate(Routine(steps=[Step(kind="move", x_um=10.0, y_um=10.0,
                                         z_um=50.0)]), Z_RIG) == [],
             "control: an (x, y, z) move within every axis's own limits, on "
@@ -293,25 +288,21 @@ def check_validation(r: Report, tmp: Path) -> None:
     r.check(back == src, "a routine survives the JSON round trip unchanged")
     r.check(not hasattr(Routine.from_dict({"start_trigger": "ttl"}),
                         "start_trigger"),
-            "an old file's start_trigger key is silently unread — every "
-            "routine arms on Start now, there's no longer a field for it")
+            "an old file's start_trigger key is dropped — every routine "
+            "arms on Start")
     r.check(Routine.from_dict({"save_mode": "per_step"}).save_mode
             == "per_repeat",
-            "a saved routine from before the per-group/per-repeat split "
-            "migrates its old 'per_step' mode to the closest equivalent, "
-            "rather than silently falling back to single")
+            "an old 'per_step' save mode migrates to per_repeat, not "
+            "silently to single")
     r.check(Routine.from_dict(
         {"steps": [{"kind": "wait", "gone": 1, "label": "x"}],
          "cycles": "nonsense"}).steps[0].label == "x",
-            "a stale saved (new-format) step drops unknown keys rather than "
-            "raising")
+            "a stale saved step drops unknown keys rather than raising")
 
 
 def check_groups(r: Report) -> None:
-    """A repeat group re-runs a contiguous range of steps, nested inside
-    `cycles` — steps [A, B, C] with B..C x3 plays A, B, C, B, C, B, C. A
-    Recording bracket is the same start/end-range shape, validated the same
-    way, and independent of Group."""
+    """A repeat group re-runs a contiguous range in place, inside `cycles`:
+    [A, B, C] with B..C x3 plays A, B, C, B, C, B, C."""
     routine = Routine(steps=[Step(kind="wait", label="A"),
                              Step(kind="wait", label="B"),
                              Step(kind="wait", label="C")],
@@ -382,9 +373,8 @@ def check_groups(r: Report) -> None:
 
 
 def check_group_repeat_at(r: Report) -> None:
-    """`group_repeat_at` — what fixed the routine panel showing "step 1/2"
-    identically on every one of a `trigger` step's repeats, with nothing
-    anywhere saying which repeat was running (rig, 2026-09-17)."""
+    """`group_repeat_at` numbers each pass of a group (rig, 2026-09-17: the
+    panel showed "step 1/2" identically on every repeat)."""
     from acqApp.routines.settings import group_repeat_at
 
     routine = Routine(steps=[Step(kind="trigger"),
@@ -403,8 +393,7 @@ def check_group_repeat_at(r: Report) -> None:
     r.check(group_repeat_at(plain, play_order(plain)) == [None, None],
             "a routine with no repeat group reports no repeat anywhere")
 
-    # A step OUTSIDE the group (the operator's Move-then-repeat shape) is
-    # None; only the grouped range is numbered.
+    # The operator's Move-then-repeat shape.
     with_move = Routine(
         steps=[Step(kind="move", label="FOV"), Step(kind="trigger"),
               Step(kind="wait", length=1.0, unit="seconds")],
@@ -416,12 +405,9 @@ def check_group_repeat_at(r: Report) -> None:
 
 
 def check_recording_repeats(r: Report) -> None:
-    """The trickiest correctness point in the redesign: a Recording drawn
-    across an ENTIRE repeated Group's range must produce N separate
-    RecordingRuns, never one merging them all (`recording_run_ids`'s
-    docstring) — and the same holds across a CYCLE boundary, via the
-    engine's own `(cycle, serial)` key in `_update_recording`.
-    """
+    """A Record step in a repeated Group, or across cycles, opens one
+    RecordingRun per pass, never one merged run (the engine keys on
+    `(cycle, serial)`)."""
     # ── across a repeated Group ──
     routine = Routine(steps=[Step(kind="wait", label="A", length=0.05,
                                   unit="seconds"),
@@ -476,12 +462,8 @@ def check_recording_repeats(r: Report) -> None:
 # ── frames and seconds are different units ────────────────────────────────────
 
 def check_units(r: Report) -> None:
-    """The operator's first decision: a step ends on the unit it was GIVEN.
-
-    The control is a camera running below its nominal rate. An engine that
-    converted seconds to frames at the nominal rate would end the seconds step
-    at a frame count this one demonstrably does not produce.
-    """
+    """A step ends on the unit it was GIVEN. The camera runs below nominal
+    rate, so an engine converting seconds at the nominal rate would show."""
     nominal, actual = 106.0, 97.0
     rig = FakeRig(hz=actual)
     routine = Routine(steps=[Step(kind="record", label="A", length=100,
@@ -515,14 +497,11 @@ def check_units(r: Report) -> None:
 # ── the order of operations within a step ─────────────────────────────────────
 
 def check_order(r: Report, tmp: Path) -> None:
-    """Blank, move, settle, restore whatever a Display step last lit — for a
-    Move step. Pattern then light — for a Display step. Neither for a Wait or
-    a Puff step: those kinds have nothing to travel or settle around."""
+    """Move: blank, move, settle, restore what Display last lit. Display:
+    pattern, then light. Wait and Puff: neither."""
     pattern = tmp / "bar.png"
     pattern.write_bytes(b"x")
 
-    # ── Display sets pattern, then light; a following Move blanks it before
-    #    travelling, then restores it once arrived and settled ──
     rig = FakeRig(travel_s=0.30)
     routine = Routine(steps=[Step(kind="display", pattern=str(pattern)),
                              Step(kind="move", x_um=50.0, y_um=60.0,
@@ -561,8 +540,7 @@ def check_order(r: Report, tmp: Path) -> None:
             f"the routine did not finish before travel AND settle elapsed "
             f"({rig.t:.3f} s)")
 
-    # A Move step with no target sends no move() at all — it is a pure
-    # settle, still blanking and restoring the light around it.
+    # A Move step with no target is a pure settle.
     rig2 = FakeRig()
     routine2 = Routine(steps=[Step(kind="display", pattern=str(pattern)),
                               Step(kind="move", settle_s=0.1)])
@@ -577,8 +555,6 @@ def check_order(r: Report, tmp: Path) -> None:
             f"…only the blank-then-restore around its settle, plus the "
             f"display before it and the final shutdown ({rig2.log})")
 
-    # Wait and Puff touch neither move nor light — only the final shutdown
-    # (unconditional, any kind) does.
     rig3 = FakeRig()
     routine3 = Routine(steps=[Step(kind="wait", length=0.05, unit="seconds"),
                               Step(kind="puff")])
@@ -590,7 +566,6 @@ def check_order(r: Report, tmp: Path) -> None:
             f"final shutdown does ({rig3.log})")
     r.check(rig3.puffed == 1, "the puff step fired exactly once")
 
-    # CONTROL: with no travel and no settle, a move finishes almost instantly.
     quick = FakeRig()
     e4 = RoutineEngine(Routine(steps=[Step(kind="move", x_um=1.0,
                                            settle_s=0.0)]), quick.hooks())
@@ -618,9 +593,8 @@ def check_move_timeout(r: Report) -> None:
 # ── a fault pauses; the partial data is kept ──────────────────────────────────
 
 def check_pause_keeps_data(r: Report, tmp: Path) -> None:
-    """PLAN §6 (4): pause everything that is not capture, and keep the
-    frames — and resuming opens a FRESH recording run, never reattaching to
-    the one the pause just closed."""
+    """A pause stops everything but capture and keeps the frames; resume
+    opens a FRESH recording run, never the one the pause closed."""
     pattern = tmp / "pause.png"
     pattern.write_bytes(b"x")
     rig = FakeRig()
@@ -695,8 +669,7 @@ def check_skip(r: Report) -> None:
 
 def check_setup_failure(r: Report, tmp: Path) -> None:
     """A step whose own action raises pauses before any light reaches the
-    sample. A Move/Display step is never inside a recording (a Record step
-    runs alone), so its failure opens no run at all.
+    sample; a failing Move/Display opens no run (only Record steps record).
     """
     pattern = tmp / "setup.png"
     pattern.write_bytes(b"x")
@@ -735,9 +708,8 @@ def check_setup_failure(r: Report, tmp: Path) -> None:
             f"({e3.fault!r})")
     r.check(e3.runs == [], "…and no run was recorded")
 
-    # Resuming once the file starts working again must actually resume — a
-    # stray phase check here once could not tell "the resume that just
-    # failed" from "the resume that is happening now" and stuck forever.
+    # A phase check here once confused the failed resume with this one and
+    # stuck forever.
     rig3.fail_begin = False
     e3.resume()
     r.check(e3.phase == Phase.RUNNING and len(rig3.begun) == 1,
@@ -753,8 +725,7 @@ def check_frames_vanish(r: Report) -> None:
     eng.start()
     drive(eng, rig, until=lambda e: e.phase == Phase.RUNNING and rig.t > 0.2)
     rig.frames_running = False
-    rig.advance()
-    eng.tick()
+    ticks(eng, rig)
     r.check(eng.phase == Phase.PAUSED and "frame count" in eng.fault,
             f"a frames step whose counter vanishes pauses ({eng.fault!r})")
 
@@ -762,12 +733,9 @@ def check_frames_vanish(r: Report) -> None:
 # ── cycles, and the per-repeat file guarantee ─────────────────────────────────
 
 def check_cycles_and_attrs(r: Report) -> None:
-    """Repeats run in order, and every recording file can be put back on one
-    clock — each step wrapped in its own Recording, `per_repeat`-style. (The
-    engine itself never reads `save_mode` — only `adapters/routines.py`
-    does — so this exercises the RecordingRun/attrs shape the file-rolling
-    feature relies on, not the rolling itself; see check_file_rolling for
-    that.)"""
+    """Cycles run in order, and every recording's attrs put it back on one
+    clock. The engine never reads `save_mode`; rolling itself is
+    check_file_rolling's."""
     rig = FakeRig()
     routine = Routine(name="grid", cycles=3, save_mode="per_repeat",
                       steps=[Step(kind="record", label="A", length=0.10,
@@ -787,9 +755,7 @@ def check_cycles_and_attrs(r: Report) -> None:
     r.check(routine.total_steps() == 6,
             "the routine says up front how many executions that is")
 
-    # The reassembly guarantee. Per-step files that each restart from zero are
-    # not relatable afterwards — so every one carries the same session origin
-    # and its own t0 on that clock.
+    # Files that each restart from zero could not be related afterwards.
     origin = 1234.5
     attrs = [x.attrs(session_origin=origin) for x in eng.runs]
     r.check(all(a["routine_recording_session_origin"] == origin
@@ -843,11 +809,8 @@ def check_transitions(r: Report) -> None:
 
 
 def check_ttl_start_trigger(r: Report) -> None:
-    """`start(trigger="ttl")` arms instead of moving right away, and only lets
-    step 1 begin once the camera reports a frame it did not have at arm time
-    — the fake's `hz` stands in for a real TTL pulse making an externally
-    triggered camera emit its first frame.
-    """
+    """`start(trigger="ttl")` arms, and step 1 begins only on a frame the
+    camera did not have at arm time (the fake's `hz` going 0 -> 100)."""
     rig = FakeRig(hz=0.0)          # frozen: the camera has not been pulsed
     routine = Routine(steps=[Step(kind="move", label="A", x_um=5.0,
                                   settle_s=0.0)])
@@ -858,15 +821,12 @@ def check_ttl_start_trigger(r: Report) -> None:
             f"({eng.phase})")
     r.check(rig.log == [], "…and nothing has actuated yet")
 
-    for _ in range(20):
-        rig.advance()
-        eng.tick()
+    ticks(eng, rig, 20)
     r.check(eng.phase == Phase.ARMED,
             "with no pulse — the camera's frame count never moves — it "
             "stays armed rather than timing out")
 
-    # The pulse: the camera, in External edge mode, produces its first frame.
-    rig.hz = 100.0
+    rig.hz = 100.0                  # the pulse
     drive(eng, rig, until=lambda e: e.phase != Phase.ARMED)
     r.check(eng.phase == Phase.RUNNING,
             f"the first frame past the baseline starts step 1 ({eng.phase})")
@@ -874,7 +834,6 @@ def check_ttl_start_trigger(r: Report) -> None:
             "…the move's own blank is the first thing it does, the same way "
             "a manual start begins a step")
 
-    # Abort while armed ends cleanly — nothing was ever opened to unwind.
     rig2 = FakeRig(hz=0.0)
     eng2 = RoutineEngine(routine, rig2.hooks())
     eng2.start(trigger="ttl")
@@ -882,30 +841,19 @@ def check_ttl_start_trigger(r: Report) -> None:
     r.check(eng2.phase == Phase.DONE and eng2.runs == [],
             "aborting while armed ends the routine with no run ever opened")
 
-    # The frame count going away while armed is a fault, the same shape as
-    # `check_frames_vanish` mid-run.
     rig3 = FakeRig(hz=0.0)
     eng3 = RoutineEngine(routine, rig3.hooks())
     eng3.start(trigger="ttl")
     rig3.frames_running = False
-    rig3.advance()
-    eng3.tick()
+    ticks(eng3, rig3)
     r.check(eng3.phase == Phase.PAUSED and "frame count" in eng3.fault,
             f"the camera going away while armed pauses ({eng3.fault!r})")
 
 
 def check_trigger_step(r: Report) -> None:
-    """A `trigger` step: one recording per external edge, repeated.
-
-    The operator's case — "100 recordings at FOV 1, each started by an edge,
-    each lasting x seconds" — is a repeat group over [trigger, wait], with the
-    Recording bracket on the wait ALONE so the file opens on the edge rather
-    than while waiting for it. Here with 3 repeats instead of 100.
-
-    Drain, settle and timeout are all shortened; at their real values
-    (1.5 s / 0.75 s / 600 s) this would tick for the better part of an hour on
-    the fake clock.
-    """
+    """A `trigger` step: one recording per external edge, repeated — a group
+    over [trigger, record], so the file opens on the edge, not before it.
+    Drain/settle/timeout are shortened from 1.5 s / 0.75 s / 600 s."""
     DRAIN, SETTLE = 0.2, 0.1
     routine = Routine(
         steps=[Step(kind="trigger", label="edge"),
@@ -926,28 +874,21 @@ def check_trigger_step(r: Report) -> None:
             "…and NOT opened a recording — the bracket is on the next step, so "
             "the file starts on the edge")
 
-    # Frames still being written while the re-arm takes effect must not read as
-    # the edge — they raise the baseline and restart the settle window. This is
-    # the rig bug: a fixed window expired while these were still arriving, and
-    # the next one started a recording with no trigger.
+    # Frames still arriving while the re-arm takes effect restart the settle
+    # window. The rig bug: a fixed window expired while they arrived, and the
+    # next one started a recording with no trigger.
     rig.fire_trigger()                      # residual frames, re-arm not yet in
-    for _ in range(int((DRAIN + SETTLE) / DT) + 10):
-        rig.advance()
-        eng.tick()
+    ticks(eng, rig, int((DRAIN + SETTLE) / DT) + 10)
     r.check(eng.phase == Phase.WAITING,
             "a camera that never goes quiet never satisfies the step — "
             "in-flight frames raise the baseline instead of ending it")
 
-    # Now the camera really stops. Going quiet is not itself an edge.
     rig.gated = True
-    for _ in range(int((DRAIN + SETTLE) / DT) + 10):
-        rig.advance()
-        eng.tick()
+    ticks(eng, rig, int((DRAIN + SETTLE) / DT) + 10)
     r.check(eng.phase == Phase.WAITING,
             f"…and the camera merely going quiet is not an edge either "
             f"({eng.phase})")
 
-    # Settled, so the next frame is a genuine edge.
     rig.fire_trigger()
     drive(eng, rig, until=lambda e: e.phase != Phase.WAITING)
     r.check(eng.phase == Phase.RUNNING,
@@ -955,16 +896,13 @@ def check_trigger_step(r: Report) -> None:
     r.check(rig.begun == [],
             "…the recording still has not opened: the trigger step is not in "
             "the bracket, so it opens as the NEXT step is entered")
-    rig.advance()
-    eng.tick()                       # completes the step, enters the wait
+    ticks(eng, rig)                  # completes the step, enters the record
     r.check(len(rig.begun) == 1,
             f"…and it opens there, once the edge has already landed "
             f"({len(rig.begun)})")
 
-    # Each repeat re-arms and waits again. Fire the remaining edges as they
-    # come, each once the drain window has passed — the only time an edge can
-    # be seen at all. `waiting_since` tracks that from the outside rather than
-    # reading the engine's own timer.
+    # Fire each remaining edge once the drain window has passed, timed from
+    # outside rather than by reading the engine's own timer.
     fired, waiting_since = 1, None
     while rig.t < 30.0 and eng.phase not in (Phase.DONE, Phase.PAUSED):
         if eng.phase == Phase.WAITING and rig.gated:
@@ -990,11 +928,8 @@ def check_trigger_step(r: Report) -> None:
     r.check(all(not run.interrupted for run in eng.runs),
             "…none of them interrupted")
 
-    # THE RIG BUG (2026-09-16), as a test: a camera that keeps streaming
-    # through the re-arm must FAULT, naming the reason — never silently treat
-    # the next frame as an edge, which is what started a second recording with
-    # no trigger. `rig_free`'s `arm_trigger` is overridden to log the call but
-    # never actually gate, the way the real camera appeared to.
+    # Rig, 2026-09-16: a camera streaming through the re-arm had its next
+    # frame taken as an edge. It must fault instead. This arm never gates.
     rig_free = FakeRig(hz=100.0)
     rig_free.arm_trigger = lambda: rig_free.log.append(("arm_trigger",))
     eng_free = RoutineEngine(routine, rig_free.hooks(), trigger_drain_s=DRAIN,
@@ -1011,7 +946,6 @@ def check_trigger_step(r: Report) -> None:
             f"…with no recording ever opened for the trigger that never "
             f"happened ({rig_free.begun})")
 
-    # A step that never sees its edge faults rather than hanging the routine.
     rig2 = FakeRig(hz=100.0)
     eng2 = RoutineEngine(routine, rig2.hooks(), trigger_drain_s=DRAIN,
                          trigger_settle_s=SETTLE, trigger_timeout_s=1.0)
@@ -1021,7 +955,6 @@ def check_trigger_step(r: Report) -> None:
             f"an edge that never arrives times out into a pause rather than "
             f"waiting forever ({eng2.fault!r})")
 
-    # The operator can take the rig back mid-wait.
     rig3 = FakeRig(hz=100.0)
     eng3 = RoutineEngine(routine, rig3.hooks(), trigger_drain_s=DRAIN,
                          trigger_settle_s=SETTLE)
@@ -1032,8 +965,6 @@ def check_trigger_step(r: Report) -> None:
             f"Pause works while WAITING — an edge may never come, and the "
             f"operator must not be held by it ({eng3.phase})")
 
-    # A camera that cannot be re-armed is a fault at the step, not a silent
-    # wait on an edge nothing can deliver.
     rig4 = FakeRig(hz=100.0)
     rig4.fail_arm = True
     eng4 = RoutineEngine(routine, rig4.hooks(), trigger_drain_s=DRAIN,
@@ -1061,18 +992,14 @@ def check_trigger_gate(r: Report) -> None:
     def rig_and_engine(report_gate: bool):
         rig = FakeRig(hz=100.0)
         rig.report_gate = report_gate
-        rig.rearm_latency = LATENCY
-        if not report_gate:
-            # The heuristic's own model: the re-arm is instant, so all the
-            # risk is the settle window.
-            rig.rearm_latency = 0.0
+        # Without the report, the heuristic's own model: an instant re-arm.
+        rig.rearm_latency = LATENCY if report_gate else 0.0
         eng = RoutineEngine(routine, rig.hooks(), trigger_timeout_s=5.0)
         eng.start()
         return rig, eng
 
     def fire_soon_after_gate(rig, eng, delay: float, limit_s: float = 30.0):
-        """Fire each edge `delay` after the camera gates — edges a stimulus
-        rig on its own schedule can deliver at any moment."""
+        """Fire each edge `delay` after the camera gates."""
         fired, gated_at = 0, None
         while rig.t < limit_s and eng.phase not in (Phase.DONE, Phase.PAUSED):
             if eng.phase == Phase.WAITING and rig.gated:
@@ -1103,9 +1030,7 @@ def check_trigger_gate(r: Report) -> None:
 
     # 2. Frames still streaming before the re-arm lands are not an edge.
     rig, eng = rig_and_engine(report_gate=True)
-    for _ in range(int(LATENCY / DT) - 5):
-        rig.advance()
-        eng.tick()
+    ticks(eng, rig, int(LATENCY / DT) - 5)
     r.check(eng.phase == Phase.WAITING and not rig.gated,
             f"leftover frames before the re-arm lands don't end the step "
             f"({eng.phase})")
@@ -1135,7 +1060,6 @@ def check_trigger_gate(r: Report) -> None:
 def check_burst(r: Report) -> None:
     """Burst mode: the camera captures N frames per edge and re-arms itself,
     so a Record right after a Trigger ends on the burst, not the clock."""
-    import dataclasses
     from acqApp.routines.estimate import burst_frames
 
     pair = [Step(kind="trigger"), Step(kind="record", length=3.0, unit="seconds")]
@@ -1186,7 +1110,8 @@ def check_burst(r: Report) -> None:
                 rig.fire_trigger()
                 edge["t"] = rig.t
             step = eng.step
-            if eng.phase == Phase.RUNNING and step is not None                     and step.kind == "record":
+            if (eng.phase == Phase.RUNNING and step is not None
+                    and step.kind == "record"):
                 rec_t0 = rig.t if rec_t0 is None else rec_t0
             elif rec_t0 is not None:
                 lengths.append(rig.t - rec_t0)
@@ -1217,8 +1142,6 @@ def check_burst_retry(r: Report) -> None:
     """A short burst (rig, 2026-09-30: an edge during the camera's restart
     gave 2491/2500) is marked and retried on the next edge, not paused on;
     the LED is lit from the trigger's arm, so the burst's first frame is."""
-    import dataclasses
-
     from acqApp.routines.engine import MAX_BURST_RETRIES
 
     N, HZ = 80, 100.0
@@ -1301,9 +1224,7 @@ def check_prepare_recording(r: Report) -> None:
             if eng.phase == Phase.DONE:
                 break
             if eng.phase == Phase.WAITING and rig.gated:
-                for _ in range(int((DRAIN + SETTLE) / DT) + 10):
-                    rig.advance()
-                    eng.tick()
+                ticks(eng, rig, int((DRAIN + SETTLE) / DT) + 10)
                 rig.fire_trigger()
             rig.advance()
             eng.tick()
@@ -1356,13 +1277,11 @@ def check_first_trial_kept(r: Report) -> None:
     r.check(not eng.edge_ready,
             "…reported not ready while the re-arm is still in progress")
     while not rig.gated:
-        rig.advance()
-        eng.tick()
+        ticks(eng, rig)
     r.check(eng.edge_ready, "…and ready once the camera is gated")
     rig.fire_trigger()                       # trial 1's edge
     drive(eng, rig, until=lambda e: e.phase != Phase.WAITING)
-    rig.advance()
-    eng.tick()
+    ticks(eng, rig)
     r.check(len(rig.begun) == 1,
             f"trial 1's edge opens the first recording ({len(rig.begun)})")
 
@@ -1383,10 +1302,6 @@ def check_edge_log(r: Report) -> None:
     """Every edge becomes one CSV row, naming the trial file its recording
     opened: at once with .dcimg (opened before the edge), after the roll
     with TIFF. The log is what bpod_match aligns to the stim rig's."""
-    import csv
-    from dataclasses import replace
-    from types import SimpleNamespace
-
     from acqApp.adapters.routines import RoutinesModule
     from acqApp.routines.engine import RecordingRun
 
@@ -1433,16 +1348,14 @@ def check_edge_log(r: Report) -> None:
     rig = FakeRig(hz=100.0)
     rig.report_gate = True
     seen = []
-    eng = RoutineEngine(routine, replace(rig.hooks(),
-                                         edge=lambda t, nxt: seen.append(nxt)))
+    eng = RoutineEngine(routine, dataclasses.replace(
+        rig.hooks(), edge=lambda t, nxt: seen.append(nxt)))
     eng.start()
     for _ in range(4000):
         if eng.phase == Phase.DONE:
             break
         if eng.phase == Phase.WAITING and rig.gated:
-            for _ in range(int(0.3 / DT) + 10):
-                rig.advance()
-                eng.tick()
+            ticks(eng, rig, int(0.3 / DT) + 10)
             rig.fire_trigger()
         rig.advance()
         eng.tick()
@@ -1455,8 +1368,6 @@ def check_edge_log(r: Report) -> None:
 def check_prepared_adapter(r: Report) -> None:
     """The adapter half: with a .dcimg open it rolls the file and re-arms once,
     inside the swap; the recording's own begin then does NOT roll again."""
-    from types import SimpleNamespace
-
     from acqApp.adapters.routines import RoutinesModule
     from acqApp.routines.engine import RecordingRun
 
@@ -1511,8 +1422,6 @@ def check_seal_after_burst(r: Report) -> None:
     sealed after the tick its Record ended in — unless that tick already
     rolled the file. A sealed file takes no further run (rig, 2026-09-30: a
     Bpod edge during the move to the next FOV added 330 frames to a trial)."""
-    from types import SimpleNamespace
-
     from acqApp.adapters.routines import RoutinesModule
     from acqApp.routines.engine import RecordingRun
 
@@ -1606,12 +1515,9 @@ def check_seal_after_burst(r: Report) -> None:
 
 
 def check_first_file_doomed(r: Report) -> None:
-    """`_first_file_is_doomed` — the file `_start()` opens for the first
-    Recording is skipped-naming only when a `trigger` step precedes it AND
-    the camera actually uses `.dcimg`: that step's own re-arm rolls the
-    file away before it ever gets a boundary, whatever it was named."""
-    from types import SimpleNamespace
-
+    """The file `_start()` opens is doomed only when a `trigger` step precedes
+    the first Recording AND the camera writes .dcimg: that re-arm rolls it
+    away before it gets a boundary."""
     from acqApp.adapters.routines import RoutinesModule
 
     a = RoutinesModule.__new__(RoutinesModule)
@@ -1640,8 +1546,6 @@ def check_first_file_doomed(r: Report) -> None:
 def check_doomed_file_deleted(r: Report, tmp: Path) -> None:
     """The doomed first file (stage travel, no frames) is deleted at the roll
     that replaces it — only its own files, and only if it caught no frames."""
-    from types import SimpleNamespace
-
     from acqApp.adapters.routines import RoutinesModule, delete_recording
 
     def split_dir(name: str) -> Path:
@@ -1697,8 +1601,6 @@ def check_doomed_file_deleted(r: Report, tmp: Path) -> None:
 def check_bad_trial_marked(r: Report, tmp: Path) -> None:
     """A file whose every run was interrupted is renamed *_BAD once closed,
     the edge log follows, and Bpod renumbering keeps the mark."""
-    from types import SimpleNamespace
-
     from acqApp.adapters.routines import RoutinesModule
     from acqApp.routines.engine import RecordingRun
     from acqApp.saving.bpod_match import Match, plan
@@ -1750,7 +1652,6 @@ def check_bad_trial_marked(r: Report, tmp: Path) -> None:
     r.check(f",{bad}\n" in text and f",{t19}\n" in text,
             "the edge log follows the rename, other rows untouched")
 
-    import csv
     rows = list(csv.DictReader(open(log, encoding="utf-8")))
     pl = plan(rows, Match({0: 18, 1: 19}, 0.0, 0.0), 21)
     got = {p.name: stem for p, stem in pl.renames}
@@ -1759,11 +1660,9 @@ def check_bad_trial_marked(r: Report, tmp: Path) -> None:
 
 
 def check_arm_camera_trigger(r: Report) -> None:
-    """`RoutinesModule._arm_camera_trigger()` — the fix itself: a TTL-start
-    routine puts the camera in External edge mode through the host, before
-    ever opening its own recording, rather than trusting the operator to
-    have set it. Qt-free: this method only calls `self.win`/`self.panel`,
-    neither of which needs a real window."""
+    """`_arm_camera_trigger()` puts the camera in External edge mode through
+    the host before the routine opens its recording, rather than trusting
+    the operator to have set it."""
     from acqApp.adapters.routines import FRAME_STREAM, RoutinesModule
 
     class FakeHost:
@@ -1786,7 +1685,6 @@ def check_arm_camera_trigger(r: Report) -> None:
         def show_problems(self, problems):
             self.problems.append(list(problems))
 
-    # Success: the camera confirms it's in External edge mode.
     host = FakeHost(True)
     adapter = RoutinesModule(host)
     adapter.panel = FakePanel()
@@ -1797,10 +1695,8 @@ def check_arm_camera_trigger(r: Report) -> None:
             f"({host.calls})")
     r.check(adapter.panel.problems == [], "…and shows no problem")
 
-    # NOT a failure: no camera loaded at all (host returns None the same way
-    # `set_camera_preset` already does) — a stage/puffer-only routine has
-    # nothing to arm, and every routine now arms unconditionally, so this
-    # must not refuse a routine that was never about the camera.
+    # None = no camera loaded: nothing to arm, and every routine arms, so
+    # this must not refuse a stage/puffer-only routine.
     host2 = FakeHost(None)
     adapter2 = RoutinesModule(host2)
     adapter2.panel = FakePanel()
@@ -1811,9 +1707,7 @@ def check_arm_camera_trigger(r: Report) -> None:
     r.check(host2.statuses == [],
             f"…and nothing is logged as refused ({host2.statuses})")
 
-    # Failure: a recording is already running and the camera isn't already
-    # External edge — VoltageCamModule.set_external_trigger's own contract
-    # (adapters/voltage_cam.py) for "would need a restart, can't do it now".
+    # False = would need a restart mid-recording (set_external_trigger).
     host3 = FakeHost(False)
     adapter3 = RoutinesModule(host3)
     adapter3.panel = FakePanel()
@@ -1825,13 +1719,11 @@ def check_arm_camera_trigger(r: Report) -> None:
 # ── pre-redesign templates auto-migrate ───────────────────────────────────────
 
 def check_migration(r: Report) -> None:
-    """`Routine.from_dict` on a pre-redesign JSON blob (composite steps: x/y,
-    pattern, length/unit, settle_s, puff_interval_s, no "kind" key) migrates
-    each old step into the atomic steps it implied, each wrapped in its own
-    Recording — and old Group ranges (indexing the OLD composite-step list)
-    are remapped onto the NEW, expanded step indices."""
+    """A pre-redesign blob (composite steps, no "kind" key) migrates each old
+    step into the atomic steps it implied, and remaps old Group ranges onto
+    the expanded indices."""
 
-    # a) a move+length composite -> a move step, then a wait step.
+    # a) a move+length composite -> a move step, then a record step.
     old_move = {"steps": [{"x_um": 10.0, "y_um": 20.0, "fov": "f1",
                           "settle_s": 0.4, "length": 50, "unit": "frames"}]}
     rm = Routine.from_dict(old_move)
@@ -1846,7 +1738,7 @@ def check_migration(r: Report) -> None:
     r.check(rm.recordings == [Recording(start=1, end=1)],
             "…the old wait is now a Record step — an old step always captured")
 
-    # b) a pattern-only composite -> a display step, then a wait step.
+    # b) a pattern-only composite -> a display step, then a record step.
     old_pat = {"steps": [{"pattern": "p.png", "length": 10, "unit": "seconds"}]}
     rp = Routine.from_dict(old_pat)
     r.check([s.kind for s in rp.steps] == ["display", "record"],
@@ -1854,8 +1746,7 @@ def check_migration(r: Report) -> None:
     r.check(rp.steps[0].pattern == "p.png" and rp.steps[1].length == 10,
             "…keeping the pattern path and the record length")
 
-    # c) a seconds-unit step with puff_interval_s>0 interleaves EXACT
-    #    Wait+Puff chunks, summing back to the original length.
+    # c) seconds + puff_interval_s: exact Record+Puff chunks.
     old_puff_s = {"steps": [{"length": 5.0, "unit": "seconds",
                             "puff_interval_s": 2.0, "label": "puffed"}]}
     rs = Routine.from_dict(old_puff_s)
@@ -1872,9 +1763,7 @@ def check_migration(r: Report) -> None:
     r.check(len(rs.recordings) == 3,
             "…each record chunk is its own recording")
 
-    # d) a frames-unit step with puff_interval_s>0 falls back to ONE trailing
-    #    Puff (lossy — no frame rate here to convert real time against a
-    #    frame-gated duration).
+    # d) frames + puff_interval_s: one trailing Puff (lossy; no frame rate).
     old_puff_f = {"steps": [{"length": 100, "unit": "frames",
                             "puff_interval_s": 1.0}]}
     rf = Routine.from_dict(old_puff_f)
@@ -1882,13 +1771,12 @@ def check_migration(r: Report) -> None:
             f"a frames step with a puff interval falls back to one trailing "
             f"puff ({[s.kind for s in rf.steps]})")
 
-    # e) old Group ranges (indexing OLD composite steps) remap onto the NEW
-    #    expanded step indices.
+    # e) old Group ranges remap onto the expanded indices.
     old_grouped = {
         "steps": [
-            {"x_um": 1.0, "length": 1, "unit": "seconds"},        # -> move, wait
-            {"pattern": "q.png", "length": 1, "unit": "seconds"}, # -> display, wait
-            {"length": 1, "unit": "seconds"},                     # -> wait
+            {"x_um": 1.0, "length": 1, "unit": "seconds"},        # move, rec
+            {"pattern": "q.png", "length": 1, "unit": "seconds"}, # disp, rec
+            {"length": 1, "unit": "seconds"},                     # rec
         ],
         "groups": [{"start": 1, "end": 2, "repeats": 2}],
     }
@@ -1911,20 +1799,12 @@ def check_migration(r: Report) -> None:
         r.check(False, f"{type(e).__name__} escaped a malformed blob: {e}")
 
 
-# ── cycles, groups, and the per-step file guarantee are above; below: how ──
-# ── long a routine takes, its panel, its table, and the whole app.        ──
+# ── estimate, panel, table, and the whole app ─────────────────────────────────
 
 def check_estimate(r: Report) -> None:
-    """The estimate converts frames to seconds; the RECORDING still never does.
-
-    Frames and seconds are not interconvertible where a step is recorded — a
-    rounded conversion sheds frames at every boundary, which is why `unit`
-    travels with `length`. An estimate is not a recording, so it may convert;
-    what it must not do is convert **silently**, or invent a rate nobody gave it.
-
-    A move step costs only its settle (travel itself is untimed); a display
-    or puff step costs nothing (both are instant).
-    """
+    """The estimate may convert frames to seconds (a recording never does),
+    but not silently, and never at a rate nobody gave it. A move costs its
+    settle (travel is untimed); display and puff cost nothing."""
     from acqApp.routines.estimate import clock, estimate, remaining
 
     r.check(clock(45) == "45 s" and clock(124) == "2:04 min"
@@ -1959,15 +1839,13 @@ def check_estimate(r: Report) -> None:
     r.check(abs(estimate(rt, 100.0).seconds - 10.5) < 1e-9,
             f"cycles multiply the whole list ({estimate(rt, 100.0).seconds} s)")
 
-    # display/puff cost nothing.
     instant = Routine(steps=[Step(kind="display", pattern="p.png"),
                              Step(kind="puff")])
     r.check(estimate(instant, None).seconds == 0.0
             and estimate(instant, None).frames == 0.0,
             "a display/puff-only routine costs nothing to estimate")
 
-    # What is LEFT, part-way through: the readout must not sit still for a
-    # whole step and then jump.
+    # What is left must fall within a step, not sit still and then jump.
     rt2 = Routine(steps=[Step(kind="wait", length=100, unit="frames"),
                          Step(kind="wait", length=2.0, unit="seconds")])
     whole = estimate(rt2, 100.0).seconds
@@ -1983,9 +1861,7 @@ def check_estimate(r: Report) -> None:
             f"the last step alone, from its start, is its own length "
             f"({last} s)")
 
-    # The stage is what nothing can time: `RoutineHooks.moving` is a seam
-    # nothing fills, so travel is not in any of these totals — and a move
-    # with no target does not count as "moving the stage" either.
+    # Travel is in no total, so the estimate counts the moves instead.
     moved = Routine(steps=[Step(kind="wait", length=1.0, unit="seconds"),
                           Step(kind="move", x_um=250.0, settle_s=0.0)])
     r.check(estimate(moved, None).moves == 1,
@@ -2027,8 +1903,7 @@ def check_progress(r: Report) -> None:
     r.check(eng.elapsed() > 0.0,
             f"and the run reports how long it took ({eng.elapsed():.2f} s)")
 
-    # CONTROL: a repeated attempt is not backwards progress. Resume repeats the
-    # step, and a bar that went back would read as a fault.
+    # Resume repeats the step; a bar that went back would read as a fault.
     rig2 = FakeRig(hz=100.0)
     eng2 = RoutineEngine(Routine(steps=[Step(kind="wait", length=0.2,
                                              unit="seconds"),
@@ -2046,13 +1921,9 @@ def check_progress(r: Report) -> None:
 
 
 def check_panel_repaint(r: Report, app) -> None:
-    """The panel is told its state 30×/s; it must repaint only on a change.
-
-    `setStyleSheet` repolishes the widget against the window's whole cascade —
-    26 us a call, and **53 % of the shared display tick** with eight modules
-    loaded, spent re-applying the identical string. Counted rather than timed,
-    so this is not a flaky benchmark.
-    """
+    """The panel is told its state 30×/s; it must restyle only on a change.
+    `setStyleSheet` cost 53 % of the display tick with eight modules loaded.
+    Counted, not timed."""
     from acqApp.routines.panel import SettingsPanel
 
     panel = SettingsPanel()
@@ -2074,8 +1945,7 @@ def check_panel_repaint(r: Report, app) -> None:
     r.check(not panel._btn_pause.isEnabled() and panel._btn_resume.isEnabled(),
             "…and the buttons follow the new phase")
 
-    # CONTROL: show_problems() writes the label out of band, so the next
-    # set_state must repaint even though the phase never moved.
+    # show_problems() writes the label out of band.
     panel.show_problems(["step 1: nope"])
     panel.set_state(Phase.PAUSED, "PAUSED — the stage stopped answering")
     r.check(len(styled) == 4,
@@ -2084,9 +1954,7 @@ def check_panel_repaint(r: Report, app) -> None:
 
 
 def _select_rows(tbl, first: int, last: int) -> None:
-    """Select a contiguous row range the way a shift-click/drag would —
-    ContiguousSelection mode means this is the only shape a real selection
-    can take, so this is the fixture for "select steps N-M" throughout."""
+    """Select rows first..last, as a shift-click would."""
     from PyQt6.QtWidgets import QTableWidgetSelectionRange
     tbl.clearSelection()
     tbl.setRangeSelected(
@@ -2094,9 +1962,8 @@ def _select_rows(tbl, first: int, last: int) -> None:
 
 
 def _menu_texts(tbl, row: int, span: tuple[int, int] | None = None) -> list[str]:
-    """The context menu's action labels for `row` — `QMenu.exec` is patched to
-    capture the built menu's actions instead of blocking on a real popup, the
-    same technique the codebase already uses for `QDialog.exec`."""
+    """The context menu's action labels for `row`, captured by patching
+    `QMenu.exec` instead of blocking on a real popup."""
     from PyQt6.QtGui import QContextMenuEvent
     from PyQt6.QtWidgets import QMenu
 
@@ -2122,16 +1989,9 @@ def _menu_texts(tbl, row: int, span: tuple[int, int] | None = None) -> list[str]
 
 
 def check_step_table(r: Report, app, tmp: Path) -> None:
-    """The step list edits through widgets, not through typed words — now
-    over a Kind column that decides which of the other columns mean anything.
-
-    A step is one atomic action; Details/Length/Unit/Settle render "—" and
-    refuse editing on a row whose kind does not use them (Length/Unit are
-    Wait-only, Settle is Move-only, Details is Move/Display-only, dialog-set
-    like the old Stage/Pattern cells). The value still lives in the cell's
-    data — the text is a rendering of it — so a cell can only hold something
-    its editor could produce.
-    """
+    """The step table edits through widgets, gated by the row's Kind: a column
+    the kind doesn't use renders "—" and refuses editing. The value lives in
+    the cell's data; the text only renders it."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
 
@@ -2176,10 +2036,7 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             f"the Settle delegate opens a spin box in seconds regardless of "
             f"the row's kind — editability is a separate gate "
             f"({type(ed).__name__})")
-    # The old "Step" column is gone — its label now lives on the row header
-    # (double-click to set), and the freed column is a Comment: dialog-set
-    # like Details, a title in the cell and the full text one double-click
-    # away.
+    # The step's name lives on the row header; Comment is dialog-set.
     r.check(not (tbl.item(0, col["comment"]).flags()
                 & Qt.ItemFlag.ItemIsEditable),
             "control: Comment is dialog-set, not typed into directly")
@@ -2250,8 +2107,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check(not (tbl.item(0, col["details"]).flags() & Qt.ItemFlag.ItemIsEditable),
             "…and is not typed into")
 
-    # A step filled from a saved FOV names it instead of showing two numbers
-    # nobody recognises a spot by.
     routine.steps[0].x_um, routine.steps[0].y_um = 111.0, 222.0
     routine.steps[0].fov = "window1"
     panel._reload_table()
@@ -2259,9 +2114,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             f"the FOV's name goes in FRONT of the coordinates "
             f"({tbl.item(0, col['details']).text()!r})")
 
-    # Z only joins the text once a step actually has one — most rigs and
-    # most steps never do, so the common (x, y) rendering must not gain a
-    # silent third number.
     routine.steps[0].z_um = 333.0
     panel._reload_table()
     r.check(tbl.item(0, col["details"]).text()
@@ -2273,17 +2125,12 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     routine.steps[0].z_um = None
     panel._reload_table()
 
-    # Typing a new position detaches the name.
     routine.steps[0].x_um, routine.steps[0].fov = 999.0, ""
     panel._reload_table()
     r.check(tbl.item(0, col["details"]).text() == "(999 um, 222 um)",
             "a typed position drops the FOV name off the whole cell")
 
-    # Double-click on Details asks for the right thing, gated by kind — tested
-    # through the signal itself, with the panel's REAL handlers disconnected
-    # first: `_pick_pattern_for` would otherwise pop a real, blocking file
-    # dialog and `_set_position_for` a real modal, neither of which this
-    # offscreen test can dismiss.
+    # The real handlers would open blocking dialogs offscreen; disconnect them.
     tbl.position_requested.disconnect(panel._set_position)
     tbl.pattern_requested.disconnect(panel._pick_pattern)
     opened: list = []
@@ -2310,13 +2157,9 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
         tbl.pattern_requested.connect(panel._pick_pattern)
     tbl.item(1, col["kind"]).setData(VALUE, "display")   # restore for below
 
-    # …and the REAL handler, reached the normal way, safely does nothing when
-    # its dialog is cancelled. QDialog.exec is patched for exactly this one
-    # call: a direct repro shows restoring it afterward (`QDialog.exec =
-    # <the original>`) leaves EVERY later `.exec()` on ANY QDialog raising
-    # TypeError for the rest of the process — a PyQt6/sip quirk, not
-    # something reachable by fixing this test's own code — so this must stay
-    # the one and only, LAST real QDialog.exec this file ever touches.
+    # QDialog.exec stays patched: restoring it makes every later QDialog
+    # .exec() raise TypeError for the rest of the process (a PyQt6/sip quirk),
+    # so this must be the last real QDialog.exec this file touches.
     from PyQt6.QtWidgets import QDialog
 
     QDialog.exec = lambda self: False
@@ -2327,7 +2170,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             "the position dialog, reached for real through the signal, "
             "changes nothing when cancelled")
 
-    # Delete on Details clears back to the kind's "nothing set" state.
     routine.steps[0].x_um, routine.steps[0].y_um = 400.0, 50.0
     panel._reload_table()
     tbl.setCurrentCell(0, col["details"])
@@ -2335,8 +2177,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check(routine.steps[0].x_um is None and routine.steps[0].y_um is None
             and routine.steps[0].z_um is None,
             "Delete on Move's Details clears every axis, not one at a time")
-    # CONTROL: Delete is not a general erase — a cell that must hold a number
-    # ignores it, and clear_cell("details") on a Wait/Puff row is a no-op.
     tbl.item(1, col["kind"]).setData(VALUE, "wait")
     before_len = routine.steps[1].length
     tbl.setCurrentCell(1, col["length"])
@@ -2352,8 +2192,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
         r.check(False, f"{type(e).__name__} escaped clearing a Wait row's "
                       f"Details: {e}")
 
-    # A frames step is a whole number of frames — validate() refuses the
-    # alternative, so the panel rounds rather than letting Start refuse it.
     tbl.item(1, col["unit"]).setData(VALUE, "frames")
     tbl.item(1, col["length"]).setData(VALUE, 100.4)
     r.check(routine.steps[1].length == 100,
@@ -2363,15 +2201,12 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
                                                        has_dmd=True))
                 if "whole number" in p],
             "…so the routine validates instead of being refused at Start")
-    # CONTROL: seconds are not rounded.
     tbl.item(1, col["unit"]).setData(VALUE, "seconds")
     tbl.item(1, col["length"]).setData(VALUE, 2.5)
     r.check(routine.steps[1].length == 2.5,
             f"control: a seconds step keeps its fraction ({routine.steps[1].length})")
     tbl.item(1, col["kind"]).setData(VALUE, "wait")   # back to a plain wait
 
-    # Reordering. Until this existed the only way to move a step was to
-    # delete it and retype it.
     panel._tbl.select_row(0)
     panel._move_down()
     r.check([x.label for x in routine.steps] == ["two", "one"],
@@ -2382,7 +2217,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check([x.label for x in routine.steps] == ["one", "two"],
             "…and back up again")
 
-    # The pattern is chosen with a file dialog on a Display row.
     tbl.item(0, col["kind"]).setData(VALUE, "display")
     routine.steps[0].pattern = r"C:\patterns\grid.png"
     panel._reload_table()
@@ -2397,12 +2231,11 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     panel._clear_pattern()
     r.check(routine.steps[0].pattern == "" and
             tbl.item(0, col["details"]).text() == "stop displaying",
-            "clearing the pattern reads as 'stop displaying', a stated "
-            "action now — not a blank cell")
+            "clearing the pattern reads as 'stop displaying', not a blank "
+            "cell")
     r.check(tbl.item(0, col["details"]).icon().isNull(),
             "…and the thumbnail clears with it")
 
-    # A real image file gets a thumbnail.
     from PyQt6.QtGui import QPixmap
 
     real_pattern = tmp / "real_pattern.png"
@@ -2412,7 +2245,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check(not tbl.item(0, col["details"]).icon().isNull(),
             "a step with a real pattern image shows a thumbnail")
 
-    # An ROI set has no image of its own, but its shapes get one too.
     from acqApp.devices.dmd import roi_store
     from acqApp.devices.dmd.roi import CircleRoi, RoiSet
 
@@ -2423,10 +2255,8 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check(tbl.item(0, col["details"]).text() == "ROI: some_set",
             f"an ROI set still names itself ({tbl.item(0, col['details']).text()!r})")
     r.check(not tbl.item(0, col["details"]).icon().isNull(),
-            "…AND now shows a thumbnail of its shapes")
+            "…and shows a thumbnail of its shapes")
 
-    # CONTROL: an empty/unreadable ROI file has nothing to rasterise — no
-    # thumbnail, but no crash either.
     empty_path = tmp / "empty_set.roi.json"
     empty_path.write_text(
         json.dumps({"name": "empty_set", "rois": []}), encoding="utf-8")
@@ -2443,7 +2273,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     except Exception as e:                        # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} escaped a corrupt ROI file: {e}")
 
-    # The summary totals the protocol and flags anything that emits light.
     routine.steps[0].pattern = r"C:\patterns\grid.png"
     panel._refresh_summary()
     text = panel._lbl_summary.text()
@@ -2456,7 +2285,6 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             f"control: with nothing projecting it does not warn "
             f"({panel._lbl_summary.text()!r})")
 
-    # Which step is running is shown in the protocol, not only in the label.
     panel.set_state(Phase.RUNNING, "step 2/2", 1)
     r.check(tbl.item(1, 0).font().bold() and not tbl.item(0, 0).font().bold(),
             "the running step is bold in the table")
@@ -2504,10 +2332,8 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
 
 
 def check_group_panel(r: Report, app) -> None:
-    """Adding/removing a repeat group by selecting rows in the table — the
-    fix for the old flow (typing 1-based row numbers into spinboxes,
-    disconnected from the table you were looking at). A recording is a
-    `record` step, not a selection."""
+    """Repeat groups are added/removed by selecting table rows; a recording
+    is a `record` step, not a selection."""
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(kind="wait", label="A"),
@@ -2518,7 +2344,7 @@ def check_group_panel(r: Report, app) -> None:
     r.check(not panel._btn_g_add.isEnabled(),
             "control: nothing selected -> no Group offered")
 
-    # ── recordings: a Record step is one — there is no sticker ──
+    # ── recordings ──
     r.check(routine.recordings == [], "control: no Record step, no recording")
     routine.steps[0].kind = "record"
     panel._reload_table()
@@ -2539,7 +2365,7 @@ def check_group_panel(r: Report, app) -> None:
     panel._reload_table()
     r.check(routine.recordings == [], "back to Waits: no recordings")
 
-    # ── repeat groups: a selected range, same as before ──
+    # ── repeat groups ──
     panel._tbl.select_row(0)
     r.check(not panel._btn_g_add.isEnabled(),
             "a single selected row is still not a repeat group — one step "
@@ -2567,14 +2393,12 @@ def check_group_panel(r: Report, app) -> None:
             and panel._tbl._group_at(0) is None,
             "…and the table itself knows which rows are grouped")
 
-    # A recording sticker on one of the grouped rows coexists with the group.
     routine.steps[1].kind = "record"
     panel._reload_table()
     r.check(routine.recordings == [Recording(start=1, end=1)]
             and panel._tbl._group_at(1) is routine.groups[0],
             "a Record step nests inside a group without disturbing it")
 
-    # Round-trips through to_dict/from_dict, the same as steps.
     reloaded = Routine.from_dict(routine.to_dict())
     r.check(len(reloaded.groups) == 1 and reloaded.groups[0].repeats == 4,
             "a saved template keeps its repeat group")
@@ -2583,7 +2407,6 @@ def check_group_panel(r: Report, app) -> None:
     routine.steps[1].kind = "wait"               # clean up for what follows
     panel._reload_table()
 
-    # The repeat count stays editable after the group exists.
     from PyQt6.QtWidgets import QInputDialog
 
     real_get_int = QInputDialog.getInt
@@ -2596,7 +2419,6 @@ def check_group_panel(r: Report, app) -> None:
             f"double-clicking a group lets its repeat count be changed "
             f"({routine.groups[0].repeats})")
 
-    # CONTROL: cancelling the dialog must leave it alone.
     QInputDialog.getInt = staticmethod(lambda *a, **k: (99, False))
     try:
         panel._edit_group_repeats(panel._lst_groups.item(0))
@@ -2613,7 +2435,6 @@ def check_group_panel(r: Report, app) -> None:
     r.check(panel._tbl._group_at(1) is None,
             "…and the table stops tinting/badging those rows")
 
-    # Right-click's Group action is the same call the button makes.
     _select_rows(panel._tbl, 0, 1)
     panel._tbl.group_requested.emit()
     r.check(len(routine.groups) == 1 and routine.groups[0].start == 0
@@ -2623,7 +2444,7 @@ def check_group_panel(r: Report, app) -> None:
     panel._lst_groups.setCurrentRow(0)
     panel._del_group()
 
-    # set_routine (template load) replaces groups AND recordings, not just steps.
+    # set_routine (template load) replaces groups and recordings too.
     _select_rows(panel._tbl, 0, 1)
     panel._group_selected()
     routine.steps[0].kind = "record"
@@ -2636,12 +2457,9 @@ def check_group_panel(r: Report, app) -> None:
 
 
 def check_per_edge_routine_is_buildable(r: Report, app) -> None:
-    """The operator's per-edge protocol, built the way the UI actually builds
-    it.
-
-    "100 recordings at FOV 1, each started by an edge, each x seconds" =
-    [move, trigger, record] with the group over the last two.
-    """
+    """The operator's per-edge protocol ("100 recordings at FOV 1, one per
+    edge"), built through the UI: [move, trigger, record], group on the
+    last two."""
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(kind="move", label="FOV 1", x_um=0.0,
@@ -2651,7 +2469,6 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
                                   unit="seconds")])
     panel = SettingsPanel(routine)
 
-    # The repeat group: trigger + record, so the move happens once.
     _select_rows(panel._tbl, 1, 2)
     panel._spn_g_repeats.setValue(100)
     panel._group_selected()
@@ -2664,7 +2481,6 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
     r.check(routine.recordings == [Recording(start=2, end=2)],
             f"the Record step is the only recording ({routine.recordings})")
 
-    # The trigger step is outside the recording, so validate() accepts it.
     panel._cmb_save.setCurrentIndex(panel._cmb_save.findData("per_repeat"))
     built = panel.settings
     r.check(built.save_mode == "per_repeat",
@@ -2673,7 +2489,6 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
     r.check(problems == [],
             f"the assembled per-edge routine validates clean ({problems})")
 
-    # And it survives a save/reload, like any other routine.
     reloaded = Routine.from_dict(built.to_dict())
     r.check(reloaded.steps[1].kind == "trigger"
             and reloaded.groups[0].repeats == 100
@@ -2683,9 +2498,7 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
 
 def check_move_row_repaint(r: Report) -> None:
     """A reorder repaints only the rows between src and dest, not the whole
-    table (2026-08-27) — `move_row` used to call `reload()`, which repainted
-    every row for what is always a contiguous shift of the rows in between.
-    """
+    table."""
     from acqApp.routines.panel import SettingsPanel
 
     routine = Routine(steps=[Step(kind="wait", label=c, length=1, unit="frames")
@@ -2697,7 +2510,6 @@ def check_move_row_repaint(r: Report) -> None:
     real_paint_row = tbl._paint_row
     tbl._paint_row = lambda row, s: (touched.append(row), real_paint_row(row, s))[1]
 
-    touched.clear()
     tbl.move_row(0, 1)                  # adjacent — only rows 0,1 shifted
     r.check(sorted(set(touched)) == [0, 1],
             f"an adjacent move repaints only the two rows involved, not all "
@@ -2742,8 +2554,7 @@ def check_templates(r: Report) -> None:
             f"…and so do the cycles and the save mode "
             f"({back.cycles}, {back.save_mode})")
 
-    # A name is not a path. The routine name is the operator's free text and
-    # goes straight at the filesystem.
+    # The routine name is the operator's free text, aimed at the filesystem.
     evil = "../../evil/name"
     r.check(templates.path_for(evil).parent == templates.DIR
             and templates.path_for("   ").name.startswith("routine"),
@@ -2756,9 +2567,8 @@ def check_templates(r: Report) -> None:
             f"the library is sorted the way a human reads it "
             f"({templates.names()})")
 
-    # A hand-edited or stale (pre-redesign) template must not stop the app:
-    # from_dict migrates what it can, and validate() refuses the rest at
-    # Start. Two old-format steps, and one entry that is not a dict at all.
+    # A stale template must not stop the app: from_dict migrates what it can
+    # and validate() refuses the rest at Start.
     templates.path_for("stale").write_text(
         '{"name": "stale", "cycles": "lots", "save_mode": "nope",'
         ' "steps": [{"label": "ok", "length": 5, "unit": "seconds"},'
@@ -2779,12 +2589,8 @@ def check_templates(r: Report) -> None:
 
 
 def check_panel_tracker(r: Report, app) -> None:
-    """The things the operator asked the panel for, at the widget level.
-
-    Where the routine is, reordering that is not nine button presses, what the
-    protocol will cost before it starts, a kind picker on +Step, and a library
-    of protocols.
-    """
+    """The operator's panel asks, at the widget level: progress, reordering,
+    cost up front, a +Step kind picker, and a template library."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
 
@@ -2870,7 +2676,6 @@ def check_panel_tracker(r: Report, app) -> None:
             "the panel keeps the rate, so the run readout does not re-ask the "
             "camera 30 times a second")
 
-    # ── no more start-trigger choice ──
     r.check(not hasattr(panel, "_cmb_trigger") and not hasattr(routine,
                                                                "start_trigger"),
             "the manual/TTL choice is gone — every routine arms on Start")
@@ -2884,12 +2689,9 @@ def check_panel_tracker(r: Report, app) -> None:
     r.check(len(routine.steps) == n_before + 1
             and routine.steps[-1].kind == "move",
             f"+Step appends a step of whatever kind is picked ({routine.steps[-1].kind!r})")
-    panel._del_step()          # tidy up via the table, so selection stays
-                                # sane for what follows — a direct list.pop()
-                                # leaves the table's selection dangling on a
-                                # row that no longer exists, and _del_step()
-                                # (used below) silently no-ops with nothing
-                                # selected
+    # Not list.pop(): that leaves the selection dangling, and the
+    # _del_step() calls below would silently no-op.
+    panel._del_step()
 
     # ── 4. the library ──
     panel.save_template("saved one")
@@ -2935,14 +2737,9 @@ def check_panel_tracker(r: Report, app) -> None:
 # ── the whole app ─────────────────────────────────────────────────────────────
 
 def check_app(r: Report, app, tmp) -> None:
-    """The wiring: the panel refuses, the engine drives real adapters, and the
-    recording boundaries reach the file on the shared clock.
-
-    Everything above this runs on fakes. This runs the actual window in mock
-    mode, because the seam that matters is `ModuleHost.stage_target` /
-    `pattern_target` — pooled by the window so the routine never imports the
-    stage, which is exactly the kind of link a unit test cannot see.
-    """
+    """The real window in mock mode: the panel refuses, the engine drives
+    real adapters through `stage_target`/`pattern_target`, and recording
+    boundaries reach the file on the shared clock."""
     import h5py
 
     out = tmp / "routine_rec"
@@ -2985,7 +2782,6 @@ def check_app(r: Report, app, tmp) -> None:
     inside = lo_x + (hi_x - lo_x) * 0.37
     inside_y = lo_y + (hi_y - lo_y) * 0.62
 
-    # ── the stage reports arrival, so a move step waits for it ──
     st = win.stage_target()
     r.check(not st.is_moving(), "is_moving: false before any move")
     st.move_to(inside, inside_y)
@@ -2996,7 +2792,6 @@ def check_app(r: Report, app, tmp) -> None:
         pump(app, 0.01)
     r.check(not st.is_moving(), "is_moving: false once the stage has arrived")
 
-    # ── the atomic protocol: two Record steps ──
     app_pattern = tmp / "app.png"
     app_pattern.write_bytes(b"x")
     panel._r.steps = [
@@ -3009,7 +2804,6 @@ def check_app(r: Report, app, tmp) -> None:
     ]
     panel._reload_table()
 
-    # ── Start opens the recording it needs ──
     r.check(not win._btn_rec.isChecked(), "fixture: not recording yet")
     adapter._start()
     r.check(adapter._engine is not None,
@@ -3020,12 +2814,8 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(not win._btn_rec.isChecked(),
             "ending the routine stops the recording it started")
 
-    # A manual Record press is always Internal-mode now (`_start_session()`
-    # resets it — the operator, 2026-09-28), and a routine always wants
-    # External edge (`_arm_camera_trigger`, same date) but won't switch mode
-    # out from under an already-running recording — so a manual recording
-    # can no longer be adopted; the routine refuses rather than run in the
-    # wrong trigger mode.
+    # A manual recording is Internal-mode and a routine won't switch mode
+    # under it, so it refuses rather than adopt it (2026-09-28).
     win._btn_rec.setChecked(True)
     adapter._start()
     r.check(adapter._engine is None,
@@ -3042,7 +2832,6 @@ def check_app(r: Report, app, tmp) -> None:
             "…and an out-of-limits target is refused before the run, not at step 7")
     panel._r.steps[0].x_um = inside
 
-    # ── the real thing ──
     moved: list[tuple] = []
     lit: list[bool] = []
     ctrl = mod["stage"].controller
@@ -3052,8 +2841,6 @@ def check_app(r: Report, app, tmp) -> None:
     real_light = mod["dmd"].set_light
     mod["dmd"].set_light = lambda on: (lit.append(bool(on)), real_light(on))[1]
 
-    # The routine opens its own recording (the normal path — see the block
-    # above for why it can no longer adopt a pre-existing manual one).
     adapter._start()
     if not r.check(adapter._engine is not None,
                    "the routine starts and opens its own recording"):
@@ -3077,9 +2864,8 @@ def check_app(r: Report, app, tmp) -> None:
         if eng0.phase == Phase.DONE:
             break
 
-    eng = eng0
-    phase, runs, filed, steps_done = (eng.phase, list(eng.runs), adapter._filed,
-                                      eng.steps_done())
+    phase, runs, filed, steps_done = (eng0.phase, list(eng0.runs),
+                                      adapter._filed, eng0.steps_done())
     win._btn_rec.setChecked(False)
     win._btn_run.setChecked(False)
     win.close()
@@ -3151,15 +2937,10 @@ def check_app(r: Report, app, tmp) -> None:
 
 
 def check_file_rolling(r: Report, app, tmp) -> None:
-    """save_mode "per_repeat"/"per_group" actually roll to new files through
-    the real MainWindow — `main.py`'s `roll_recording()`, the one path a
-    fake rig cannot exercise (adapters/routines.py's `_needs_roll`/
-    `_roll_for` are only proven end-to-end here)."""
+    """save_mode "per_repeat"/"per_group" really roll to new files through
+    the real window's `roll_recording()`."""
     out = tmp / "routine_roll"
-    # voltage_cam is loaded even though this test doesn't care about its
-    # frames: every routine now arms on the camera's own first edge
-    # (`validate()` requires `rig.has_frames` unconditionally), so a
-    # stage-only window can no longer start one at all.
+    # voltage_cam only because every routine arms on the camera.
     win = make_window({"stage", "routines", "voltage_cam"})
     mod = {m.key: m for m in win._modules}
     adapter, panel = mod["routines"], mod["routines"].panel
@@ -3175,8 +2956,7 @@ def check_file_rolling(r: Report, app, tmp) -> None:
         panel._r.steps = steps
         panel._r.groups = groups
         panel._r.cycles = 1
-        # Not `panel._r.save_mode = ...` directly — the `settings` property
-        # `_start()` reads overwrites it from this combo box on every read.
+        # Not `panel._r.save_mode`: `settings` overwrites it from the combo.
         panel._cmb_save.setCurrentIndex(panel._cmb_save.findData(save_mode))
         panel._reload_table()
         adapter._start()
@@ -3195,18 +2975,13 @@ def check_file_rolling(r: Report, app, tmp) -> None:
                 f"(phase={eng0.phase}, fault={eng0.fault!r})")
         return len(set(out.rglob("*.h5")) - before)
 
-    # A Record step in a 3x-repeated 2-step group -> 3 RecordingRuns
-    # (one per repeat) -> per_repeat rolls a file for each.
     n = run_to_done(
         [Step(kind="move", label="m", x_um=10.0, settle_s=0.0),
          Step(kind="record", label="w", length=0.02, unit="seconds")],
         [Group(start=0, end=1, repeats=3)], "per_repeat")
     r.check(n == 3, f"per_repeat: one file per repeat of the group ({n})")
 
-    # Two DIFFERENT groups, each repeated twice, each with its OWN Recording
-    # -> per_group shares a file across repeats of the SAME group and rolls
-    # only when the covering group actually changes -> 2 files (one per
-    # group), not 4 (one per repeat) — the whole point of the coarser mode.
+    # Two groups x2 repeats: per_group makes 2 files, not 4.
     multi_group_steps = [
         Step(kind="move", label="a", x_um=10.0, settle_s=0.0),
         Step(kind="record", label="wa", length=0.02, unit="seconds"),
@@ -3220,8 +2995,6 @@ def check_file_rolling(r: Report, app, tmp) -> None:
             f"per_group: repeats of the same group share a file, only "
             f"moving to the other one rolls ({n2})")
 
-    # CONTROL: save_mode="single" over the SAME multi-group protocol is the
-    # behavior every one of these modes departs from — exactly one file.
     n3 = run_to_done(list(multi_group_steps), multi_group_groups, "single")
     r.check(n3 == 1,
             f"control: single mode never rolls, over the identical protocol "
@@ -3265,9 +3038,8 @@ def _part_routines() -> int:
         check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)
-        # The window persists as a side effect of ordinary use, so isolate
-        # first — an unisolated run overwrites the operator's save folder, and
-        # would save into and delete from the operator's template library.
+        # Unisolated, this overwrites the operator's save folder and edits
+        # their template library.
         state = isolate_user_state()
         try:
             sys.argv = ["main.py", "--mock"]
@@ -3282,15 +3054,13 @@ def _part_routines() -> int:
             check_app(r, app, state)
             check_file_rolling(r, app, state)
         finally:
-            import shutil
             shutil.rmtree(state, ignore_errors=True)
     finally:
-        import shutil
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
 
 
-# ═══ timeline (was test_timeline.py) ════════════════════════════════════
+# ═══ timeline ═══════════════════════════════════════════════════════════
 
 def check_layout(r: Report) -> None:
     routine = Routine(steps=[
@@ -3305,22 +3075,22 @@ def check_layout(r: Report) -> None:
     r.check(total_w > 0, "a non-empty routine has a non-zero width")
     order = [s.kind for s in segs]
     r.check(order == ["move", "display", "wait", "puff", "wait"],
-           "segments follow the step order")
+            "segments follow the step order")
 
     wait5s = segs[2]
     wait100f_known = segs[4]
     r.check(wait5s.duration_s == 5.0, "a seconds-unit Wait's duration is exact")
     r.check(abs(wait100f_known.duration_s - 100 / 30.0) < 1e-9,
-           "a frames-unit Wait converts at the given rate, like estimate.py")
+            "a frames-unit Wait converts at the given rate, like estimate.py")
     r.check(segs[2].width > segs[3].width,
-           "a longer Wait draws wider than an instant Puff")
+            "a longer Wait draws wider than an instant Puff")
 
     segs_no_hz, _ = _layout(routine, hz=None)
     r.check(segs_no_hz[4].duration_s is None,
-           "a frames-unit Wait with no frame rate is UNKNOWN, not guessed")
+            "a frames-unit Wait with no frame rate is UNKNOWN, not guessed")
     r.check(segs_no_hz[2].duration_s == 5.0,
-           "…but a seconds-unit Wait next to it is still exact — unknown is "
-           "per-segment, not all-or-nothing")
+            "…but a seconds-unit Wait next to it is still exact — unknown is "
+            "per-segment, not all-or-nothing")
 
 
 def check_group_span(r: Report) -> None:
@@ -3330,12 +3100,11 @@ def check_group_span(r: Report) -> None:
     )
     order = play_order(routine)
     r.check(order == [0, 1, 2, 1, 2, 1, 2, 3],
-           "control: the group's range repeats in place in play_order")
+            "control: the group's range repeats in place in play_order")
     spans = _group_spans(routine, order)
     r.check(spans == [(1, 6, 3)],
-           "one bracket for the WHOLE repeated run (positions 1..6), "
-           "labelled with the true repeat count — not three separate "
-           "brackets, since the segments underneath already show the repeats")
+            "one bracket for the WHOLE repeated run (positions 1..6), "
+            "labelled with the repeat count — not three brackets")
 
 
 def check_recording_runs_separate(r: Report) -> None:
@@ -3349,15 +3118,15 @@ def check_recording_runs_separate(r: Report) -> None:
     order = play_order(routine)
     runs = _recording_runs(routine, order)
     r.check(len(runs) == 3,
-           "a Record step in a repeated group draws as "
-           "3 separate bars, one per repeat — never one merged bar")
+            "a Record step in a repeated group draws as "
+            "3 separate bars, one per repeat — never one merged bar")
     r.check(runs == [(1, 1, 0), (2, 2, 0), (3, 3, 0)],
-           "…each bar covering exactly one repeat's position, same region "
-           "(there is only one Record step, region 0)")
+            "…each bar covering exactly one repeat's position, same region "
+            "(there is only one Record step, region 0)")
     starts = [a for a, _b, _c in runs]
     ends = [b for _a, b, _c in runs]
     r.check(all(a <= b for a, b in zip(starts, ends)),
-           "every run is a valid (start <= end) range")
+            "every run is a valid (start <= end) range")
     gaps = all(runs[i][1] < runs[i + 1][0] for i in range(len(runs) - 1))
     r.check(gaps, "consecutive runs don't touch — a real gap separates them, "
                   "matching the bars drawn with a gap either side")
@@ -3371,14 +3140,12 @@ def check_recording_runs_not_grouped(r: Report) -> None:
     order = play_order(routine)
     runs = _recording_runs(routine, order)
     r.check(runs == [(0, 0, 0), (1, 1, 1), (2, 2, 2)],
-           "adjacent Record steps draw as three bars, one region each")
+            "adjacent Record steps draw as three bars, one region each")
 
 
 def check_recording_runs_across_cycle(r: Report) -> None:
-    """cycles > 1 isn't drawn (one cycle only, per the module's own
-    docstring) — `_recording_runs` operates on a single `play_order` pass,
-    so this just confirms it stays a single run within that one pass even
-    though the routine as a whole will run it twice."""
+    """Only one cycle is drawn: `_recording_runs` sees a single
+    `play_order` pass, whatever `cycles` says."""
     routine = Routine(
         steps=[Step(kind="record", length=1, unit="seconds")],
         cycles=2,
@@ -3386,15 +3153,13 @@ def check_recording_runs_across_cycle(r: Report) -> None:
     order = play_order(routine)
     runs = _recording_runs(routine, order)
     r.check(runs == [(0, 0, 0)],
-           "one pass drawn = one run, regardless of routine.cycles (the "
-           "engine's own per-cycle splitting is a separate, tested "
-           "correctness point in test_routines.py — this file only pins "
-           "down what gets DRAWN)")
+            "one pass drawn = one run, regardless of routine.cycles (the "
+            "engine's per-cycle split is check_recording_repeats')")
 
 
 def check_widget_builds(r: Report) -> None:
-    """The dialog and its canvas construct without error, empty routine
-    included — this is what `panel.py`'s Timeline… button actually calls."""
+    """The dialog the panel's Timeline… button opens builds, empty routine
+    included."""
     isolate_user_state()
     app = qt_app()                      # assign it: an unreferenced one is GC'd
     from acqApp.routines.timeline import TimelineDialog
@@ -3420,7 +3185,7 @@ def check_widget_builds(r: Report) -> None:
     no_hz.show()
     app.processEvents()
     r.check(no_hz.isVisible(),
-           "…and still shows with no frame rate set (unknown-duration path)")
+            "…and still shows with no frame rate set (unknown-duration path)")
     no_hz.close()
 
 

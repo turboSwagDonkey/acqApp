@@ -51,7 +51,6 @@ class LoopRule:
 
     def __init__(self, settings: LoopSettings | None = None) -> None:
         self._s = settings or LoopSettings()
-        self.n_fires = 0
         self.reset()
 
     def reset(self) -> None:

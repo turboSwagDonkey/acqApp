@@ -1,14 +1,11 @@
 """Pupil-tracking camera — acquisition worker (Basler via pypylon).
 
-A **Basler acA1920-40umMED — USB3 Vision**, not GigE, and it *must* be on a
-USB 3.0 port: pylon refuses otherwise, with no reduced-speed fallback. Watch
-for USB2 cables — a USB3 Micro-B socket accepts one carrying only USB2 pins.
+A Basler acA1920-40umMED, USB3 Vision: it must be on a USB 3.0 port (pylon
+has no reduced-speed fallback). A USB3 Micro-B socket also accepts a cable
+carrying only USB2 pins.
 
-Open camera BEFORE importing PyQt6/pyqtgraph, against Windows DLL-path
-conflicts (as with DCAM in voltage_cam).
-
-Both workers share `acq.worker.PullWorker`: `get_latest()` is the newest frame,
-recording sink receives every frame.
+Open the camera BEFORE importing PyQt6/pyqtgraph (Windows DLL-path
+conflicts, as with DCAM in voltage_cam).
 """
 
 from __future__ import annotations
@@ -22,11 +19,9 @@ from PyQt6.QtCore import pyqtSignal
 from acqApp.acq.worker import PullWorker, paced
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  GenICam node helpers — names differ across Basler families (USB ace uses
-#  SFNC 2.0, GigE ace classic the older *Abs ones), and a missing node must
-#  never be fatal: the camera still grabs fine on its defaults.
-# ══════════════════════════════════════════════════════════════════════════════
+# GenICam node names differ across Basler families (USB ace: SFNC 2.0; GigE
+# ace classic: the older *Abs ones). A missing node is never fatal: the camera
+# still grabs on its defaults.
 
 def _node(cam, *names):
     """First available node among `names`, or None."""
@@ -73,9 +68,8 @@ def _set_enum(cam, value: str, *names, label: str = "") -> bool:
 
 
 def open_camera(index: int = 0):
-    """Open the first Basler camera -> InstantCamera, or None if there's none
-    or it won't open. Call BEFORE importing PyQt6/pyqtgraph. Never raises:
-    caller falls back to the mock worker."""
+    """Open Basler camera `index` -> InstantCamera, or None. Never raises.
+    Call BEFORE importing PyQt6/pyqtgraph."""
     try:
         from pypylon import pylon
         factory = pylon.TlFactory.GetInstance()
@@ -104,12 +98,8 @@ def open_camera(index: int = 0):
 
 
 class PupilCameraWorker(PullWorker):
-    """Grabs Mono8 frames from a Basler camera.
-
-    Normally handed an already-open InstantCamera so the caller can pre-init
-    before Qt imports; it then never opens or closes that handle. `cam=None`
-    makes worker own one, simpler where import order doesn't bite.
-    """
+    """Grabs Mono8 frames from a Basler camera. A passed-in open camera is
+    never closed here; `cam=None` makes the worker open and own one."""
     hz_update = pyqtSignal(int, float)   # (total_frames, Hz over recent window)
 
     _STOP_WAIT_MS = 5000
@@ -128,9 +118,8 @@ class PupilCameraWorker(PullWorker):
         self._frame_shape: tuple[int, int] | None = None
 
     def set_exposure(self, us: float) -> None:
-        """Queue an exposure change, applied on next grab-loop tick — queued
-        because camera is opened on the GUI thread and grabbed on this one
-        (see PUPIL_CAMERA_TRANSFER.md)."""
+        """Queued for the grab thread; the camera is opened on the GUI one
+        (docs/PUPIL_CAMERA_TRANSFER.md)."""
         self._exposure_us = us
         with self._exp_lock:
             self._pending_exp = us
@@ -141,10 +130,9 @@ class PupilCameraWorker(PullWorker):
         return self._frame_shape
 
     def _configure(self, cam) -> None:
-        """Put camera into free-running Mono8 at the requested exposure/rate."""
-        # Mono8 explicitly: a persisted Mono12 from a previous session would
-        # hand us uint16 and silently break the tracker's threshold units and
-        # the (0, 255) display levels.
+        """Free-running Mono8 at the requested exposure/rate."""
+        # A Mono12 persisted in the camera would hand us uint16 and silently
+        # break the tracker's threshold units and the 0-255 display levels.
         pf = _node(cam, "PixelFormat")
         if pf is not None:
             current = "?"
@@ -160,13 +148,12 @@ class PupilCameraWorker(PullWorker):
         # Auto-exposure would fight every set_exposure() call.
         _set_enum(cam, "Off", "ExposureAuto")
         _set_enum(cam, "Off", "GainAuto")
-        _set_enum(cam, "Off", "TriggerMode")           # free-running
+        _set_enum(cam, "Off", "TriggerMode")
 
         exp = _set_clamped(cam, self._exposure_us,
                            "ExposureTime", "ExposureTimeAbs", label="exposure")
 
-        # Only honoured with enable node on; otherwise camera free-runs as
-        # fast as exposure and bandwidth allow.
+        # Ignored unless the enable node is on.
         rate_on = _node(cam, "AcquisitionFrameRateEnable")
         if rate_on is not None:
             try:
@@ -214,8 +201,8 @@ class PupilCameraWorker(PullWorker):
                         _set_clamped(cam, pending, "ExposureTime",
                                      "ExposureTimeAbs", label="exposure")
 
-                    # Return (not Throw) on timeout: a missed frame should spin
-                    # the loop so the stop flag is seen, not raise out of it.
+                    # Return, not Throw: a timeout must spin the loop so the
+                    # stop flag is seen.
                     grab = cam.RetrieveResult(self._GRAB_TIMEOUT_MS,
                                               pylon.TimeoutHandling_Return)
                     if grab is None:
@@ -225,7 +212,7 @@ class PupilCameraWorker(PullWorker):
                             print(f"[pupil_cam] grab failed: "
                                   f"{grab.GetErrorDescription()}")
                             continue
-                        frame = grab.Array.copy()      # Mono8 → (H, W) uint8
+                        frame = grab.Array.copy()   # buffer is reused
                         if self._frame_shape is None:
                             self._frame_shape = frame.shape
                             print(f"[pupil_cam] first frame: shape={frame.shape} "
@@ -252,7 +239,7 @@ class PupilCameraWorker(PullWorker):
                 except Exception:
                     pass
         finally:
-            if own_cam:                # only close a camera we opened ourselves
+            if own_cam:
                 try:
                     cam.Close()
                 except Exception:
@@ -260,15 +247,8 @@ class PupilCameraWorker(PullWorker):
 
 
 class MockPupilCameraWorker(PullWorker):
-    """
-    Synthetic pupil camera: grey frame with a dark disc whose radius varies
-    sinusoidally (simulated pupil dilation). Frame rate is configurable so the
-    settings-panel rate actually takes effect on the mock.
-
-    Includes a bright specular dot standing in for the IR corneal glint, since
-    that's the artefact the tracker's outlier rejection exists to handle —
-    a perfectly clean disc wouldn't exercise it.
-    """
+    """Grey frame, a dark disc of sinusoidally varying radius, and a bright
+    dot standing in for the corneal glint (so glint removal is exercised)."""
     hz_update = pyqtSignal(int, float)
     H, W = 240, 320
     _STOP_WAIT_MS = 2000
@@ -278,7 +258,7 @@ class MockPupilCameraWorker(PullWorker):
         self._hz = max(1.0, rate_hz)
 
     def set_exposure(self, us: float) -> None:
-        """No-op (kept for API parity with PupilCameraWorker)."""
+        """No-op."""
 
     @property
     def frame_shape(self) -> tuple[int, int]:
@@ -290,6 +270,7 @@ class MockPupilCameraWorker(PullWorker):
         period = 1.0 / self._hz
         cy, cx = self.H // 2, self.W // 2
         Y, X = np.ogrid[:self.H, :self.W]
+        d2 = (X - cx) ** 2 + (Y - cy) ** 2
 
         for n in paced(period, t0):
             if self._stop:
@@ -297,8 +278,8 @@ class MockPupilCameraWorker(PullWorker):
             t = time.perf_counter() - t0
             r = 35 + 15 * np.sin(2 * np.pi * 0.1 * t)
             frame = np.full((self.H, self.W), 180, dtype=np.uint8)
-            frame[((X - cx) ** 2 + (Y - cy) ** 2) < r ** 2] = 20
-            gr = max(2.0, 0.16 * r)     # corneal glint, offset inside the pupil
+            frame[d2 < r ** 2] = 20
+            gr = max(2.0, 0.16 * r)     # glint, offset inside the pupil
             frame[((X - (cx + 0.35 * r)) ** 2
                    + (Y - (cy - 0.3 * r)) ** 2) < gr ** 2] = 245
             self._publish(frame)

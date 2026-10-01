@@ -22,8 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-# A sibling of the repo; patches for a fresh clone are in
-# docs/eyeloop-3.14-patches.diff.
+# Patches for a fresh clone: docs/eyeloop-3.14-patches.diff.
 EYELOOP_DIR = Path(
     os.environ.get("ACQAPP_EYELOOP_DIR")
     or Path(__file__).resolve().parents[3] / "eyeloop")
@@ -78,7 +77,7 @@ class GlintRemoval:
     pins: tuple[Pin, ...] = ()   # exempt from both guards
 
 
-_ARMED: list[str] = []          # process-wide, because eyeloop.config is
+_ARMED: list[str] = []          # process-wide, as eyeloop.config is
 
 
 class EyeLoopTracker:
@@ -109,7 +108,8 @@ class EyeLoopTracker:
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def arm(self, width: int, height: int, seed: tuple[float, float]) -> None:
-        """Build for a frame size; call again if it changes."""
+        """Build for a frame size; call again if it changes. The fit model is
+        baked into the Shape built here, so a model switch needs a re-arm."""
         if str(EYELOOP_DIR) not in sys.path:
             if not (EYELOOP_DIR / "eyeloop").is_dir():
                 raise EyeLoopUnavailable(
@@ -122,8 +122,7 @@ class EyeLoopTracker:
 
         import eyeloop.config as config
 
-        # Before importing processor: Shape.__init__ reads these globals,
-        # and reset() reads width/height.
+        # Before importing processor: Shape.__init__ and reset() read these.
         config.arguments = types.SimpleNamespace(model=self.model)
         config.engine = types.SimpleNamespace(
             dataout={}, width=int(width), height=int(height), angle=0)

@@ -1,16 +1,14 @@
-"""
-mcm6101.py - Minimal, safe driver for a Thorlabs MCM6101 / MCM6000-series
-motorized stage controller (e.g. a PLS-XY stage), over its USB CDC serial port.
+"""Driver for a Thorlabs MCM6101 / MCM6000-series stage controller over its
+USB CDC serial port (Thorlabs APT message set).
 
-Protocol: Thorlabs APT message set. Verified on this hardware:
-  * Port      : USB CDC ("USB Serial Device"), 115200 8N1, DTR+RTS asserted.
+Verified on this hardware:
+  * Port      : USB CDC, 115200 8N1, DTR+RTS asserted.
   * Controller: destination 0x11 answers HW_REQ_INFO (model "MCM61010").
-  * Axes      : each axis N is addressed at destination 0x21 + N, with the
-                channel-ident field in the message also set to N.
-                Three axes were detected (0,1,2).
+  * Axes      : axis N (0-indexed) is destination 0x21 + N, with the message's
+                channel-ident field also N; axes 0-2 answer. The rig's chip
+                numbers are 1-indexed: chip N = axis N-1.
 
-Every method that causes MOTION is clearly marked. Nothing moves unless you
-call one of those methods.
+Only methods marked MOTION move anything.
 """
 from __future__ import annotations
 import struct
@@ -45,9 +43,9 @@ MGMSG_MOT_GET_POSCOUNTER   = 0x0412
 MGMSG_MOT_REQ_STATUSUPDATE = 0x0480
 MGMSG_MOT_GET_STATUSUPDATE = 0x0481
 
-# Mirror/light-path (Slider_IO_type cards, e.g. chip 7's PMT/camera switch on
-# this rig -- NOT a stepper axis, so MOT_REQ_STATUSUPDATE never answers it.
-# From ThorImageLS's own ThorMCM6000 driver source (APT.h/APT.cpp).
+# Mirror/light-path (Slider_IO_type) cards, e.g. chip 7's PMT/camera switch:
+# not steppers, so MOT_REQ_STATUSUPDATE never answers them. IDs from
+# ThorImageLS's ThorMCM6000 driver source (APT.h/APT.cpp).
 MGMSG_MCM_SET_MIRROR_STATE = 0x4087
 MGMSG_MCM_REQ_MIRROR_STATE = 0x4088
 MGMSG_MCM_GET_MIRROR_STATE = 0x4089
@@ -56,9 +54,8 @@ MIRROR_OUT = 0
 MIRROR_IN = 1
 MIRROR_UNKNOWN = 2
 
-# Channel indices within a mirror/LightPath card (Mcm6kParams.h). This rig's
-# scan head is galvo-resonant only (operator-confirmed 2026-09-11), so GG
-# never applies here -- only GR and CAMERA are meaningful.
+# Channels on a mirror card (Mcm6kParams.h). The scan head is galvo-resonant
+# only (operator-confirmed 2026-09-11), so GG never applies here.
 MIRROR_CHAN_GG = 4
 MIRROR_CHAN_GR = 5
 MIRROR_CHAN_CAMERA = 6
@@ -114,9 +111,8 @@ class MCM6101Error(Exception):
 
 
 class MCM6101:
-    # Absolute-move commands use coarser "command units" than the encoder
-    # position readout. Measured on this hardware: readout ~= 17.78 * command
-    # for the XY axes. This is the default; override per-axis via set_scale().
+    # Absolute moves take coarser "command units" than the encoder readout;
+    # measured readout ~= 17.78 * command on the XY axes.
     DEFAULT_SCALE = 17.78
 
     def __init__(self, port: str, timeout: float = 0.5, default_scale: float = DEFAULT_SCALE):
@@ -126,9 +122,8 @@ class MCM6101:
         self._lock = threading.Lock()
         self.default_scale = default_scale
         self._scale: dict[int, float] = {}   # axis -> readout counts per command unit
-        # Per-axis linear map: encoder = slope * command + offset. The controller
-        # re-references its command origin when a hard limit is hit, so `offset`
-        # must be measured in the current frame (see the app's Find-Center routine).
+        # Per-axis encoder = slope * command + offset. A hard-limit hit
+        # re-references the command origin, so `offset` goes stale with it.
         self._slope: dict[int, float] = {}
         self._offset: dict[int, float] = {}
 
@@ -190,7 +185,7 @@ class MCM6101:
         self._ser.flush()
 
     def _read_exact(self, n: int, deadline: float) -> bytes | None:
-        """Read exactly n bytes before `deadline`, or None on timeout."""
+        """Exactly n bytes before `deadline`, or None."""
         buf = bytearray()
         while len(buf) < n:
             remaining = deadline - time.time()
@@ -204,10 +199,9 @@ class MCM6101:
         return bytes(buf)
 
     def _read_message(self, want_cmd: int, wait: float = 0.4) -> bytes | None:
-        """Read whole APT frames (header + declared data packet) until one with
-        command id == want_cmd is found or `wait` seconds elapse. Reads exactly
-        the number of bytes each frame declares, so it returns as soon as the
-        reply arrives instead of waiting out the serial timeout."""
+        """Read whole frames until one is `want_cmd` or `wait` s pass. Reading
+        each frame's declared length returns on arrival, not on the serial
+        timeout."""
         deadline = time.time() + wait
         while time.time() < deadline:
             header = self._read_exact(6, deadline)
@@ -223,15 +217,19 @@ class MCM6101:
                     return None
             if cmd == want_cmd:
                 return header + data
-            # else: an unsolicited/other frame - skip it and keep reading
         return None
+
+    def _query(self, cmd: int, reply: int, dest: int, p1: int = 0,
+               wait: float = 0.4) -> bytes | None:
+        with self._lock:
+            self._ser.reset_input_buffer()
+            self._write(self._header(cmd, p1=p1, dest=dest))
+            return self._read_message(reply, wait=wait)
 
     # ---- device info (read-only) -----------------------------------------
     def get_info(self) -> DeviceInfo:
-        with self._lock:
-            self._ser.reset_input_buffer()
-            self._write(self._header(MGMSG_HW_REQ_INFO, dest=CONTROLLER))
-            msg = self._read_message(MGMSG_HW_GET_INFO, wait=0.6)
+        msg = self._query(MGMSG_HW_REQ_INFO, MGMSG_HW_GET_INFO, CONTROLLER,
+                          wait=0.6)
         if not msg or len(msg) < 90:
             raise MCM6101Error("No/short HW_GET_INFO reply from controller.")
         body = msg[6:]
@@ -242,21 +240,16 @@ class MCM6101:
 
     # ---- per-axis reads (read-only) --------------------------------------
     def get_position(self, axis: int) -> int:
-        dest = BAY0 + axis
-        with self._lock:
-            self._ser.reset_input_buffer()
-            self._write(self._header(MGMSG_MOT_REQ_POSCOUNTER, p1=axis, dest=dest))
-            msg = self._read_message(MGMSG_MOT_GET_POSCOUNTER, wait=0.4)
+        msg = self._query(MGMSG_MOT_REQ_POSCOUNTER, MGMSG_MOT_GET_POSCOUNTER,
+                          BAY0 + axis, p1=axis)
         if not msg or len(msg) < 12:
             raise MCM6101Error(f"No position reply from axis {axis}.")
         return struct.unpack_from("<i", msg, 8)[0]
 
     def get_status(self, axis: int, wait: float = 0.4) -> AxisStatus:
-        dest = BAY0 + axis
-        with self._lock:
-            self._ser.reset_input_buffer()
-            self._write(self._header(MGMSG_MOT_REQ_STATUSUPDATE, p1=axis, dest=dest))
-            msg = self._read_message(MGMSG_MOT_GET_STATUSUPDATE, wait=wait)
+        msg = self._query(MGMSG_MOT_REQ_STATUSUPDATE,
+                          MGMSG_MOT_GET_STATUSUPDATE, BAY0 + axis, p1=axis,
+                          wait=wait)
         if not msg or len(msg) < 20:
             raise MCM6101Error(f"No status reply from axis {axis}.")
         chan = struct.unpack_from("<H", msg, 6)[0]
@@ -266,23 +259,18 @@ class MCM6101:
         return AxisStatus(chan, pos, enc, bits)
 
     def get_mirror_state(self, axis: int, channel: int, wait: float = 0.4) -> int:
-        """Read-only. Query one channel on a mirror/LightPath card (e.g. chip 7
-        = axis 6 on this rig) -- MIRROR_OUT, MIRROR_IN or MIRROR_UNKNOWN. This
-        is a different message family than get_status(): mirror cards don't
-        answer MOT_REQ_STATUSUPDATE at all."""
-        dest = BAY0 + axis
-        with self._lock:
-            self._ser.reset_input_buffer()
-            self._write(self._header(MGMSG_MCM_REQ_MIRROR_STATE, p1=channel, dest=dest))
-            msg = self._read_message(MGMSG_MCM_GET_MIRROR_STATE, wait=wait)
+        """One mirror-card channel (chip 7 = axis 6 here): MIRROR_OUT, _IN or
+        _UNKNOWN. Read-only."""
+        msg = self._query(MGMSG_MCM_REQ_MIRROR_STATE,
+                          MGMSG_MCM_GET_MIRROR_STATE, BAY0 + axis, p1=channel,
+                          wait=wait)
         if not msg or len(msg) < 4:
             raise MCM6101Error(f"No mirror-state reply from axis {axis} channel {channel}.")
         return msg[3]
 
     def detect_axes(self, max_axes: int = 6, stop_after_misses: int = 2) -> list[int]:
-        """Return the indices of axes that answer a status request. Stops early
-        after `stop_after_misses` consecutive silent axes so it doesn't wait out
-        the timeout on every unused slot."""
+        """Axes that answer a status request, stopping after
+        `stop_after_misses` consecutive silent ones."""
         found = []
         misses = 0
         for a in range(max_axes):
@@ -298,8 +286,7 @@ class MCM6101:
 
     def _send(self, cmd: int, axis: int | None, data: bytes | None = None,
               **kw) -> None:
-        """Frame one command to `axis`'s bay (axis=None -> the controller) and
-        write it under the lock. Every write below goes through here."""
+        """Write one command to `axis`'s bay (None = the controller)."""
         dest = CONTROLLER if axis is None else BAY0 + axis
         pkt = (self._header_with_data(cmd, data, dest=dest) if data is not None
                else self._header(cmd, dest=dest, **kw))
@@ -307,8 +294,8 @@ class MCM6101:
             self._write(pkt)
 
     def set_enabled(self, axis: int, enable: bool):
-        """Enable (energize) or disable (de-energize) an axis. A disabled axis
-        ignores move commands and its motor isn't held - it may drift/back-drive."""
+        """Energize or de-energize an axis. A disabled axis ignores moves and
+        isn't held, so it may back-drive."""
         self._send(MGMSG_MOD_SET_CHANENABLESTATE, axis, p1=axis,
                    p2=CHAN_ENABLE if enable else CHAN_DISABLE)
 
@@ -323,35 +310,33 @@ class MCM6101:
     #  MOTION COMMANDS BELOW - these physically move the stage.
     # ======================================================================
     def move_relative(self, axis: int, delta_cmd: int):
-        """MOTION: relative move by delta in COMMAND units.
-        NOTE: this firmware (MCM61010 fw 7.0.2) ignores MOVE_RELATIVE. Prefer
-        move_to_readout()/jog_by_readout(), which use absolute moves."""
+        """MOTION: relative move in COMMAND units. This firmware (MCM61010 fw
+        7.0.2) ignores MOVE_RELATIVE; use jog_by_readout()."""
         self._send(MGMSG_MOT_MOVE_RELATIVE, axis,
                    struct.pack("<Hi", axis, int(delta_cmd)))
 
     def move_absolute(self, axis: int, position_cmd: int):
-        """MOTION: move `axis` to an absolute position in COMMAND units
-        (coarser than the readout; see scale()). Most callers want
-        move_to_readout() instead."""
+        """MOTION: absolute move in COMMAND units; most callers want
+        move_to_readout()."""
         self._send(MGMSG_MOT_MOVE_ABSOLUTE, axis,
                    struct.pack("<Hi", axis, int(position_cmd)))
 
     def move_to_readout(self, axis: int, target_readout: int):
-        """MOTION: move `axis` to an absolute position given in READOUT (encoder)
-        counts, using the per-axis linear map command=(enc-offset)/slope."""
+        """MOTION: absolute move in READOUT (encoder) counts, via
+        command = (enc - offset) / slope."""
         slope, offset = self.linear_map(axis)
         cmd = int(round((target_readout - offset) / slope))
         self.move_absolute(axis, cmd)
 
     def jog_by_readout(self, axis: int, delta_readout: int, current_readout: int | None = None):
-        """MOTION: jog `axis` by delta READOUT counts, implemented as an absolute
-        move to (current + delta). Reads current position if not supplied."""
+        """MOTION: absolute move to current + delta READOUT counts (reads
+        current if not given)."""
         if current_readout is None:
             current_readout = self.get_status(axis).position
         self.move_to_readout(axis, current_readout + delta_readout)
 
     def jog(self, axis: int, forward: bool = True):
-        """MOTION: start a jog move in one direction (uses controller's jog params)."""
+        """MOTION: start a jog with the controller's own jog params."""
         self._send(MGMSG_MOT_MOVE_JOG, axis, p1=axis,
                    p2=JOG_FORWARD if forward else JOG_REVERSE)
 
@@ -360,17 +345,12 @@ class MCM6101:
         self._send(MGMSG_MOT_MOVE_HOME, axis, p1=axis)
 
     def set_mirror_state(self, axis: int, channel: int, state: int):
-        """MOTION: physically flip a mirror/light-path channel (e.g. chip 7's
-        GR or CAMERA channel on this rig) to MIRROR_OUT or MIRROR_IN."""
+        """MOTION: flip a mirror-card channel to MIRROR_OUT or MIRROR_IN."""
         self._send(MGMSG_MCM_SET_MIRROR_STATE, axis, p1=channel, p2=state)
 
     # ---- frame establishment (for absolute positioning) -------------------
-    def _settle(self, axis: int, t: float = 2.0) -> int:
-        time.sleep(t)
-        return self.get_status(axis).position
-
     def wait_stopped(self, axis: int, timeout: float = 20.0, tol: int = 20) -> int:
-        """Block until the axis stops moving and its position is stable; return it."""
+        """Block until the axis stops and its position is stable; return it."""
         time.sleep(0.3)  # let the move start
         t0 = time.time()
         last = None
@@ -388,8 +368,8 @@ class MCM6101:
         return self.get_status(axis).position
 
     def drive_to_reverse_limit(self, axis: int, timeout: float = 150) -> int:
-        """MOTION: drive to the reverse hard limit and return its encoder value.
-        This re-references the controller's command origin (defines the frame)."""
+        """MOTION: drive to the reverse hard limit; return its encoder value.
+        Re-references the command origin."""
         self.move_absolute(axis, REVERSE_LIMIT_SEEK_COUNTS)
         time.sleep(0.4)
         t0 = time.time()
@@ -402,11 +382,10 @@ class MCM6101:
 
     def establish_frame(self, axis: int, span_counts: int,
                         probe_a: int = 20000, probe_b: int = 40000) -> dict:
-        """MOTION: fix the coordinate frame for `axis`. Drives to the reverse
-        limit, measures the in-range command->encoder map, and stores it. Returns
-        {R, slope, offset, travel_min, travel_max, true_center} (encoder counts).
-        Positive command drives away from the reverse limit (encoder increases),
-        so travel = [R, R+span]. Caller should then set soft limits inside this."""
+        """MOTION: drive to the reverse limit, then measure and store the
+        command->encoder map. Returns {R, slope, offset, travel_min,
+        travel_max, true_center} in encoder counts; travel = [R, R+span],
+        since positive command drives away from the reverse limit."""
         R = self.drive_to_reverse_limit(axis)
         self.move_absolute(axis, probe_a); e1 = self.wait_stopped(axis)
         self.move_absolute(axis, probe_b); e2 = self.wait_stopped(axis)
@@ -415,8 +394,8 @@ class MCM6101:
                                f"(e1={e1}, e2={e2}); could not measure slope.")
         slope = (e2 - e1) / (probe_b - probe_a)
         offset = e1 - slope * probe_a
-        # Sanity: this hardware's slope is ~17.8 enc/cmd; a wild value means a
-        # bad read (still moving, or hit a limit during the probe).
+        # ~17.8 enc/cmd on this hardware; anything wild is a bad read (still
+        # moving, or a limit hit mid-probe).
         if not (10.0 < abs(slope) < 25.0):
             raise MCM6101Error(f"Axis {axis}: implausible frame slope {slope:.2f} "
                                f"(e1={e1}, e2={e2}); try again.")
@@ -426,7 +405,7 @@ class MCM6101:
                 "true_center": R + span_counts // 2}
 
     def stop(self, axis: int, profiled: bool = True):
-        """Stop motion on an axis (profiled=controlled deceleration)."""
+        """Stop an axis (profiled = controlled deceleration)."""
         self._send(MGMSG_MOT_MOVE_STOP, axis, p1=axis,
                    p2=STOP_PROFILED if profiled else STOP_IMMEDIATE)
 
@@ -436,17 +415,15 @@ class MCM6101:
 
 
 if __name__ == "__main__":
-    # Make the console unable to raise on this script's own output before it
-    # prints anything (see acqApp/console.py -- a UnicodeEncodeError from a
-    # diagnostic print is otherwise indistinguishable from a device failure).
-    import sys as _sys
-    from pathlib import Path as _Path
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from acqApp.console import enable_safe_console
     enable_safe_console()
 
-    # Read-only self test: connect, identify device, print positions. No motion.
-    import sys
+    # Read-only self test: identify, list axes and positions. No motion.
     port = sys.argv[1] if len(sys.argv) > 1 else "COM54"
     with MCM6101(port) as dev:
         info = dev.get_info()

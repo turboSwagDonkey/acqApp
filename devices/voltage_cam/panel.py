@@ -1,16 +1,8 @@
-"""
-Voltage-imaging camera — settings panel.
+"""Voltage camera settings panel: a signal per parameter.
 
-SettingsPanel : QWidget that emits a signal per parameter.
-                Resolution/binning/trigger lock while acquisition runs;
-                capture rate (and so exposure) is hot. `set_trigger_mode()`
-                lets a routine drive the combo itself (adapters/
-                voltage_cam.py's `set_external_trigger`), the same way
-                `set_preset()` already lets the DMD calibration drive the
-                resolution combo.
-
-The owner (MainWindow / toy) reads .get_config() to build an AcqConfig
-before starting the worker, and wires target_hz_changed to worker.set_rate().
+Resolution/binning/trigger/burst lock while running; capture rate (and so
+exposure) is hot. The owner builds the worker from `get_config()` and wires
+`target_hz_changed` to `worker.set_rate()`.
 """
 
 from __future__ import annotations
@@ -31,8 +23,6 @@ from .presets import (
 
 
 class SettingsPanel(QWidget):
-    """Camera acquisition settings panel."""
-
     resolution_changed = pyqtSignal(str)    # preset key
     binning_changed   = pyqtSignal(int)
     trigger_changed   = pyqtSignal(str)
@@ -42,19 +32,14 @@ class SettingsPanel(QWidget):
     auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
     preview_avg_changed = pyqtSignal(int)   # frames to average in the preview only
     led_toggled       = pyqtSignal(bool)    # primary illumination on/off
-    led_follow_changed = pyqtSignal(bool)   # the Follow Live view MODE, not the LED state
-    # Any parameter edit. The LED's own ON/OFF is deliberately NOT one of
-    # these: it's runtime state, and restoring it at launch would turn the
-    # illumination on in an empty rig (devices/pupil_cam/panel.py's same
-    # rule). `led_follow_live` is a MODE, not that state, so it persists
-    # like show_lut/auto_levels — it only ever fires the LED from an
-    # explicit Live/Record start, never at launch.
+    # A persisted MODE; the LED's own on/off is never persisted, or launch
+    # would light an empty rig.
+    led_follow_changed = pyqtSignal(bool)
 
     def __init__(self, config: AcqConfig | None = None, parent=None):
         super().__init__(parent)
         self._cfg = config or AcqConfig()
-        # (hz, exposure_limited) reported by the running camera, or None when we
-        # only have the datasheet estimate (before Start).
+        # (hz, exposure_limited) from the running camera; None = datasheet.
         self._measured: tuple[float, bool] | None = None
         self._build()
 
@@ -65,7 +50,6 @@ class SettingsPanel(QWidget):
 
         self._cmb_preset = QComboBox()
         for key in PRESET_KEYS:
-            # Show the descriptive label (dims + Hz); store the stable key.
             self._cmb_preset.addItem(PRESETS[key].label, key)
         start = self._cfg.preset_key if self._cfg.preset_key in PRESET_KEYS else DEFAULT_PRESET
         self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(start))
@@ -101,8 +85,6 @@ class SettingsPanel(QWidget):
         lay.addRow("Frames per edge:", self._spn_burst)
         self._cmb_trigger.currentTextChanged.connect(self._sync_burst_enabled)
 
-        # The only rate/exposure control: exposure is always the longest this
-        # rate allows (presets.fit_exposure).
         self._spn_target_hz = spin(
             0.0, 100_000.0, self._cfg.target_hz, decimals=1, step=50.0,
             suffix=" Hz", track=False,
@@ -116,11 +98,8 @@ class SettingsPanel(QWidget):
         self._lbl_rate = QLabel()
         lay.addRow("Frame rate:", self._lbl_rate)
 
-        # Whether a RECORDING of this configuration can actually be written. The
-        # camera happily offers ~2200 MB/s at full frame and the writer sustains
-        # ~1000, so a bin-1 session silently keeps about half its frames — the
-        # single most consequential fact about a configuration, and until now it
-        # was only ever printed to a console the operator may never see.
+        # Whether a recording can be written: full frame at bin 1 offers more
+        # than the writer sustains and silently sheds the rest.
         self._lbl_rec = QLabel()
         self._lbl_rec.setWordWrap(True)
         lay.addRow("Recording:", self._lbl_rec)
@@ -187,7 +166,6 @@ class SettingsPanel(QWidget):
         cfg = self.get_config()
         self._refresh_recordability(cfg)
         exp = f"exposure {cfg.exposure_us:.0f} µs"
-        # The camera's own figure once running beats the datasheet estimate.
         if self._measured is not None:
             hz, _ = self._measured
             self._lbl_rate.setText(f"{hz:.1f} Hz — camera · {exp}")
@@ -203,16 +181,9 @@ class SettingsPanel(QWidget):
             "color:#c62828; font-weight:bold;" if cfg.rate_unreachable
             else "color:#2e7d32;")
 
-    def _refresh_recordability(self, cfg: AcqConfig | None = None) -> None:
-        """Say whether a recording of this configuration fits the writer.
-
-        `WRITER_MBPS` is the whole path (worker → Recorder → HDF5Writer →
-        NVMe), not a disk benchmark, and it's deliberately pessimistic — see
-        presets.py for what it is and isn't. Binning is the lever: on this
-        camera it cuts bytes, not time, so 2×2 keeps the full frame rate at a
-        quarter of the data.
-        """
-        cfg = cfg if cfg is not None else self.get_config()
+    def _refresh_recordability(self, cfg: AcqConfig) -> None:
+        """`WRITER_MBPS` is the whole write path, not a disk benchmark.
+        Binning cuts bytes, not rate, so 2×2 is the lever."""
         hz = self._measured[0] if self._measured is not None else cfg.rate_hz
         mbps = cfg.frame_bytes * hz / (1 << 20)
         if mbps <= WRITER_MBPS:
@@ -233,16 +204,13 @@ class SettingsPanel(QWidget):
 
     def set_measured_rate(self, hz: float | None,
                           exposure_limited: bool = False) -> None:
-        """Show the camera's own measured frame rate. Pass None to revert to the
-        datasheet estimate (e.g. when the session stops)."""
+        """The camera's own rate; None reverts to the datasheet estimate."""
         self._measured = None if hz is None else (float(hz), bool(exposure_limited))
         self._refresh_rate()
 
     def get_config(self) -> AcqConfig:
-        # `link` has no widget — it comes from the config the panel was built
-        # with (and, on the rig, from _check_link.py). Carry it through rather
-        # than rebuilding a default: dropping it silently reverts a USB3 rig to
-        # the CoaXPress readout table, and every Hz estimate reads ~7× high.
+        # `link` has no widget; dropping it would put a USB3 rig on the
+        # CoaXPress table, every estimate ~7× high.
         return AcqConfig(
             preset_key   = self._cmb_preset.currentData(),
             binning      = self._cmb_binning.currentData(),
@@ -257,15 +225,13 @@ class SettingsPanel(QWidget):
         ).fit_exposure()
 
     def set_led(self, on: bool) -> None:
-        """Sync the checkbox to actual state without re-emitting led_toggled
-        — the adapter calls this when Follow Live view fires the LED itself,
-        so the checkbox still shows the truth without a feedback loop."""
+        """Show the LED state without re-emitting `led_toggled`."""
         self._chk_led.blockSignals(True)
         self._chk_led.setChecked(on)
         self._chk_led.blockSignals(False)
 
     def set_running(self, running: bool) -> None:
-        """Lock structural settings (resolution/binning/trigger) while running."""
+        """Lock the structural settings while running."""
         self._running = running
         for w in self._locked:
             w.setEnabled(not running)
@@ -276,33 +242,26 @@ class SettingsPanel(QWidget):
             not self._running and self._cmb_trigger.currentText() == EXTERNAL_EDGE)
 
     def set_preset(self, key: str) -> None:
-        """Programmatically select a resolution preset (e.g. forcing full
-        frame before a DMD calibration). Structural, like a user's own combo
-        click: it only takes effect at the next Start."""
+        """Structural: takes effect at the next Start."""
         if key in PRESET_KEYS:
             self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(key))
 
     def set_binning(self, n: int) -> None:
-        """Programmatically select a binning factor (e.g. from a Mode
-        preset). Structural, like `set_preset()`: only takes effect at the
-        next Start."""
+        """Structural: takes effect at the next Start."""
         if n in BINNING_OPTIONS:
             self._cmb_binning.setCurrentIndex(BINNING_OPTIONS.index(n))
 
     def set_trigger_mode(self, mode: str) -> None:
-        """Programmatically select a trigger mode — a routine forces External
-        edge before it opens its recording, for a TTL start or for any
-        `trigger` step (see adapters/voltage_cam.py's `set_external_trigger`).
-        Structural, like `set_preset()`: only takes effect at the next Start."""
+        """Structural: takes effect at the next Start."""
         if mode in TRIGGER_MODES:
             self._cmb_trigger.setCurrentText(mode)
 
     def set_burst_frames(self, n: int) -> None:
-        """Frames per edge (a routine sets it). Structural: next Start."""
+        """Frames per edge. Structural: next Start."""
         self._spn_burst.setValue(int(n))
 
     def set_rate(self, hz: float) -> None:
-        """Capture rate (e.g. from a Mode preset); hot, like a manual edit."""
+        """Capture rate; hot, like a manual edit."""
         self._spn_target_hz.setValue(hz)
 
     @property

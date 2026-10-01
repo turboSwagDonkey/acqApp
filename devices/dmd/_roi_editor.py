@@ -4,14 +4,9 @@
     ...\\_roi_editor.py --image snapshot.npy      # a real ORCA frame
     ...\\_roi_editor.py --calib dmd_calib.json    # a measured registration
 
-`RoiEditor` is wired into the DMD tab (`adapters/dmd.py: edit_rois`) and
-tested (`tests/test_dmd_roi.py`); this is a way to look at it against a
-synthetic or saved frame with no rig and no light attached.
-
-Without `--calib` there's no measured DMD↔camera transform, so a plausible
-stand-in is invented to draw the reachable field with: **the outline is then
-made up, and an ROI inside it proves nothing about where light would land.**
-Window title says so.
+Without `--calib` the DMD↔camera transform is an invented stand-in: **the
+field outline is made up, and an ROI inside it proves nothing about where
+light would land.** The window title says so.
 """
 from __future__ import annotations
 
@@ -37,11 +32,8 @@ def demo_frame(w: int = CAM_W, h: int = CAM_H) -> np.ndarray:
 
 
 def stand_in_calibration(cam_size, dmd_size):
-    """A *made-up* registration: the DMD covering the middle ~60 % of the frame.
-
-    Only so the reachable-field outline has something to draw — not a
-    measurement. `run_calibration()` in `calibration.py` is.
-    """
+    """A *made-up* registration (the DMD over the middle ~60 % of the frame),
+    only so the field outline has something to draw."""
     from acqApp.devices.dmd.calibration import DmdCalibration
     cw, ch = cam_size
     dw, dh = dmd_size
@@ -57,7 +49,7 @@ def stand_in_calibration(cam_size, dmd_size):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image", help=".npy or .csv camera snapshot to draw on")
-    ap.add_argument("--calib", help="DmdCalibration JSON from run_calibration()")
+    ap.add_argument("--calib", help="DmdCalibration JSON from a sweep")
     args = ap.parse_args()
 
     if args.image:

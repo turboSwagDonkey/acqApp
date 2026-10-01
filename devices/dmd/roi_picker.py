@@ -1,10 +1,5 @@
-"""A small dialog for choosing a saved ROI set: `roi_store`'s Qt front end.
-
-Shared by the ROI editor's Load button and a routine step's Pattern picker —
-both need the same "this session's sets first, older ones through Browse"
-shape, so it lives once rather than being copied into each caller. That shape
-itself is `widgets.SessionPicker`, shared in turn with the stage's FOV picker.
-"""
+"""Choose a saved ROI set: `roi_store`'s Qt front end, shared by the ROI
+editor's Load button and a routine step's Pattern picker."""
 from __future__ import annotations
 
 from acqApp.devices.dmd import roi_store

@@ -22,14 +22,11 @@ class SavePanel(QWidget):
 
     settings_changed = pyqtSignal()
 
-    # A short burst reads fast on any SSD — its own SLC write cache absorbs
-    # it — which is exactly the trap that hid a SATA drive's real ceiling
-    # behind the writer/GIL for a whole session (PLAN.md sec 6 item 1). 1 GiB
-    # is enough to run past that cache on the drives this rig actually has.
+    # Must run past the SSD's SLC cache: a short burst once hid a SATA
+    # drive's real ceiling. 1 GiB does on this rig's drives.
     _SCAN_SIZE_MB = 1024
-    # The writer's own overhead over a raw write, measured in
-    # docs/CAMERA_TRANSFER.md (direct-chunk 2696 -> 2464 MB/s through the
-    # whole path, ~9%) — derate the raw measurement before calling it safe.
+    # Writer overhead over a raw write: 2696 -> 2464 MB/s, ~9%
+    # (docs/CAMERA_TRANSFER.md).
     _SCAN_DERATE = 0.85
 
     def __init__(self, config: SaveConfig | None = None, parent=None):
@@ -37,10 +34,10 @@ class SavePanel(QWidget):
         self._cfg = config or SaveConfig()
         if not self._cfg.folder.strip():
             self._cfg.folder = str(default_folder())
-        self._rate_mbps: float = 0.0        # set by the owner from the cam config
-        self._writer_mbps: float = 0.0      # …and what the writer sustains
-        self._active_fov: str = ""          # set by the owner (MainWindow), live
-        self._recording = False             # set by the owner; blocks renaming
+        self._rate_mbps: float = 0.0
+        self._writer_mbps: float = 0.0
+        self._active_fov: str = ""
+        self._recording = False             # blocks Bpod renaming
         self._build()
         self._refresh()
 
@@ -51,7 +48,6 @@ class SavePanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        # Drive shortcut: picking one rewrites the folder to that drive.
         self._cmb_drive = QComboBox()
         self._reload_drives()
         self._cmb_drive.activated.connect(self._on_drive_picked)
@@ -130,11 +126,8 @@ class SavePanel(QWidget):
         self._cmb_orca_format = QComboBox()
         self._cmb_orca_format.addItem("TIFF — per-frame timestamps", "tiff")
         self._cmb_orca_format.addItem("DCIMG — native, faster", "dcimg")
-        # Preview DOES survive a .dcimg recording (measured 2026-09-23): the
-        # driver keeps filling the ring, so read_newest_image still answers.
-        # What stops is per-frame access — read_multiple_images returns
-        # nothing, so there is no _timestamps.csv. Routines DO run on it:
-        # they count the recorder's own frame total instead.
+        # Preview survives a .dcimg recording (2026-09-23); per-frame reads
+        # don't, so there are no per-frame timestamps.
         self._cmb_orca_format.setToolTip(
             "TIFF: frames go through acqApp, each stamped on the shared "
             "clock.\n"
@@ -152,7 +145,6 @@ class SavePanel(QWidget):
         self._lbl_preview.setStyleSheet("color:#8a8a8a;")
         lay.addRow("Next file:", self._lbl_preview)
 
-        # The point of the whole panel: how long can this actually record?
         self._lbl_space = QLabel()
         self._lbl_space.setWordWrap(True)
         lay.addRow("Capacity:", self._lbl_space)
@@ -219,11 +211,8 @@ class SavePanel(QWidget):
             self._lbl_space.setText(f"Could not open {folder}: {e}")
 
     def _on_scan_drives(self) -> None:
-        """Benchmark every fixed drive and flag any too slow for the current
-        acquisition rate. Synchronous (like dialogs.py's device probe loop) —
-        each drive is only ~1 GiB, a couple of seconds even on SATA, and
-        `processEvents()` between drives keeps the window from looking frozen.
-        """
+        """Benchmark every drive and flag any too slow for the current rate.
+        Synchronous: a couple of seconds per drive, with processEvents()."""
         self._btn_scan.setEnabled(False)
         html = []
         try:
@@ -231,12 +220,12 @@ class SavePanel(QWidget):
                 self._lbl_scan.setText(f"scanning {root}…")
                 self._lbl_scan.setStyleSheet("color:#8a8a8a;")
                 QApplication.processEvents()
-                need = (self._SCAN_SIZE_MB << 20) * 4     # leave the drive most of its room
-                if free < need:
+                size = self._SCAN_SIZE_MB << 20
+                if free < size * 4:
                     html.append(f"{root}&nbsp;&nbsp;skipped — only {_gb(free)} free "
                                 f"(need some room to test meaningfully)")
                     continue
-                mbps = benchmark_drive(root, self._SCAN_SIZE_MB << 20)
+                mbps = benchmark_drive(root, size)
                 if mbps is None:
                     html.append(f"{root}&nbsp;&nbsp;write test failed (permissions?)")
                     continue
@@ -283,9 +272,7 @@ class SavePanel(QWidget):
         self.settings_changed.emit()
 
     def _current_fov(self) -> str:
-        """The name to append to the stem right now — empty unless a FOV is
-        active AND the operator opted in, so turning the box on with nothing
-        active is a silent no-op rather than an empty trailing underscore."""
+        """The FOV name to append, or "" (box off or no FOV active)."""
         return self._active_fov if self._chk_fov.isChecked() else ""
 
     def _update_fov_checkbox(self) -> None:
@@ -322,8 +309,8 @@ class SavePanel(QWidget):
         return self._cfg.resolve_routine_dir(fov, trial, when, unique=unique)
 
     def set_active_fov(self, name: str) -> None:
-        """The Stage tab's current FOV, or "" once the stage drifts off it —
-        called on the shared display tick (MainWindow.active_fov_name())."""
+        """The Stage tab's current FOV, or "" off it. Called every display
+        tick, so a no-op unless it changed."""
         name = name or ""
         if name == self._active_fov:
             return
@@ -335,13 +322,8 @@ class SavePanel(QWidget):
         self._recording = bool(on)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
-        """Data rate of the current acquisition config, for the capacity estimate.
-
-        `writer_mbps` is what the write path can actually sustain. Passed in
-        rather than imported: it's a camera-side measurement, and `saving/`
-        doesn't depend on `devices/` (see docs/STRUCTURE.md). 0 means unknown,
-        and the estimate then assumes everything offered is written.
-        """
+        """Offered data rate, and what the writer sustains (0 = unknown:
+        assume all is written). Passed in: `saving/` doesn't import devices."""
         self._rate_mbps = max(0.0, float(mbps))
         self._writer_mbps = max(0.0, float(writer_mbps))
         self._refresh()
@@ -360,9 +342,7 @@ class SavePanel(QWidget):
     # ── Readouts ─────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        # Preview the path a recording started now would actually get, so a
-        # template that collides shows its `_001` here rather than surprising
-        # the operator in the status line after the fact.
+        # The path a recording now would really get, `_001` included.
         resolve = self.resolve_dir if self._cfg.split else self.resolve
         plain = resolve()
         unique = resolve(unique=True)
@@ -378,13 +358,10 @@ class SavePanel(QWidget):
             return
 
         txt = f"{_gb(free)} free"
-        warn = free < (10 << 30)          # under 10 GB isn't a usable target
+        warn = free < (10 << 30)
         if self._rate_mbps > 0:
-            # The disk fills at what's WRITTEN, not what the camera offers, and
-            # those differ: full frame at bin 1 acquires ~2200 MB/s against a
-            # writer that sustains ~1000. Estimating from the offered rate both
-            # halved the time and — worse — showed a configuration that sheds
-            # half its frames in the same green as a healthy one.
+            # The disk fills at what's WRITTEN: full frame offers ~2200 MB/s
+            # to a writer that sustains less, and sheds the rest.
             cap = self._writer_mbps or self._rate_mbps
             written = min(self._rate_mbps, cap)
             secs = free / (written * (1 << 20))
@@ -394,7 +371,7 @@ class SavePanel(QWidget):
                         f"~{100 * (1 - written / self._rate_mbps):.0f}% of "
                         f"frames can't be written — see the Voltage cam tab")
                 warn = True
-            warn = warn or secs < 120     # under 2 minutes of headroom
+            warn = warn or secs < 120
         self._lbl_space.setText(txt)
         self._lbl_space.setStyleSheet(
             "color:#c47f00; font-weight:bold;" if warn else "color:#2e7d32;")

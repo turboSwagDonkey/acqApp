@@ -81,6 +81,14 @@ def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
     return QSize(w, h)
 
 
+def _restore_or_fit(win: QDialog, saved, floor: tuple[int, int]) -> None:
+    """Saved geometry if it restores AND looks sane (a restore can succeed on
+    a garbage size), else `win.default_size()`."""
+    if not (saved is not None and win.restoreGeometry(saved)
+            and _looks_sane(win.size(), floor)):
+        win.resize(win.default_size())
+
+
 class PanelWindow(QDialog):
     """One module's panel in its own window (`ModuleAdapter.own_window`).
     Hidden, never destroyed: the panel is wired to a live controller.
@@ -94,7 +102,6 @@ class PanelWindow(QDialog):
     def __init__(self, panel: QWidget, label: str, key: str, parent=None,
                  size: tuple[int, int] | None = None):
         super().__init__(parent)
-        self._key = key
         self._size = size
         self._geom_key = f"panelGeometry/{key}"
         self.setWindowTitle(label)
@@ -126,11 +133,8 @@ class PanelWindow(QDialog):
     def showEvent(self, event) -> None:
         if not self._sized:
             self._sized = True
-            restored = (self._saved_geom is not None
-                       and self.restoreGeometry(self._saved_geom))
-            floor = (0, 0) if self._size else self._MIN_DEFAULT
-            if not restored or not _looks_sane(self.size(), floor):
-                self.resize(self.default_size())
+            _restore_or_fit(self, self._saved_geom,
+                            (0, 0) if self._size else self._MIN_DEFAULT)
         super().showEvent(event)
         self.visibility_changed.emit(True)
 
@@ -192,10 +196,7 @@ class SettingsDialog(QDialog):
     def showEvent(self, event) -> None:
         if not self._sized:
             self._sized = True
-            restored = (self._saved_geom is not None
-                       and self.restoreGeometry(self._saved_geom))
-            if not restored or not _looks_sane(self.size(), self._MIN_DEFAULT):
-                self.resize(self.default_size())
+            _restore_or_fit(self, self._saved_geom, self._MIN_DEFAULT)
         super().showEvent(event)
 
     def add_panel(self, panel: QWidget, label: str, key: str,
@@ -247,7 +248,6 @@ class ConnectionMonitor(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Device connections")
         self.setMinimumWidth(420)
-        self._modules = module_keys
         # A callable, so Refresh sees a port edited after opening.
         self._probe_kwargs = probe_kwargs or (lambda: {})
         self._rows: dict[str, tuple[QLabel, QLabel]] = {}

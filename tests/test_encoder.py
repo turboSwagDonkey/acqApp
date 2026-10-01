@@ -4,13 +4,14 @@
 """
 from __future__ import annotations
 
+import random
 import sys
+import time
+import types
+
 import numpy as np
 from _harness import Report, pump, qt_app, run_parts
 from acqApp.devices.wheel.acquisition import _EncoderBase
-import random
-import time
-import types
 
 
 # ═══ derive (was test_encoder_derive.py) ════════════════════════════════
@@ -27,11 +28,8 @@ def sim(seconds: float, rev_s: float = REV_S, smear: int = SMEAR,
         noise: float = 0.0, seed: int = 3):
     """(times, voltages) for a wheel turning at `rev_s`, resets smeared.
 
-    Position runs *upward* through the ramp, because that is what this rig
-    does: the operator confirmed 2026-08-19 that a mouse running forward reads
-    positive with `_SIGN = +1.0`, which is only true of a rising ramp. This
-    fixture previously asserted the opposite ("the forward direction is the
-    falling one") and was simply wrong about the hardware — see §7 (ad).
+    A rising ramp: forward running reads positive on this rig (operator,
+    2026-08-19); an earlier falling-ramp fixture was wrong about the hardware.
     """
     rng = np.random.default_rng(seed)
     n = int(seconds * RATE)
@@ -39,14 +37,10 @@ def sim(seconds: float, rev_s: float = REV_S, smear: int = SMEAR,
     frac = (rev_s * t) % 1.0
     v = frac * VPR
 
-    # Smear each reset: while the sensor crosses its dead zone the output is
-    # neither the old position nor the new one, but somewhere in between. The
-    # transition is then several sub-steps of ~1/smear of a turn each — every
-    # one implying tens of rev/s, which is the signature _derive rejects, and
-    # every one under the half-turn a plain unwrap needs to see.
-    # A rising ramp wraps DOWNWARD (…0.99 → 0.00), so the reset is a large
-    # negative step. Flipping the ramp without flipping this would find no
-    # wraps at all and quietly stop smearing them — the whole point of `sim`.
+    # Crossing the dead zone, the output passes through in-between values:
+    # sub-steps of ~1/smear turn, each implying tens of rev/s (what _derive
+    # rejects) and each under the half-turn a plain unwrap sees. The wrap is
+    # DOWNWARD; flip the ramp without flipping this and nothing gets smeared.
     jump = np.nonzero(np.diff(frac) < -0.5)[0] + 1       # sample after each wrap
     for j in jump:
         if smear <= 0 or j + smear >= n:
@@ -58,11 +52,8 @@ def sim(seconds: float, rev_s: float = REV_S, smear: int = SMEAR,
 
 
 def naive_unwrap(v: np.ndarray) -> float:
-    """Control: wrap-correct each step, but keep every one — no reset rejection.
-
-    This is the obvious implementation, and the one the comment in
-    `_EncoderBase` is warning about.
-    """
+    """Control: the obvious implementation — wrap-correct each step, but keep
+    every one (no reset rejection)."""
     frac = v / VPR
     step = np.diff(frac)
     step = np.where(step > 0.5, step - 1.0, np.where(step < -0.5, step + 1.0, step))
@@ -95,8 +86,7 @@ def _part_derive() -> int:
            f"({np.count_nonzero(np.diff(v / VPR) > 0.5)} steps left big enough "
            f"for a half-turn unwrap to notice)")
 
-    # Speed is reported for a sample _LAG_S in the past, so judge it after the
-    # buffer has filled.
+    # Speed is for a sample _LAG_S in the past; judge it once the buffer fills.
     settled = t > 2.0
     want = REV_S * CIRC
     med = float(np.median(sp[settled]))
@@ -106,8 +96,7 @@ def _part_derive() -> int:
             f"speed: no reset spikes — worst sample is "
             f"{float(np.max(np.abs(sp[settled] - want))) / want * 100:.1f} % off")
 
-    # Distance is the number that decays over a long run, so check its slope
-    # rather than a single value: it must keep pace with the true speed.
+    # Distance is what decays over a long run: check its slope.
     i3 = int(3.0 * RATE)
     i5 = int(5.0 * RATE)
     slope = (di[i5] - di[i3]) / (t[i5] - t[i3])
@@ -136,8 +125,7 @@ def _part_derive() -> int:
             f"averages {naive / 6.0:.2f} — it is not merely agreeing with it")
 
     # ── a clean reset must still be counted ──────────────────────────────────
-    # Rejection is on speed, not on "is this a wrap", so a single-sample wrap —
-    # which is what a good sensor gives — has to survive it.
+    # Rejection is on speed: a good sensor's single-sample wrap must survive.
     t, v = sim(6.0, smear=0)
     _, di_clean = run(t, v)
     r.check(abs(di_clean[-1] - di[-1]) < 0.15 * di[-1],
@@ -163,7 +151,6 @@ def _part_derive() -> int:
     r.check(out == (2.75, 0.0),
             f"with no V/rev the raw voltage is passed through as 'speed' "
             f"(got {out})")
-    enc = _EncoderBase(volts_per_rev=VPR, wheel_dia_mm=None)
     t, v = sim(4.0)
     sp_r, di_r = run(t, v, dia=None)
     r.check(abs(float(np.median(sp_r[t > 2.0])) - REV_S) < 0.05,
@@ -181,7 +168,7 @@ def _part_derive() -> int:
 
 # ═══ timing (was test_encoder_timing.py) ════════════════════════════════
 
-T_RATE = 200.0            # Hz asked for
+T_RATE = 200.0          # Hz asked for
 COERCED = 200.0         # Hz the fake board settles on
 T_VPR = 5.0
 RUN_S = 1.5
@@ -216,12 +203,8 @@ class FakeTiming:
 
 
 class FakeTask:
-    """A board whose samples are perfectly clocked and irregularly collected.
-
-    Samples become available on a virtual clock at `i / rate`; a read returns as
-    soon as the last sample it wants exists, then sometimes dawdles — which is
-    what a buffer is for, and what makes arrival time a bad timestamp.
-    """
+    """Samples perfectly clocked at `i / rate`, collected irregularly: a read
+    returns once its last sample exists, then sometimes dawdles."""
 
     instances: list["FakeTask"] = []
     fail_timing = False
@@ -237,7 +220,6 @@ class FakeTask:
         self._rng = random.Random(20260812)
         FakeTask.instances.append(self)
 
-    # context manager, as `with Task() as task:` needs
     def __enter__(self): return self
     def __exit__(self, *exc): self.close(); return False
 
@@ -334,8 +316,6 @@ def _part_timing() -> int:
     r.note(f"{len(rows)} samples over {RUN_S:g} s at {COERCED:g} Hz, "
            f"blocks of {block}")
 
-    # Every sample exactly once, in order: a block read must not drop, repeat
-    # or reorder anything.
     volts = np.array([s[0] for _a, s in rows])
     want = np.array([FakeTask.value(i) for i in range(len(rows))])
     r.check(bool(np.allclose(volts, want)),
@@ -355,9 +335,8 @@ def _part_timing() -> int:
             f"from {period * 1e3:.3f} ms")
     r.check(bool(np.all(d_at > 0)), "no two samples share a timestamp")
 
-    # CONTROL: the arrival times of these very same samples — what the old
-    # software-paced loop recorded. If these were also regular, the check
-    # above would be proving nothing about the code.
+    # CONTROL: the same samples' arrival times, which the old software-paced
+    # loop recorded. Were these regular too, the above would prove nothing.
     d_ar = np.diff(arrival)
     r.check(float(np.std(d_ar)) > 20.0 * float(np.std(d_at)) + 1e-4,
             f"control: arrival intervals are irregular "
@@ -370,9 +349,7 @@ def _part_timing() -> int:
     r.info(f"arrival jitter that no longer reaches the file: "
            f"±{float(np.max(np.abs(d_ar - period))) * 1e3:.1f} ms")
 
-    # The anchor must put the stream in the right place, not just space it
-    # evenly: a constant offset is acceptable (it is the first read's latency),
-    # a drifting or wildly wrong one is not.
+    # Placed, not just spaced; a constant offset (first read's latency) is ok.
     off = float(np.median(arrival - at))
     r.check(0.0 <= off < 4.0 * EncoderWorker._BLOCK_S,
             f"the stream is anchored to real time: samples are stamped "
@@ -381,9 +358,7 @@ def _part_timing() -> int:
     r.check(float(np.max(at)) <= float(np.max(arrival)) + 1e-9,
             "no sample is stamped in the future")
 
-    # ── speed: the point of the exercise ─────────────────────────────────────
-    # The fake wheel turns at exactly rate/100 rev/s. Hardware spacing means the
-    # derived speed should be that, to well under a percent.
+    # ── speed: the point of the exercise (exactly rate/100 rev/s) ───────────
     speed = np.array([s[1] for _a, s in rows])          # mm/s
     want_mm_s = (COERCED / 100.0) * np.pi * 150.0
     settled = speed[int(0.75 * len(speed)):]
@@ -393,8 +368,7 @@ def _part_timing() -> int:
             f"(within 1 %)")
 
     # ── the fallback ─────────────────────────────────────────────────────────
-    # A board with no timing engine must keep acquiring — losing the wheel for
-    # a session is worse than a jittery timebase — but must say which it gave.
+    # Losing the wheel is worse than a jittery timebase — but it must say so.
     FakeTask.instances.clear()
     FakeTask.fail_timing = True
     w2 = EncoderWorker("Dev3/ai2", 100.0, volts_per_rev=T_VPR, wheel_dia_mm=150.0)

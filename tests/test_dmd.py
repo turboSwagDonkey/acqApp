@@ -4,11 +4,16 @@
 """
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
+import tracemalloc
 import types
+from pathlib import Path
+
 import numpy as np
-from _harness import (Report, block_real_devices, qt_app, isolate_user_state,
-                      run_parts)
+from _harness import (Report, block_real_devices, isolate_user_state,
+                      make_window, pump, qt_app, run_parts)
 from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
@@ -16,14 +21,11 @@ from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             holdout_error, offset_stripe,
                                             stripe_sweep, with_corners,
                                             with_vignette, without_vignette)
-from acqApp.devices.dmd.sweep import FreshGrabber, sweep_exposures
-import tempfile
-import tracemalloc
-from pathlib import Path
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet, roi_from_dict
+from acqApp.devices.dmd.sweep import FreshGrabber, sweep_exposures
 
 
-# ═══ dmd (was test_dmd.py) ══════════════════════════════════════════════
+# ═══ dmd ════════════════════════════════════════════════════════════════
 
 W, H = 1024, 768                # this rig's ALP panel
 
@@ -134,10 +136,8 @@ def _part_dmd() -> int:
             f"offset moves the pattern from the panel centre by exactly that "
             f"many device px (centre {cx:.1f}, {cy:.1f})")
 
-    # Fit: scale to the largest that fits, centre, and ignore the rest.
-    # The source image is 200 px square with a 100 px mark in it, so fitting it
-    # to a 768-tall panel scales by 3.84 and the mark ends up exactly half the
-    # panel's height.
+    # Fit: a 200 px source scales by 3.84 to the 768 px panel, so its 100 px
+    # mark is exactly half the panel's height.
     f = alp.build_frame(src, W, H, scale_pct=25.0, offset_x=300.0,
                         rotation_deg=45.0, fit=True)
     b = bbox(f)
@@ -148,9 +148,7 @@ def _part_dmd() -> int:
     r.check(abs(cx - W / 2) <= 1.0 and abs(cy - H / 2) <= 1.0,
             "fit re-centres, overriding scale, rotation and offset")
 
-    # Rotation direction. A mark in the TOP-LEFT must go to the TOP-RIGHT under
-    # a +90 degrees rotation if — and only if — positive is clockwise. Getting
-    # this backwards would still look plausible on any symmetric pattern.
+    # A backwards rotation still looks plausible on any symmetric pattern.
     mark = square(200, 40, at=(20, 20))
     f = alp.build_frame(mark, W, H, scale_pct=100.0, rotation_deg=90.0)
     cx, cy = centre(f)
@@ -163,7 +161,6 @@ def _part_dmd() -> int:
             f"control: unrotated, the same mark is top-left "
             f"({c0[0]:.0f}, {c0[1]:.0f})")
 
-    # Thresholds, both of them.
     r.check(int((alp.build_frame(np.full((10, 10), 128, np.uint8), W, H) > 0).sum())
             == 100, "grey 128 is on (>127)")
     r.check(int((alp.build_frame(np.full((10, 10), 127, np.uint8), W, H) > 0).sum())
@@ -185,8 +182,6 @@ def _part_dmd() -> int:
     r.check(ok, "a colour (3-D) array is rejected rather than silently reshaped")
 
     # ══ the controller ════════════════════════════════════════════════════════
-    import tempfile
-    from pathlib import Path
     from PIL import Image
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmd_"))
     pat = tmp / "square.png"
@@ -237,7 +232,6 @@ def _part_dmd() -> int:
     c.stop()
     r.check(events == [], "a second stop is a no-op, not a second event")
 
-    # Static hold: device-default timing, looped — not a 250 ms flicker.
     c.apply_settings(DmdSettings(pattern_path=pat, static_hold=True))
     c.display()
     r.check(dev.last("SetTiming")[1] is None and dev.last("Run")[1] is True,
@@ -246,12 +240,8 @@ def _part_dmd() -> int:
             f"loop={dev.last('Run')[1]})")
     c.stop()
 
-    # The two checks below drive the CYCLING path, which the panel no longer
-    # offers — it hardcodes static_hold=True so the DMD innately holds one
-    # image. So they say static_hold=False explicitly rather than leaning on
-    # the dataclass default, which now follows the panel.
-
-    # Repeats: a finite burst rather than a loop.
+    # The cycling path below: the panel never offers it, and the dataclass
+    # default follows the panel, so static_hold=False is explicit.
     c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
                                  on_time_ms=20.0, n_repeats=3))
     c.display()
@@ -260,7 +250,6 @@ def _part_dmd() -> int:
             f"…and is sent as ALP_SEQ_REPEAT (calls {dev.calls[-4:]})")
     c.stop()
 
-    # The ALP cannot hold a picture longer than 10 s.
     c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
                                  on_time_ms=30_000.0))
     c.display()
@@ -269,13 +258,11 @@ def _part_dmd() -> int:
             f"(got {dev.last('SetTiming')[1]})")
     c.stop()
 
-    # Geometry edited after loading must rebuild the frame, or Display projects
-    # the old alignment while the panel shows the new one.
+    # Unrebuilt, Display would project the old alignment under the new panel.
     c.apply_settings(DmdSettings(pattern_path=pat, scale_pct=50.0))
     r.check(c.on_pixels == 50 * 50,
             f"a geometry change re-renders the pattern ({c.on_pixels} mirrors)")
 
-    # No pattern: say so and touch nothing.
     n_before = len(dev.calls)
     c2 = DmdController(DmdSettings())
     dev2 = FakeALP4.instances[-1]
@@ -318,7 +305,6 @@ def _part_dmd() -> int:
     r.check(raised, "a device already in use raises out of the constructor, "
                     "so the adapter can substitute the mock and say so")
 
-    import shutil
     shutil.rmtree(tmp, ignore_errors=True)
 
     check_roi_wiring(r)
@@ -328,18 +314,11 @@ def _part_dmd() -> int:
 
 
 def check_roi_wiring(r) -> None:
-    """The ROI editor reaches the DMD tab, and gets a VOLTAGE-camera frame.
-
-    The DMD images through the voltage camera, so an ROI drawn for it is in
-    ORCA pixels. Two things could silently break that: the frame arriving at
-    display scale (every ROI then out by DISP_DS), or `latest_frame` consuming
-    the frame and starving the camera's own preview.
-    """
-    import sys as _s
-    from _harness import isolate_user_state, make_window, pump, qt_app
+    """The ROI editor gets a full-resolution VOLTAGE-camera frame (ROIs are in
+    ORCA px), without consuming it from the camera's own preview."""
     isolate_user_state()
     app = qt_app()
-    _s.argv = ["main.py", "--mock"]
+    sys.argv = ["main.py", "--mock"]
     win = make_window({"voltage_cam", "dmd"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     cam = next(m for m in win._modules if m.key == "voltage_cam")
@@ -357,20 +336,17 @@ def check_roi_wiring(r) -> None:
                 f"…at FULL camera resolution {f.shape} (want {want}), not the "
                 f"preview's 1/{DISP_DS} — ROIs are in camera px, so a "
                 f"downsampled frame would put every one of them out by {DISP_DS}x")
-    # CONTROL: reading it must not consume. The camera's own preview pulls from
-    # the same worker, and a stolen frame is a dropped one.
+    # The preview pulls from the same worker; a stolen frame is a dropped one.
     again = win.latest_frame("voltage_cam")
     r.check(again is not None and again.shape == f.shape,
             "control: reading it twice still returns a frame (non-consuming)")
     r.check(win.latest_frame("nope") is None, "an unloaded module gives None")
 
-    # The panel round-trips what the editor produces.
     # Keys exactly as RectRoi.to_dict() writes them: `roi_from_dict` passes
     # them straight to the constructor, so cx/cy/angle would raise.
     dmd.panel.set_rois(({"kind": "rect", "name": "r1", "enabled": True,
                          "x": 100.0, "y": 80.0, "w": 40.0, "h": 30.0,
                          "angle_deg": 0.0},))
-    from acqApp.devices.dmd.roi import RoiSet
     r.check(len(RoiSet.from_list(list(dmd.panel.rois))) == 1,
             "…and they round-trip through roi_from_dict, so the ROI display "
             "mode can rebuild them")
@@ -389,24 +365,19 @@ def check_roi_wiring(r) -> None:
 
 def check_mode_switch_and_cache(r) -> None:
     """A mode click must not double-fire, and an unchanged preview must not
-    re-run the pattern transform (2026-08-27 cleanup sweep findings)."""
-    import sys as _s
-    import tempfile
-    from pathlib import Path
+    re-run the pattern transform."""
     from PIL import Image
-    from _harness import isolate_user_state, make_window, pump, qt_app
 
     isolate_user_state()
     app = qt_app()
-    _s.argv = ["main.py", "--mock"]
+    sys.argv = ["main.py", "--mock"]
     win = make_window({"dmd"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     panel = dmd.panel
 
     from acqApp.devices.dmd.control import MODE_ALL_ON, MODE_PATTERN
 
-    # ── each toggled radio in a QButtonGroup fires once — the switch is one
-    # user action, and a single settings_changed/preview-rebuild per click ──
+    # A switch toggles two radios; it must still emit once.
     seen: list = []
     panel.settings_changed.connect(lambda s: seen.append(s))
     panel._rb[MODE_ALL_ON].setChecked(True)
@@ -418,7 +389,6 @@ def check_mode_switch_and_cache(r) -> None:
             f"a mode click emits settings_changed once, not once per radio "
             f"in the switch ({len(seen)})")
 
-    # ── the built frame is cached: an unchanged preview reuses it ───────────
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmdcache_"))
     pat = tmp / "square.png"
     Image.fromarray(np.full((64, 64), 255, np.uint8), mode="L").save(pat)
@@ -441,28 +411,20 @@ def check_mode_switch_and_cache(r) -> None:
     r.check(changed is not before,
             "…but a real parameter change rebuilds it")
 
-    import shutil
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()
     pump(app, 0.1)
 
 
 def check_sub_sampling(r) -> None:
-    """1-out-of-N: cuts total light without touching illumination time or
-    geometry. n=1 (the default) is a no-op; n=2..10 removes roughly that
-    fraction of the ON pixels, evenly (diagonally striped, not banded on one
-    axis) — see `control.subsample_frame`. Also the point of adding it: the
-    real controller's `apply_settings` decides whether to reload off an
-    explicit field tuple (unlike the mock, which just compares the whole
-    dataclass), so a sub_sampling-only change is the regression this guards —
-    it is easy to add a field to `DmdSettings` and forget it there."""
+    """1-out-of-N sub-sampling removes ~1/N of the ON pixels (n=1 is a no-op),
+    and a sub_sampling-only change reloads the real controller, whose reload
+    test is an explicit field tuple easy to forget a new field in."""
     from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                             DmdController, DmdSettings,
                                             MockDmdController, subsample_frame)
 
-    # check_roi_wiring/check_mode_switch_and_cache called isolate_user_state(),
-    # which re-blocks ALL vendor drivers (including ALP4) with no args — undo
-    # that here, the same fake this file's own `main()` installs up front.
+    # isolate_user_state() above re-blocked every vendor driver, ALP4 included.
     install_fake_alp()
 
     full = np.full((200, 300), 255, dtype=np.uint8)
@@ -477,25 +439,18 @@ def check_sub_sampling(r) -> None:
                 f"wanted ~{1.0 / n:.3f})")
         r.check(set(np.unique(out)) <= {0, 255}, f"…and stays binary (n={n})")
 
-    # A pixel that was already off must stay off, not get toggled back on.
     half = full.copy()
     half[:, 150:] = 0
     masked = subsample_frame(half, 2)
     r.check(np.array_equal(masked[:, 150:], half[:, 150:]),
             "an already-off pixel is unaffected either way")
 
-    # End to end, against the FakeALP4 the module fixture already installed:
-    # All ON + 1-in-2 sub-sampling halves the mirrors actually projected.
     FakeALP4.instances.clear()
     c = DmdController(DmdSettings(display_mode=MODE_ALL_ON, sub_sampling=2))
     r.check(abs(c.on_pixels / (DEFAULT_W * DEFAULT_H) - 0.5) < 0.02,
             f"All ON + 1-in-2 sub-sampling projects ~half the mirrors "
             f"({c.on_pixels} of {DEFAULT_W * DEFAULT_H})")
 
-    # The regression this exists for: sub_sampling alone must be enough to
-    # trigger a reload — it was added to DmdSettings after geometry_changed's
-    # field tuple already existed, exactly the kind of field a later edit
-    # forgets to add there.
     before = c.on_pixels
     c.apply_settings(DmdSettings(display_mode=MODE_ALL_ON, sub_sampling=4))
     r.check(c.on_pixels != before,
@@ -503,27 +458,20 @@ def check_sub_sampling(r) -> None:
             f"{c.on_pixels} mirrors)")
     c.close()
 
-    # The mock must agree — it reloads on ANY settings change (dataclass
-    # equality), so this is the cross-check that the real controller's
-    # explicit tuple isn't quietly narrower.
+    # The mock reloads on any change (dataclass equality): the cross-check.
     m = MockDmdController(DmdSettings(display_mode=MODE_ALL_ON, sub_sampling=2))
     m.load_pattern()
     r.check(abs(m.on_pixels / (DEFAULT_W * DEFAULT_H) - 0.5) < 0.02,
             f"the mock agrees ({m.on_pixels} of {DEFAULT_W * DEFAULT_H})")
 
 
-# ═══ calib (was test_dmd_calibration.py) ════════════════════════════════
+# ═══ calib ══════════════════════════════════════════════════════════════
 
 DW, DH = 256, 192          # a small DMD
 CW, CH = 320, 240          # the "ORCA"
 
-# Independent of calibration.py's own STRIPE_WIDTH/STRIPE_CROSS — those are
-# tuned per rig (a real one has been hand-edited smaller than these, and
-# rigs.json can override them per profile), while the synthetic camera and
-# vignette model below were sized against THESE specific fractions. Passed
-# explicitly everywhere a stripe is projected here, so this test's own
-# geometry never silently drifts with whatever a real rig's file currently
-# says.
+# Not calibration.py's STRIPE_WIDTH/STRIPE_CROSS: those are tuned per rig, and
+# the synthetic camera below was sized against these.
 TEST_THICK_FRAC = 0.025
 TEST_CROSS_FRAC = 0.25
 
@@ -608,9 +556,8 @@ def _part_calib() -> int:
             f"…recording both sizes it was measured at {c.dmd_size} -> "
             f"{c.cam_size}")
 
-    # A mirrored relay must come back mirrored. The offsets are signed for
-    # exactly this: a symmetric pattern could not tell the two apart, and a
-    # mirrored registration aims every ROI wrongly while looking well fitted.
+    # A mirrored registration aims every ROI wrongly while looking well
+    # fitted; the signed offsets are what tell the two apart.
     flip = np.array([[-1.05, 0.10, 300.0], [0.08, 1.02, 22.0], [0.0, 0.0, 1.0]])
     cf = run(make_camera(flip, rng))
     errf = float(np.abs(apply_transform(np.linalg.inv(cf.cam_to_dmd), pts)
@@ -623,9 +570,6 @@ def _part_calib() -> int:
             f"({d[0]:+.0f} px), so a sign error would have been caught")
 
     # ── 2b. the manual Y-flip (DmdSettings.roi_flip_y) mirrors DMD rows only ──
-    # A rig-side correction, not a re-fit — so this holds it to plain algebra
-    # rather than another synthetic-camera round trip: flip_y's mapping at
-    # DMD row y must agree with the ORIGINAL's at row (h-1-y), exactly.
     cf = flip_y(c)
     r.check(cf.dmd_size == c.dmd_size and cf.cam_size == c.cam_size,
             "flip_y keeps both recorded sizes — only the mapping's sense "
@@ -660,7 +604,7 @@ def _part_calib() -> int:
             "flip_x and flip_y commute — each mirrors its own axis "
             "independently of the other")
 
-    # CONTROL: vignetting must not move the answer. It ate the previous method.
+    # Vignetting ate the previous method.
     c_flat = run(make_camera(M, rng, vignette=False))
     moved = float(np.abs(c.cam_to_dmd - c_flat.cam_to_dmd).max())
     r.check(moved < 0.05,
@@ -681,7 +625,6 @@ def _part_calib() -> int:
             f"usable region and not an extrapolation")
 
     # ── 4. ROI → mask, the thing the transform is for ────────────────────────
-    from acqApp.devices.dmd.roi import RectRoi, RoiSet
     rs = RoiSet()
     rs.add(RectRoi(x=180.0, y=130.0, w=60.0, h=40.0))
     roi = rs.mask((CH, CW))
@@ -695,8 +638,7 @@ def _part_calib() -> int:
     r.check(hit > 0.85 and spill < 0.15,
             f"projected, the mask lands on the ROI ({100 * hit:.0f}% covered, "
             f"{100 * spill:.0f}% spill)")
-    # CONTROL: aim with the wrong transform and it must miss, or the check
-    # above would pass on any mask at all.
+    # Or the check above would pass on any mask at all.
     bad = DmdCalibration(cam_to_dmd=c.cam_to_dmd.copy(), dmd_size=c.dmd_size,
                          cam_size=c.cam_size)
     off = c.dmd_to_cam.copy()
@@ -708,19 +650,14 @@ def _part_calib() -> int:
             f"({100 * hit_bad:.0f}% covered)")
 
     # ── 4b. knowing when not to trust it ─────────────────────────────────────
-    # >= 0, not > 0: a clean synthetic fit with enough surviving points can
-    # average the centroid noise down to (near) exact, and that is a GOOD
-    # result, not a broken check — the real assertion is the upper bound.
+    # >= 0: a clean synthetic fit can average its noise to (near) exact.
     r.check(0 <= c.holdout_px < 4.0,
             f"a stripe left OUT of the fit is predicted to {c.holdout_px:.2f} px")
-    # The point of hold-out: the residual is optimistic BY CONSTRUCTION, since
-    # least squares sits closest to the points it was handed. Prove the two are
-    # different numbers rather than the same one computed twice.
+    # The residual is optimistic by construction; hold-out must not be it.
     r.check(c.holdout_px != c.rms_px,
             f"…and it is a different number from the residual "
             f"({c.holdout_px:.2f} vs {c.rms_px:.2f})")
-    # A wandering stripe must show up in the hold-out even though the fit can
-    # absorb it: this is the failure the residual alone would flatter.
+    # A wandering stripe the fit absorbs must still show in the hold-out.
     good = {0: [(d, 100 + 2 * d, 50.0) for d in (-80, -40, 0, 40, 80)],
             1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
     clean = holdout_error(good)
@@ -734,7 +671,6 @@ def _part_calib() -> int:
             f"{holdout_error(bent):.0f} px of hold-out error (the WORST axis, "
             f"since averaging it against a good axis would hide it)")
 
-    # An outlier is dropped, and the drop is reported rather than silent.
     wild = {0: [(d, 100 + 2 * d + (300 if d == 40 else 0), 50.0)
                 for d in (-80, -40, 0, 40, 80)],
             1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
@@ -743,7 +679,7 @@ def _part_calib() -> int:
             f"a 300 px outlier is rejected, leaving {out[4]} of 10 stripes")
     r.check(out[3] < 1.0,
             f"…so the residual reflects the good stripes ({out[3]:.2f} px)")
-    # CONTROL: rejection must not run away and keep trimming until it "fits".
+    # Rejection must not keep trimming until it "fits".
     noisy = {0: [(d, 100 + 2 * d + (3 if i % 2 else -3), 50.0)
                  for i, d in enumerate((-80, -40, 0, 40, 80))],
              1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
@@ -763,7 +699,6 @@ def _part_calib() -> int:
             "one stripe per axis is refused — a fit with no residual cannot be "
             "judged")
 
-    # Shear is DISCARDED by default, and the discarded amount is recorded.
     r.check(c.model == "affine-noshear" and "shear" in c.notes,
             f"shear is off by default and the measured value is kept in the "
             f"notes ({c.model})")
@@ -776,7 +711,6 @@ def _part_calib() -> int:
     withshear = run(make_camera(M, rng), allow_shear=True)
     r.check(withshear.model == "affine",
             "…and allow_shear=True keeps it, for a relay where it is real")
-    # deshear must preserve both scales and the handedness, not just square up.
     vx = np.array([3.0, 1.0])
     vy = np.array([-0.6, 2.0])
     ox, oy = deshear(vx, vy)
@@ -789,15 +723,13 @@ def _part_calib() -> int:
             == np.sign(ox[0] * oy[1] - ox[1] * oy[0]),
             "…and preserves handedness, so it cannot mirror the registration")
 
-    # The raw stripes travel with the result, so a fit can be redone offline.
-    # n_points is AFTER outlier rejection, so stripes >= n_points, not ==.
+    # n_points is after outlier rejection, hence >=.
     r.check(len(c.stripes) >= c.n_points and len(c.stripes[0]) == 4,
             f"the {len(c.stripes)} raw stripe measurements are stored "
             f"[axis, offset, cam_x, cam_y] ({c.n_points} kept after outlier "
             f"rejection)")
 
-    # Stripes that run off the frame are dropped, not fitted. This is what the
-    # rig does: its DMD field is ~1.9x the camera's area.
+    # Off-frame stripes are dropped: the rig's DMD field is ~1.9x the camera's.
     seen = stripe_sweep(lambda _f: None, lambda: np.full((CH, CW), 50.0),
                         (DW, DH), log=lambda _s: None)
     r.check(seen[0] == [] and seen[1] == [],
@@ -815,11 +747,8 @@ def _part_calib() -> int:
             f"{2 * len(STRIPE_OFFSETS)} stripes stay on the frame")
 
     # ── 6b. a rig too tilted for affine — the homography model ───────────────
-    # Real perspective: the bottom row isn't [0, 0, 1], so scale genuinely
-    # varies across the panel — the thing an affine fit (however sheared)
-    # cannot represent at all. This is what the rig this was built for showed:
-    # a stripe sweep with near-invisible points on one side and multi-million-
-    # pixel, frame-clipping ones on the other.
+    # Real perspective (bottom row not [0, 0, 1]): scale varies across the
+    # panel, which no affine fit can represent.
     tilt = np.array([[1.3, 0.05, 40.0], [0.02, 1.1, 20.0],
                      [0.0015, 0.0005, 1.0]])
     d0 = 0.0015 * (DW - 1) + 0.0005 * (DH - 1) + 1.0
@@ -831,8 +760,7 @@ def _part_calib() -> int:
     probe = np.array([[DW / 4, DH / 4], [3 * DW / 4, DH / 4],
                       [DW / 4, 3 * DH / 4], [3 * DW / 4, 3 * DH / 4]], float)
 
-    # CONTROL: the affine fit, asked to explain real perspective, cannot —
-    # otherwise "homography does better" would prove nothing.
+    # Otherwise "homography does better" would prove nothing.
     c_aff = run(img_tilt, model="affine")
     err_aff = float(np.abs(apply_transform(np.linalg.inv(c_aff.cam_to_dmd), probe)
                            - apply_transform(tilt, probe)).max())
@@ -849,8 +777,7 @@ def _part_calib() -> int:
             f"{err_aff:.2f} px for the affine control on the same data)")
     r.check(c_h.holdout_px >= 0.0, "hold-out error is computed for this model too")
 
-    # Needs more points than the affine fit (8 DOF, not 6) — too few must
-    # raise with a reason that names the right model.
+    # 8 DOF, not 6: three offsets are too few.
     try:
         run(img_tilt, model="homography", offsets=(-100, 0, 100))
         r.check(False, "too few points for a homography should raise")
@@ -858,15 +785,12 @@ def _part_calib() -> int:
         r.check("homography" in str(e),
                 f"…naming the model that needed more of them ({str(e)[:50]}…)")
 
-    # An unknown model name is refused up front, before any light is emitted.
     try:
         run(img_tilt, model="projective")
         r.check(False, "an unrecognized model name should raise")
     except CalibrationError as e:
         r.check("projective" in str(e), f"…naming the bad value ({e})")
 
-    # cross_frac exists to keep a magnified stripe inside the frame on a rig
-    # like this one — smaller cross_frac, smaller footprint, same offset.
     wide = offset_stripe(DW, DH, 0, 40.0, cross_frac=0.25)
     narrow = offset_stripe(DW, DH, 0, 40.0, cross_frac=0.05)
     r.check(0 < int(narrow.sum()) < int(wide.sum()),
@@ -875,8 +799,6 @@ def _part_calib() -> int:
             f"footprint from clipping the frame edge on a tilted rig")
 
     # ── 6. it round-trips through JSON ───────────────────────────────────────
-    import tempfile
-    from pathlib import Path
     p = Path(tempfile.mkdtemp()) / "calib.json"
     c.save(p)
     back = DmdCalibration.load(p)
@@ -886,13 +808,10 @@ def _part_calib() -> int:
             "a calibration survives save/load with its provenance and its "
             "raw stripes")
     r.check(back.vignette is None,
-            "…and a calibration with no vignette marked stays that way "
-            "(also: old JSON on disk with no \"vignette\" key at all loads "
-            "fine, since from_dict defaults it)")
+            "…and a calibration with no vignette marked stays that way")
 
     # ── 7. manual corner adjustment (with_corners) ───────────────────────────
-    # A wrong starting calibration — only dmd_size/cam_size have to be right,
-    # since with_corners replaces the mapping outright rather than nudging it.
+    # Only the sizes need be right: with_corners replaces the mapping outright.
     wrong = DmdCalibration(
         cam_to_dmd=np.linalg.inv(np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
                                            [0.0, 0.0, 1.0]])),
@@ -924,8 +843,6 @@ def _part_calib() -> int:
     r.check(fixed.dmd_size == wrong.dmd_size and fixed.cam_size == wrong.cam_size,
             "the sizes travel through unchanged — only the mapping is replaced")
 
-    # CONTROL: four corners too close to collinear can't determine a
-    # homography, and must say so rather than handing back garbage.
     try:
         with_corners(wrong, np.array([[0, 0], [10, 0.001], [20, 0.002],
                                       [30, 0.003]], float))
@@ -968,23 +885,12 @@ def _part_calib() -> int:
     return r.finish()
 
 
-# ═══ sweep (was test_dmd_sweep.py) ══════════════════════════════════════
-
-# The simulated rig, imported rather than copied: a second camera model would
-# be a second set of assumptions to keep in step with this one. It is a plain
-# module — its own checks run only under __main__.
-
-
-
-# ── a rig where the camera lags the projector, as the real one does ───────────
+# ═══ sweep ══════════════════════════════════════════════════════════════
 
 class LaggingRig:
-    """A projector and a camera that does NOT show the new pattern at once.
-
-    `latency` frames after a projection still carry the previous pattern —
-    exposed across the mirror flip. This is the whole reason `FreshGrabber` has
-    a settle count, so the model has to have it or the test is vacuous.
-    """
+    """A projector and a camera whose next `latency` frames still carry the
+    previous pattern, as the real one's do — without that lag
+    `FreshGrabber`'s settle count would go untested."""
 
     def __init__(self, M, rng, *, latency: int = 1, tick: int = 3):
         self.image = make_camera(M, rng)
@@ -1016,18 +922,12 @@ def check_fresh_grabber(r: Report) -> None:
     rng = np.random.default_rng(3)
     M = true_transform()
 
-    # A pattern whose brightness names it, so a returned frame can be traced
-    # back to the pattern that was up when it was exposed.
     def marked(v):
         return np.full((DH, DW), np.uint8(v))
 
     def which(frame):
-        """Which pattern this frame came from: lit -> 255, dark -> 0.
-
-        Against a midpoint, not against the dark frame's own mean: an all-off
-        pattern gives `sample`, a full-on one `3 * sample`, and comparing two
-        dark frames to each other is a coin flip on the noise.
-        """
+        """Which pattern this frame came from: lit -> 255, dark -> 0. Against
+        a midpoint: two dark frames compared directly is a coin flip."""
         return 255 if float(np.mean(frame)) > 1.5 * float(np.mean(dark_ref)) else 0
 
     rig = LaggingRig(M, rng, latency=1)
@@ -1042,8 +942,6 @@ def check_fresh_grabber(r: Report) -> None:
     r.check(which(got) == 255,
             "grab() returns a frame exposed AFTER the projection")
 
-    # CONTROL: with no settle the in-flight frame gets through, so the check
-    # above is testing the settle count and not the rig's own timing.
     rig2 = LaggingRig(M, rng, latency=1)
     rig2.project(marked(0))
     for _ in range(20):
@@ -1054,7 +952,6 @@ def check_fresh_grabber(r: Report) -> None:
             "control: settle=0 returns the STALE frame — the lag is real, and "
             "the settle count is what defeats it")
 
-    # A frame object that never changes must not be handed back as new.
     stuck = np.zeros((CH, CW))
     frozen = FreshGrabber(lambda: stuck, settle=0, timeout_s=0.15,
                           pump=lambda: None)
@@ -1065,8 +962,6 @@ def check_fresh_grabber(r: Report) -> None:
         r.check("RUNNING" in str(e) or "running" in str(e),
                 f"a stalled camera raises, naming the cause ({str(e)[:60]}…)")
 
-    # …and identity is the test, not equality: two equal-but-distinct frames
-    # are two real exposures of an unchanging sample.
     seq = [np.zeros((4, 4)), np.zeros((4, 4)), np.zeros((4, 4))]
     box = {"i": 0}
 
@@ -1086,12 +981,8 @@ def check_fresh_grabber(r: Report) -> None:
 
 
 def check_end_to_end(r: Report) -> None:
-    """calibrate() through a camera that LAGS — the two halves meeting.
-
-    Neither half proves this on its own: the maths is tested against an
-    instant camera, and `FreshGrabber` is tested against a rig with no
-    geometry. A wrong pairing of project and grab only shows up here.
-    """
+    """calibrate() through a camera that LAGS: a wrong pairing of project and
+    grab shows only here, not in either half's own tests."""
     rng = np.random.default_rng(11)
     M = true_transform()
     rig = LaggingRig(M, rng, latency=1, tick=2)
@@ -1120,23 +1011,16 @@ def check_end_to_end(r: Report) -> None:
 
 def check_display_modes(r: Report) -> None:
     """All ON / Image / ROIs each load a different frame, and ROI needs a calib."""
-    import tempfile
-    from pathlib import Path
-
-    from acqApp.devices.dmd.calibration import DmdCalibration
     from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                             MODE_PATTERN, MODE_ROI,
                                             DmdSettings, MockDmdController)
 
-    # A calibration whose panel matches the mock, so the mask is device-sized.
     A = np.array([[4.0, 0.0, 200.0], [0.0, 4.0, 150.0], [0.0, 0.0, 1.0]])
     calib = DmdCalibration(cam_to_dmd=np.linalg.inv(A),
                            dmd_size=(DEFAULT_W, DEFAULT_H), cam_size=(900, 600))
     cpath = Path(tempfile.mkdtemp()) / "c.json"
     calib.save(cpath)
-    # Keys as `RectRoi.to_dict()` really writes them — x/y/angle_deg, not
-    # cx/cy/angle. The panel round-trips these through `roi_from_dict`, so a
-    # near-miss raises rather than being ignored.
+    # Keys exactly as RectRoi.to_dict() writes them (see check_roi_wiring).
     roi = {"kind": "rect", "name": "r1", "enabled": True, "x": 450.0,
            "y": 300.0, "w": 120.0, "h": 90.0, "angle_deg": 0.0}
 
@@ -1152,13 +1036,10 @@ def check_display_modes(r: Report) -> None:
     n_roi = c.on_pixels
     r.check(0 < n_roi < all_on,
             f"ROI mode lights only the ROI's mirrors ({n_roi} of {all_on})")
-    # It must be the RIGHT mirrors: a 120x90 camera-px ROI at 4 px/mirror is
-    # about 30x22 mirrors.
+    # 120x90 camera px at 4 px/mirror is about 30x22 mirrors.
     r.check(abs(n_roi - (120 / 4) * (90 / 4)) < 0.4 * (120 / 4) * (90 / 4),
             f"…and about the right number of them ({n_roi}, expected ~675)")
 
-    # CONTROL: without a calibration there is no way to map camera px to
-    # mirrors, and guessing would aim light at the wrong place.
     c = MockDmdController(DmdSettings(display_mode=MODE_ROI, rois=(roi,)))
     c.load_pattern()
     r.check(c.on_pixels == 0,
@@ -1169,8 +1050,7 @@ def check_display_modes(r: Report) -> None:
     c.load_pattern()
     r.check(c.on_pixels == 0, "control: …and with no ROIs, likewise")
 
-    # Switching mode reloads: the old guard only reloaded when a pattern FILE
-    # was set, so all-on and ROI modes would have stayed stale.
+    # A guard once reloaded only when a pattern FILE was set.
     c = MockDmdController(DmdSettings(display_mode=MODE_PATTERN))
     c.apply_settings(DmdSettings(display_mode=MODE_ALL_ON))
     r.check(c.on_pixels == all_on,
@@ -1178,16 +1058,13 @@ def check_display_modes(r: Report) -> None:
 
 
 def check_project_frame(r: Report) -> None:
-    """`project_frame` must not go through `build_frame`. PLAN §6 names this
-    trap twice, and it is invisible in the result: a warped calibration
+    """`project_frame` must not go through `build_frame`: a warped calibration
     pattern still decodes, into the wrong geometry."""
     from acqApp.acq.devices import RawProjector
-    from acqApp.devices.dmd.calibration import offset_stripe
     from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, DmdSettings,
                                             MockDmdController)
 
-    # Hostile geometry: every knob set to something that would visibly move a
-    # pattern, and `fit` on, which overrides the other three.
+    # Every knob set to visibly move a pattern.
     s = DmdSettings(scale_pct=57.0, rotation_deg=23.0, offset_x=-90.0,
                     offset_y=45.0, fit=True, invert=True)
     c = MockDmdController(s)
@@ -1201,7 +1078,6 @@ def check_project_frame(r: Report) -> None:
             "project_frame holds the frame EXACTLY — no scale, rotation, "
             "offset, invert or fit")
 
-    # CONTROL: those settings are not inert — build_frame really would move it.
     from acqApp.devices.dmd import alp
     built = alp.build_frame(pattern, DEFAULT_W, DEFAULT_H, scale_pct=s.scale_pct,
                             rotation_deg=s.rotation_deg, offset_x=s.offset_x,
@@ -1210,8 +1086,7 @@ def check_project_frame(r: Report) -> None:
             "control: run through build_frame the same pattern IS transformed, "
             "so the check above is not vacuous")
 
-    # A frame that is not device-sized is a bug in the caller, not something to
-    # pad: it would silently register the wrong panel.
+    # Padding a mis-sized frame would silently register the wrong panel.
     try:
         c.project_frame(np.zeros((10, 10), np.uint8))
         r.check(False, "a mis-sized frame is refused")
@@ -1221,13 +1096,11 @@ def check_project_frame(r: Report) -> None:
 
 
 def check_wiring(r: Report) -> None:
-    """The button reaches the adapter, and the adapter refuses without a camera."""
-    import sys as _s
-
-    from _harness import isolate_user_state, make_window, pump, qt_app
+    """The Calibrate button reaches the adapter, which opens the dialog with
+    the camera stopped and hands it set_live."""
     isolate_user_state()
     app = qt_app()
-    _s.argv = ["main.py", "--mock"]
+    sys.argv = ["main.py", "--mock"]
     win = make_window({"voltage_cam", "dmd"})
     dmd = next(m for m in win._modules if m.key == "dmd")
 
@@ -1235,9 +1108,8 @@ def check_wiring(r: Report) -> None:
             "the DMD adapter owns the calibrate path, not the panel — only it "
             "can reach both the controller and the camera")
 
-    # The dialog must open with the camera STOPPED: it starts the camera
-    # itself and puts it back, so requiring Live view first would be friction
-    # with no safety value — the actuation decision is the dialog's button.
+    # Requiring Live view first would add nothing: the dialog's own button is
+    # the actuation decision.
     seen = {"box": 0, "dialog": 0, "exec": 0, "live": []}
     from PyQt6.QtWidgets import QMessageBox
     real_info = QMessageBox.information
@@ -1269,8 +1141,6 @@ def check_wiring(r: Report) -> None:
                 "…and is handed set_live, so it can start the camera and put "
                 "it back")
 
-        # set_live really drives the window, and reports the PREVIOUS state so
-        # the dialog can restore it.
         was = win.set_live(True)
         pump(app, 1.0)
         r.check(was is False and win._btn_run.isChecked(),
@@ -1287,8 +1157,7 @@ def check_wiring(r: Report) -> None:
         QMessageBox.information = real_info
         SW.CalibrationDialog = real_dlg
 
-    # The measured calibration must reach the panel, or the ROI editor keeps
-    # drawing the old field.
+    # Else the ROI editor keeps drawing the old field.
     dmd._adopt_calibration("C:/nowhere/dmd_calib_test.json")
     r.check(dmd.panel.settings.calib_path.endswith("dmd_calib_test.json"),
             "a saved calibration is adopted by the panel straight away")
@@ -1302,16 +1171,11 @@ def check_wiring(r: Report) -> None:
 
 
 def check_geometry_controls(r: Report) -> None:
-    """The Model/cross-length controls (added for a rig whose camera is
-    tilted enough that the affine fit measurably mis-registers it — see
-    test_dmd_calibration.py's homography checks) seed from this rig's
-    profile, stay editable, and the operator's choice — not the seed — is
-    what reaches calibrate()."""
-    from _harness import qt_app
-    _app = qt_app()          # kept alive for the function's duration — an
-    # unreferenced QApplication is garbage-collected immediately, taking the
-    # C++ singleton with it, and every widget built after that segfaults with
-    # no Python traceback at all.
+    """The Model/cross-length controls seed from the rig profile, and the
+    operator's choice, not the seed, reaches calibrate()."""
+    # Held: an unreferenced QApplication is GC'd, and every widget built
+    # after that segfaults with no traceback.
+    _app = qt_app()
     import acqApp.devices.dmd.sweep as SW
 
     class FakeProjector:
@@ -1360,10 +1224,8 @@ def check_corner_adjust(r: Report) -> None:
     """"Adjust corners…" is disabled until a fit exists, projects ALL-ON (not
     a stripe) for the operator to align against, and only replaces `_calib`
     on Apply — never on Cancel."""
-    from _harness import qt_app
     _app = qt_app()          # kept alive — see check_geometry_controls
     import acqApp.devices.dmd.sweep as SW
-    from acqApp.devices.dmd.calibration import ON, DmdCalibration
 
     projected: list = []
 
@@ -1376,9 +1238,8 @@ def check_corner_adjust(r: Report) -> None:
         def stop(self):
             pass
 
-    # A fresh array object every call — FreshGrabber keys on IDENTITY, exactly
-    # as the real display tick does (a new object per frame), so a source
-    # that reused one array would make every grab() wait for the timeout.
+    # A fresh array every call: FreshGrabber keys on identity, and a reused
+    # one would make every grab() wait out its timeout.
     counter = {"n": 0}
 
     def source():
@@ -1395,8 +1256,7 @@ def check_corner_adjust(r: Report) -> None:
     dlg._btn_save.setEnabled(True)
     dlg._btn_adjust.setEnabled(True)
 
-    # CANCEL: the fake corner-adjust dialog reports Rejected, so _calib and
-    # every button's enabled state must come back exactly as they went in.
+    # Cancel first: the fake reports Rejected until `result` is set.
     seen: dict = {"built": 0, "exec": 0}
     adjusted = DmdCalibration(
         cam_to_dmd=2 * np.eye(3), dmd_size=(64, 48), cam_size=(10, 10),
@@ -1439,7 +1299,6 @@ def check_corner_adjust(r: Report) -> None:
             r.check(b.isEnabled(),
                     "…and every button is left enabled again, not stuck mid-run")
 
-        # APPLY: exec -> Accepted with a result must adopt it.
         FakeCornerDialog.result = adjusted
         dlg._adjust_corners()
         r.check(dlg._calib is adjusted,
@@ -1451,9 +1310,7 @@ def check_corner_adjust(r: Report) -> None:
 def check_corner_editor(r: Report) -> None:
     """The real `CornerAdjustDialog`: corners AND the vignette circle reach
     Apply's result, independently of each other, and Cancel discards both."""
-    from _harness import qt_app
     _app = qt_app()          # kept alive — see check_geometry_controls
-    from acqApp.devices.dmd.calibration import DmdCalibration
     from acqApp.devices.dmd.corner_editor import CornerAdjustDialog
 
     calib = DmdCalibration(cam_to_dmd=np.linalg.inv(
@@ -1487,13 +1344,10 @@ def check_corner_editor(r: Report) -> None:
             "…and the dragged corner too — both reach the same result "
             "independently")
 
-    # CANCEL must discard everything, not just leave the corners alone.
     dlg2 = CornerAdjustDialog(calib, frame)
     dlg2.reject()
     r.check(dlg2.calibration is None, "Cancel produces no result at all")
 
-    # Re-opening on an ALREADY-marked calibration must show it pre-checked
-    # and pre-positioned, not force the operator to remark it from scratch.
     marked = DmdCalibration(cam_to_dmd=calib.cam_to_dmd, dmd_size=calib.dmd_size,
                             cam_size=calib.cam_size, vignette=(200.0, 150.0, 90.0))
     dlg3 = CornerAdjustDialog(marked, frame)
@@ -1505,7 +1359,6 @@ def check_corner_editor(r: Report) -> None:
             and abs(float(size[0]) / 2 - 90.0) < 1e-6,
             "…seeded at the calibration's own circle, not a fresh guess")
 
-    # Unchecking the box on Apply must un-mark it, not just hide the widget.
     dlg3._chk_vignette.setChecked(False)
     dlg3._apply()
     r.check(dlg3.calibration.vignette is None,
@@ -1525,29 +1378,21 @@ def _part_sweep() -> int:
     return r.finish()
 
 
-# ═══ roi (was test_dmd_roi.py) ══════════════════════════════════════════
+# ═══ roi ════════════════════════════════════════════════════════════════
 # Shares DW, DH, CW, CH with the calib part.
 
 
 def calib() -> DmdCalibration:
     """A DMD sitting rotated and offset inside a slightly larger camera FOV."""
-    th = np.radians(7.0)
-    s = 1.05
-    dmd_to_cam = np.array([[s * np.cos(th), -s * np.sin(th), 34.0],
-                           [s * np.sin(th),  s * np.cos(th), 22.0],
-                           [0.0, 0.0, 1.0]])
-    return DmdCalibration(cam_to_dmd=np.linalg.inv(dmd_to_cam),
+    return DmdCalibration(cam_to_dmd=np.linalg.inv(true_transform()),
                           dmd_size=(DW, DH), cam_size=(CW, CH),
                           model="homography", rms_px=0.31, n_points=4096,
                           created="2026-08-18T00:00:00")
 
 
 def _reach_unbounded(rset, calib, max_side: int = 512) -> float:
-    """`reach_fraction` with no bounding — every ROI over the whole grid.
-
-    The algorithm as it stood before 2026-08-25, kept here as the reference the
-    bounded one must reproduce bit for bit.
-    """
+    """`reach_fraction` with no bounding (every ROI over the whole grid): the
+    reference the bounded one must reproduce bit for bit."""
     w, h = calib.cam_size
     step = max(1, int(np.ceil(max(int(w), int(h)) / max(1, max_side))))
     xs = np.arange(0, int(w), step, dtype=np.float64)
@@ -1586,8 +1431,6 @@ def _part_roi() -> int:
     turned = RectRoi(x=100, y=80, w=40, h=20, angle_deg=90).mask((CH, CW))
     r.check(abs(turned.sum() - m.sum()) < 60,
             "a rotated rect keeps its area")
-    # CONTROL: rotating by 90° must actually change which pixels are covered,
-    # or `angle_deg` is being ignored.
     r.check((turned != m).sum() > 0.5 * m.sum(),
             "control: rotating by 90 deg really moves the covered pixels")
 
@@ -1611,7 +1454,6 @@ def _part_roi() -> int:
             "disabling one drops it from the union")
     s[1].enabled = True
 
-    # round-trip through dicts
     again = RoiSet.from_list(s.to_list())
     r.check(len(again) == 3
             and np.array_equal(again.mask((CH, CW)), s.mask((CH, CW))),
@@ -1622,14 +1464,11 @@ def _part_roi() -> int:
 
     # ── 3. the accessible area ───────────────────────────────────────────────
     reach = c.accessible_mask((CH, CW))
-    exp = DW * DH / np.linalg.det(c.dmd_to_cam[:2, :2])
     r.check(0.2 < reach.mean() < 0.95,
             f"the DMD reaches part but not all of the camera "
             f"({100 * reach.mean():.0f}%)")
-    # The editor rebuilds all of this on EVERY drag (_refresh_status →
-    # clipped_mask), so it has to be cheap at camera scale, not just correct at
-    # test scale. Whole-grid versions cost ~800 ms and ~1 GB per drag at ORCA
-    # full frame. Budget: a coordinate grid the old code materialised outright.
+    # The editor rebuilds this on every drag; whole-grid versions cost ~800 ms
+    # and ~1 GB per drag at ORCA full frame.
     BH, BW = 1200, 1600
     grid = 2 * BH * BW * 8                      # what np.mgrid alone would cost
 
@@ -1644,9 +1483,8 @@ def _part_roi() -> int:
         tracemalloc.stop()
         return pk
 
-    # The property that matters is not an absolute figure but that the working
-    # set is BANDED: doubling the height must add only the extra output rows,
-    # not double the temporaries. A whole-grid version adds 2 int64 grids.
+    # Banded: doubling the height adds only the extra output rows, not the
+    # two int64 grids a whole-grid version would.
     grew = mask_peak(2 * BH) - mask_peak(BH)
     r.check(grew < 4 * BH * BW,
             f"accessible_mask is banded: doubling the height added "
@@ -1666,7 +1504,6 @@ def _part_roi() -> int:
     r.check(peak_roi < 0.5 * grid,
             f"an ROI mask broadcasts rather than gridding: peak "
             f"{peak_roi / 2**20:.1f} MB")
-    # CONTROL: the budget is not vacuous — a grid really does exceed it.
     tracemalloc.start()
     _yy, _xx = np.mgrid[:BH, :BW]
     _cur, peak_grid = tracemalloc.get_traced_memory()
@@ -1684,7 +1521,6 @@ def _part_roi() -> int:
     r.check(bool(c.accessible(inset).all()),
             f"the field's own corners are inside the accessible mask "
             f"({c.accessible(inset)})")
-    # CONTROL: step outside them and they must stop being accessible.
     outset = corners - 6.0 * (corners.mean(axis=0) - corners) / np.linalg.norm(
         corners.mean(axis=0) - corners, axis=1, keepdims=True)
     r.check(not c.accessible(outset).any(),
@@ -1698,16 +1534,13 @@ def _part_roi() -> int:
     _, kept = far.clipped_mask(c)
     r.check(kept < 0.9, f"…and its unreachable part is not counted ({kept:.2f})")
 
-    # outside() is geometric, which is not just cheaper than rasterising — it is
-    # safer. An ROI hanging off the IMAGE edge has no pixels there to raster, so
-    # the old mask-based test judged only the visible part and called it fine.
+    # outside() is geometric: a raster test sees no pixels off the IMAGE edge,
+    # so it judged only the visible part and called it fine.
     off = RoiSet()
     off.add(CircleRoi(x=float(corners[:, 0].mean()), y=-6.0, r=30))
     r.check(off.outside(c) == ["circle1"],
             f"an ROI hanging off the image edge is reported, not judged on the "
             f"part that happens to be visible ({off.outside(c)})")
-    # CONTROL: the same circle moved fully into the field must not be flagged,
-    # so this is about position and not about circles.
     inn = RoiSet()
     inn.add(CircleRoi(x=float(corners[:, 0].mean()),
                       y=float(corners[:, 1].mean()), r=30))
@@ -1715,8 +1548,7 @@ def _part_roi() -> int:
             f"control: the same circle inside the field is not flagged "
             f"({inn.outside(c)})")
 
-    # dim() is outside()'s twin for the marked vignette, not the DMD field —
-    # both fully reachable geometrically, one of them just past the mark.
+    # dim() is outside()'s twin for the marked vignette.
     vcx, vcy = float(corners[:, 0].mean()), float(corners[:, 1].mean())
     cv = with_vignette(c, vcx, vcy, 25.0)
     r.check(inn.dim(cv) == ["circle1"],
@@ -1733,18 +1565,14 @@ def _part_roi() -> int:
             f"control: well inside the marked circle is not flagged "
             f"({small.dim(cv)})")
 
-    # The status line's estimate has to track the exact figure it stands in for.
     for st in (far, off, inn):
         _, exact = st.clipped_mask(c)
         r.check(abs(st.reach_fraction(c) - exact) < 0.05,
                 f"reach_fraction tracks clipped_mask "
                 f"({st.reach_fraction(c):.3f} vs {exact:.3f})")
-    # reach_fraction bounds its grid twice — each ROI to its own bbox, the scan
-    # to their union (2026-08-25, ~8x). A bbox one cell tight under-counts and
-    # the answer stays plausible, so compare against the UNBOUNDED algorithm and
-    # demand they agree exactly. Checking against `clipped_mask` within a
-    # tolerance does not work: at this camera size one cell is well under 5 %,
-    # and a deliberately broken bbox passed all three ways.
+    # reach_fraction bounds each ROI to its bbox. A bbox one cell tight stays
+    # plausible and passed the 5 % check above, so demand exact agreement
+    # with the unbounded algorithm.
     for name, st in (
             ("two overlapping circles", _set(CircleRoi(x=40.0, y=60.0, r=34),
                                              CircleRoi(x=58.0, y=60.0, r=34))),
@@ -1766,9 +1594,7 @@ def _part_roi() -> int:
                 f"reach_fraction bounds correctly — {name} "
                 f"({got!r} vs unbounded {ref!r})")
 
-    # CONTROL: the bounding must not be free to return anything. A set whose
-    # ROIs are wholly off the DMD field has to come back near 0, and one in the
-    # middle near 1 — if both read the same, the checks above prove nothing.
+    # If off- and on-field sets read the same, the checks above prove nothing.
     lo = _set(CircleRoi(x=CW - 5, y=CH - 5, r=20)).reach_fraction(c)
     hi = _set(CircleRoi(x=float(corners[:, 0].mean()),
                         y=float(corners[:, 1].mean()), r=20)).reach_fraction(c)
@@ -1776,7 +1602,6 @@ def _part_roi() -> int:
             f"control: reach_fraction separates an off-field set from an "
             f"on-field one ({lo:.3f} vs {hi:.3f})")
 
-    # CONTROL: an ROI well inside must NOT be flagged, or the check is vacuous.
     near = RoiSet()
     near.add(CircleRoi(x=float(corners[:, 0].mean()),
                        y=float(corners[:, 1].mean()), r=15))
@@ -1790,43 +1615,28 @@ def _part_roi() -> int:
     r.check(frame.shape == (DH, DW) and set(np.unique(frame)) <= {0, 255},
             f"the ROI becomes a device-sized binary frame {frame.shape}")
 
-    # Project it back through the same optics and see where it lands.
-    yy, xx = np.mgrid[:CH, :CW]
-    d = apply_transform(c.cam_to_dmd, np.column_stack((xx.ravel(), yy.ravel())))
-    dxi = np.rint(d[:, 0]).astype(np.int64)
-    dyi = np.rint(d[:, 1]).astype(np.int64)
-    ok = (dxi >= 0) & (dxi < DW) & (dyi >= 0) & (dyi < DH)
-    lit = np.zeros(CW * CH, bool)
-    lit[ok] = frame[dyi[ok], dxi[ok]] > 127
-    lit = lit.reshape(CH, CW)
-
+    # Project it back through the same optics (calib()'s) and see where it
+    # lands.
+    lit = footprint(frame, true_transform())
     hit = (lit & want).sum() / max(1, want.sum())
     spill = (lit & ~want).sum() / max(1, lit.sum())
     r.check(hit > 0.9 and spill < 0.12,
             f"projected, the mask lands on the ROI ({100*hit:.0f}% covered, "
             f"{100*spill:.0f}% spill)")
 
-    # CONTROL: aim through a wrong transform and it must miss.
     bad_cal = DmdCalibration(cam_to_dmd=c.cam_to_dmd.copy(),
                              dmd_size=c.dmd_size, cam_size=c.cam_size)
     off = c.dmd_to_cam.copy()
     off[0, 2] += 40.0
     bad_cal.cam_to_dmd = np.linalg.inv(off)
-    frame_bad = near.dmd_frame(bad_cal)
-    lit_bad = np.zeros(CW * CH, bool)
-    lit_bad[ok] = frame_bad[dyi[ok], dxi[ok]] > 127
-    hit_bad = (lit_bad.reshape(CH, CW) & want).sum() / max(1, want.sum())
+    lit_bad = footprint(near.dmd_frame(bad_cal), true_transform())
+    hit_bad = (lit_bad & want).sum() / max(1, want.sum())
     r.check(hit_bad < 0.6,
             f"control: a 40 px registration error misses ({100*hit_bad:.0f}%)")
 
     # ── 4b. Flip X/Y mirror the PROJECTED PIXELS and nothing else ───────────
-    # The operator's model of this knob (2026-09-24): what they drew stays
-    # put, the mirrors that light up flip. It holds because the flip maps the
-    # panel's corners onto each other, so every question asked in camera
-    # space has the same answer — worth locking, since the panel tooltip now
-    # promises exactly this.
-    from acqApp.devices.dmd.calibration import flip_x, flip_y
-
+    # What the panel tooltip promises (2026-09-24): the drawing stays put,
+    # only the lit mirrors flip.
     r.check(np.array_equal(near.dmd_frame(flip_y(c)), frame[::-1, :]),
             "Flip Y mirrors the mask's rows on the panel, exactly")
     r.check(np.array_equal(near.dmd_frame(flip_x(c)), frame[:, ::-1]),
@@ -1859,9 +1669,7 @@ def _part_roi() -> int:
     r.check(len(ed.roi_set) == 0, "the editor starts empty")
 
     # ── contrast: an ORCA frame is 16-bit with hot pixels ───────────────────
-    # autoLevels stretches to min/max, so two hot pixels collapse the whole
-    # image to black — the editor looked far worse than the live preview it is
-    # opened from, which has always used percentiles.
+    # autoLevels stretches to min/max, so two hot pixels blacken the image.
     rng16 = np.random.default_rng(1)
     frame16 = rng16.normal(1400, 60, (CH, CW)).astype(np.uint16)
     frame16[3, 4] = 65000                       # every sCMOS has a few
@@ -1871,9 +1679,7 @@ def _part_roi() -> int:
     r.check(abs(lo - s1) < 1 and abs(hi - s99) < 1,
             f"levels come from the 1st/99th percentile ({lo:.0f}-{hi:.0f}), "
             f"not min/max")
-    # Taken from a strided view, because percentile SORTS: 87 ms at ORCA full
-    # frame for a contrast estimate. Legitimate only if it agrees with the
-    # whole-frame answer, so that is asserted rather than assumed.
+    # A strided view, because percentile sorts (87 ms at ORCA full frame).
     f1, f99 = np.percentile(frame16, (1, 99))
     span = float(f99 - f1)
     r.check(abs(lo - f1) < 0.02 * span and abs(hi - f99) < 0.02 * span,
@@ -1882,7 +1688,6 @@ def _part_roi() -> int:
     r.check(hi < 0.1 * frame16.max(),
             f"control: a hot pixel at {frame16.max()} would have stretched the "
             f"range to it; the shown top is {hi:.0f}")
-    # A flat frame must not produce an inverted or zero-width range.
     ed.set_image(np.full((CH, CW), 700, np.uint16))
     flo, fhi = ed._img.getLevels()
     r.check(fhi >= flo, f"a flat frame still gives a usable range ({flo}-{fhi})")
@@ -1898,8 +1703,7 @@ def _part_roi() -> int:
                 f"({roi.x:.0f}, {roi.y:.0f})")
         r.check(abs(roi.w - 60) < 1 and abs(roi.h - 50) < 1,
                 f"…and sized by it ({roi.w:.0f}x{roi.h:.0f})")
-    # The REAL drag path, not just the handler: mouseDragEvent maps the event's
-    # local coordinates into image space, and nothing exercised that mapping.
+    # The real drag path: mouseDragEvent maps local coordinates to the image.
     from PyQt6.QtCore import QPointF, Qt as _Qt
     ed._on_clear()
     ed._btn_draw.setChecked(True)
@@ -1928,8 +1732,6 @@ def _part_roi() -> int:
                 f"…exactly where it was dragged: centre ({got.x:.1f}, "
                 f"{got.y:.1f}) {got.w:.0f}x{got.h:.0f}, want (300, 240) 200x180")
 
-    # The rubber band tracks the drag and clears on release, so the mode is
-    # visible before anything is committed.
     ed._on_clear()
     mid = _Ev((la.x(), la.y()), (lb.x(), lb.y()), finish=False)
     vb.mouseDragEvent(mid)
@@ -1941,7 +1743,6 @@ def _part_roi() -> int:
     vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y())))
     r.check(not vb._rect.isVisible(), "…and it clears on release")
 
-    # A circle's band must be the circle that gets made, or the preview lies.
     ed._on_clear()
     ed._cmb.setCurrentText("circle")
     vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y()), finish=False))
@@ -1957,7 +1758,6 @@ def _part_roi() -> int:
             "disarming Draw clears any band left on screen")
     ed._on_clear()
 
-    # CONTROL: a stray click must not litter the set with zero-size ROIs.
     n = len(ed.roi_set)
     ed._on_drawn((200.0, 200.0), (200.5, 200.5))
     r.check(len(ed.roi_set) == n,
@@ -1976,12 +1776,10 @@ def _part_roi() -> int:
     kinds = [x.kind for x in ed.roi_set]
     r.check(kinds == ["rect", "circle"], f"both shapes are creatable ({kinds})")
 
-    # A new ROI must be placed where it can actually be projected.
     r.check(ed.roi_set.outside(c) == [],
             f"a freshly added ROI is inside the DMD field "
             f"({ed.roi_set.outside(c)})")
 
-    # Dragging the pyqtgraph item must write back into the model.
     before = (ed.roi_set[0].x, ed.roi_set[0].y)
     ed._items[0].setPos([ed._items[0].pos()[0] + 12,
                          ed._items[0].pos()[1] + 7])
@@ -1997,7 +1795,6 @@ def _part_roi() -> int:
     ed._on_clear()
     r.check(len(ed.roi_set) == 0, "clear empties the set")
 
-    # Without a calibration the editor must say so rather than pretend.
     ed2 = RoiEditor(None)
     r.check("calibration" in ed2._status.text().lower(),
             f"with no calibration the editor says so ({ed2._status.text()!r})")
@@ -2006,11 +1803,8 @@ def _part_roi() -> int:
             "…but still allows drawing, so ROIs can be prepared beforehand")
 
     # ── offset: a cropped preset's frame origin isn't the sensor's ─────────
-    # devices/voltage_cam/presets.py crops vertically (hpos always 0, vpos
-    # variable), and the calibration is always fit full-frame, so an ROI
-    # drawn on a cropped preset's frame must land (hpos, vpos) away in the
-    # MODEL (absolute sensor) coordinates the calibration expects — not
-    # where it was clicked on screen.
+    # The calibration is fit full-frame, so the model stores absolute sensor
+    # coordinates while the screen stays display-local.
     ox, oy = 37.0, 82.0
     ed3 = RoiEditor(c, offset=(ox, oy))
     ed3.set_image(np.zeros((CH, CW), np.uint8))
@@ -2021,18 +1815,12 @@ def _part_roi() -> int:
             f"sensor coordinates, shifted by the preset offset "
             f"({roi3.x:.0f}, {roi3.y:.0f})")
 
-    # The on-screen item must stay where it was clicked (display-local),
-    # even though the model just stored an absolute position.
     it3 = ed3._items[-1]
     r.check(abs(it3.pos()[0] - 100.0) < 1 and abs(it3.pos()[1] - 80.0) < 1,
             f"…but the on-screen item stays at the display-local drag "
             f"position ({it3.pos()[0]:.0f}, {it3.pos()[1]:.0f})")
 
-    # Moving the on-screen (display-local) item must still write back an
-    # absolute-coordinate model position. `roi3` and the set's entry are the
-    # SAME object, so its pre-move coordinates are captured as plain floats
-    # first — reading them back off `roi3` after the move would just compare
-    # the mutated value to itself.
+    # Copied first: `roi3` IS the set's entry, and the move mutates it.
     x3, y3 = roi3.x, roi3.y
     before3 = it3.pos()
     it3.setPos([before3[0] + 15, before3[1] - 9])
@@ -2042,16 +1830,12 @@ def _part_roi() -> int:
             "moving the on-screen item still writes an absolute-coordinate "
             "model position")
 
-    # The reachable-field outline is absolute (calibration) space too, so it
-    # must shift into display-local coordinates the same way ROI items do.
     corners = c.accessible_corners()
     xdata, ydata = ed3._field.getData()
     r.check(np.allclose(xdata[:-1], corners[:, 0] - ox)
             and np.allclose(ydata[:-1], corners[:, 1] - oy),
             "the reachable-field outline is drawn display-local too")
 
-    # CONTROL: zero offset (the default, and the common full-frame case)
-    # reproduces the pre-existing no-offset behaviour exactly.
     ed4 = RoiEditor(c)
     ed4._on_drawn((100.0, 80.0), (160.0, 130.0))
     roi4 = list(ed4.roi_set)[-1]
@@ -2059,10 +1843,8 @@ def _part_roi() -> int:
             "control: zero offset behaves exactly as before")
 
     # ── scale: a binned frame covers more sensor than it has pixels ─────────
-    # Same seam as the offset above, on the other axis of the problem: the
-    # calibration is measured unbinned, so a 2x2 frame drawn at its own pixel
-    # count sits in a quarter of the area it really covers — and the field
-    # outline lands nowhere near the image it's meant to describe.
+    # The calibration is unbinned; a 2x2 frame drawn at its own pixel count
+    # would cover a quarter of its real area.
     ed5 = RoiEditor(c, offset=(ox, oy), scale=2.0)
     ed5.set_image(np.zeros((CH // 2, CW // 2), np.uint8))
     box5 = ed5._img.mapRectToView(ed5._img.boundingRect())
@@ -2071,15 +1853,13 @@ def _part_roi() -> int:
             f"covers, not its own pixel count "
             f"({box5.width():.0f}x{box5.height():.0f})")
 
-    # And the view stays in sensor px, so the drag → model conversion is the
-    # SAME one the unbinned case uses — scale belongs to the image alone.
+    # Scale belongs to the image alone; the view stays in sensor px.
     ed5._on_drawn((100.0, 80.0), (160.0, 130.0))
     roi5 = list(ed5.roi_set)[-1]
     r.check(abs(roi5.x - (130 + ox)) < 1 and abs(roi5.y - (105 + oy)) < 1,
             f"binning doesn't move where a drag lands in the model "
             f"({roi5.x:.0f}, {roi5.y:.0f})")
 
-    # CONTROL: unbinned, the image is drawn at its own pixel count.
     ed6 = RoiEditor(c, offset=(ox, oy))
     ed6.set_image(np.zeros((CH // 2, CW // 2), np.uint8))
     box6 = ed6._img.mapRectToView(ed6._img.boundingRect())
@@ -2110,9 +1890,7 @@ def _part_roi() -> int:
     r.check(roi_store.is_roi_file(p1) and not roi_store.is_roi_file("frame.png"),
             "is_roi_file distinguishes a saved set from a raw pattern file")
 
-    # A second "run" (module re-touched with _rotated reset) must move the
-    # first run's session sets into archive, not delete or duplicate them.
-    roi_store._rotated = False
+    roi_store._rotated = False          # a second run
     moved = roi_store.list_archive()
     r.check({s.path.name for s in moved} == {p1.name, p2.name},
             f"rotation moves the previous run's sets into archive "
@@ -2120,8 +1898,6 @@ def _part_roi() -> int:
     r.check(roi_store.list_session() == [],
             "…and leaves the session folder empty for the new run")
 
-    # Display: a routine step's pattern reads as "ROI: <name>", not the
-    # raw <name>.roi.json filename a plain image would show.
     r.check(pattern_label(str(p1)) == "ROI: column A",
             f"pattern_label names a saved ROI set ({pattern_label(str(p1))!r})")
     r.check(pattern_label("frame.png") == "frame.png",

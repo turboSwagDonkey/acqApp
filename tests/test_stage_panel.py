@@ -1,18 +1,10 @@
-"""The stage panel's motion handlers, and the panic path.
+"""The stage panel's motion handlers, and the panic path (Esc → STOP ALL).
 
-Nothing else in this suite drives them: the GUI tests build the panel but never
-press its buttons, so every handler here was unexercised. That mattered on
-2026-08-13 — `_stop`, `_stop_all` and the calibration dialog's `_stop_all` were
-the only controller calls with no guard, and that is the panic path (Esc → STOP
-ALL, app-wide). A dead serial link is exactly when it gets pressed, and an
-exception escaping a Qt slot aborts the process, so the abort button could kill
-the app at the one moment it is needed.
-
-Drives the real `SettingsPanel` against a fake controller, twice: healthy, then
-with every call raising. The control is the old unguarded body run on the same
-controller — it must raise, or this test proves nothing.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_stage_panel.py
+2026-08-13: `_stop`/`_stop_all` were unguarded. A dead serial link is exactly
+when STOP ALL is pressed, and an exception escaping a Qt slot aborts the
+process. Drives the real `SettingsPanel` against a fake controller, healthy
+then with every call raising; the control is the old unguarded body, which
+must raise.
 """
 from __future__ import annotations
 
@@ -24,9 +16,8 @@ from _harness import Report, isolate_user_state, qt_app
 
 from acqApp.devices.stage import settings as stage_settings
 
-# Bind the temp path before `panel` does `from ... import config_path`, or it
-# keeps a reference to the real one. The operator's calibration is shared with
-# the standalone stage_control app; this test must not read or write it.
+# Before `panel` binds `config_path` by import. The operator's calibration is
+# shared with the standalone stage_control app.
 _TMP = Path(tempfile.mkdtemp(prefix="acqapp_stagepanel_"))
 _REAL_CONFIG = stage_settings.config_path()
 stage_settings.config_path = lambda: _TMP / "config.json"
@@ -41,7 +32,7 @@ _ANSWER = QMessageBox.StandardButton.Yes
 
 
 def _fake_dialogs() -> None:
-    """No modal may open in a test — it would hang the run."""
+    """A modal would hang the run."""
     QMessageBox.warning = staticmethod(
         lambda *a, **k: WARNINGS.append(a[2] if len(a) > 2 else ""))
     QMessageBox.question = staticmethod(
@@ -189,12 +180,9 @@ def check_frame_gating(r: Report) -> None:
 
 
 def check_current_position_not_consumed(r: Report) -> None:
-    """Save FOV (adapters/stage.py) reads `connected`/`current_position`
-    rather than the poll worker's `get_latest()` — a real regression: the
-    ~30 Hz display tick already drains that one-shot value every ~33 ms, so
-    a second, occasional reader competing for the SAME value lost the race
-    almost every time, and a fully-connected stage acted as if it were not
-    connected whenever "Save current as FOV..." was clicked."""
+    """Save FOV reads these, not the poll worker's one-shot `get_latest()`,
+    which the 30 Hz display tick drains first — a connected stage read as
+    disconnected almost every time "Save current as FOV..." was clicked."""
     p = _panel(None)
     r.check(p.connected is False, "an unbound panel reports not connected")
 
@@ -207,8 +195,6 @@ def check_current_position_not_consumed(r: Report) -> None:
     r.check(pos == (123.0, -45.0, None),
             f"current_position reflects the last readout, Z absent on a "
             f"no-Z rig (got {pos})")
-    # The regression itself: a SECOND read must return the SAME thing, unlike
-    # PullWorker.get_latest() (which hands back a value exactly once).
     r.check(p.current_position == pos,
             "reading current_position twice does not consume/clear it")
 
@@ -222,8 +208,7 @@ def check_real_config_untouched(r: Report) -> None:
 
 def check_map_repaint_guard(r: Report) -> None:
     """A stationary stage must not repaint the travel map every poll tick
-    (2026-08-27) — `StageMap.set_position` always calls `update()`, so
-    `set_readout` guards it with an epsilon rather than relying on the map."""
+    (2026-08-27): `StageMap.set_position` always calls `update()`."""
     p = _panel(None)
     calls: list[tuple] = []
     p._map.set_position = lambda x, y: calls.append((x, y))
@@ -247,8 +232,8 @@ def main() -> int:
     r = Report("stage-panel")
     isolate_user_state()
     _fake_dialogs()
-    app = qt_app()          # must stay referenced — a collected QApplication
-    assert app is not None  # aborts widget construction natively, no traceback
+    app = qt_app()  # held: a collected QApplication aborts widget construction
+    assert app is not None
     before = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None
 
     check_healthy(r)

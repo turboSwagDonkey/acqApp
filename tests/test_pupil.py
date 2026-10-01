@@ -1,29 +1,27 @@
-"""Pupil camera: EyeLoop seam, tracking through the app, the eye region, clip replay.
+"""Pupil camera: EyeLoop seam, tracking, the eye region, clip replay.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_pupil.py [-q] [--part NAME]
 """
 from __future__ import annotations
 
+import math
+import struct
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
+
 import numpy as np
 from _harness import (Report, isolate_user_state, make_window, npoints, pump,
                       qt_app, run_parts)
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking import PupilTracking
-import math
-import threading
-import time
 from acqApp.devices.pupil_cam.track_worker import PupilTrackWorker
 from PyQt6.QtCore import QPointF, Qt
-import struct
-import tempfile
 
 
 # ═══ eyeloop (was test_pupil_eyeloop.py) ════════════════════════════════
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 
 CLIPS = {
     "pAce": (Path(r"E:\pAce\VF203.2R\20260701\FOV1_T1\FOV1_T1_Pupil.avi"), (850, 490)),
@@ -65,7 +63,6 @@ def _part_eyeloop() -> int:
     have_clone = (EYELOOP_DIR / "eyeloop").is_dir()
 
     # ── the contract that must hold with NO clone ────────────────────────────
-    # A rig that has never set EyeLoop up must run exactly as it did before.
     st_off = PupilSettings(track=False, limit_x0=50, limit_y0=50,
                            limit_x1=350, limit_y1=350)
     pt_off = PupilTracking()
@@ -99,8 +96,7 @@ def _part_eyeloop() -> int:
         r.check(fit.axis_ratio > 0.9,
                 f"a round pupil fits round (ratio {fit.axis_ratio:.2f})")
 
-    # CONTROL: the same eye with no region to crop to — a full rig frame is
-    # what EyeLoop cannot fit, and it is why the eye region is mandatory.
+    # CONTROL: EyeLoop cannot fit a full rig frame; hence the region.
     st_full = PupilSettings(track=True, track_threshold=60, cr_remove=False,
                             limit_x0=364, limit_y0=4, limit_x1=1564, limit_y1=1204)
     ctl = PupilTracking().track(full, st_full)
@@ -115,8 +111,7 @@ def _part_eyeloop() -> int:
     misses = [pt2.track(noise, st) for _ in range(8)]
     r.check(good is not None and all(m is None for m in misses),
             "a frame with no pupil returns None, not the previous fit")
-    # CONTROL: EyeLoop's own state still holds that stale answer, which is
-    # exactly the bug being defended against.
+    # CONTROL: EyeLoop's own state is where the stale answer lived.
     r.check(pt2._tracker is not None
             and pt2._tracker._shape.fit_model.params is None,
             "control: params really was nulled, not merely re-read")
@@ -133,11 +128,8 @@ def _part_eyeloop() -> int:
     r.check(pt3.track(full, st_moved) is not None,
             "and it still tracks after the re-arm")
 
-    # Switching Ellipse<->Circle must ALSO re-arm, even with the region
-    # untouched: EyeLoop bakes the model into the Shape it builds in arm(), so
-    # it is not a live knob the way threshold/blur are — the operator saw this
-    # as "the model can't be changed without closing and reopening" (the box
-    # happening to change was the only thing that ever forced a re-arm).
+    # A model change must re-arm too: EyeLoop bakes it in at arm(), and the
+    # operator found it could not be changed without reopening.
     st_circle = PupilSettings(track=True, track_threshold=60, cr_remove=False,
                               limit_x0=650, limit_y0=290, limit_x1=1050,
                               limit_y1=690, track_model="circular")
@@ -162,8 +154,8 @@ def _part_eyeloop() -> int:
     r.check(mask.sum() > 0, "the reflection is found")
     r.check(cleaned[215, 180] < 120,
             f"and blanked to {cleaned[215, 180]} — it reads as pupil again")
-    # CONTROL: the mask must not reach the pupil boundary. Masking the rim is
-    # what erases the edge and inflates the radius (+3.5 px, docs/EYELOOP.md).
+    # CONTROL: masking the rim erases the edge and inflates the radius
+    # (+3.5 px, docs/EYELOOP.md).
     yy, xx = np.ogrid[:400, :400]
     d = np.hypot(xx - 200, yy - 200)
     r.check(not mask[d > 55 * 0.95].any(),
@@ -243,9 +235,8 @@ def run_worker(app, r: Report, st: PupilSettings, *, frames: int = 6,
                reconfigure: PupilSettings | None = None):
     """Drive a worker over `frames` synthetic frames. Returns what it saw."""
     frame = eye_frame()
-    # `gate` holds the source at half the frames until the reconfigure has
-    # happened — the worker polls faster than this loop pumps, so without it
-    # every frame is served before the edit and the edit proves nothing.
+    # `gate` holds the source at half the frames until the reconfigure, or the
+    # worker serves every frame before the edit.
     served = {"n": 0, "thread": None,
               "gate": frames if reconfigure is None else frames // 2}
 
@@ -297,8 +288,7 @@ def _part_track() -> int:
     r.check(served["n"] > 0, f"the worker pulled frames ({served['n']})")
     r.check(served["thread"] not in (None, main_thread),
             "frames are pulled on the worker's thread, not the GUI's")
-    # CONTROL: the same call made here reports this thread — so the check above
-    # is comparing against something that can differ, not against None.
+    # CONTROL: the comparison is against something that can differ.
     inline = threading.get_ident()
     r.check(inline == main_thread,
             "control: the same reading taken inline is the GUI thread")
@@ -320,8 +310,7 @@ def _part_track() -> int:
     r.check(w.fits == sum(1 for f, _b, _at in sink if f is not None),
             f"the fit counter matches the fits ({w.fits}/{w.frames_seen})")
 
-    # CONTROL: with tracking off nothing is recorded and nothing is traced,
-    # while frames still flow — the camera must be untouched by any of this.
+    # CONTROL: tracking off records nothing, while frames still flow.
     st_off = PupilSettings(track=False, **REGION)
     w2, served2, seen2, sink2, radii2 = run_worker(app, r, st_off)
     r.check(served2["n"] > 0 and seen2, "control: frames still flow with tracking off")
@@ -374,8 +363,7 @@ def _part_track() -> int:
             f"a fourth fit drops the oldest — mean of the last 3 (110,120,140), "
             f"not all 4 ({f4.center_x})")
 
-    # CONTROL: a lost frame must clear the buffer, not be skipped over — else
-    # the first fit after a loss would blend in a pupil position from before it.
+    # CONTROL: a lost frame clears the buffer rather than being skipped.
     sm = _FitSmoother()
     for f in fits:
         sm.apply(f, window=3)
@@ -386,8 +374,7 @@ def _part_track() -> int:
             f"control: the fit right after a loss is raw, not blended with "
             f"pre-loss history ({f_after.center_x})")
 
-    # An ellipse's angle repeats every 180 deg, so 179 and 1 deg are 2 deg
-    # apart, not ~178 — a plain mean gets this wrong at the wrap.
+    # 179 and 1 deg are 2 deg apart; a plain mean gets the wrap wrong.
     sm = _FitSmoother()
     sm.apply(PupilFit(0.0, 0.0, 40.0, 30.0, 179.0), window=2)
     wrapped = sm.apply(PupilFit(0.0, 0.0, 40.0, 30.0, 1.0), window=2)
@@ -415,8 +402,7 @@ def _part_track() -> int:
     r.check(not bd.check(29.0, drop_frac=0.35, window=10),
             "…and clears once the radius recovers")
 
-    # CONTROL: a run of blink frames must not drag the baseline down — or a
-    # blink long enough would talk itself into looking normal.
+    # CONTROL: or a long enough blink would become the baseline.
     bd = _BlinkDetector()
     for _ in range(6):
         bd.check(30.0, drop_frac=0.35, window=10)
@@ -437,7 +423,6 @@ def _part_track() -> int:
     panel = mod.panel
 
     # ── 6. what the recorder is offered, stream by stream ────────────────────
-    from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
     all_streams = list(mod.FIT_STREAMS) + [mod.BLINK_STREAM]
     rec = FakeRec()
     mod._record_fit(rec, PupilFit(101.0, 202.0, 30.0, 20.0, 45.0), False, 1.5)
@@ -496,16 +481,13 @@ def _part_track() -> int:
             f"…as the ellipse it was given (centre {0.5*(xs.min()+xs.max()):.0f}, "
             f"semi-axes {0.5*(xs.max()-xs.min()):.0f}/"
             f"{0.5*(ys.max()-ys.min()):.0f})")
-    # The angle is drawn, not dropped: a 90 degree turn swaps the two extents.
     mod._draw_fit(PupilFit(160.0, 120.0, 40.0, 30.0, 90.0))
     xs, ys = mod._fit_curve.getData()
     r.check(abs(0.5 * (xs.max() - xs.min()) - 30.0) < 1.0
             and abs(0.5 * (ys.max() - ys.min()) - 40.0) < 1.0,
             f"control: turning it 90° swaps the axes "
             f"({0.5*(xs.max()-xs.min()):.0f}/{0.5*(ys.max()-ys.min()):.0f})")
-    # THE one that matters: a lost frame must not leave the last good outline
-    # standing. `fit()` upstream returns stale params on failure — this is the
-    # display half of the same trap.
+    # The display half of EyeLoop's stale-fit trap.
     mod._draw_fit(None)
     r.check(npoints(mod._fit_curve) == 0,
             "a frame with no fit clears the outline rather than leaving a stale one")
@@ -583,8 +565,7 @@ def _part_track() -> int:
             f"clicking a pinned reflection unpins it ({panel.settings.cr_pins})")
     r.check(npoints(mod._pin_curve) == 0, "…and it stops being drawn")
 
-    # The two placement tools are exclusive: arming one disarms the other, or
-    # the next click means two things at once.
+    # Exclusive, or the next click means two things at once.
     mod._btn_pin.setChecked(True)
     mod._btn_limit.setChecked(True)
     r.check(not mod._btn_pin.isChecked(),
@@ -603,10 +584,8 @@ def _part_track() -> int:
 # ═══ limit (was test_pupil_limit.py) ════════════════════════════════════
 
 class _DragEv:
-    """Stands in for pyqtgraph's MouseDragEvent, delivered to
-    `DragRectViewBox.mouseDragEvent` (`adapters/base.py`) exactly as a real
-    drag would be — this drives the real armed/unarmed gate, not just the
-    adapter's own `_on_limit_drag`."""
+    """pyqtgraph's MouseDragEvent, delivered to the ViewBox so its own
+    armed/unarmed gate is exercised, not just `_on_limit_drag`."""
 
     def __init__(self, start, pos, finish: bool):
         self._start = start
@@ -631,8 +610,6 @@ class _DragEv:
 
 def _part_limit() -> int:
     r = Report("pupil-limit")
-
-    from acqApp.devices.pupil_cam.settings import PupilSettings
 
     # ── 1. the settings model ────────────────────────────────────────────────
     r.check(PupilSettings().search_limit() is None,
@@ -680,8 +657,7 @@ def _part_limit() -> int:
     r.check(len(seen) == 1, f"a placement writes back as one settings change "
                             f"({len(seen)})")
     seen.clear()
-    # CONTROL: the same four values typed into the spinboxes really do emit
-    # four times, so the check above is not vacuous.
+    # CONTROL: the same four values typed in really do emit four times.
     panel._spn_lx0.setValue(401.0)
     panel._spn_ly0.setValue(151.0)
     panel._spn_lx1.setValue(601.0)
@@ -722,9 +698,7 @@ def _part_limit() -> int:
     win._btn_run.setChecked(True)
     pump(app, 1.0)                       # frames flow
 
-    # The window is never shown, so the view has no size and never auto-ranges:
-    # every scene point would map to the default 0-1 view range and the drag
-    # would span 0 px. Give it both explicitly.
+    # Never shown, the view has no size or range: the drag would span 0 px.
     mod._gv.resize(400, 300)
     mod._vb.setRange(xRange=(0, 320), yRange=(0, 240), padding=0)
     pump(app, 0.05)
@@ -750,8 +724,6 @@ def _part_limit() -> int:
     r.check("drag from one corner" in mod._lbl_limit.text(),
             f"arming says what to do next ({mod._lbl_limit.text()!r})")
 
-    # Delivered to the ViewBox itself, not the adapter's handler directly —
-    # this exercises DragRectViewBox's own armed/unarmed gate too.
     mod._vb.mouseDragEvent(_DragEv(start, start, finish=False))
     r.check(npoints(mod._limit_ghost) == 5,
             f"the rectangle follows the cursor before it is committed "
@@ -771,11 +743,8 @@ def _part_limit() -> int:
             "…and disarms itself — no mode left switched on")
     r.check(npoints(mod._limit_ghost) == 0, "…and the rubber band is cleared")
 
-    # CONTROL: disarmed (as it now is, having just placed one), the ViewBox's
-    # own gate must be off — a real pg drag event then falls all the way
-    # through to `pg.ViewBox`'s own pan, which a minimal stub can't stand in
-    # for, so this checks the flag `mouseDragEvent` actually gates on rather
-    # than replaying a full pan through it.
+    # CONTROL: the flag `mouseDragEvent` gates on; a stub cannot replay the
+    # real pan it falls through to.
     r.check(mod._vb._draw is False,
             "control: disarmed, the ViewBox's own draw-mode flag is off — the "
             "next real drag falls through to pyqtgraph's own pan")
@@ -821,9 +790,8 @@ def i420(y: np.ndarray) -> bytes:
 
 
 def dib_rows(img: np.ndarray, px: int) -> bytes:
-    """`img` as DIB scanlines — each padded up to a 4-byte boundary, as the
-    format requires. `write_avi` alone would pack them, which is the one case a
-    reader that ignores the stride still gets right."""
+    """`img` as DIB scanlines, each padded to a 4-byte boundary (packed rows
+    are the one case a stride-ignoring reader gets right)."""
     h, w = img.shape[:2]
     stride = ((w * px + 3) // 4) * 4
     row = img.reshape(h, w * px) if img.ndim == 3 else img
@@ -858,8 +826,7 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
     r.check(np.array_equal(rd.luma(0), y0) and np.array_equal(rd.luma(1), y1),
             "IYUV: the Y plane comes back exactly, chroma ignored")
     r.check(abs(rd.hz - 20.0) < 1e-6, f"IYUV: hz from avih ({rd.hz:.2f})")
-    # CONTROL: the frames genuinely differ, so "comes back exactly" is not
-    # satisfied by returning the same buffer twice.
+    # CONTROL: or returning one buffer twice would pass.
     r.check(not np.array_equal(y0, y1),
             "control: the two source frames are not identical")
 
@@ -881,10 +848,8 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
     r.check(not np.array_equal(got, bgr[:, :, 0]),
             "control: the BI_RGB flip actually happened")
 
-    # A width whose row bytes are NOT 4-aligned. DIB pads every scanline up to
-    # the boundary; a reader that assumes width*px shears the image a little
-    # further on each row. W=96 above cannot show this — 96*3 is already
-    # aligned — which is exactly how it went unnoticed.
+    # Rows NOT 4-aligned: a reader assuming width*px shears each row further.
+    # W=96 above is aligned, which is how this went unnoticed.
     W2 = 97
     r.check((W2 * 3) % 4 != 0 and (W2 * 1) % 4 != 0,
             f"control: {W2}px rows are unaligned at both 8- and 24-bit, so "
@@ -932,7 +897,6 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
             "worker: every published frame is (H, W) uint8")
     r.check(np.array_equal(seen[0], seen[5]) if len(seen) > 5 else False,
             "worker: frame 5 is frame 0 again — the loop wraps in order")
-    # A copy, not a memmap view: two frames must not alias one buffer.
     r.check(not np.shares_memory(seen[0], seen[1]),
             "worker: frames are copies, so the sink can keep them")
 
@@ -945,10 +909,8 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
 
     # ── 4. the adapter's choice, and what lands in the file ──────────────────
     isolate_user_state()               # the panel persists on every edit
-    from acqApp.devices.pupil_cam.acquisition import MockPupilCameraWorker
-    from acqApp.devices.pupil_cam.settings import PupilSettings
-
     from acqApp.adapters.pupil_cam import PupilCamModule
+    from acqApp.devices.pupil_cam.acquisition import MockPupilCameraWorker
 
     class FakeWin:
         """Only what build_session touches."""

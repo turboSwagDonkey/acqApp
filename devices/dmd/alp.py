@@ -1,11 +1,10 @@
-"""Vialux ALP-4.2 (1024x768) device layer, via ALP4lib and the vendor's
-high-speed API. No Qt, so `build_frame` is testable without the device.
+"""Vialux ALP-4.2 (1024x768) device layer, via ALP4lib. No Qt.
 
 `build_frame` ports `dmdGUI_project`'s `dmdCommandLine.buildFrame`, which the
 optics are aligned with; the two must stay identical.
 
-Only one process can hold the ALP (over USB); `open()` raises if the
-standalone app has it.
+Only one process can hold the ALP; `open()` raises if the standalone app has
+it.
 """
 from __future__ import annotations
 
@@ -18,6 +17,8 @@ import numpy as np
 
 # Vendor cap between pictures (AlpSeqTiming); clamped here, not truncated.
 MAX_PICTURE_US = 10_000_000
+
+_ON, _OFF = np.uint8(255), np.uint8(0)
 
 _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
 # The standalone app's libDir and aligned scale/rotation.
@@ -77,9 +78,9 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
     if arr.ndim != 2:
         raise ValueError(f"expected a 2-D pattern, got shape {arr.shape}")
 
-    arr = np.where(arr > 127, 255, 0).astype(np.uint8)
+    arr = np.where(arr > 127, _ON, _OFF)
     if invert:
-        arr = (~arr).astype(np.uint8)
+        arr = ~arr
 
     proc = Image.fromarray(arr, mode="L")
     src_w, src_h = proc.size
@@ -104,8 +105,7 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
     canvas = Image.new("L", (width, height), color=0)
     canvas.paste(proc, (int(round(width / 2.0 + offset_x - pw / 2.0)),
                         int(round(height / 2.0 + offset_y - ph / 2.0))))
-    out = np.asarray(canvas)
-    return np.ascontiguousarray(np.where(out > 127, 255, 0).astype(np.uint8))
+    return np.where(np.asarray(canvas) > 127, _ON, _OFF)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

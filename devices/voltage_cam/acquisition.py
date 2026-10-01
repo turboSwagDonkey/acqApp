@@ -263,7 +263,6 @@ class OrcaFireWorker(PullWorker):
         cam.stop_acquisition()
         self._close_dcimg()
         t_stop = time.perf_counter()
-        t_start = t_stop
         try:
             if err is not None:
                 raise err
@@ -540,10 +539,11 @@ class OrcaFireWorker(PullWorker):
     def _emit_frames(self, imgs, infos, sink) -> tuple[int, Any]:
         """Feed the sink (frame, acquired_at, index) -> (count, newest)."""
         n, last = 0, None
+        n_info = len(infos) if infos is not None else 0
         for i, img in enumerate(imgs):
             if img is None:
                 continue
-            info = infos[i] if infos is not None and i < len(infos) else None
+            info = infos[i] if i < n_info else None
             sink((img, self._frame_time(info),
                   None if info is None else getattr(info, "frame_index", None)))
             n += 1
@@ -586,11 +586,10 @@ class OrcaFireWorker(PullWorker):
 
         own_cam = self._ext_cam is None
         mark = time.perf_counter()
+        cam = self._ext_cam
         if own_cam:
             cam = open_camera(self._device_index)
             mark = _t("open", mark)
-        else:
-            cam = self._ext_cam
         try:
             if preset.is_full_frame:
                 cam.set_roi(hbin=cfg.binning, vbin=cfg.binning)
@@ -694,21 +693,21 @@ class OrcaFireWorker(PullWorker):
                             self.error.emit(f"DCIMG recording failed: {e}")
                         finally:
                             self._rec_busy = False
-                    if rearm and self._burst_n and not (
-                            rearm_file and self._dcimg is not None):
-                        self._soft_gate = rearm_from
-                    elif rearm and not (rearm_file and self._dcimg is not None):
-                        try:
-                            self._do_rearm(cam, nframes, self._mp_mode)
-                            self._gated()
-                            # Camera counters restart at 0; stale totals would
-                            # read as a negative rate and a phantom drop.
-                            self._skipped = 0
-                            n_acquired = 0
-                            print("[voltage_cam] re-armed")
-                        except Exception as e:      # noqa: BLE001
-                            print(f"[voltage_cam] trigger re-arm failed "
-                                  f"({type(e).__name__}: {e})")
+                    if rearm and not (rearm_file and self._dcimg is not None):
+                        if self._burst_n:
+                            self._soft_gate = rearm_from
+                        else:
+                            try:
+                                self._do_rearm(cam, nframes, self._mp_mode)
+                                self._gated()
+                                # Camera counters restart at 0; stale totals
+                                # would read as a negative rate and a drop.
+                                self._skipped = 0
+                                n_acquired = 0
+                                print("[voltage_cam] re-armed")
+                            except Exception as e:  # noqa: BLE001
+                                print(f"[voltage_cam] trigger re-arm failed "
+                                      f"({type(e).__name__}: {e})")
                     if pending is not None:
                         try:
                             cfg.target_hz = pending

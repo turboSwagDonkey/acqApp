@@ -1,13 +1,6 @@
-"""
-Backend registry for the stage: which driver module talks to whatever
-controller is actually plugged in, and how to figure that out automatically.
-
-The hardware has already been swapped once (MCM6101 -> MCM301, 2026-09) and
-will likely be swapped again. That should mean plugging in the new
-controller and letting the app notice -- not editing control.py. Adding a
-new controller is: write its driver module (open/close/get_status/
-move_to_readout/stop, matching the shape of driver.py or mcm301_driver.py),
-then register it below.
+"""Stage backend registry: which driver talks to the controller plugged in,
+and how to tell automatically. A new controller is a driver module with the
+surface below, registered in BACKENDS; control.py doesn't change.
 
 Every backend driver exposes the same axis-indexed surface:
     open() / close() / is_open
@@ -16,18 +9,13 @@ Every backend driver exposes the same axis-indexed surface:
     jog_by_readout(axis, delta_counts, current_counts=None)   # MOTION
     stop(axis) / stop_all(axes)            # MOTION
     set_linear_map(axis, slope, offset) / linear_map(axis)
-`axis` is whatever address that backend's own driver expects (0/1/2 for the
-MCM6101's dest-offset scheme, 4/5/6 for the MCM301's fixed slots) -- it's
-carried through opaquely from StageAxis.index in the calibration config, so
-the two backends' configs use different index values for the same logical
-X/Y/Z.
+`axis` is the driver's own address (MCM6101 0/1/2, MCM301 slots 4/5/6),
+carried opaquely from StageAxis.index, so the two backends' configs index
+the same logical X/Y/Z differently.
 
-`establish_frame` (the MCM6101's command-origin recalibration) is NOT part
-of the common surface: it exists to work around that controller's quirk of
-re-referencing its origin on every hard-limit hit. A backend without that
-quirk (the MCM301: position is already a stable encoder count) doesn't
-implement it, and StageController.establish_frame() reports that clearly
-instead of AttributeError-ing.
+`establish_frame` is MCM6101-only: it works around that controller
+re-referencing its origin on every hard-limit hit. The MCM301's readout is a
+stable encoder count, and StageController.establish_frame() says so.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -53,16 +41,12 @@ def _open_mcm6101(port: str):
 
 
 def _probe_mcm6101(port: str) -> bool:
-    """The MCM6101 only identifies itself by answering APT's HW_REQ_INFO over
-    the open serial port -- there's no OS-level way to tell it apart from any
-    other USB-CDC device without talking to it."""
+    """Only answering HW_REQ_INFO over the open port tells an MCM6101 apart
+    from any other USB-CDC device."""
     from .driver import MCM6101
     dev = MCM6101(port)
     try:
         dev.open()
-    except Exception:
-        return False
-    try:
         dev.get_info()
         return True
     except Exception:
@@ -79,13 +63,9 @@ def _open_mcm301(port: str):
 
 
 def _probe_mcm301(port: str) -> bool:
-    """The MCM301's vendor DLL enumerates its own devices without opening a
-    port, so this probe is connectionless and cheap -- run it first.
-
-    A single connected MCM301 counts as a match even when it isn't on the
-    configured port: Windows renumbers COM ports whenever it feels like it,
-    and this enumeration lists ONLY MCM301-family devices, so there's nothing
-    else it could be confused with."""
+    """Connectionless (the DLL enumerates without opening a port). A lone
+    MCM301 matches on any port: Windows renumbers COM ports, and this lists
+    only MCM301s."""
     from .mcm301_driver import com_name, list_devices
     try:
         devices = list_devices()
@@ -96,8 +76,8 @@ def _probe_mcm301(port: str) -> bool:
     return len(devices) == 1
 
 
-# Probed in this order. mcm301's probe is a safe, connectionless enumeration;
-# mcm6101's has to open the serial port, so it runs only if nothing cheaper matched.
+# Probed in order: the connectionless mcm301 probe before the port-opening
+# mcm6101 one.
 BACKENDS: dict[str, _Backend] = {
     "mcm301":  _Backend("mcm301",  _open_mcm301,  _probe_mcm301),
     "mcm6101": _Backend("mcm6101", _open_mcm6101, _probe_mcm6101),
@@ -105,8 +85,8 @@ BACKENDS: dict[str, _Backend] = {
 
 
 def probe_port(port: str) -> str | None:
-    """Identify which registered backend's hardware is on `port`, leaving
-    nothing open. Returns the backend name, or None if nothing recognized it."""
+    """The backend whose hardware is on `port`, or None; leaves nothing
+    open."""
     for name, backend in BACKENDS.items():
         try:
             if backend.probe(port):
@@ -126,8 +106,7 @@ def open_backend(name: str, port: str):
 
 
 def connect_auto(port: str) -> tuple[str, object]:
-    """Probe `port` and connect with whichever backend recognizes it.
-    Returns (backend_name, connected_driver)."""
+    """Probe `port` and connect -> (backend_name, connected_driver)."""
     name = probe_port(port)
     if name is None:
         raise BackendError(

@@ -1,8 +1,8 @@
 """The interfaces the module adapters program against.
 
-Structural Protocols: nothing inherits, and `tests/test_device_contracts.py`
-is what enforces them (there's no type checker). They replace getattr probes
-whose defaults once filed a real projection as none.
+Structural Protocols: nothing inherits; tests/test_device_contracts.py
+enforces them. (getattr probes they replaced once filed a real projection as
+none.)
 """
 from __future__ import annotations
 
@@ -185,7 +185,6 @@ class ModuleHost(Protocol):
 
     def set_modules(self, keys) -> tuple[list[str], list[str]]:
         """-> (loaded, unloaded). Raises while recording."""
-        ...
 
     def module_keys(self) -> list[str]: ...
 
@@ -193,11 +192,9 @@ class ModuleHost(Protocol):
 
     def set_live(self, on: bool) -> bool:
         """Returns the previous state, so a caller can put it back."""
-        ...
 
     def set_recording(self, on: bool) -> bool:
         """Returns the previous state, so a caller stops only what it started."""
-        ...
 
     def is_recording(self) -> bool: ...
 
@@ -205,49 +202,39 @@ class ModuleHost(Protocol):
 
     def set_camera_preset(self, key: str, preset: str) -> str | None:
         """Returns the previous preset. Applies at the next session start."""
-        ...
 
     def camera_binning(self, key: str) -> int | None: ...
 
     def set_camera_binning(self, key: str, n: int) -> int | None:
         """Returns the previous value. Applies at the next session start."""
-        ...
 
     def set_camera_trigger(self, key: str, on: bool) -> bool | None:
         """External edge (True) or Internal, restarting live view if needed.
         False: refused because a recording is running."""
-        ...
 
     def routine_arming_trigger(self, on: bool) -> None:
         """Brackets a routine's arm + session open, so `_start_session()`
         doesn't reset the camera to Internal under it."""
-        ...
 
     def set_camera_burst(self, key: str, n: int) -> bool | None:
         """Frames per edge (0 = until re-armed), restarting live view if
         needed. False: refused because a recording is running."""
-        ...
 
     def camera_burst_frames(self, key: str) -> int | None:
         """Real frames of the burst the last gate caught; None outside burst."""
-        ...
 
     def rearm_camera_trigger(self, key: str) -> bool | None:
         """Queue a re-gate so the next edge is detectable. False: no worker."""
-        ...
 
     def arm_camera_with_next_file(self, key: str) -> bool | None:
         """Make the next .dcimg swap re-arm too. False: no .dcimg open."""
-        ...
 
     def seal_camera_file(self, key: str) -> bool | None:
         """Close the open .dcimg early; the recording stays open until the
         next roll. False: no .dcimg open."""
-        ...
 
     def camera_trigger_gate(self, key: str) -> tuple[int, int] | None:
         """(re-arms completed, frames since the last)."""
-        ...
 
     def stage_target(self) -> Any: ...
 
@@ -259,23 +246,19 @@ class ModuleHost(Protocol):
 
     def frame_rate_hz(self) -> float | None:
         """For estimates only."""
-        ...
 
     def latest_frame(self, key: str) -> Any:
         """The cached newest frame; never commands the camera."""
-        ...
 
     def latest_frame_preset(self, key: str) -> str | None:
         """The preset that frame was captured under (`camera_preset` can
         name one not yet in effect)."""
-        ...
 
     def active_fov_name(self) -> str: ...
 
     def roll_recording(self) -> bool:
         """Close and reopen with no gap the routine could mistake for a stop.
         Returns whether the new one started."""
-        ...
 
     def set_routine_save_context(self, fov: str | None, trial: int | None,
                                  coords: tuple[float | None, float | None,
@@ -283,12 +266,9 @@ class ModuleHost(Protocol):
                                  ) -> None:
         """Name the next file by (FOV, trial); None, None clears. `coords`
         for a "custom" FOV go to a sidecar."""
-        ...
 
     def recording_path(self) -> Any:
         """The file/folder being recorded to, or None."""
-        ...
 
     def routine_folder(self) -> Any:
         """Today's folder for routine trials (where the edge log goes)."""
-        ...

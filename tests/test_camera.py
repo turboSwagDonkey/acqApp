@@ -1,27 +1,28 @@
-"""Voltage camera and recording path: readout table, timestamps, .dcimg, losses.
+"""Voltage camera and recording path: readout, timestamps, .dcimg, losses.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_camera.py [-q] [--part NAME]
 """
 from __future__ import annotations
 
+import collections
 import math
+import shutil
 import sys
+import tempfile
+import threading
+import time
+from collections import deque
+from pathlib import Path
+
+import numpy as np
 from _harness import (Report, qt_app, isolate_user_state, make_window, pump,
                       run_parts)
 from acqApp.devices.voltage_cam import presets as P
-import collections
-import time
-import numpy as np
 from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
 from acqApp.devices.voltage_cam.presets import AcqConfig
 from acqApp.acq.clock import SessionClock
-import shutil
-import tempfile
-from pathlib import Path
 from acqApp.devices.voltage_cam.dcimg import (MIN_FRAMES, DcimgError,
                                               DcimgRecorder, frames_that_fit)
-import threading
-from collections import deque
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
 from acqApp.acq.writer import Writer
@@ -59,8 +60,8 @@ def _part_readout() -> int:
             "— an estimate that is too low only oversizes a buffer")
 
     # ── interpolation ────────────────────────────────────────────────────────
-    # Log-log means the geometric midpoint of two rows maps to the geometric
-    # mean of their rates. 512→524, 1024→264 on CXP.
+    # Log-log: the geometric midpoint of two rows maps to the geometric mean
+    # of their rates. 512→524, 1024→264 on CXP.
     mid = math.sqrt(512 * 1024)
     want = math.sqrt(524.0 * 264.0)
     got = P.readout_hz(round(mid), link=P.CXP)
@@ -73,8 +74,7 @@ def _part_readout() -> int:
                for a, b in zip(range(4, 2400, 37), range(41, 2437, 37)))
     r.check(mono, "monotonic across the whole range (65 sample points)")
 
-    # Readout is row-by-row, so rows x Hz is ~constant over the mid range —
-    # this is the physical claim the table is standing in for.
+    # The physical claim the table stands in for.
     k = [rws * P.readout_hz(rws, link=P.CXP) for rws in (2368, 2048, 1024, 512, 256)]
     r.check(max(k) / min(k) < 1.1,
             f"rows x Hz is constant to {100 * (max(k) / min(k) - 1):.0f} % over "
@@ -117,8 +117,7 @@ def _part_readout() -> int:
     r.check(min(P.PRESETS[k].vsize for k in P.PRESET_KEYS) == P.MIN_PRESET_ROWS,
             f"the smallest offered preset is exactly {P.MIN_PRESET_ROWS} rows")
 
-    # Control: the check above is vacuous unless the table still HAS smaller
-    # rows to have excluded.
+    # Control: vacuous unless the table still HAS smaller rows to exclude.
     r.check(any(rws < P.MIN_PRESET_ROWS for rws, _u, _c in P._ROWS_HZ_BOTH),
             f"the datasheet table still carries rows below "
             f"{P.MIN_PRESET_ROWS} (trimming presets must not trim physics)")
@@ -247,8 +246,7 @@ class FakeCam:
     def read_newest_image(self): return np.zeros(self._shape, dtype=np.uint16)
 
     def wait_for_frame(self, timeout=None):
-        # A batch's worth of frames accumulates between reads — this interval is
-        # exactly what the old code was (incorrectly) stamping frames with.
+        # The interval the old code wrongly stamped frames with.
         time.sleep(BATCH * PERIOD)
 
     def read_multiple_images(self, return_info=False):
@@ -269,8 +267,7 @@ def _part_timestamps() -> int:
     r = Report("camera-ts")
     qt_app()                                # the worker declares pyqtSignals
 
-    # Smallest offered preset, binned hard: this test wants a cheap frame shape
-    # for FakeCam, not a particular ROI.
+    # Smallest offered preset, binned hard: a cheap frame shape.
     cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
     clock = SessionClock()
     clock.start()
@@ -300,14 +297,12 @@ def _part_timestamps() -> int:
     ts = np.array([g[0] for g in got])
     idx = np.array([g[1] for g in got])
 
-    # indices: contiguous except for the injected drop
     steps = np.diff(idx)
     r.check(bool(np.all(steps >= 1)), "frame indices never go backwards")
     r.check(int((steps == 2).sum()) == 1,
             f"the dropped frame shows as one index jump "
             f"(jumps={sorted(set(steps.tolist()))})")
 
-    # timestamps: the frame rate, not the read cadence
     dt = np.diff(ts)
     normal = dt[steps == 1]                 # the drop legitimately doubles one
     r.check(bool(np.all(normal > 0)), "no two frames share a timestamp")
@@ -357,12 +352,10 @@ def check_frame_cap(r: Report, tmp: Path) -> None:
     r.check(small <= free // (1 << 20),
             f"the cap never exceeds free space ({small} frames of 1 MB)")
 
-    # Halving the frame size doubles the cap — the cap is bytes, not frames.
     # Within one frame: free space moves under us, and the division truncates.
     r.check(abs(frames_that_fit(tmp, 1 << 19) - small * 2) <= 2,
             "the cap scales inversely with frame size")
 
-    # A frame nothing could hold.
     r.check(frames_that_fit(tmp, free * 2) == 0,
             "a frame larger than the drive fits zero of them")
 
@@ -373,8 +366,7 @@ def check_frame_cap(r: Report, tmp: Path) -> None:
         except ValueError:
             r.check(True, f"frame_bytes={bad} raises rather than dividing by it")
 
-    # A path that doesn't exist yet is normal — the session folder is made by
-    # the writer, and the recorder is sized before it opens.
+    # Normal: the recorder is sized before the writer makes the folder.
     deep = tmp / "not" / "made" / "yet" / "x.dcimg"
     r.check(frames_that_fit(deep, 1 << 20) == small,
             "an unmade path measures the nearest existing parent's drive")
@@ -421,7 +413,7 @@ def check_cap_guards(r: Report, tmp: Path) -> None:
                                      cap=1 << 40).max_frames == fit.max_frames,
             "...but never above what the drive holds")
 
-    # close() runs on the failure path, so it must never raise or need open().
+    # close() runs on the failure path.
     fit.close()
     fit.close()
     r.check(True, "close() on an unopened recorder is a no-op, twice over")
@@ -470,7 +462,7 @@ def check_routine_counts_recorder(r: Report, app) -> None:
     r.check(win.dcimg_frames("voltage_cam") is None,
             "no .dcimg open — the host says so with None, not 0")
 
-    # A worker that IS writing one, at a count no sink could have produced.
+    # Writing one, at a count no sink could have produced.
     class FakeWorker:
         dcimg_active = True
         dcimg_frames = 41
@@ -488,9 +480,7 @@ def check_routine_counts_recorder(r: Report, app) -> None:
             f"the engine's frames() hook reads it, not offered() "
             f"(got {hooks.frames()})")
 
-    # 0 frames written so far is NOT "no .dcimg": the difference decides
-    # whether a Wait counts from the recorder or from a Recorder that will
-    # never move.
+    # 0 is not "no .dcimg": None would count from a Recorder that never moves.
     FakeWorker.dcimg_frames = 0
     r.check(hooks.frames() == 0,
             "a .dcimg with nothing in it yet still counts 0, not None")
@@ -499,7 +489,7 @@ def check_routine_counts_recorder(r: Report, app) -> None:
     r.check(hooks.frames() is None or hooks.frames() == 0,
             "with no .dcimg open it falls back to the Recorder")
 
-    # The routine itself must now START on DCIMG — it used to be refused.
+    # It used to be refused.
     cam.worker = None
     sp = win._save_panel
     sp._chk_split.setChecked(True)
@@ -517,8 +507,6 @@ def check_wait_for_camera(r: Report, app) -> None:
     trial short by exactly that much — hold, then restart the step's clock."""
     from acqApp.routines.settings import Routine, Step
 
-    # The setting survives a save/load round trip, and defaults on for a file
-    # written before it existed.
     rt = Routine(wait_for_camera=False)
     r.check(Routine.from_dict(rt.to_dict()).wait_for_camera is False,
             "wait_for_camera round-trips through to_dict/from_dict")
@@ -533,7 +521,6 @@ def check_wait_for_camera(r: Report, app) -> None:
     eng = adapter._engine
     r.check(eng is not None, "fixture: the routine is running")
 
-    # rearm_step restarts the clock without re-issuing anything.
     pump(app, 0.15)
     before = eng.progress()
     r.check(before > 0, f"fixture: the wait has started ({before:.3f})")
@@ -541,9 +528,7 @@ def check_wait_for_camera(r: Report, app) -> None:
     r.check(eng.progress() < before,
             f"…and its clock restarts ({eng.progress():.3f} < {before:.3f})")
 
-    # A held routine doesn't tick, so nothing touches the step's clock.
-    # (`progress()` is computed from wall time, so it keeps climbing either
-    # way — the clock's ORIGIN is what says whether the gap was counted.)
+    # The clock's ORIGIN, not `progress()` (wall time, climbs regardless).
     win.camera_ready = lambda _k: False
     adapter._hold_t0 = time.monotonic()
     t_armed = eng._wait_t0
@@ -551,7 +536,6 @@ def check_wait_for_camera(r: Report, app) -> None:
     r.check(eng._wait_t0 == t_armed,
             "while held, the step's clock origin is left alone")
 
-    # Releasing restarts the step rather than resuming mid-way through it.
     win.camera_ready = lambda _k: True
     pump(app, 0.1)
     r.check(adapter._hold_t0 is None, "the hold releases once frames resume")
@@ -559,8 +543,7 @@ def check_wait_for_camera(r: Report, app) -> None:
             "…and the step's clock restarts from the release, so the gap "
             "is not counted against the trial")
 
-    # A step that must NOT be re-armed: re-issuing a move, or resetting a
-    # trigger's baseline, would each undo the thing the step is there for.
+    # Re-issuing a move or resetting a trigger's baseline would undo the step.
     adapter._abort()
     adapter.panel._r.steps = [Step(kind="move", x_um=0.0)]
     adapter.panel._reload_table()
@@ -571,10 +554,9 @@ def check_wait_for_camera(r: Report, app) -> None:
 
 
 def check_cap_vs_gated(r: Report) -> None:
-    """A recorder that stopped because it FILLED vs one that merely isn't
-    capturing. The rig hit the second and was told the first: a `trigger`
-    step stops capture and leaves the camera gated on its edge, DCAM clears
-    RECORDING for that too, and the routine aborted on a 0-frame file."""
+    """FILLED vs merely not capturing: DCAM clears RECORDING for a camera
+    gated on a trigger step's edge too, and a routine aborted on a 0-frame
+    file."""
     from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker as W
     from acqApp.devices.voltage_cam.dcimg import RecStatus
 
@@ -598,7 +580,6 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
     """A trigger step's file swap must bind the NEW recorder while capture is
     stopped, cycle the master pulse, and only then start - so capture comes
     back gated with the file already open. The plain swap must not cycle."""
-    import threading
     from types import SimpleNamespace
 
     from acqApp.devices.voltage_cam import acquisition as acq
@@ -737,19 +718,15 @@ def check_count_cap(r: Report) -> None:
     r.check(len(kept) == 4, f"count cap held at maxlen (kept {len(kept)})")
     r.check(buf.drop_count == 7, f"every eviction counted (got {buf.drop_count})")
 
-    # Control: the old policy on the identical sequence. Without this the test
-    # would keep passing if events simply stopped reaching the buffer.
+    # Control: the old policy; else this passes if events stop arriving.
     old: deque = deque()
-    old_drops = 0
     for item in [event(0)] + [frame(i) for i in range(1, 11)]:
         old.append(item)
-        while len(old) > 4 and len(old) > 1:
+        while len(old) > 4:
             old.popleft()
-            old_drops += 1
     r.check("puffer" not in [o[0] for o in old],
             "control: the old drop-oldest rule loses the event")
 
-    # A backlog of nothing but events still has to be bounded.
     buf2 = RingBuffer(maxlen=3, maxbytes=None, sizeof=sizeof)
     for i in range(5):
         buf2.put(event(i))
@@ -759,7 +736,6 @@ def check_count_cap(r: Report) -> None:
     r.check([k[1] for k in kept2] == [2.0, 3.0, 4.0],
             f"and it is the OLDEST that go (kept {[k[1] for k in kept2]})")
 
-    # The byte cap must still shed frames and spare events.
     buf3 = RingBuffer(maxlen=1000, maxbytes=3 * 64 * 64 * 2, sizeof=sizeof)
     buf3.put(event(0))
     for i in range(1, 9):
@@ -812,7 +788,6 @@ def check_late_samples(r: Report) -> None:
     seen: dict = {}
 
     def final() -> dict:
-        # Called after the drain, before close — so it can report final counts.
         seen["at_call"] = list(w.events)
         return {"drops": rec.drop_count, "late": rec.late_count}
 
@@ -830,8 +805,7 @@ def check_late_samples(r: Report) -> None:
     r.check(rec.late_count == 3, f"late samples counted (got {rec.late_count})")
     r.check(len(w.written) == 5, "and none of them reached the closed writer")
 
-    # Un-drained samples must not ALSO be counted as late: each lost sample
-    # belongs to exactly one bucket, or the total is meaningless.
+    # Each lost sample belongs to exactly one bucket.
     r.check(rec.drop_count == 0 and rec.unstamped_count == 0,
             "the other counters stayed at zero")
 
@@ -856,7 +830,7 @@ def check_drops_counted(r: Report) -> None:
     """An overflowing buffer must show up in drop_count, not vanish."""
     rec, w, clock = new_recorder(maxlen=4)
     clock.start()
-    # No start() → no writer thread draining, so the buffer is forced to shed.
+    # No start(): no writer thread draining.
     for i in range(20):
         rec.put("voltage_cam", np.zeros((8, 8), dtype=np.uint16))
     r.check(rec.drop_count == 16,
@@ -864,18 +838,9 @@ def check_drops_counted(r: Report) -> None:
 
 
 def check_offered_never_blocks(r: Report) -> None:
-    """`offered()` is read from the GUI thread; it must not wait on the gate.
-
-    An experiment routine measures a "100 frames" step by this count, reading it
-    ~70×/s (its own tick plus the display tick) while every device worker is
-    enqueueing through `put()`. Taking the gate to read one int bought a count
-    that never leads the buffer — which no caller can tell apart — and cost a
-    stall behind the producers: 6.1 ms mean, 28.7 ms worst against a saturating
-    one, against 1.3 us unlocked.
-
-    Deterministic, not a timing measurement: hold the gate from another thread
-    and require the read to come back anyway. A locked read hangs here.
-    """
+    """`offered()`, read ~70×/s from the GUI thread by a routine, must not
+    wait on the enqueue gate (locked: 6.1 ms mean, 28.7 ms worst stall).
+    Deterministic: hold the gate and require the read to return."""
     rec, _w, clock = new_recorder()
     clock.start()
     rec.start(Path("unused.h5"), {})
@@ -901,8 +866,7 @@ def check_offered_never_blocks(r: Report) -> None:
     r.check(not th.is_alive() and got == [7],
             f"offered() returns while the enqueue gate is held (got {got})")
 
-    # CONTROL: the same read WITH the gate is what would hang — so the check
-    # above is not passing for free.
+    # CONTROL: the same read WITH the gate hangs.
     stuck: list = []
     go = threading.Event()
 
@@ -926,9 +890,6 @@ def check_offered_never_blocks(r: Report) -> None:
 # ── #8 ────────────────────────────────────────────────────────────────────────
 
 def check_no_hot_spin(r: Report) -> None:
-    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
-    from acqApp.devices.voltage_cam.presets import AcqConfig
-
     RUN_S = 1.0
 
     class BrokenCam(FakeCam):
@@ -950,8 +911,6 @@ def check_no_hot_spin(r: Report) -> None:
                 self.worker._stop = True
             raise RuntimeError("link down")
 
-    # Smallest offered preset, binned hard — BrokenCam never yields a frame, so
-    # the shape only has to be cheap.
     cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
     cam = BrokenCam(cfg.frame_shape)
     worker = OrcaFireWorker(0, cfg, cam=cam)
@@ -960,7 +919,7 @@ def check_no_hot_spin(r: Report) -> None:
     worker._run()                       # must return, not raise, not spin
     dt = time.perf_counter() - cam.t0   # time spent in the retry loop only
 
-    # How fast the loop would turn with no pause at all, for scale.
+    # For scale: the loop with no pause at all.
     t1 = time.perf_counter()
     unpaced = 0
     while time.perf_counter() - t1 < 0.05:
@@ -979,16 +938,12 @@ def check_no_hot_spin(r: Report) -> None:
 
 
 # ── the diagnostics themselves (2026-08-17) ──────────────────────────────────
-# A loss that is reported with the WRONG CAUSE costs as much as a silent one:
-# it sends the next session after the wrong fix. These three all misreported.
+# A loss reported with the WRONG CAUSE sends the next session after the wrong
+# fix. These three all misreported.
 
 def check_skip_report_blames_the_loop(r: Report) -> None:
-    """A camera skip is a read-loop shortfall, never the writer's.
-
-    The sink only enqueues (Recorder.put -> ring, no disk I/O), so a slow
-    writer sheds in the ring and is counted there instead.
-    """
-    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
+    """A camera skip is a read-loop shortfall, never the writer's: the sink
+    only enqueues, so a slow writer sheds (and is counted) in the ring."""
 
     class St:
         skipped, unread, buffer_size = 143, 38, 38
@@ -1000,24 +955,17 @@ def check_skip_report_blames_the_loop(r: Report) -> None:
             "it no longer blames the writer for a driver-buffer overflow")
     r.check("read loop" in msg,
             f"it names the read loop as the cause (got: {msg[:60]}...)")
-    # Control: it must still mention the writer, to say it is NOT this count —
-    # a message that simply deleted the word would also pass the check above.
+    # Control: a message that just deleted the word would pass the above.
     r.check("WRITER" in msg,
             "it still distinguishes the writer's separate count")
 
 
 def check_memory_capped_buffer_is_announced(r: Report) -> None:
-    """768 MB used to make full frame silently fall from 2 s of slack to 0.33 s
-    — a real ~6% frame loss on hardware even after the writer stopped being the
-    bottleneck (PLAN.md sec 6 item 1). Fixed by raising `_BUFFER_BYTES` to 6 GiB
-    (the rig has 51 GiB free); full frame at the real CXP rate now gets the
-    full 2 s. The memory-cap branch itself still has to work for whatever
-    budget is configured, so it's exercised here with a shrunk budget rather
-    than asserting a specific machine's headroom."""
+    """A 768 MB budget silently cut full frame from 2 s of slack to 0.33 s
+    (~6% real frame loss). The memory-cap branch is exercised with a shrunk
+    budget rather than this machine's headroom."""
     import io
     from contextlib import redirect_stdout
-    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
-    from acqApp.devices.voltage_cam.presets import AcqConfig
 
     def sizing(worker, cfg, hz):
         buf = io.StringIO()
@@ -1027,8 +975,6 @@ def check_memory_capped_buffer_is_announced(r: Report) -> None:
 
     full = AcqConfig()                                  # full frame, ~21 MB
 
-    # The fix: at the real full-frame CXP rate, 6 GiB is no longer the tight
-    # bound — full frame now gets the full 2.0 s the constant promises.
     w = OrcaFireWorker(0, full)
     n_full, out_full = sizing(w, full, 115.0)
     r.check(n_full == int(115.0 * OrcaFireWorker._BUFFER_SECONDS),
@@ -1038,9 +984,6 @@ def check_memory_capped_buffer_is_announced(r: Report) -> None:
     r.check("MEMORY-capped" not in out_full,
             "and stays quiet now that the budget covers it")
 
-    # The branch: an under-provisioned machine (or a faster future preset)
-    # must still get a correct, announced shortfall — verified by shrinking
-    # the instance's own budget rather than hard-coding today's headroom.
     w_tight = OrcaFireWorker(0, full)
     w_tight._BUFFER_BYTES = 768 << 20
     n_tight, out_tight = sizing(w_tight, full, 115.0)
@@ -1051,9 +994,7 @@ def check_memory_capped_buffer_is_announced(r: Report) -> None:
     r.check("GiB" in out_tight,
             "the announcement says what the full slack would cost")
 
-    # Control: a small frame is NOT capped even under the tight budget, and
-    # must stay quiet — otherwise the checks above would pass on a warning
-    # that always fires.
+    # Control: or the above would pass on a warning that always fires.
     small = AcqConfig(preset_key="4432x512", binning=4)  # ~0.28 MB
     n_small, out_small = sizing(w_tight, small, 115.0)
     r.check(n_small == int(115.0 * OrcaFireWorker._BUFFER_SECONDS),
@@ -1066,7 +1007,6 @@ def check_memory_capped_buffer_is_announced(r: Report) -> None:
 def check_readout_speed_absence_is_reported(r: Report) -> None:
     """`get_all_readout_speeds() == []` on this model, so the 'fast' path never
     ran and silently looked like it had."""
-    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
 
     class NoSpeeds:
         def get_all_readout_speeds(self): return []
@@ -1084,8 +1024,7 @@ def check_readout_speed_absence_is_reported(r: Report) -> None:
 
     r.check(OrcaFireWorker._maximise_readout_speed(NoSpeeds()) == "absent",
             "a camera with no selectable speeds reports 'absent', not success")
-    # Control: where the control DOES exist it must still be used, or the fix
-    # would just be a way of never setting the speed.
+    # Control: or the fix could be a way of never setting the speed.
     cam = HasSpeeds()
     r.check(OrcaFireWorker._maximise_readout_speed(cam) == "set"
             and cam.set_to == "fast",
@@ -1095,11 +1034,9 @@ def check_readout_speed_absence_is_reported(r: Report) -> None:
 
 
 def check_nocamera_retry(r: Report) -> None:
-    """DCAMERR_NOCAMERA sometimes comes back on a fresh open with the camera
-    plugged in, powered, and fine — a transient USB-enumeration race in
-    Hamamatsu's own driver. open_camera() retries past exactly that code and
-    nothing else, so a real absence (or any other DCAM failure) still fails,
-    just not on a driver hiccup."""
+    """DCAMERR_NOCAMERA is sometimes a transient USB-enumeration race in the
+    driver; open_camera() retries that code alone, a bounded number of times.
+    """
     import acqApp.devices.voltage_cam.acquisition as ACQ
     import pylablib.devices.DCAM as real_dcam
     from pylablib.devices.DCAM.dcamapi4_defs import DCAMERR
@@ -1107,10 +1044,8 @@ def check_nocamera_retry(r: Report) -> None:
 
     real_ctor = real_dcam.DCAMCamera
     real_delay = ACQ._NOCAMERA_RETRY_DELAY_S
-    ACQ._NOCAMERA_RETRY_DELAY_S = 0.0    # the retry is what's tested, not the wait
+    ACQ._NOCAMERA_RETRY_DELAY_S = 0.0
 
-    # Fails NOCAMERA twice, then succeeds — must return the real handle, not
-    # swallow the eventual success into another exception.
     calls = {"n": 0}
 
     def flaky_then_ok(idx=0):
@@ -1129,8 +1064,6 @@ def check_nocamera_retry(r: Report) -> None:
             f"two NOCAMERA failures are retried past, landing the real open "
             f"on attempt {calls['n']}")
 
-    # Always NOCAMERA — a genuinely absent camera must still fail, not retry
-    # forever, and the retry count is bounded.
     always_calls = {"n": 0}
 
     def always_nocamera(idx=0):
@@ -1153,8 +1086,6 @@ def check_nocamera_retry(r: Report) -> None:
         real_dcam.DCAMCamera = real_ctor
         ACQ._NOCAMERA_RETRY_DELAY_S = real_delay
 
-    # A DIFFERENT DCAM error (camera held by another process, real fault)
-    # must NOT be retried — only the one named, known-transient code is.
     other_calls = {"n": 0}
 
     def other_error(idx=0):
@@ -1180,7 +1111,6 @@ def check_edge_rate_reported(r: Report) -> None:
     read as lost frames. And exposure fills whatever the rate leaves."""
     import io
     from contextlib import redirect_stdout
-    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
     from acqApp.devices.voltage_cam.presets import (
         EXTERNAL_EDGE, master_pulse_interval)
 
@@ -1237,7 +1167,6 @@ def check_dcimg_preview_skips_not_drops(r: Report) -> None:
     import io
     from contextlib import redirect_stdout
     from types import SimpleNamespace
-    from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
 
     cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
 

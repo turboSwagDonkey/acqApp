@@ -19,10 +19,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from acqApp.acq.clock import AbstractClock, SessionClock
 
-# main.py constructs the app's one SyncController with this; anything that
-# needs to convert its own tick-counted units to/from seconds (e.g.
-# devices/vis_stim/panel.py) should import it rather than re-hardcoding the
-# rate, so the two can't drift apart.
+# Import this to convert ticks to seconds (vis_stim does); don't re-hardcode.
 DEFAULT_TICK_MS = 100
 
 
@@ -72,12 +69,8 @@ class SyncController(QObject):
         self._triggers.clear()
 
     def fire(self, name: str, duration_s: float = 0.0) -> None:
-        """Fire trigger `name` NOW, on the same bus as the scheduled ones.
-
-        The closed loop's way in. Routing it through the bus rather than calling
-        the device keeps every actuation leaving from one place, and makes a
-        rule-driven puff indistinguishable downstream — session file included.
-        """
+        """Fire trigger `name` now, on the same bus as the scheduled ones, so
+        a closed-loop puff is indistinguishable downstream (file included)."""
         self.trigger_fired.emit(name, duration_s)
 
     # ── Control ─────────────────────────────────────────────────────────────────
@@ -87,7 +80,7 @@ class SyncController(QObject):
             return
         for t in self._triggers:
             t.fired = False
-        self._clock.start()                 # ← single time origin for the session
+        self._clock.start()
         self._running = True
         self._timer.start()
 

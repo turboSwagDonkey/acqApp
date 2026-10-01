@@ -1,12 +1,9 @@
-"""Save/load for named ROI sets (`roi.py`'s `RoiSet`). No Qt — the picker is
-`roi_picker.py`.
+"""Save/load for named ROI sets. No Qt; the picker is `roi_picker.py`.
 
-Two folders under `rois/`: `session/` holds sets saved during THIS run of
-acqApp, for the quick list in the editor's Load dialog; `archive/` holds
-every earlier run's sets, still loadable but reached only through Browse.
-Rotation is per PROCESS, not per "close the app" — there's no reliable hook
-for the latter (Task Manager, a crash), so whatever `session/` holds is moved
-into `archive/` once, the first time this module is touched in a run.
+`rois/session/` holds this run's sets (the quick list); `rois/archive/` holds
+earlier runs' (Browse only). Rotation is per PROCESS — app close has no
+reliable hook (Task Manager, a crash) — so `session/` is archived once, the
+first time this module is touched in a run.
 """
 from __future__ import annotations
 
@@ -35,7 +32,9 @@ def _rotate_once() -> None:
     for p in SESSION_DIR.glob("*.roi.json"):
         dest = ARCHIVE_DIR / p.name
         if dest.exists():           # same name from an earlier run — keep both
-            dest = ARCHIVE_DIR / f"{p.name[:-len('.roi.json')]}_{datetime.now():%Y%m%d_%H%M%S}.roi.json"
+            stem = p.name[:-len(".roi.json")]
+            dest = ARCHIVE_DIR / (f"{stem}_{datetime.now():%Y%m%d_%H%M%S}"
+                                  ".roi.json")
         shutil.move(str(p), str(dest))
 
 
@@ -63,20 +62,15 @@ def save(name: str, rois: RoiSet) -> Path:
 
 
 def load(path: str | Path) -> RoiSet:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return RoiSet.from_list(data.get("rois", []))
+    return load_named(path)[1]
 
 
 def load_named(path: str | Path) -> tuple[str, RoiSet]:
-    """Like `load`, plus the name it was SAVED under.
-
-    Not the filename stem: `save()` sanitizes and de-duplicates the stem
-    (spaces/punctuation stripped, `_2` on a collision), so a set named
-    "column A" can live in "column_A_2.roi.json" — stripping the suffix off
-    the path would show the mangled stem, not what the operator typed.
-    """
+    """-> (name as typed, set). Not the file stem, which `save()` sanitizes
+    and de-duplicates ("L2/3" -> "L2_3_2.roi.json")."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return (data.get("name", Path(path).stem), RoiSet.from_list(data.get("rois", [])))
+    return (data.get("name", Path(path).stem),
+            RoiSet.from_list(data.get("rois", [])))
 
 
 def list_session() -> list[SavedRoiSet]:
@@ -96,7 +90,8 @@ def _list(folder: Path) -> list[SavedRoiSet]:
             data = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        out.append(SavedRoiSet(p, data.get("name", p.stem), data.get("saved_at", "")))
+        out.append(SavedRoiSet(p, data.get("name", p.stem),
+                               data.get("saved_at", "")))
     return out
 
 

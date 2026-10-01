@@ -34,9 +34,10 @@ from acqApp.routines.engine import (BURST_STALL_S, Phase, RoutineEngine,
 from acqApp.devices.voltage_cam.presets import BURST_TIMES_MAX
 from acqApp.routines.estimate import burst_frames, clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
-from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS, group_region_at,
-                                      group_repeat_at, play_order,
-                                      recording_region_at, validate)
+from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS,
+                                      group_region_at, group_repeat_at,
+                                      play_order, recording_region_at,
+                                      validate)
 from acqApp.saving.config import BAD_SUFFIX, rename_trial
 
 # Under three frames at 106 Hz; boundaries are stamped from the clock anyway.
@@ -44,7 +45,8 @@ TICK_MS = 25
 
 FRAME_STREAM = "voltage_cam"
 
-# Ticks between frame-rate refreshes (each rebuilds another panel's config).
+# Display updates between frame-rate refreshes (each rebuilds another
+# panel's config).
 RATE_EVERY = 30
 
 # A .dcimg roll stops the camera 0.35 s, or up to 7 s when its file keeps the
@@ -236,8 +238,8 @@ class RoutinesModule(ModuleAdapter):
         camera records .dcimg (the re-arm swaps files; a TIFF survives)."""
         if not self.win.dcimg_enabled():
             return False
-        first_index = min((r.start for r in routine.recordings), default=0)
-        return any(s.kind == "trigger" for s in routine.steps[:first_index])
+        return any(s.kind == "trigger"
+                   for s in routine.steps[:_first_record_index(routine)])
 
     def _start(self) -> None:
         """Validate, arm, open the recording, run — refusals leave no file."""
@@ -277,11 +279,11 @@ class RoutinesModule(ModuleAdapter):
             self._edge_n = 0
             self._pending_edge = None
             if self._rec is None:
-                if self._first_file_is_doomed(routine):
+                doomed = self._first_file_is_doomed(routine)
+                if doomed:
                     self.win.set_routine_save_context(None, None)
                 else:
-                    first_index = min((r.start for r in routine.recordings),
-                                      default=0)
+                    first_index = _first_record_index(routine)
                     region = recording_region_at(routine, first_index) or 0
                     fov, coords = self._fov_for(routine, first_index)
                     self.win.set_routine_save_context(
@@ -289,7 +291,7 @@ class RoutinesModule(ModuleAdapter):
                 if not self._open_recording():
                     self.win.set_routine_save_context(None, None)
                     return
-                if self._own_rec and self._first_file_is_doomed(routine):
+                if self._own_rec and doomed:
                     self._doomed = self.win.recording_path()
         finally:
             self.win.routine_arming_trigger(False)
@@ -346,9 +348,8 @@ class RoutinesModule(ModuleAdapter):
             self._status("recording started for the routine")
         return True
 
-    def _fov_for(self, routine: Routine,
-                step_index: int) -> tuple[str, tuple[float | None, float | None,
-                                                     float | None] | None]:
+    def _fov_for(self, routine: Routine, step_index: int
+                 ) -> tuple[str, tuple[float | None, ...] | None]:
         """The last Move at or before `step_index`: its saved FOV name, or
         ("custom", coords) for typed coordinates."""
         for i in range(min(step_index, len(routine.steps) - 1), -1, -1):
@@ -365,20 +366,14 @@ class RoutinesModule(ModuleAdapter):
 
     def _close_own_recording(self) -> None:
         """Stop recording and capture at the routine's end."""
-        # Ended before its first trigger rolled Start's file away.
-        junk, self._doomed = self._doomed, None
-        if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
-            junk = None
+        junk = self._take_doomed()
         bad = self._bad_file()
         self.win.set_routine_save_context(None, None)
         self._own_rec = False            # before: detach_sink re-enters
         self.win.set_recording(False)
         self.win.set_live(False)
         self._flush_pending_edge()
-        if junk is not None:
-            self._delete_junk(junk, JUNK_TRIES)
-        if bad is not None:
-            self._mark_bad(bad, JUNK_TRIES)
+        self._discard(junk, bad)
 
     def _pause(self) -> None:
         if self._engine is not None:
@@ -551,9 +546,7 @@ class RoutinesModule(ModuleAdapter):
 
     def _roll_for(self, run) -> bool:
         """Close the current file and open the next, scoped to `run`."""
-        junk, self._doomed = self._doomed, None
-        if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
-            junk = None                 # it caught frames after all: keep it
+        junk = self._take_doomed()
         bad = self._bad_file()
         fov, coords = self._fov_for(self._routine, run.start_index)
         self.win.set_routine_save_context(fov, self._trial_for(run.region), coords)
@@ -567,11 +560,22 @@ class RoutinesModule(ModuleAdapter):
             self._sealed = False
             self._filed_from = len(self._engine.runs)
             self._file_group_key = self._group_key_for(run)
-            if junk is not None:
-                self._delete_junk(junk, JUNK_TRIES)
-            if bad is not None:
-                self._mark_bad(bad, JUNK_TRIES)
+            self._discard(junk, bad)
         return ok
+
+    def _take_doomed(self) -> Path | None:
+        """Start's travel-only file, unless it caught frames after all."""
+        junk, self._doomed = self._doomed, None
+        if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
+            return None
+        return junk
+
+    def _discard(self, junk: Path | None, bad: Path | None) -> None:
+        """Clean up a closed file: delete travel-only junk, mark a bad one."""
+        if junk is not None:
+            self._delete_junk(junk, JUNK_TRIES)
+        if bad is not None:
+            self._mark_bad(bad, JUNK_TRIES)
 
     def _bad_file(self) -> Path | None:
         """The open file, if every run it holds was interrupted."""
@@ -764,15 +768,17 @@ class RoutinesModule(ModuleAdapter):
     # ── metadata ──
     def metadata(self) -> dict[str, Any]:
         r = self.panel.settings
+        proto = r.to_dict()
         meta = {
             "routine_name":          r.name,
             "routine_cycles":        r.cycles,
             "routine_save_mode":     r.save_mode,
             "routine_start_trigger": "ttl",     # constant; kept for old readers
             "routine_n_steps":       len(r.steps),
-            "routine_steps":      _steps_json(r),
+            # HDF5 attributes are scalars: the steps travel as one string.
+            "routine_steps":      json.dumps(proto["steps"]),
             # Nested copy: SplitWriter's JSON keeps it an object.
-            "routine_protocol":   r.to_dict(),
+            "routine_protocol":   proto,
             "routine_started":    False,
         }
         # The (cycle, group) this file starts with, set by `_roll_for`.
@@ -807,6 +813,5 @@ class RoutinesModule(ModuleAdapter):
         }
 
 
-def _steps_json(r: Routine) -> str:
-    """HDF5 attributes are scalars, so the steps travel as one JSON string."""
-    return json.dumps(r.to_dict()["steps"])
+def _first_record_index(routine: Routine) -> int:
+    return min((r.start for r in routine.recordings), default=0)

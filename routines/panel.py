@@ -287,8 +287,7 @@ class SettingsPanel(QWidget):
 
     # ── step list (the table edits cells; these edit the list) ───────────
     def _reload_table(self) -> None:
-        self._tbl.reload()
-        self._reload_groups()
+        self._reload_groups()           # set_groups repaints the whole table
         self._refresh_summary()
 
     # ── repeat groups ────────────────────────────────────────────────────────
@@ -349,38 +348,33 @@ class SettingsPanel(QWidget):
     def _selected(self) -> int:
         return self._tbl.selected_row()
 
+    def _list_edited(self, select: int) -> None:
+        self._reload_table()
+        self._tbl.select_row(select)
+        self._emit()
+
     def _add_step(self) -> None:
         kind = self._cmb_new_kind.currentData() or "wait"
         self._r.steps.append(Step(kind=kind))
-        self._reload_table()
-        self._tbl.select_row(len(self._r.steps) - 1)
-        self._emit()
+        self._list_edited(len(self._r.steps) - 1)
 
     def _add_trigger_record_pair(self) -> None:
         """[trigger, record 2 s]: one recording per edge, in the right order."""
         self._r.steps.append(Step(kind="trigger"))
         self._r.steps.append(Step(kind="record", length=2.0, unit="seconds"))
-        self._reload_table()
-        self._tbl.select_row(len(self._r.steps) - 1)
-        self._emit()
+        self._list_edited(len(self._r.steps) - 1)
 
     def _dup_step(self) -> None:
         row = self._selected()
-        if row < 0:
-            return
-        self._r.steps.insert(row + 1, replace(self._r.steps[row]))
-        self._reload_table()
-        self._tbl.select_row(row + 1)
-        self._emit()
+        if row >= 0:
+            self._r.steps.insert(row + 1, replace(self._r.steps[row]))
+            self._list_edited(row + 1)
 
     def _del_step(self) -> None:
         row = self._selected()
-        if row < 0:
-            return
-        del self._r.steps[row]
-        self._reload_table()
-        self._tbl.select_row(min(row, len(self._r.steps) - 1))
-        self._emit()
+        if row >= 0:
+            del self._r.steps[row]
+            self._list_edited(min(row, len(self._r.steps) - 1))
 
     def _move_up(self) -> None:
         self._move(-1)
@@ -404,8 +398,8 @@ class SettingsPanel(QWidget):
     def _pick_pattern_for(self, row: int) -> None:
         if not (0 <= row < len(self._r.steps)):
             return
-        start = str(Path(self._r.steps[row].pattern).parent) \
-            if self._r.steps[row].pattern else ""
+        cur = self._r.steps[row].pattern
+        start = str(Path(cur).parent) if cur else ""
         path, _ = QFileDialog.getOpenFileName(
             self, "Pattern for this step", start,
             "Images (*.png *.bmp *.tif);;All files (*)")
@@ -429,10 +423,10 @@ class SettingsPanel(QWidget):
             self._emit()
 
     _POS_LO, _POS_HI, _POS_STEP = -1e5, 1e5, 100.0
+    _POS_BLANK = _POS_LO - _POS_STEP      # "leave this axis alone" (NA)
 
     def _position_spin(self, value: float | None) -> QDoubleSpinBox:
-        # One step below the range is "leave this axis alone" (NA).
-        blank = self._POS_LO - self._POS_STEP
+        blank = self._POS_BLANK
         sb = spin(blank, self._POS_HI, blank if value is None else value,
                   decimals=0, step=self._POS_STEP, suffix=" um", track=False)
         sb.setSpecialValueText(NO_CHANGE)
@@ -448,12 +442,10 @@ class SettingsPanel(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("Stage position for this step")
         form = QFormLayout(dlg)
-        x_spin = self._position_spin(step.x_um)
-        y_spin = self._position_spin(step.y_um)
-        z_spin = self._position_spin(step.z_um)
-        form.addRow("X:", x_spin)
-        form.addRow("Y:", y_spin)
-        form.addRow("Z:", z_spin)
+        spins = [self._position_spin(v)
+                 for v in (step.x_um, step.y_um, step.z_um)]
+        for axis, sb in zip("XYZ", spins):
+            form.addRow(f"{axis}:", sb)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(dlg.accept)
@@ -462,11 +454,9 @@ class SettingsPanel(QWidget):
         if not dlg.exec():
             return
 
-        def val(sb: QDoubleSpinBox) -> float | None:
-            blank = self._POS_LO - self._POS_STEP
-            return None if sb.value() <= blank + 1e-9 else sb.value()
-
-        step.x_um, step.y_um, step.z_um = val(x_spin), val(y_spin), val(z_spin)
+        step.x_um, step.y_um, step.z_um = (
+            None if sb.value() <= self._POS_BLANK + 1e-9 else sb.value()
+            for sb in spins)
         step.fov = ""            # typed — no longer necessarily a saved spot
         self._reload_table()
         self._emit()
@@ -481,11 +471,11 @@ class SettingsPanel(QWidget):
 
         dlg = FovPicker(self)
         dlg.exec()
-        if dlg.fov is not None:
-            self._r.steps[row].x_um = dlg.fov.x_um
-            self._r.steps[row].y_um = dlg.fov.y_um
-            self._r.steps[row].z_um = dlg.fov.z_um
-            self._r.steps[row].fov = dlg.fov.name
+        fov = dlg.fov
+        if fov is not None:
+            s = self._r.steps[row]
+            s.x_um, s.y_um, s.z_um = fov.x_um, fov.y_um, fov.z_um
+            s.fov = fov.name
             self._reload_table()
             self._emit()
 
@@ -556,13 +546,12 @@ class SettingsPanel(QWidget):
     def _set_phase(self, phase: str, text: str) -> None:
         """Repaint only what changed: setStyleSheet costs ~26 us per call."""
         if phase != self._painted:
-            running = phase == Phase.RUNNING
-            armed = phase == Phase.ARMED
-            waiting = phase == Phase.WAITING
             paused = phase == Phase.PAUSED
-            held = running or armed or waiting or paused
+            active = phase in (Phase.RUNNING, Phase.ARMED, Phase.WAITING)
+            held = active or paused
             self._btn_start.setEnabled(not held)
-            self._btn_pause.setEnabled(running or waiting)
+            self._btn_pause.setEnabled(phase in (Phase.RUNNING,
+                                                 Phase.WAITING))
             for b in (self._btn_resume, self._btn_skip):
                 b.setEnabled(paused)
             self._btn_abort.setEnabled(held)
@@ -570,8 +559,7 @@ class SettingsPanel(QWidget):
             self._tbl.setEnabled(not held)
             self._lbl_state.setStyleSheet(
                 "color:#d08770;" if paused else
-                (f"color:{style.HEX['routines']};"
-                 if (running or armed or waiting) else ""))
+                f"color:{style.HEX['routines']};" if active else "")
             self._painted = phase
         if text != self._painted_text:
             self._lbl_state.setText(text or "—")

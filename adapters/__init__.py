@@ -1,13 +1,12 @@
 """Per-subsystem wiring for the main window.
 
-One `ModuleAdapter` subclass per instrument, owning its whole lifecycle, and
-`MainWindow` just iterates — replacing six near-identical `if "foo" in enabled:`
-branches in each of four methods. Adapters share only `base.py` and never
-import each other.
+One `ModuleAdapter` subclass per instrument, owning its whole lifecycle;
+`MainWindow` just iterates. Adapters share only `base.py` and never import
+each other.
 
-They reach the window only through `devices.ModuleHost`, and the surface is
-written down *there* because this docstring once listed it and was wrong.
-`test_device_contracts` checks every `self.win.X` here against it.
+They reach the window only through `devices.ModuleHost`; the surface is
+documented there, not here. `test_device_contracts` checks every `self.win.X`
+here against it.
 
 Lifecycle, in call order:
 
@@ -19,7 +18,7 @@ Lifecycle, in call order:
     start()            per session: only after the shared clock reached t=0
     update_display()   ~30 Hz while running
     attach_sink()      at record start;  detach_sink() at stop
-    metadata()         at record start
+    metadata()         at record start; final_metadata() just before close
     stop()             per session teardown
 """
 from __future__ import annotations

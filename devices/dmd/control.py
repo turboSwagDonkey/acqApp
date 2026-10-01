@@ -1,23 +1,21 @@
-"""
-DMD (Digital Micromirror Device) controller + settings panel.
+"""DMD settings and controllers; the panel is `panel.py`.
 
-DmdController      : the real Vialux ALP-4.2 (1024x768 on this rig), via devices/dmd/alp.py.
-MockDmdController  : renders patterns locally, no hardware needed.
-SettingsPanel      : QWidget for pattern, geometry, timing and trigger settings.
+DmdController: the real Vialux ALP-4.2, via `alp.py`.
+MockDmdController: renders patterns in memory, no hardware.
 """
-
 from __future__ import annotations
-import time
+
 import threading
+import time
 from dataclasses import dataclass
+from functools import lru_cache
+from operator import attrgetter
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
-# Only QObject and pyqtSignal: the controllers are devices, not widgets. The
-# panel and everything it draws with live in `panel.py`.
 from acqApp.devices.dmd import alp
 
 # Fallback panel size before (or without) a device: this rig's ALP is XGA.
@@ -30,15 +28,13 @@ FRAME_STOP = -1
 MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
 
 
-# Keyed on path, invalidated on mtime — `roi_frame` is called from the panel's
-# preview on every resize/nudge as well as from an actual upload, and a fresh
-# JSON load + parse on every preview tick was most of its cost (2026-08-27).
+# Keyed on path, invalidated on mtime: `roi_frame` runs on every preview
+# resize/nudge, and re-parsing the JSON was most of its cost (2026-08-27).
 _calib_cache: dict[str, tuple[int, object]] = {}
 
 
 def _emit_frame(sink: Callable[[int], None] | None, signal, idx: int) -> None:
-    """Shared by the real and mock controllers' `_frame`: tell the sink, then
-    the Qt signal."""
+    """Tell the sink, then the Qt signal."""
     if sink is not None:
         sink(idx)
     signal.emit(idx)
@@ -56,13 +52,18 @@ def _load_calibration(path):
     return calib
 
 
-def roi_frame(settings, width: int, height: int):
-    """The ROI mask as a device-sized frame, or None with the reason printed.
+def orient_calibration(calib, settings):
+    """`calib` with the operator's ROI flips applied (Y, then X)."""
+    from acqApp.devices.dmd.calibration import flip_x, flip_y
+    if settings.roi_flip_y:
+        calib = flip_y(calib)
+    if settings.roi_flip_x:
+        calib = flip_x(calib)
+    return calib
 
-    Here rather than in the adapter because the controller owns "what is
-    currently loaded", and the mock has to answer `on_pixels` truthfully for
-    the same reason the real one does.
-    """
+
+def roi_frame(settings, width: int, height: int):
+    """The ROI mask as a device-sized frame, or None (reason printed)."""
     if not settings.rois:
         print("[DMD] ROI mode: no ROIs drawn — nothing to project")
         return None
@@ -71,13 +72,9 @@ def roi_frame(settings, width: int, height: int):
               "turned into mirrors. Run Calibrate… first.")
         return None
     try:
-        from acqApp.devices.dmd.calibration import flip_x, flip_y
         from acqApp.devices.dmd.roi import RoiSet
-        calib = _load_calibration(settings.calib_path)
-        if settings.roi_flip_y:
-            calib = flip_y(calib)
-        if settings.roi_flip_x:
-            calib = flip_x(calib)
+        calib = orient_calibration(_load_calibration(settings.calib_path),
+                                   settings)
         frame = RoiSet.from_list(list(settings.rois)).dmd_frame(calib)
     except Exception as e:                        # noqa: BLE001
         print(f"[DMD] ROI mode: couldn't build the mask ({type(e).__name__}: "
@@ -94,29 +91,32 @@ def roi_frame(settings, width: int, height: int):
     return np.asarray(frame)
 
 
+@lru_cache(maxsize=8)
+def _subsample_keep(shape: tuple[int, ...], n: int) -> np.ndarray:
+    yy, xx = np.indices(shape)
+    keep = (yy + xx) % n != 0
+    keep.flags.writeable = False        # shared between calls
+    return keep
+
+
 def subsample_frame(frame: np.ndarray, n: int) -> np.ndarray:
-    """Zero out 1 of every `n` pixels, to cut total light without touching
-    illumination time — a coarse ND filter made of missing mirrors rather
-    than a dimmer. Diagonally striped ((row+col) % n) so the removed
-    fraction is uniform over any neighbourhood instead of banding along one
-    axis; already-off pixels are unaffected either way. n <= 1 ("1 out of
-    1") is a no-op — the default, off."""
+    """Zero 1 of every `n` pixels: a coarse ND filter made of missing mirrors,
+    illumination time untouched. Diagonal ((row+col) % n) so the removed
+    fraction is uniform rather than banded. n <= 1 is a no-op (off)."""
     if n <= 1:
         return frame
-    yy, xx = np.indices(frame.shape)
-    keep = (yy + xx) % n != 0
-    return np.where(keep, frame, 0).astype(frame.dtype)
+    keep = _subsample_keep(tuple(frame.shape), int(n))
+    return np.where(keep, frame, 0).astype(frame.dtype, copy=False)
 
 
 @dataclass
 class DmdSettings:
     pattern_path:  Path | None = None   # .png / .bmp to upload
     on_time_ms:    float       = 100.0  # illumination on-time per pattern (ms)
-    # Hardcoded True by the panel: the DMD holds one image until Stop.
-    # `on_time_ms` / `n_repeats` are read only on the cycling path, reachable
-    # from code and the tests but not the UI — kept because the ALP timing
-    # rules it encodes were expensive to establish, not because it's used.
-    static_hold:   bool        = True   # True = project one image, held
+    # The panel always sets True (hold one image until Stop). The cycling
+    # path (`on_time_ms`, `n_repeats`) is code/test-only, kept for the ALP
+    # timing rules it encodes.
+    static_hold:   bool        = True
     trigger_mode:  str         = "Internal"   # Internal | External | Software
     n_repeats:     int         = 0      # 0 = loop forever
     # ── geometry: how the pattern lands on the panel ──
@@ -125,27 +125,29 @@ class DmdSettings:
     offset_x:      float       = 0.0    # device px from the panel centre
     offset_y:      float       = 0.0
     invert:        bool        = False  # swap on/off mirrors
-    # Turn off 1 of every N pixels to cut total light — see `subsample_frame`.
-    # 1 = off (every pixel kept); the UI offers 1..10 ("1 out of N").
-    sub_sampling:  int         = 1
-    # `all_on` is kept in step because the session metadata and the geometry
-    # checks below have always read that field.
+    sub_sampling:  int         = 1      # `subsample_frame`; 1 = off, UI 1..10
+    # `all_on` mirrors display_mode for the session metadata.
     display_mode:  str         = MODE_PATTERN   # pattern | all_on | roi
     all_on:        bool        = False  # turn all mirrors on
     fit:           bool        = False  # scale to fit and centre
     lib_dir:       str         = ""     # ALP API location
     # ── photostimulation ROIs ──
-    # Drawn on a VOLTAGE-camera frame — the imaging path the DMD projects
-    # into — and stored as `RoiSet.to_list()` to survive JSON. Without a
-    # `calib_path` registration they can be drawn and saved, not projected.
+    # Voltage-camera px, as `RoiSet.to_list()`. Projectable only with a
+    # `calib_path` registration.
     rois:          tuple       = ()
     calib_path:    str         = ""
-    # A manual correction for a rig that projects backwards in Y
-    # (operator-confirmed): the ROI mask is mirrored on its way to the panel
-    # and nothing else moves — see `calibration.flip_y`. ROI mode only; a
-    # pattern image goes to the panel as-is.
+    # Mirror only the ROI mask on its way to the panel (`calibration.flip_y`
+    # / `flip_x`); pattern images are unaffected.
     roi_flip_y:    bool        = False
-    roi_flip_x:    bool        = False   # `calibration.flip_x`'s twin knob
+    roi_flip_x:    bool        = False
+
+
+# Everything that changes the built frame; the real controller reloads only
+# when one of these differs.
+_GEOMETRY = attrgetter(
+    "scale_pct", "rotation_deg", "offset_x", "offset_y", "invert", "fit",
+    "display_mode", "rois", "calib_path", "roi_flip_y", "roi_flip_x",
+    "sub_sampling")
 
 
 class DmdController(QObject):
@@ -186,21 +188,11 @@ class DmdController(QObject):
         _emit_frame(self._sink, self.frame_displayed, idx)
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        geometry_changed = (
-            (settings.scale_pct, settings.rotation_deg, settings.offset_x,
-             settings.offset_y, settings.invert, settings.fit,
-             settings.display_mode, settings.rois, settings.calib_path,
-             settings.roi_flip_y, settings.roi_flip_x, settings.sub_sampling)
-            != (self._s.scale_pct, self._s.rotation_deg, self._s.offset_x,
-                self._s.offset_y, self._s.invert, self._s.fit,
-                self._s.display_mode, self._s.rois, self._s.calib_path,
-                self._s.roi_flip_y, self._s.roi_flip_x, self._s.sub_sampling))
+        changed = _GEOMETRY(settings) != _GEOMETRY(self._s)
         self._s = settings
-        # Always reload on geometry change, even MODE_PATTERN with no file chosen:
-        # load_pattern() already clears _pattern to None in that case, and a
-        # "pattern_path or mode != MODE_PATTERN" guard here used to skip that
-        # clear, leaving a stale ALL_ON/ROI frame cached and projected.
-        if geometry_changed:
+        # Reload even in MODE_PATTERN with no file: that clears a stale
+        # ALL_ON/ROI frame, which a skipped reload would project.
+        if changed:
             self.load_pattern(settings.pattern_path)
 
     def load_pattern(self, path: Path | None = None) -> None:
@@ -233,14 +225,9 @@ class DmdController(QObject):
         print(f"[DMD] {p.name} -> {w}x{h}, {self.on_pixels} mirrors on")
 
     def project_frame(self, frame: np.ndarray) -> None:
-        """Project one device-sized frame AS IT IS — no `build_frame`.
-
-        For the calibration sweep, which measures the geometry and so must not
-        be put through it: scale/rotation/offset, and `fit` which overrides all
-        three, would transform the very thing being measured. The panel's
-        settings are left untouched, so the next Display is unaffected.
-        """
-        h, w = self.resolution[1], self.resolution[0]
+        """Project a device-sized frame as-is, skipping `build_frame` (the
+        sweep measures that geometry). Settings are untouched."""
+        w, h = self.resolution
         if frame.shape != (h, w):
             raise ValueError(f"frame is {frame.shape}, device is {(h, w)}")
         self._pattern = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -253,8 +240,7 @@ class DmdController(QObject):
             print("[DMD] display: no pattern loaded — nothing to project")
             return
         if self.on_pixels == 0:
-            # Every mirror off is a legal frame and a projector showing nothing.
-            # It's also what a bad scale/offset produces, so say it out loud.
+            # Legal, but also what a bad scale/offset produces.
             print("[DMD] display: frame is entirely dark — check scale, "
                   "offset and invert")
 
@@ -294,9 +280,6 @@ class DmdController(QObject):
         self.stop()
         self._dev.close()
 
-    def software_trigger(self) -> None:
-        self._frame(FRAME_START)
-
 
 class MockDmdController(QObject):
     """Renders patterns in memory and logs events — no hardware."""
@@ -326,8 +309,6 @@ class MockDmdController(QObject):
         self._sink = sink
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        # See the real controller's apply_settings for why this must not skip
-        # MODE_PATTERN-with-no-file: load_pattern() clears the stale frame then.
         reload = settings != self._s
         self._s = settings
         if reload:
@@ -362,8 +343,8 @@ class MockDmdController(QObject):
             except Exception as e:
                 print(f"[DMD mock] couldn't render {p.name}: {e}")
 
-        # Placeholder only — reached with no pattern configured at all, not a
-        # real display mode, so it deliberately skips sub-sampling too.
+        # Placeholder for no pattern at all: not a display mode, so no
+        # sub-sampling.
         tile = np.kron([[0, 255] * 8, [255, 0] * 8] * 8,
                        np.ones((4, 4), dtype=np.uint8)).astype(np.uint8)
         reps = (DEFAULT_H // tile.shape[0] + 1, DEFAULT_W // tile.shape[1] + 1)
@@ -412,6 +393,3 @@ class MockDmdController(QObject):
 
     def close(self) -> None:
         self.stop()
-
-    def software_trigger(self) -> None:
-        self._frame(FRAME_START)

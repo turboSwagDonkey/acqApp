@@ -89,8 +89,7 @@ class StageModule(ModuleAdapter):
         self._disp_timer.start()
 
     def close_controller(self) -> None:
-        # Reverse of build_controller; each step independent, so a dead port
-        # can't strand it half torn down.
+        # Each step independent, so a dead port can't strand a half teardown.
         self._disp_timer.stop()
         if self.panel is not None:
             self.panel.bind_controller(None)

@@ -1,43 +1,23 @@
-"""A visual timeline of a routine — Groups and Recordings made literal.
+"""One cycle of a routine drawn to scale, from the expanded `play_order`.
 
-The table shows a routine as rows; this shows it as **time**, one cycle's
-worth, drawn to scale. Three bands, top to bottom:
-
-- A **repeat-group bracket**, spanning every repeat's segments as one block
-  labelled "×N" — the group itself doesn't repeat visually (that would just
-  draw the same bracket N times); its CONTENTS already do, since this reads
-  the **expanded** play order (`play_order`), the same one the engine and
-  `recording_run_ids` use.
-- The **step blocks** themselves, one per position in that expanded order,
-  colored by kind and widened by estimated duration (`estimate.step_seconds`)
-  — a 10 s Wait draws wider than a 1 s one. Move/Display/Puff, which cost
-  nothing or only a fixed settle, still get a visible minimum width so they
-  stay clickable rather than collapsing to a sliver.
-- A **recording bar**, drawn as SEPARATE segments — one per run
-  `recording_run_ids` reports — rather than one bar spanning a whole
-  repeated group's range. That gap between two bars over the same bracket
-  *is* the answer to "how are recordings handled for repeated steps":
-  each repeat gets its own file boundary, never one merged capture.
-
-Only one cycle is drawn — `routine.cycles` repeating the whole thing is
-named in the summary line instead of drawn out, so a cycles=50 routine
-doesn't need a timeline fifty screens wide.
-
-Qt-only, view-only: this reads a `Routine`, it never drives anything, so it
-carries none of the actuation-safety weight `engine.py` does.
+Three bands: a bracket per repeat group ("×N", drawn once, since its contents
+already repeat below), step blocks widened by `estimate.step_seconds` (with a
+minimum width so instant steps stay clickable), and one bar per recording run
+from `recording_run_ids` — kept apart, since each repeat gets its own file.
+`cycles` is named in the summary, not drawn. View-only.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QEvent, QPoint, QRectF, Qt
+from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
                              QScrollArea, QToolTip, QVBoxLayout, QWidget)
 
 from acqApp import style
 from acqApp.routines.estimate import clock, estimate, step_seconds
-from acqApp.routines.settings import (Recording, Routine, TIMED_KINDS, group_region_at,
+from acqApp.routines.settings import (Routine, TIMED_KINDS, group_region_at,
                                       play_order, recording_region_at,
                                       recording_run_ids)
 from acqApp.routines.table import KIND_LABELS, GROUP_TINT, REC_TINT
@@ -53,8 +33,6 @@ REC_BAND_Y = ROW_Y + ROW_H + 4
 REC_BAND_H = 12
 MARGIN = 12
 
-# Tied to the same per-subsystem colors the rest of the app uses for these
-# instruments, so the timeline's palette is one the operator already knows.
 _KIND_COLOR = {
     "move":    QColor(style.HEX["stage"]),
     "display": QColor(style.HEX["dmd"]),
@@ -85,8 +63,7 @@ def _layout(routine: Routine, hz: float | None,
     for pos, step_i in enumerate(order):
         step = routine.steps[step_i]
         secs, frames = step_seconds(step, hz)
-        unknown = frames > 0
-        dur = None if unknown else secs
+        dur = None if frames > 0 else secs
         width = (MIN_SEG_PX if dur is None
                  else max(MIN_SEG_PX, min(MAX_SEG_PX, dur * PX_PER_SEC)))
         segs.append(_Seg(pos=pos, step_index=step_i, kind=step.kind,
@@ -96,10 +73,9 @@ def _layout(routine: Routine, hz: float | None,
     return segs, x + MARGIN - SEG_GAP
 
 
-def _group_spans(routine: Routine, order: list[int]) -> list[tuple[int, int, int]]:
-    """(first_pos, last_pos, repeats) for each Group's FULL run — every
-    repeat merged into one bracket, since the repeats already draw out as
-    separate segments underneath it; see the module docstring."""
+def _group_spans(routine: Routine,
+                 order: list[int]) -> list[tuple[int, int, int]]:
+    """(first_pos, last_pos, repeats) per Group, all repeats in one."""
     spans: list[tuple[int, int, int]] = []
     active: tuple[int, int] | None = None      # (group_index, start_pos)
     for pos, step_i in enumerate(order):
@@ -107,38 +83,39 @@ def _group_spans(routine: Routine, order: list[int]) -> list[tuple[int, int, int
         cur = None if active is None else active[0]
         if gi != cur:
             if active is not None:
-                spans.append((active[1], pos - 1, routine.groups[active[0]].repeats))
+                spans.append((active[1], pos - 1,
+                              routine.groups[active[0]].repeats))
             active = None if gi is None else (gi, pos)
     if active is not None:
-        spans.append((active[1], len(order) - 1, routine.groups[active[0]].repeats))
+        spans.append((active[1], len(order) - 1,
+                      routine.groups[active[0]].repeats))
     return spans
 
 
-def _recording_runs(routine: Routine, order: list[int]) -> list[tuple[int, int, int]]:
-    """(first_pos, last_pos, region) per SEPARATE recording run — the whole
-    point of drawing these apart rather than merged; see `recording_run_ids`."""
+def _recording_runs(routine: Routine,
+                    order: list[int]) -> list[tuple[int, int, int]]:
+    """(first_pos, last_pos, region) per recording run."""
     ids = recording_run_ids(routine, order)
     runs: list[tuple[int, int, int]] = []
-    start = None
-    prev = None
+    start = prev = None
     for pos, rid in enumerate(ids):
         if rid != prev:
             if prev is not None:
-                runs.append((start, pos - 1, recording_region_at(routine, order[start])))
+                runs.append((start, pos - 1,
+                             recording_region_at(routine, order[start])))
             start = pos if rid is not None else None
         prev = rid
     if prev is not None:
-        runs.append((start, len(order) - 1, recording_region_at(routine, order[start])))
+        runs.append((start, len(order) - 1,
+                     recording_region_at(routine, order[start])))
     return runs
 
 
 class _TimelineCanvas(QWidget):
-    """The painted strip itself — a QScrollArea's child, not scrollable on
-    its own, so it can just be as wide as the routine needs."""
+    """The painted strip, as wide as the routine; its QScrollArea scrolls."""
 
     def __init__(self, routine: Routine, hz: float | None, parent=None) -> None:
         super().__init__(parent)
-        self._routine = routine
         order = play_order(routine)
         self._segs, total_w = _layout(routine, hz, order)
         self._groups = _group_spans(routine, order)
@@ -189,7 +166,8 @@ class _TimelineCanvas(QWidget):
         f.setPointSize(max(7, f.pointSize() - 1))
         p.setFont(f)
         for first, last, repeats in self._groups:
-            x0, x1 = self._segs[first].x, self._segs[last].x + self._segs[last].width
+            x0 = self._segs[first].x
+            x1 = self._segs[last].x + self._segs[last].width
             y = GROUP_BAND_H - 4
             p.drawLine(int(x0), y, int(x1), y)
             p.drawLine(int(x0), y - 5, int(x0), y)
@@ -204,30 +182,30 @@ class _TimelineCanvas(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(color.darker(160) if s.duration_s is None else color)
             p.drawRoundedRect(rect, 3, 3)
-            if s.duration_s is None:      # unknown duration — say so, not to scale
-                p.setPen(QPen(QColor(255, 255, 255, 160), 1, Qt.PenStyle.DashLine))
+            if s.duration_s is None:      # not to scale: say so
+                p.setPen(QPen(QColor(255, 255, 255, 160), 1,
+                              Qt.PenStyle.DashLine))
                 p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 3, 3)
             if s.width >= 34:
                 p.setPen(QColor("#ffffff"))
                 p.drawText(rect.adjusted(3, 0, -3, 0),
-                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                          KIND_LABELS.get(s.kind, s.kind))
+                           Qt.AlignmentFlag.AlignVCenter
+                           | Qt.AlignmentFlag.AlignLeft,
+                           KIND_LABELS.get(s.kind, s.kind))
 
     def _paint_recordings(self, p: QPainter) -> None:
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(REC_TINT.red(), REC_TINT.green(), REC_TINT.blue(), 210))
+        p.setBrush(QColor(REC_TINT.red(), REC_TINT.green(), REC_TINT.blue(),
+                          210))
         for first, last, _region in self._recs:
             x0 = self._segs[first].x
             x1 = self._segs[last].x + self._segs[last].width
-            # A real gap either side — this is a SEPARATE run from its
-            # neighbour, even one drawn from the same Recording bracket.
-            p.drawRoundedRect(QRectF(x0 + 1, REC_BAND_Y, x1 - x0 - 2, REC_BAND_H),
-                              2, 2)
+            p.drawRoundedRect(
+                QRectF(x0 + 1, REC_BAND_Y, x1 - x0 - 2, REC_BAND_H), 2, 2)
 
 
 class TimelineDialog(QDialog):
-    """One cycle of `routine`, to scale. `.exec()` it; nothing is editable
-    here — double-clicking a step in the table is still how you change it."""
+    """One cycle of `routine`, to scale. Read-only; `.exec()` it."""
 
     def __init__(self, routine: Routine, hz: float | None, parent=None) -> None:
         super().__init__(parent)

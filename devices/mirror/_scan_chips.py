@@ -1,15 +1,11 @@
 """
-Which axes on this rig's MCM6101 actually answer a status request?
+Which axes on this rig's MCM6101 answer a status request? Read-only.
 
     acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\mirror\\_scan_chips.py [COM54]
 
-`driver.py`'s own `detect_axes()` only checks axes 0-5 and stops after two
-consecutive misses -- not enough to find chip 7 (axis 6, by this rig's
-chip-N=axis-N-1 convention) if a slot in between it and the stage's axes
-0-2 doesn't answer. This scans 0-9 unconditionally, with a longer wait than
-the default, and reports each axis instead of guessing at one.
-
-Read-only -- get_status only, no move command.
+`detect_axes()` checks only axes 0-5 and stops after two misses, so it can
+miss chip 7 (axis 6; chip N = axis N-1). This scans 0-9 unconditionally with
+a longer wait and reports each axis.
 """
 from __future__ import annotations
 import sys
@@ -41,6 +37,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))

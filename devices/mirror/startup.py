@@ -1,19 +1,15 @@
 """
-Launch-time default check for chip 7 (PMT/camera light path): confirm the
-GR and CAMERA channels report the CAMERA/epi state and correct them if not.
+Launch-time check that chip 7 (PMT/camera light path) is on CAMERA/epi,
+correcting either channel that isn't.
 
-Raw target confirmed at the rig 2026-09-11: with ThorImage's light path set
-to Camera, chip 7 reports GR=OUT, CAMERA=OUT; set to PMT/scanning, both
-report IN. So MIRROR_OUT on both channels is the CAMERA/epi target -- no
-guessing at the "New MCM6000 cards reverse camera lightpath positions"
-inversion ThorImage's own source warns about.
+Measured 2026-09-11: ThorImage's Camera path reads GR=OUT, CAMERA=OUT; PMT
+reads both IN. So MIRROR_OUT on both is the target, whatever ThorImage's
+"New MCM6000 cards reverse camera lightpath positions" flip implies.
 
-Operator-authorized silent auto-correct (PLAN.md S2, 2026-09-11): this is a
-deliberate, narrow exception to "ask before actuating" -- only for this
-launch-time, ThorImage-closed check, never during a live session. Only ever
-runs successfully when ThorImage does NOT hold COM54; when the port can't be
-opened (ThorImage running, or the controller absent), this reports that
-rather than raising, so a caller can warn without blocking startup.
+Operator-authorized silent auto-correct (PLAN.md S2, 2026-09-11): a narrow
+exception to "ask before actuating", for this launch-time check only, never
+mid-session. If the port won't open (ThorImage holds COM54, or no
+controller), it reports instead of raising so startup isn't blocked.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -24,7 +20,7 @@ from acqApp.devices.stage.driver import (
 
 CHIP = 7
 AXIS = CHIP - 1
-CAMERA_STATE = MIRROR_OUT  # confirmed target for both GR and CAMERA channels
+CAMERA_STATE = MIRROR_OUT  # for both GR and CAMERA
 
 
 @dataclass
@@ -37,9 +33,8 @@ class MirrorCheckResult:
 
 
 def ensure_camera_default(port: str = "COM54", driver_cls=MCM6101) -> MirrorCheckResult:
-    """Read chip 7's GR/CAMERA channels; correct either that isn't
-    MIRROR_OUT (the confirmed CAMERA/epi default). `driver_cls` is
-    injectable for testing without real hardware."""
+    """Read chip 7's GR/CAMERA channels; set either that isn't CAMERA_STATE.
+    `driver_cls` is injectable for tests."""
     dev = driver_cls(port)
     try:
         dev.open()
@@ -50,12 +45,10 @@ def ensure_camera_default(port: str = "COM54", driver_cls=MCM6101) -> MirrorChec
         gr = dev.get_mirror_state(AXIS, MIRROR_CHAN_GR)
         cam = dev.get_mirror_state(AXIS, MIRROR_CHAN_CAMERA)
         corrected = False
-        if gr != CAMERA_STATE:
-            dev.set_mirror_state(AXIS, MIRROR_CHAN_GR, CAMERA_STATE)
-            corrected = True
-        if cam != CAMERA_STATE:
-            dev.set_mirror_state(AXIS, MIRROR_CHAN_CAMERA, CAMERA_STATE)
-            corrected = True
+        for chan, state in ((MIRROR_CHAN_GR, gr), (MIRROR_CHAN_CAMERA, cam)):
+            if state != CAMERA_STATE:
+                dev.set_mirror_state(AXIS, chan, CAMERA_STATE)
+                corrected = True
         return MirrorCheckResult(ok=True, corrected=corrected, gr_state=gr, camera_state=cam)
     except MCM6101Error as exc:
         return MirrorCheckResult(ok=False, error=str(exc))

@@ -1,17 +1,9 @@
-"""docs/STRUCTURE.md still describes this tree.
-
-A structure doc is prose, and prose about layout rots the first time a file
-moves — the 2026-08-14 regroup broke every relative link in docs/ and nothing
-noticed. So both halves of that file are checked here:
+"""docs/STRUCTURE.md still describes this tree (the 2026-08-14 regroup broke
+every relative link in docs/ and nothing noticed):
 
   1. the tree block lists exactly the files on disk, and
-  2. the mermaid arrows are exactly the imports the AST finds.
-
-(2) is the half worth having. A diagram nobody verifies records what the
-layering was *meant* to be; this one fails when an adapter starts importing
-another adapter, or when something under acq/ imports upward.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_structure.py
+  2. the mermaid arrows are exactly the imports the AST finds — so it fails
+     when an adapter imports another adapter, or acq/ imports upward.
 """
 from __future__ import annotations
 
@@ -77,11 +69,8 @@ def real_paths() -> set[str]:
 
 
 def _inits(paths: set[str]) -> set[str]:
-    """Every package has one; listing ten of them buries the tree in noise.
-
-    Optional on both sides, so the doc may still call out the two that carry
-    logic (the adapter registry, the lazy re-exports).
-    """
+    """Optional on both sides: listing every one buries the tree, but the doc
+    may still name the two that carry logic."""
     return {p for p in paths if p.rsplit("/", 1)[-1] == "__init__.py"}
 
 
@@ -180,6 +169,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    from acqApp.console import enable_safe_console
-    enable_safe_console()
     sys.exit(main())

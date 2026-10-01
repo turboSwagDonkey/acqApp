@@ -1,11 +1,10 @@
 """VisStimController — the stimulus state machine, ported from
 guiVisStimDAQ.m (startStimFlow, runStimManager, runAnimationLoop).
 
-Unlike MATLAB's blocking loop, this advances once per painted frame, so the
-rest of acqApp keeps running. The MCC DAQ trigger line doesn't exist here:
-each SyncController tick (10 Hz, while live) stands in for one pulse, so
-WaitTrigger/TriggersBlank/TriggersStim count ticks (field names kept for
-MATLAB config parity).
+Advances once per painted frame instead of MATLAB's blocking loop. There
+is no MCC DAQ trigger line: each SyncController tick (10 Hz, while live) is
+one pulse, so WaitTrigger/TriggersBlank/TriggersStim count ticks (MATLAB
+names kept).
 
 Trial types (`VisStimSettings.trial_type`):
   grating     drifting grating, frame-counted
@@ -383,11 +382,7 @@ class VisStimController(QObject):
             return
 
         p = self._trials[self._trial_idx]
-        if self._is_visible:
-            self._stim_frames += 1
-        else:
-            self._blank_frames += 1
-
+        self._count_frame()
         self._xoffset = (self._xoffset + self._shift_per_frame) % max(
             p.WaveSpPeriod, 1e-9)
         self._window.set_offset(self._xoffset)
@@ -395,16 +390,19 @@ class VisStimController(QObject):
 
     def _visuomotor_frame(self) -> None:
         """Drift by how far the wheel moved, x VisuomotorGain."""
-        if self._is_visible:
-            self._stim_frames += 1
-        else:
-            self._blank_frames += 1
+        self._count_frame()
         p = self._trials[self._trial_idx]
         speed = self._read_wheel_speed()
         ifi = 1.0 / self._hz
         self._xoffset = (self._xoffset + speed * p.VisuomotorGain * ifi) % max(
             p.WaveSpPeriod, 1e-9)
         self._window.set_offset(self._xoffset)
+
+    def _count_frame(self) -> None:
+        if self._is_visible:
+            self._stim_frames += 1
+        else:
+            self._blank_frames += 1
 
     def _read_wheel_speed(self) -> float:
         """In the wheel's own units; 0.0 with no wheel or no sample yet."""

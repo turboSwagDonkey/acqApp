@@ -127,8 +127,8 @@ class DmdModule(ModuleAdapter):
 
     # ── photostimulation ROIs ──
     def edit_rois(self) -> None:
-        """`RoiEditor` on the camera's newest frame. Commands nothing: putting
-        the DMD all-on first is the operator's (light-emitting) step."""
+        """`RoiEditor` on the camera's newest frame. Commands nothing: all-on
+        first is the operator's (light-emitting) step."""
         from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
                                      QVBoxLayout)
 
@@ -183,22 +183,18 @@ class DmdModule(ModuleAdapter):
         if not path:
             return None, ""
         try:
-            from acqApp.devices.dmd.calibration import DmdCalibration, flip_x, flip_y
-            calib = DmdCalibration.load(path)
-            if self.panel is not None and self.panel.settings.roi_flip_y:
-                calib = flip_y(calib)
-            if self.panel is not None and self.panel.settings.roi_flip_x:
-                calib = flip_x(calib)
-            return calib, ""
+            from acqApp.devices.dmd.calibration import DmdCalibration
+            from acqApp.devices.dmd.control import orient_calibration
+            return orient_calibration(DmdCalibration.load(path),
+                                      self.panel.settings), ""
         except Exception as e:      # noqa: BLE001 — missing, corrupt, or stale
             return None, (f"DMD calibration {Path(path).name} could not be "
                           f"read ({type(e).__name__}) — ROIs can be drawn but "
                           f"not projected")
 
     def _settings(self) -> DmdSettings:
-        """Saved settings, with scale/rotation re-adopted from the standalone
-        DMD app whenever it has re-aligned since our last save (`_shared_*`
-        records what we last saw)."""
+        """Saved settings; scale/rotation re-adopted from the standalone app
+        if it re-aligned since our last save (`_shared_*` = what we saw)."""
         s = config.load_dataclass(DmdSettings, self.key)
         saved = config.load_settings(self.key)
         shared = alp.sibling_config()
@@ -224,9 +220,7 @@ class DmdModule(ModuleAdapter):
     def build_controller(self, emulate: bool) -> None:
         s = self.panel.settings if self.panel is not None else DmdSettings()
         real = False
-        if emulate:
-            self.controller = MockDmdController(s)
-        else:
+        if not emulate:
             try:
                 self.controller = DmdController(s)
                 real = True
@@ -235,13 +229,13 @@ class DmdModule(ModuleAdapter):
                 print(f"[main] DMD unavailable ({type(e).__name__}: {e}) — "
                       f"using mock. If the standalone DMD app is open, close "
                       f"it and toggle Emulate off again.")
-                self.controller = MockDmdController(s)
+        if not real:
+            self.controller = MockDmdController(s)
         self._real = real
         if self.panel is not None:
             self.panel.set_device(self.controller.device_name,
                                   self.controller.resolution, real)
-        # Or Display projects the new controller's default while the panel
-        # names a file.
+        # Or Display projects the new controller's default, not the named file.
         path = s.pattern_path
         if path is not None and Path(path).is_file():
             self.controller.load_pattern(Path(path))

@@ -198,12 +198,13 @@ def rig_device() -> str:
 
 def rig_channel(key: str) -> str | None:
     """Fully-qualified DAQ channel for `key`, or None to keep the default."""
-    chan = rig_profile().get("channels", {}).get(key)
+    profile = rig_profile()
+    chan = profile.get("channels", {}).get(key)
     if not chan:
         return None
-    head = chan.split("/", 1)[0]
-    return (f"{rig_device()}/{chan}" if head.startswith(_CHANNEL_SPACES)
-            else chan)
+    if not chan.split("/", 1)[0].startswith(_CHANNEL_SPACES):
+        return chan
+    return f"{profile.get('ni_device') or DEFAULT_NI_DEVICE}/{chan}"
 
 
 def rig_has(key: str) -> bool:

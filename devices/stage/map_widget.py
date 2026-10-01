@@ -1,14 +1,10 @@
 """
-Stage travel visualizations: `StageMap` for X/Y, `ZGauge` for Z (focus).
+Stage travel pictures: `StageMap` for X/Y, `ZGauge` for Z (focus).
 
-Both are a read-only picture of where the stage is inside its travel: the
-hard travel extent, the soft-limit extent inside it, the origin, the session
-home, and the current position. Display only — nothing here commands motion.
-
-Two widgets rather than one made 3D: X/Y is a plane you travel across, Z is a
-depth you travel through — the same distinction `panel.py`'s Motion grid vs.
-`CalibrationDialog`'s two risk profiles already draw. A gauge, not a second
-travel-map axis, reads as depth rather than another position on a table.
+Both show the hard travel, the soft limits inside it, the origin, the session
+home and the current position. Display only; nothing here commands motion.
+Z gets a gauge, not a third map axis, so it reads as depth rather than
+another position on a table.
 """
 from __future__ import annotations
 
@@ -20,16 +16,34 @@ from .settings import _BAD, _C_CUR, _C_HOME, _C_ORIGIN, _C_SOFT
 
 _TRAVEL_EDGE = QColor("#8a8a8a")
 _TRAVEL_FILL = QColor("#f4f4f4")
-# Same colors settings.py's legend swatches use — one definition, not two
-# hex literals kept in step by hand.
+_TEXT        = _TRAVEL_EDGE.darker(160)
 _SOFT_EDGE   = QColor(_C_SOFT)
 _CURRENT     = QColor(_C_CUR)
 _ORIGIN      = QColor(_C_ORIGIN)
 _HOME        = QColor(_C_HOME)
 _STALE       = QColor(_BAD)
 
+_LEFT_VCENTER = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-class StageMap(QWidget):
+
+class _TravelWidget(QWidget):
+    """Shared drawing helpers."""
+
+    def clear_position(self) -> None:
+        self._pos = None
+        self.update()
+
+    def _small(self) -> QFont:
+        f = QFont(self.font())
+        f.setPointSizeF(max(6.5, f.pointSizeF() - 2.0))
+        return f
+
+    def _center_text(self, p: QPainter, text: str) -> None:
+        p.setPen(QPen(_TRAVEL_EDGE))
+        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), text)
+
+
+class StageMap(_TravelWidget):
     """Travel map. Feed it `set_axes()` once and `set_position()` per poll."""
 
     _MARGIN_LEFT   = 10
@@ -43,7 +57,7 @@ class StageMap(QWidget):
         self._y = None
         self._pos: tuple[float, float] | None = None
         self._invert_y = True
-        
+
         self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip("Stage position within its travel. Display only — "
@@ -58,23 +72,16 @@ class StageMap(QWidget):
         self._pos = (x_um, y_um)
         self.update()
 
-    def clear_position(self) -> None:
-        self._pos = None
-        self.update()
-
     # ── geometry ────────────────────────────────────────────────────────────
     def _box(self) -> QRectF:
-        """Enforces a 1:1 square canvas maximized within available widget area."""
+        """The largest square that fits inside the margins, centred."""
         avail_w = max(1.0, self.width() - self._MARGIN_LEFT - self._MARGIN_RIGHT)
         avail_h = max(1.0, self.height() - self._MARGIN_TOP - self._MARGIN_BOTTOM)
-        side = min(avail_w, avail_h)  # Strict square aspect ratio
+        side = min(avail_w, avail_h)
+        return QRectF(self._MARGIN_LEFT + (avail_w - side) / 2.0,
+                      self._MARGIN_TOP + (avail_h - side) / 2.0, side, side)
 
-        box_x = self._MARGIN_LEFT + (avail_w - side) / 2.0
-        box_y = self._MARGIN_TOP + (avail_h - side) / 2.0
-        return QRectF(box_x, box_y, side, side)
-
-    def _to_px(self, x_um: float, y_um: float, xr, yr) -> QPointF:
-        box = self._box()
+    def _to_px(self, box: QRectF, x_um: float, y_um: float, xr, yr) -> QPointF:
         (x0, x1), (y0, y1) = xr, yr
         fx = (x_um - x0) / (x1 - x0) if x1 > x0 else 0.5
         fy = (y_um - y0) / (y1 - y0) if y1 > y0 else 0.5
@@ -85,9 +92,9 @@ class StageMap(QWidget):
         return QPointF(box.left() + fx * box.width(),
                        box.top() + fy * box.height())
 
-    def _rect_for(self, xr, yr, xlim, ylim) -> QRectF:
-        a = self._to_px(xlim[0], ylim[0], xr, yr)
-        b = self._to_px(xlim[1], ylim[1], xr, yr)
+    def _rect_for(self, box: QRectF, xr, yr, xlim, ylim) -> QRectF:
+        a = self._to_px(box, xlim[0], ylim[0], xr, yr)
+        b = self._to_px(box, xlim[1], ylim[1], xr, yr)
         return QRectF(a, b).normalized()
 
     # ── painting ────────────────────────────────────────────────────────────
@@ -107,21 +114,21 @@ class StageMap(QWidget):
             span = lim[1] - lim[0]
             return (lim[0] - span * 0.04, lim[1] + span * 0.04)
         xr, yr = pad(xt), pad(yt)
+        box = self._box()
 
-        travel = self._rect_for(xr, yr, xt, yt)
+        travel = self._rect_for(box, xr, yr, xt, yt)
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
         p.setBrush(QBrush(_TRAVEL_FILL))
         p.drawRect(travel)
 
-        xs, ys = self._x.soft_limits_um(), self._y.soft_limits_um()
-        soft = self._rect_for(xr, yr, xs, ys)
-        pen = QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine)
-        p.setPen(pen)
+        soft = self._rect_for(box, xr, yr, self._x.soft_limits_um(),
+                              self._y.soft_limits_um())
+        p.setPen(QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(soft)
 
         if self._pos is not None:
-            c = self._to_px(self._pos[0], self._pos[1], xr, yr)
+            c = self._to_px(box, self._pos[0], self._pos[1], xr, yr)
             p.setPen(QPen(_CURRENT.lighter(130), 0.8, Qt.PenStyle.DotLine))
             p.drawLine(QPointF(travel.left(), c.y()), QPointF(travel.right(), c.y()))
             p.drawLine(QPointF(c.x(), travel.top()), QPointF(c.x(), travel.bottom()))
@@ -131,29 +138,21 @@ class StageMap(QWidget):
 
         hx, hy = self._x.home_um(), self._y.home_um()
         if hx is not None and hy is not None:
-            self._diamond(p, self._to_px(hx, hy, xr, yr), _HOME, 7)
+            self._diamond(p, self._to_px(box, hx, hy, xr, yr), _HOME, 7)
 
+        small = self._small()
         if self._x.origin_set and self._y.origin_set:
-            self._cross(p, self._to_px(0.0, 0.0, xr, yr), _ORIGIN, 9)
+            self._cross(p, self._to_px(box, 0.0, 0.0, xr, yr), _ORIGIN, 9)
         else:
             p.setPen(QPen(_STALE))
-            p.setFont(self._small())
+            p.setFont(small)
             p.drawText(travel.adjusted(4, 4, -4, -4),
                        int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter),
                        "0,0 not set")
 
-        self._legend(p, travel)
+        self._legend(p, travel, small)
 
     # ── drawing helpers ─────────────────────────────────────────────────────
-    def _small(self) -> QFont:
-        f = QFont(self.font())
-        f.setPointSizeF(max(6.5, f.pointSizeF() - 2.0))
-        return f
-
-    def _center_text(self, p: QPainter, text: str) -> None:
-        p.setPen(QPen(_TRAVEL_EDGE))
-        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), text)
-
     def _cross(self, p: QPainter, c: QPointF, color: QColor, r: int) -> None:
         p.setPen(QPen(color, 1.8))
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -166,57 +165,42 @@ class StageMap(QWidget):
         p.drawPolygon(QPointF(c.x(), c.y() - r), QPointF(c.x() + r, c.y()),
                       QPointF(c.x(), c.y() + r), QPointF(c.x() - r, c.y()))
 
-    def _legend(self, p: QPainter, travel: QRectF) -> None:
-        p.setFont(self._small())
+    def _legend(self, p: QPainter, travel: QRectF, font: QFont) -> None:
+        p.setFont(font)
         lx = travel.right() + 10
-        
         spacing = 20
-        total_h = 4 * spacing
-        ly = travel.top() + max(0.0, (travel.height() - total_h) / 2.0) + 6
+        ly = travel.top() + max(0.0, (travel.height() - 4 * spacing) / 2.0) + 6
+
+        def label(text: str) -> None:
+            p.setPen(QPen(_TEXT))
+            p.drawText(QRectF(lx + 14, ly - 7, 70, 14), _LEFT_VCENTER, text)
 
         p.setPen(QPen(_CURRENT.darker(130), 1.2))
         p.setBrush(QBrush(_CURRENT))
         p.drawEllipse(QPointF(lx + 4, ly), 4, 4)
-        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
-        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
-                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                   "Position")
+        label("Position")
 
         ly += spacing
         self._cross(p, QPointF(lx + 4, ly), _ORIGIN, 4)
-        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
-        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
-                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                   "0,0 (Origin)")
+        label("0,0 (Origin)")
 
         ly += spacing
         self._diamond(p, QPointF(lx + 4, ly), _HOME, 4)
-        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
-        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
-                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                   "Home")
+        label("Home")
 
         ly += spacing
-        pen = QPen(_SOFT_EDGE, 1.2, Qt.PenStyle.DashLine)
-        p.setPen(pen)
+        p.setPen(QPen(_SOFT_EDGE, 1.2, Qt.PenStyle.DashLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(QRectF(lx + 1, ly - 4, 6, 6))
-        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
-        p.drawText(QRectF(lx + 14, ly - 7, 70, 14),
-                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                   "Soft limits")
+        label("Soft limits")
 
 
-class ZGauge(QWidget):
-    """Z (focus) position within its travel — a vertical thermometer, not a
-    second travel-map axis: depth reads as depth. `set_axis()` once,
-    `set_position()` per poll, same shape as `StageMap`.
+class ZGauge(_TravelWidget):
+    """Z (focus) within its travel, as a vertical thermometer. `set_axis()`
+    once, `set_position()` per poll.
 
-    Origin sits on the bar's LEFT, home on its RIGHT — opposite sides so the
-    two never draw on top of each other at a shared value — and the soft
-    limits get their actual µm numbers at the ends of the dashed box, the
-    same way a real gauge has marks that mean something rather than a
-    colour band alone.
+    Origin ticks on the bar's left and home on its right so they never
+    overlap at a shared value; the soft limits carry their µm values.
     """
 
     _MARGIN_TOP    = 20        # room for the top soft-limit number
@@ -246,21 +230,14 @@ class ZGauge(QWidget):
         self._pos = z_um
         self.update()
 
-    def clear_position(self) -> None:
-        self._pos = None
-        self.update()
-
     # ── geometry ────────────────────────────────────────────────────────────
     def _bar(self) -> QRectF:
         h = max(1.0, self.height() - self._MARGIN_TOP - self._MARGIN_BOTTOM)
         return QRectF(self._SIDE_TICK, self._MARGIN_TOP, self._BAR_WIDTH, h)
 
     def _y_for(self, z_um: float, lim: tuple[float, float], bar: QRectF) -> float:
-        """Screen y for a value in `lim` — up on screen for a bigger number,
-        the way a thermometer or a level reads, not StageMap's arbitrary
-        invert_y (there's only one sensible "up" for a single axis). `bar`
-        is the caller's own `_bar()`, passed in rather than recomputed —
-        paintEvent already has it, and calls this up to four times a frame."""
+        """Screen y for a value in `lim`; bigger is always up (no invert_y
+        for a single axis)."""
         lo, hi = lim
         f = (z_um - lo) / (hi - lo) if hi > lo else 0.5
         f = min(max(f, 0.0), 1.0)
@@ -291,10 +268,9 @@ class ZGauge(QWidget):
         p.drawRoundedRect(QRectF(bar.left(), top, bar.width(), bot - top),
                           self._RADIUS, self._RADIUS)
 
-        # The soft limits' own numbers — a coloured band alone doesn't say
-        # HOW close to the edge "close" is.
-        p.setFont(self._small())
-        p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
+        small = self._small()
+        p.setFont(small)
+        p.setPen(QPen(_TEXT))
         p.drawText(QRectF(bar.left() - 6, top - 13, bar.width() + 12, 12),
                    int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom),
                    f"{hi:.0f}")
@@ -306,7 +282,6 @@ class ZGauge(QWidget):
             self._side_tick(p, bar, self._y_for(0.0, zt, bar), _ORIGIN, "left")
         else:
             p.setPen(QPen(_STALE))
-            p.setFont(self._small())
             p.drawText(bar.adjusted(-6, 0, 6, 0),
                        int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter),
                        "0 not\nset")
@@ -323,34 +298,20 @@ class ZGauge(QWidget):
             p.setPen(QPen(_CURRENT.darker(130), 1.4))
             p.setBrush(QBrush(_CURRENT))
             p.drawEllipse(QPointF(bar.center().x(), y), 5.5, 5.5)
-            p.setFont(self._small())
-            p.setPen(QPen(_TRAVEL_EDGE.darker(160)))
+            p.setPen(QPen(_TEXT))
             p.drawText(QRectF(bar.right() + 6, y - 7, self._LABEL_W, 14),
-                       int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                       f"{self._pos:.0f} µm")
+                       _LEFT_VCENTER, f"{self._pos:.0f} µm")
 
         if not self._ax.has_frame:
             p.setPen(QPen(_STALE))
-            p.setFont(self._small())
             p.drawText(bar.adjusted(-6, -6, 6, 0),
                        int(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter),
                        "no frame")
 
     # ── drawing helpers ─────────────────────────────────────────────────────
-    def _small(self) -> QFont:
-        f = QFont(self.font())
-        f.setPointSizeF(max(6.5, f.pointSizeF() - 2.0))
-        return f
-
-    def _center_text(self, p: QPainter, text: str) -> None:
-        p.setPen(QPen(_TRAVEL_EDGE))
-        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), text)
-
     def _side_tick(self, p: QPainter, bar: QRectF, y: float, color: QColor,
                    side: str, *, diamond: bool = False) -> None:
-        """A marker on one side of the bar, extending outward from its edge
-        — origin on the left, home on the right, so the two never collide
-        at a shared value the way sharing one edge would."""
+        """A marker extending outward from one edge of the bar."""
         x0 = bar.left() if side == "left" else bar.right()
         x1 = x0 + (-self._SIDE_TICK + 4 if side == "left" else self._SIDE_TICK - 4)
         p.setPen(QPen(color, 1.8))
@@ -358,7 +319,7 @@ class ZGauge(QWidget):
         if diamond:
             r = 5
             xm = (x0 + x1) / 2.0
-            p.drawPolygon(QPointF(xm, y - r), QPointF(xm + (x1 - xm), y),
-                          QPointF(xm, y + r), QPointF(xm - (x1 - xm), y))
+            p.drawPolygon(QPointF(xm, y - r), QPointF(x1, y),
+                          QPointF(xm, y + r), QPointF(x0, y))
         else:
             p.drawLine(QPointF(x0, y), QPointF(x1, y))

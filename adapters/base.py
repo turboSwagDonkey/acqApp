@@ -108,8 +108,8 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
 
 
 def led_controller(emulate: bool, rig_key: str, real_cls, mock_cls, label: str):
-    """A DAQ LED or its mock. A rig without the LED gets the mock with no DAQ
-    attempt (which only ever produced a traceback)."""
+    """A DAQ LED or its mock. A rig without the LED gets the mock without a
+    DAQ attempt."""
     if emulate:
         return mock_cls()
     if not config.rig_has(rig_key):
@@ -140,7 +140,7 @@ class ModuleAdapter:
         self.worker: DeviceWorker | None = None
         self.controller: OutputController | None = None
         self._chk_auto_lut: QCheckBox | None = None
-        # Preview state for camera-shaped modules; only _paint() reads it.
+        # Preview state for camera-shaped modules.
         self._img = None
         self._hist = None
         self._levels: tuple[float, float] | None = None

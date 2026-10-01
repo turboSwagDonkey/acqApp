@@ -18,7 +18,7 @@ class PupilSettings:
     # ── tracking (needs an EyeLoop clone beside the repo) ──
     track:            bool = False
     # Sets the reported radius (~60% swing over 25-60) at an unchanged fit
-    # rate; illumination-dependent. See docs/EYELOOP.md.
+    # rate; illumination-dependent (docs/EYELOOP.md).
     track_threshold:  int = 45
     track_blur:       int = 3
     track_model:      str = "ellipsoid"     # or "circular" (~2.5x cheaper)

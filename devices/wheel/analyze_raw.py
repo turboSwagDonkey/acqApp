@@ -1,11 +1,7 @@
 r"""
-Analyse a wheel_raw.csv capture — turn the raw position voltage into revolutions
-and distance, so we can confirm the conversion before trusting it in the app.
-
-The encoder is a single-turn sawtooth: voltage ramps 0..Vfs over one revolution,
-then wraps. This unwraps that sawtooth (np.unwrap), integrates it, and reports
-revolutions + distance — at the captured rate and again decimated to the app's
-50 Hz, so aliasing (if any) is visible.
+Analyse a wheel_raw.csv capture: unwrap the single-turn sawtooth (0..Vfs per
+revolution) into revolutions and distance, at the captured rate and again
+decimated to the app's rate, so any aliasing shows.
 
   ..\..\.venv\Scripts\python.exe wheel\analyze_raw.py wheel_raw.csv
   ..\..\.venv\Scripts\python.exe wheel\analyze_raw.py wheel_raw.csv --dia 150 --vfs 5.0
@@ -21,8 +17,7 @@ import numpy as np
 
 def revolutions(v: np.ndarray, vfs: float) -> np.ndarray:
     """Cumulative signed revolutions from a sawtooth position voltage."""
-    phase = v / vfs * 2 * np.pi          # volts → radians (one turn = 2π)
-    return np.unwrap(phase) / (2 * np.pi)
+    return np.unwrap(v / vfs * 2 * np.pi) / (2 * np.pi)
 
 
 def report(name: str, v: np.ndarray, rate: float, vfs: float, dia: float,
@@ -30,8 +25,8 @@ def report(name: str, v: np.ndarray, rate: float, vfs: float, dia: float,
     rev = revolutions(v, vfs)
     net = rev[-1] - rev[0]                # net rotation (forward - backward)
     step = np.diff(rev)
-    # Mirror the app worker: drop >0.5 rev/sample glitches, and steps whose speed
-    # is below the velocity deadband. So this predicts what the app will report.
+    # Roughly the app worker: drop >0.5 rev/sample glitches and sub-deadband
+    # steps.
     speed = np.abs(step) * rate          # rev/s per sample
     good = step[(np.abs(step) <= 0.5) & (speed > deadband_vel)]
     path_db = float(np.sum(np.abs(good)))
@@ -82,14 +77,13 @@ def main() -> None:
     print("=============================================================")
     print("Set the app's V/rev to the value above. 'net rotation' is what the app "
           "records (forward-back); it should match how far you *net* turned the "
-          "wheel. Big net differences between full-rate and ~50Hz mean the spin "
-          "aliased (>0.5 rev/sample) - the app samples at 120Hz to avoid that.")
+          "wheel. Big net differences between full rate and the app rate mean "
+          "the spin aliased (>0.5 rev/sample).")
 
 
 if __name__ == "__main__":
-    # Make the console unable to raise on this script's own output before it
-    # prints anything (see acqApp/console.py -- a UnicodeEncodeError from a
-    # diagnostic print is otherwise indistinguishable from a device failure).
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))

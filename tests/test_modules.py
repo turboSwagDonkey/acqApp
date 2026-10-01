@@ -7,6 +7,7 @@ from __future__ import annotations
 import shutil
 import sys
 import traceback
+
 from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
                       run_parts)
 from acqApp import config
@@ -33,13 +34,12 @@ def _part_subsets() -> int:
 
     sys.argv = ["main.py", "--mock"]
     app = qt_app()
-    from acqApp import config, probe
+    from acqApp import probe
 
     for subset in SUBSETS + [list(config.MODULES)]:
         label = "+".join(subset)
         try:
             win = make_window(set(subset))
-            # A session: build workers -> start clock -> start -> display -> stop.
             win._btn_run.setChecked(True)
             pump(app, 0.4)
             for _ in range(4):
@@ -51,13 +51,10 @@ def _part_subsets() -> int:
             win._btn_emulate.setChecked(False)
             win._btn_emulate.setChecked(True)
 
-            # The Devices monitor collects probe arguments from every adapter.
+            # Every kwarg an adapter offers must be one probe_all accepts, or
+            # the Devices window dies with a TypeError for this subset.
             kw = win._probe_kwargs()
             assert isinstance(kw, dict)
-            # Every kwarg an adapter offers must be one probe_all accepts —
-            # otherwise the Devices window dies with a TypeError the moment a
-            # particular subset of modules is loaded, which is exactly the
-            # failure this test exists to find.
             probe.probe_all(subset, **kw)
 
             win.close()
@@ -68,12 +65,9 @@ def _part_subsets() -> int:
             r.check(False, f"{label}: {type(e).__name__}: {e}")
 
     # ── teardown survives one module failing to stop ─────────────────────────
-    # Stopping touches hardware: a stage whose serial port went away, a camera
-    # that will not release. `_stop_session` stops every adapter in one loop, so
-    # unguarded, the FIRST raise skipped every module after it (worker threads
-    # left running) and skipped `stop_all()` (clock and trigger bus still alive
-    # while the UI said "Stopped"). Via closeEvent it also skipped the DCAM
-    # handle close, which is the native crash the pre-init note describes.
+    # Unguarded, the first raise in `_stop_session` left later workers running,
+    # the clock and trigger bus alive under a "Stopped" UI, and (via
+    # closeEvent) the DCAM handle unclosed — a native crash.
     try:
         win = make_window({"wheel", "stage", "puffer"})
         win._btn_run.setChecked(True)
@@ -82,7 +76,7 @@ def _part_subsets() -> int:
         victim = win._modules[0]
         later = win._modules[1:]
         stopped: list[str] = []
-        for m in later:                       # record that the rest still stop
+        for m in later:
             original = m.stop
             m.stop = (lambda mod=m, orig=original: (stopped.append(mod.key),
                                                     orig())[1])
@@ -100,9 +94,7 @@ def _part_subsets() -> int:
         r.check(win._btn_run.text() == "Live view",
                 "…and the UI returns to a consistent state")
 
-        # CONTROL: the same failure through the OLD unguarded loop must strand
-        # them, or the three checks above pass no matter what `_stop_session`
-        # does.
+        # CONTROL: the same failure through the old unguarded loop.
         reached: list[str] = []
         adapters = [("victim", boom)] + [(m.key, lambda: None) for m in later]
         try:
@@ -132,8 +124,7 @@ def _keys(win) -> list[str]:
 
 
 def _chosen(win) -> list[str]:
-    """The loaded keys the operator picked. `config.ALWAYS_ON` is not one of
-    them and is checked on its own (`check_always_on`)."""
+    """The loaded keys the operator picked (not `config.ALWAYS_ON`)."""
     return [k for k in _keys(win) if k not in config.ALWAYS_ON]
 
 
@@ -158,13 +149,8 @@ def check_add_remove(r: Report, win) -> None:
 
 
 def check_empty_set(r: Report, win) -> None:
-    """Unloading everything must not break the window.
-
-    `ModuleSelectDialog` keeps OK disabled until something is ticked, so this
-    is unreachable from the UI — but the guard is in the dialog, not in
-    `set_modules`, and a window left in pieces by a code path nobody clicks is
-    still a window left in pieces.
-    """
+    """Unloading everything must not break the window — unreachable from the
+    UI, but the guard is in the dialog, not in `set_modules`."""
     win.set_modules(["voltage_cam", "wheel"])
     win.set_modules([])
     r.check(_chosen(win) == [],
@@ -198,8 +184,7 @@ def check_order(r: Report, win) -> None:
     got = _keys(win)
     r.check(got == sorted(got, key=order.index),
             f"a module added after closed_loop still sorts before it ({got})")
-    # CONTROL: the order really is being imposed, not inherited from the
-    # argument — which was given closed_loop first both times.
+    # CONTROL: imposed, not inherited — the argument put closed_loop first.
     r.check(got.index("wheel") < got.index("closed_loop"),
             f"…and that is not the order it was asked for ({got})")
 
@@ -223,13 +208,10 @@ def check_ui_released(r: Report, win) -> None:
     r.check(len(win._pg_views) < views_with,
             f"its pyqtgraph views were unregistered ({len(win._pg_views)} vs "
             f"{views_with}) — a stale one crashes the theme toggle natively")
-    # The pupil camera grew a plot when EyeLoop landed (the radius trace), so
-    # unloading it takes a Signals tab with it.
     r.check(win._plots_tabs.count() == plots_with - 1,
             f"its Signals tab went too ({win._plots_tabs.count()} vs "
             f"{plots_with})")
 
-    # The wheel DOES have a plot, so removing it must drop a Signals tab.
     before = win._plots_tabs.count()
     win.set_modules(["voltage_cam"])
     r.check(win._plots_tabs.count() == before - 1,
@@ -238,11 +220,8 @@ def check_ui_released(r: Report, win) -> None:
 
 
 def check_sidebar_follows(r: Report, win) -> None:
-    """Each loaded instrument owns a sidebar item, and only while loaded.
-
-    The sidebar is the settings selector since 2026-08-25, so a stale item is
-    not cosmetic — it points at a panel that has been deleted.
-    """
+    """Each loaded instrument owns a sidebar item, only while loaded — a
+    stale item points at a deleted panel."""
     win.set_modules(["voltage_cam", "wheel"])
     r.check(set(win._page_actions) ==
             {"saving", "voltage_cam", "wheel"} | config.ALWAYS_ON,
@@ -259,8 +238,6 @@ def check_sidebar_follows(r: Report, win) -> None:
     r.check(dead not in win._sidebar.actions(),
             "…and the item really is off the toolbar, not just out of the dict")
 
-    # The order is the sidebar's whole readability: Save first, then
-    # config.MODULES order.
     win.set_modules(["closed_loop", "wheel", "voltage_cam"])
     labels = [a.text() for a in win._sidebar.actions()
               if a in win._page_actions.values()]
@@ -272,11 +249,8 @@ def check_sidebar_follows(r: Report, win) -> None:
 
 
 def check_theme_toggle_survives(r: Report, win) -> None:
-    """The failure the view bookkeeping exists to prevent.
-
-    Recolouring walks `_pg_views`; a deleted view there is a native crash, so
-    this both toggles the theme and reads a view back afterwards.
-    """
+    """Recolouring walks `_pg_views`; a deleted view there is a native
+    crash."""
     win.set_modules(["voltage_cam", "wheel"])
     win.set_modules(["wheel"])              # drops the CENTRAL view's items
     try:
@@ -301,8 +275,7 @@ def check_central_pane(r: Report, win) -> None:
     r.check(win._central_owner == "voltage_cam",
             f"the camera claims it when loaded ({win._central_owner})")
 
-    # Not rebuilt when the owner is unchanged: central_widget() BUILDS a view
-    # per call, so a needless rebuild throws away the live image.
+    # central_widget() BUILDS a view: a needless rebuild drops the live image.
     was = win.centralWidget()
     win.set_modules(["voltage_cam", "wheel", "puffer"])
     r.check(win.centralWidget() is was,
@@ -327,8 +300,7 @@ def check_recording_refused(r: Report, win) -> None:
     r.check(raised, "set_modules refuses while a recorder is open")
     r.check(_chosen(win) == ["voltage_cam", "wheel"],
             f"…and changed nothing ({_keys(win)})")
-    # CONTROL: the same call succeeds once the recorder is gone, so the refusal
-    # is about recording and not about the argument.
+    # CONTROL: the refusal is about recording, not the argument.
     added, removed = win.set_modules(["voltage_cam"])
     r.check(removed == ["wheel"],
             f"control: the same change works with no recorder ({removed})")
@@ -350,14 +322,8 @@ def check_closed_loop_offers(r: Report, win) -> None:
 
 
 def check_camera_handle_survives(r: Report, win) -> None:
-    """Unloading the voltage camera must NOT close the shared DCAM handle.
-
-    The window opens the camera once at startup and every worker borrows it,
-    because re-opening a just-closed DCAM device crashes the driver natively —
-    no traceback, no exit code (docs/HANDOFF.md). Unload/reload is a new way to
-    reach that, so the handle is checked across a round trip. `OrcaFireWorker`
-    holds the line with `own_cam`: it closes only a handle it opened itself.
-    """
+    """Unloading the voltage camera must NOT close the shared DCAM handle:
+    re-opening a just-closed DCAM device crashes the driver natively."""
     sentinel = object()
     win._cam_handle = sentinel
     try:
@@ -375,13 +341,8 @@ def check_camera_handle_survives(r: Report, win) -> None:
 
 
 def check_devices_monitor(r: Report, win) -> None:
-    """The Devices monitor must not outlive the module set it was built for.
-
-    `ConnectionMonitor` takes a SNAPSHOT of the keys at construction, so a
-    cached one would go on probing an instrument that is no longer loaded —
-    and on a rig that reads as "the stage is missing" rather than "the stage
-    was unloaded".
-    """
+    """`ConnectionMonitor` snapshots the keys: a cached one reports an
+    unloaded stage as "missing"."""
     win.set_modules(["voltage_cam", "wheel"])
     win._show_devices()
     r.check(win._devices_dialog is not None, "the monitor opens")
@@ -398,12 +359,8 @@ def check_devices_monitor(r: Report, win) -> None:
 
 
 def check_live_session(r: Report, win) -> None:
-    """The point of the feature: change the set WITHOUT stopping.
-
-    A module loaded into a running session has to build and start its own
-    worker — the clock is already past t=0, and nothing is going to call
-    `_start_session` again for it.
-    """
+    """Change the set WITHOUT stopping: nothing calls `_start_session` again
+    for a module loaded mid-session."""
     win.set_modules(["voltage_cam", "wheel"])
     win._btn_run.setChecked(True)
     try:
@@ -428,7 +385,6 @@ def check_live_session(r: Report, win) -> None:
                 "the unloaded module's worker was stopped, not abandoned")
         r.check("wheel" not in _keys(win), f"…and it is gone ({_keys(win)})")
 
-        # The display tick must survive a set that changed under it.
         try:
             win._display_tick()
             ticked = True
@@ -442,14 +398,9 @@ def check_live_session(r: Report, win) -> None:
 
 
 def check_always_on(r: Report, win) -> None:
-    """`config.ALWAYS_ON` is not the operator's to switch off.
-
-    The routine panel drives the instruments that ARE optional and owns no
-    device of its own, so unticking it would only lose the protocol. Enforced
-    in three places, because any one of them alone leaves a way to drop it: the
-    picker offers no checkbox, `selected()` puts it back, and `set_modules`
-    puts it back for callers that never went through the picker at all.
-    """
+    """`config.ALWAYS_ON` (the routine panel) cannot be switched off: the
+    picker offers no checkbox, `selected()` puts it back, and so does
+    `set_modules` — each alone leaves a way to drop it."""
     from PyQt6.QtWidgets import QCheckBox
 
     from acqApp.dialogs import ModuleSelectDialog
@@ -464,8 +415,7 @@ def check_always_on(r: Report, win) -> None:
             f"the picker offers no checkbox for it ({sorted(boxes)})")
     r.check(config.ALWAYS_ON <= set(dlg.selected()),
             f"…and hands it back anyway ({dlg.selected()})")
-    # CONTROL: the picker still reports what WAS ticked, so the check above is
-    # not passing because selected() returns everything.
+    # CONTROL: or selected() could be returning everything.
     r.check("wheel" in dlg.selected() and "puffer" not in dlg.selected(),
             f"control: the ticked modules are still what comes back "
             f"({dlg.selected()})")
@@ -473,7 +423,7 @@ def check_always_on(r: Report, win) -> None:
 
     win.set_modules(["voltage_cam"])
     r.check(config.ALWAYS_ON <= set(_keys(win)),
-            f"set_modules([]) cannot drop it either ({_keys(win)})")
+            f"set_modules cannot drop it either ({_keys(win)})")
     _, removed = win.set_modules(["voltage_cam"])
     r.check(removed == [], f"…and asking again unloads nothing ({removed})")
     r.check(config.ALWAYS_ON <= set(config.load_enabled_modules()),
@@ -482,11 +432,8 @@ def check_always_on(r: Report, win) -> None:
 
 
 def check_own_window(r: Report, win) -> None:
-    """A module with `own_window` gets a window, not a settings page.
-
-    Its sidebar item is the same gesture as every other page's — that is the
-    point: one selector, two kinds of destination.
-    """
+    """A module with `own_window` gets a window, not a settings page, from
+    the same sidebar gesture."""
     key = next(iter(config.ALWAYS_ON))
     win.set_modules(["voltage_cam", "wheel"])
 
@@ -508,7 +455,6 @@ def check_own_window(r: Report, win) -> None:
     r.check(own.isVisible(), "its sidebar item opens it")
     r.check(win._page_actions[key].isChecked(),
             "…and lights the item while it is open")
-    # The two windows are independent: opening a settings page must not shut it.
     win._page_actions["wheel"].trigger()
     r.check(own.isVisible() and win._settings_dialog.isVisible(),
             "opening a settings page leaves the own window open")
@@ -525,7 +471,7 @@ def check_own_window(r: Report, win) -> None:
 def _part_hotload() -> int:
     r = Report("hotload")
     isolate_user_state()
-    app = qt_app()          # keep the reference: a GC'd QApplication aborts
+    app = qt_app()          # held: a collected QApplication aborts
 
     win = make_window({"voltage_cam", "wheel"})
     try:

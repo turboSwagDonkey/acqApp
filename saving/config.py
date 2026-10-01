@@ -27,7 +27,6 @@ def sanitize(name: str, fallback: str = "session") -> str:
 
 def list_drives() -> list[tuple[str, int, int]]:
     """[(root, free, total)] for readable drives, most free first."""
-    roots: list[str] = []
     if os.name == "nt":
         roots = [f"{d}:\\" for d in string.ascii_uppercase
                  if os.path.isdir(f"{d}:\\")]
@@ -103,9 +102,7 @@ class SaveConfig:
     template:  str  = DEFAULT_TEMPLATE
     subfolder: bool = True     # each recording in its own directory
     append_fov: bool = False   # suffix the active FOV's name
-    # Split mode: TIFF/DCIMG per image stream, one CSV, one JSON — a folder
-    # instead of one .h5.
-    split:       bool = False
+    split:       bool = False    # a folder: TIFF/DCIMG + CSV + JSON, no .h5
     orca_format: str  = "tiff"   # "tiff" or "dcimg"; split mode only
     bpod_folder: str  = ""       # where "Match to Bpod…" last found a file
 
@@ -171,14 +168,14 @@ class SaveConfig:
                         unique: bool = False) -> Path:
         """<routine_base>/FOV<fov>_T<trial>.h5"""
         return self._resolve_at(self.routine_base(when),
-                                _routine_stem(fov, trial),
+                                routine_stem(fov, trial),
                                 self._path_for, unique=unique)
 
     def resolve_routine_dir(self, fov: str, trial: int,
                             when: datetime | None = None, *,
                             unique: bool = False) -> Path:
         return self._resolve_at(self.routine_base(when),
-                                _routine_stem(fov, trial),
+                                routine_stem(fov, trial),
                                 self._dir_for, unique=unique)
 
 
@@ -192,12 +189,10 @@ def _first_free(base: Path, stem: str,
     return build(base, f"{stem}_{datetime.now():%H%M%S_%f}")
 
 
-def _routine_stem(fov: str, trial: int) -> str:
+def routine_stem(fov: str, trial: int) -> str:
     prefix = "" if fov.lower().startswith("fov") else "FOV"
     return sanitize(f"{prefix}{fov}_T{trial}")
 
-
-routine_stem = _routine_stem
 
 # Appended to a routine trial whose every run was interrupted.
 BAD_SUFFIX = "_BAD"

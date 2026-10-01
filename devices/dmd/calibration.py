@@ -54,7 +54,7 @@ def offset_stripe(width: int, height: int, axis: int, offset: float, *,
         m = (np.abs(x - cx - offset) <= half) & (np.abs(y - cy) <= cross)
     else:
         m = (np.abs(y - cy - offset) <= half) & (np.abs(x - cx) <= cross)
-    return np.where(m, ON, OFF).astype(np.uint8)
+    return np.where(m, ON, OFF)
 
 
 # ── measuring ─────────────────────────────────────────────────────────────────
@@ -237,12 +237,8 @@ def deshear(vx: np.ndarray, vy: np.ndarray,
 def _homography_points(seen: dict, w: int, h: int) -> list[tuple]:
     """(DMD_x, DMD_y, cam_x, cam_y) per stripe; stripes sit on the centrelines."""
     cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    pts = []
-    for d, u, v in seen[0]:
-        pts.append((cx + d, cy, u, v))
-    for d, u, v in seen[1]:
-        pts.append((cx, cy + d, u, v))
-    return pts
+    return ([(cx + d, cy, u, v) for d, u, v in seen[0]]
+            + [(cx, cy + d, u, v) for d, u, v in seen[1]])
 
 
 def _dlt(pts: list[tuple]) -> np.ndarray:
@@ -344,8 +340,7 @@ def _calibrate_homography(seen: dict, w: int, h: int,
         cam_to_dmd=np.linalg.inv(H), dmd_size=(w, h),
         cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
         holdout_px=float(hold or 0.0), model="homography",
-        stripes=[[axis, d, px, py] for axis in (0, 1)
-                for d, px, py in seen[axis]],
+        stripes=_raw_stripes(seen),
         created=datetime.now().isoformat(timespec="seconds"),
         notes=f"full projective fit (8 DOF, for a steeply tilted camera) — "
               f"local scale near centre {kx:.3f} x {ky:.3f} px/mirror at "
@@ -357,6 +352,12 @@ def _calibrate_homography(seen: dict, w: int, h: int,
             "fit too — check the log above for a stripe that was kept but "
             "looks out of place.")
     return c
+
+
+def _raw_stripes(seen: dict) -> list:
+    """The raw measurements, saved with the fit so it can be redone offline
+    rather than by re-projecting onto an animal."""
+    return [[axis, d, px, py] for axis in (0, 1) for d, px, py in seen[axis]]
 
 
 # ── the transform ─────────────────────────────────────────────────────────────
@@ -447,10 +448,7 @@ def calibrate(project: Callable[[np.ndarray], None],
         cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
         holdout_px=float(hold or 0.0),
         model="affine" if allow_shear else "affine-noshear",
-        # Raw measurements travel with the fit, so it can be redone offline
-        # rather than by re-projecting onto an animal.
-        stripes=[[axis, d, px, py] for axis in (0, 1)
-                 for d, px, py in seen[axis]],
+        stripes=_raw_stripes(seen),
         created=datetime.now().isoformat(timespec="seconds"),
         notes=f"{kx:.3f} x {ky:.3f} px/mirror, DMD-x {ax:+.2f}deg, measured "
               f"shear {shear:+.2f}deg "

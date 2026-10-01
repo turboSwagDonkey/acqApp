@@ -28,13 +28,16 @@ _THUMB = QSize(28, 28)
 # Shared with routines/timeline.py.
 GROUP_TINT = QColor(208, 135, 112, 40)
 REC_TINT = QColor(196, 60, 60, 55)
+_BOTH_TINT = QColor((GROUP_TINT.red() + REC_TINT.red()) // 2,
+                    (GROUP_TINT.green() + REC_TINT.green()) // 2,
+                    (GROUP_TINT.blue() + REC_TINT.blue()) // 2,
+                    max(GROUP_TINT.alpha(), REC_TINT.alpha()))
 
 VALUE = Qt.ItemDataRole.UserRole
 
 KIND_LABELS: dict[str, str] = {
     "move": "Move", "display": "Display", "wait": "Wait", "record": "Record",
-    "puff": "Puff",
-    "trigger": "Trigger",
+    "puff": "Puff", "trigger": "Trigger",
 }
 
 # (title, field, tooltip). "details" depends on kind; see `_paint_details`.
@@ -43,8 +46,8 @@ COLS = (
                           "here. Double-click to read or write the full "
                           "text."),
     ("Kind",    "kind",  "What this step does: Move the stage, start "
-                         "Displaying a pattern, Wait, Puff, or wait for an "
-                         "external Trigger on the camera's line."),
+                         "Displaying a pattern, Wait, Record, Puff, or wait "
+                         "for an external Trigger on the camera's line."),
     ("Details", "details", "Move: where to send the stage, as (X, Y, Z). "
                          "Double-click, or right-click -> Set position…, to "
                          "type numbers; Delete clears every axis back to "
@@ -53,10 +56,11 @@ COLS = (
                          "DMD pattern, shown as a thumbnail once one is set. "
                          "Double-click to choose one, Delete to stop "
                          "displaying."),
-    ("Length",  "length", "How long to wait (Wait steps only)."),
+    ("Length",  "length", "How long to wait or record (Wait and Record "
+                          "steps only)."),
     ("Unit",    "unit",   "Frames or seconds — never converted between "
-                         "them, so a step means what it says (Wait steps "
-                         "only)."),
+                         "them, so a step means what it says (Wait and "
+                         "Record steps only)."),
     ("Settle",  "settle_s", "Wait this long after the stage arrives, before "
                          "the step ends (Move steps only)."),
 )
@@ -189,30 +193,31 @@ class StepTable(QTableWidget):
 
     # ── painting ─────────────────────────────────────────────────────────────
     def reload(self) -> None:
-        """Repaint from the step list. Signals off — an itemChanged here would
-        read half-built rows back into the routine."""
+        """Repaint every row from the step list."""
+        self._repaint(None, numbers=True)
+
+    def _repaint(self, rows, numbers: bool = False) -> None:
+        """`rows` (None: all, resizing). Signals off — an itemChanged here
+        would read half-built rows back into the routine."""
         self._loading = True
         try:
-            self.setRowCount(len(self._steps))
-            for row, s in enumerate(self._steps):
-                self._paint_row(row, s)
-            self._paint_numbers()
+            if rows is None:
+                self.setRowCount(len(self._steps))
+                rows = range(len(self._steps))
+            for row in rows:
+                self._paint_row(row, self._steps[row])
+            if numbers:
+                self._paint_numbers()
         finally:
             self._loading = False
+
+    def _repaint_row(self, row: int) -> None:
+        self._repaint((row,))
 
     def set_groups(self, groups: list[Group]) -> None:
         """So rows can be tinted/badged. Call after any group edit."""
         self._groups = list(groups)
-        self._repaint_all()
-
-    def _repaint_all(self) -> None:
-        self._loading = True
-        try:
-            self._paint_numbers()
-            for row in range(self.rowCount()):
-                self._paint_row(row, self._steps[row])
-        finally:
-            self._loading = False
+        self.reload()
 
     def _group_at(self, row: int) -> Group | None:
         for g in self._groups:
@@ -227,12 +232,10 @@ class StepTable(QTableWidget):
 
     def _tint_for(self, row: int) -> QColor | None:
         """Blended when both grouped and recording."""
-        g, r = self._group_at(row) is not None, self._recording_at(row) is not None
+        g = self._group_at(row) is not None
+        r = self._recording_at(row) is not None
         if g and r:
-            return QColor((GROUP_TINT.red() + REC_TINT.red()) // 2,
-                         (GROUP_TINT.green() + REC_TINT.green()) // 2,
-                         (GROUP_TINT.blue() + REC_TINT.blue()) // 2,
-                         max(GROUP_TINT.alpha(), REC_TINT.alpha()))
+            return _BOTH_TINT
         if g:
             return GROUP_TINT
         if r:
@@ -370,13 +373,6 @@ class StepTable(QTableWidget):
         self._repaint_row(row)
         self.changed.emit()
 
-    def _repaint_row(self, row: int) -> None:
-        self._loading = True
-        try:
-            self._paint_row(row, self._steps[row])
-        finally:
-            self._loading = False
-
     def _on_double_click(self, row: int, col: int) -> None:
         field = FIELDS[col]
         if field == "comment":
@@ -431,14 +427,7 @@ class StepTable(QTableWidget):
         if dest == src:
             return False
         self._steps.insert(dest, self._steps.pop(src))
-        lo, hi = min(src, dest), max(src, dest)
-        self._loading = True
-        try:
-            for row in range(lo, hi + 1):
-                self._paint_row(row, self._steps[row])
-            self._paint_numbers()
-        finally:
-            self._loading = False
+        self._repaint(range(min(src, dest), max(src, dest) + 1), numbers=True)
         self.select_row(dest)          # so a second press moves the same step
         self.reordered.emit(dest)
         self.changed.emit()
@@ -573,7 +562,7 @@ _ICONS: dict[tuple[str, float], QIcon] = {}
 
 
 def _pattern_icon(pattern: str) -> QIcon:
-    """Thumbnail, cached by (path, mtime): every repaint used to reload it."""
+    """Thumbnail, cached by (path, mtime) so a repaint doesn't reload it."""
     if not pattern:
         return QIcon()
     try:

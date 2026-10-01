@@ -14,12 +14,9 @@ from acqApp.closed_loop.settings import (POLL_HZ, LoopRule, LoopSettings,
 class ClosedLoopWorker(PullWorker):
     """Samples one `SignalSource` and runs a `LoopRule` over it.
 
-    `fired` is emitted from this thread; Qt queues it, so actuation happens on
-    the GUI thread with every other one.
-
-    Disarmed, the rule still evaluates and the panel still shows whether the
-    condition is met — it just doesn't fire, which is what makes a threshold
-    settable against a live animal without actuating anything.
+    `fired` is emitted here and queued, so actuation is on the GUI thread.
+    Disarmed, the condition is still shown but never fires, so a threshold
+    can be set against a live animal without actuating anything.
     """
 
     fired = pyqtSignal(str, float, float)      # (target, duration_s, value)
@@ -47,32 +44,22 @@ class ClosedLoopWorker(PullWorker):
         return self._armed
 
     def configure(self, settings: LoopSettings) -> None:
-        """Queue a settings change, applied before the next evaluation — queued
-        because the panel edits on the GUI thread while `update()` runs here."""
+        """Queued: the panel edits on the GUI thread, `update()` runs here."""
         with self._cfg_lock:
             self._pending = settings
 
     @property
     def n_fires(self) -> int:
-        """Fires this SESSION — the loop runs under Live view too, so this can
-        exceed what's in the file."""
+        """Fires this SESSION; Live view counts too, so it can exceed the
+        file's."""
         return self._rule.n_fires
 
     @property
     def recorded_fires(self) -> int:
-        """Fires handed to the sink, i.e. that should be in `/closed_loop`.
-
-        Separate from `n_fires` because they genuinely differ — the rule runs all
-        session but the sink is attached only while recording. Filing `n_fires`
-        would leave an attribute disagreeing with the stream beside it.
-
-        "Should be": this counts the handover, and `Recorder.put` can still shed
-        it (ring overflow, or a straggler arriving after the file closed). Those
-        are counted in the file's own `recorder_*` attributes, so a mismatch is
-        explainable — but don't read this as a guarantee of `len(/closed_loop)`.
-        """
+        """Fires handed to the sink (attached only while recording).
+        `Recorder.put` can still shed one (counted in the file's `recorder_*`
+        attributes), so this is not a guarantee of `len(/closed_loop)`."""
         return self._recorded
-
 
     # ── thread ───────────────────────────────────────────────────────────────
     def _run(self) -> None:
@@ -90,7 +77,7 @@ class ClosedLoopWorker(PullWorker):
 
             if self._armed:
                 hit = self._rule.update(value, at)
-                ok = self._rule.last_satisfied   # update() already worked this out
+                ok = self._rule.last_satisfied
             else:
                 self._rule.idle()
                 hit = False
@@ -102,7 +89,7 @@ class ClosedLoopWorker(PullWorker):
 
             if hit:
                 s = self._rule.settings
-                sink = self._sink   # snapshot: no None deref if set_sink races
+                sink = self._sink       # set_sink may race
                 if sink is not None:
                     sink((value, at))
                     self._recorded += 1
@@ -111,5 +98,3 @@ class ClosedLoopWorker(PullWorker):
             slp = self._period - (time.perf_counter() - now)
             if slp > 0:
                 time.sleep(slp)
-
-

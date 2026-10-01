@@ -47,10 +47,9 @@ def _tint(c: str) -> str:
 def toggle_btn(key: str) -> str:
     """Pale accent when off, full accent when checked."""
     c = HEX[key]
-    tint = _tint(c)
     return (
         "QPushButton{"
-        f"background:{tint};color:#333;border:1px solid {c};"
+        f"background:{_tint(c)};color:#333;border:1px solid {c};"
         "border-radius:4px;padding:3px 8px}"
         f"QPushButton:checked{{background:{c};color:white;font-weight:bold;"
         f"border:1px solid {c}}}"
@@ -62,10 +61,9 @@ def toggle_btn(key: str) -> str:
 def record_btn(key: str) -> str:
     """Bigger, and red while recording: readable from across the rig."""
     c = HEX[key]
-    tint = _tint(c)
     return (
         "QPushButton{"
-        f"background:{tint};color:#333;border:2px solid {c};"
+        f"background:{_tint(c)};color:#333;border:2px solid {c};"
         "border-radius:5px;padding:6px 22px;font-weight:bold;font-size:11pt}"
         f"QPushButton:checked{{background:#c62828;color:white;"
         "border:2px solid #ff5252}"
@@ -167,7 +165,7 @@ def apply_theme(app, theme: str) -> None:
     _ACTIVE = "dark" if dark else "light"
     app.setStyle("Fusion")
     app.setPalette(_dark_palette() if dark else app.style().standardPalette())
-    app.setStyleSheet(_qss(_THEME["dark" if dark else "light"]))
-    bg, fg = plot_colors("dark" if dark else "light")
+    app.setStyleSheet(_qss(_THEME[_ACTIVE]))
+    bg, fg = plot_colors(_ACTIVE)
     pg.setConfigOption("background", bg)
     pg.setConfigOption("foreground", fg)

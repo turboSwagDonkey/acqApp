@@ -1,7 +1,5 @@
-"""Orientation-tuning trial: which orientations to sweep, and how many
-pretrial flashes come first. The aperture geometry itself is shared
-(circle.py) — this module owns only what is specific to Tuning.
-"""
+"""Orientation-tuning trial: the orientations swept and the pretrial flash
+count."""
 from __future__ import annotations
 
 N_ORIENTATIONS = 8

@@ -483,10 +483,7 @@ class RoutineEngine:
         """Mark the short burst's run and wait for the next edge at its
         trigger step, whose re-arm opens the next file. Out of retries, it
         pauses there instead, so resume waits for an edge too."""
-        if self._open_run is not None:
-            self._close_recording(self._open_run, interrupted=True,
-                                  fault=reason)
-            self._open_key = None
+        self._close_open_run(interrupted=True, fault=reason)
         self._pos, self._cycle = self._edge_at
         self._i = self._order[self._pos]
         self._steps_completed -= 1      # the trigger step runs again
@@ -616,9 +613,7 @@ class RoutineEngine:
         self._safe(self._h.stop_motion)
         self._safe(self._h.light, False)
         self._safe(self._h.led, False)      # a trigger step lit it early
-        if self._open_run is not None:
-            self._close_recording(self._open_run, interrupted=True, fault=reason)
-            self._open_key = None
+        self._close_open_run(interrupted=True, fault=reason)
         self._phase = Phase.PAUSED
         self._h.log(f"routine paused: {reason}")
 
@@ -632,16 +627,15 @@ class RoutineEngine:
         if key == self._open_key and self._open_run is not None:
             self._open_run.end_index = self._i
             return True
-        if self._open_run is not None:
-            self._close_recording(self._open_run)
+        self._close_open_run()
         self._open_key = key
         if key is not None:
             return self._open_recording(recording_region_at(self._r, self._i))
         return True
 
-    def _close_open_run(self) -> None:
+    def _close_open_run(self, **kw) -> None:
         if self._open_run is not None:
-            self._close_recording(self._open_run)
+            self._close_recording(self._open_run, **kw)
             self._open_key = None
 
     def _open_recording(self, region: int) -> bool:

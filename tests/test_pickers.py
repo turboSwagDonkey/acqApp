@@ -1,15 +1,8 @@
-"""The two saved-file pickers: `RoiSetPicker` and `FovPicker`.
+"""`RoiSetPicker` and `FovPicker`, the two `widgets.SessionPicker`s. A break
+here is invisible until an operator presses "Load" or "Go to FOV…" mid-run.
 
-Both are `widgets.SessionPicker` subclasses — one dialog shape, differing only
-in what a row says and what the choice yields. Nothing built either of them
-before, which is exactly why the shared base needs a test: a break here is
-invisible until an operator presses "Load" or "Go to FOV…" mid-experiment.
-
-The control that matters is the EMPTY case. An empty list is disabled rather
-than holding a pickable "(none saved this session)" row, so a stray Ok cannot
-return a path that is really a placeholder string.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_pickers.py
+Control: an empty list is disabled rather than holding a pickable placeholder
+row, so a stray Ok cannot return the placeholder string as a path.
 """
 from __future__ import annotations
 
@@ -19,8 +12,7 @@ from pathlib import Path
 from _harness import Report, isolate_user_state, qt_app
 
 isolate_user_state()
-app = qt_app()          # must be held: an unreferenced QApplication is
-                        # collected and widget construction aborts natively
+app = qt_app()  # held: a collected QApplication aborts widget construction
 
 from acqApp.devices.dmd import roi_store                      # noqa: E402
 from acqApp.devices.dmd.roi import RectRoi, RoiSet            # noqa: E402

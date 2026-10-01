@@ -1,23 +1,11 @@
-"""
-Guard test for the console-encoding crash.
+"""The console-encoding crash: a print of "≤" / "→" / "⚠" raises
+UnicodeEncodeError on a non-UTF-8 console (a pipe, a legacy terminal). Inside
+an acquisition loop that reads as a device failure — the camera just doesn't
+start. The voltage cam's "≤N µs" notice hits it on the DEFAULT configuration.
 
-A diagnostic print containing "≤" / "→" / "⚠" raises UnicodeEncodeError on a
-non-UTF-8 console (which is what Python falls back to whenever stdout is a pipe
-or a legacy terminal). Those prints live inside the acquisition loops, so the
-exception escapes into PullWorker.run() and is reported as a device failure —
-the camera simply doesn't start, and the message blames the hardware. The
-voltage cam's "shorten exposure to ≤N µs" notice hits this on the DEFAULT
-configuration, so it is not a corner case.
-
-Three things are checked:
   1. every runnable entry point calls enable_safe_console()   (static)
   2. the real code path that crashed survives a cp1252 console (dynamic)
-  3. that same path WITHOUT the fix still crashes             (control)
-
-(3) is what makes (2) meaningful: without it the dynamic check would pass even
-if cp1252 had stopped being fatal for some unrelated reason.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_console_safety.py
+  3. that same path WITHOUT the fix still crashes             (control for 2)
 """
 from __future__ import annotations
 
@@ -27,8 +15,7 @@ import sys
 
 from _harness import APP_DIR, REPO_ROOT, Report
 
-# What used to kill the camera worker: its start-up prints carrying characters
-# a cp1252 console can't encode.
+# The camera worker's start-up prints that used to kill it.
 CAMERA_PATH = r'''
 import sys
 sys.path.insert(0, r"{repo}")
@@ -55,12 +42,8 @@ HARDEN = ("from acqApp.console import enable_safe_console\n"
 
 
 def _hardens(text: str) -> bool:
-    """Does this entry point make its console safe?
-
-    Either directly, or by importing the test harness, which does it on import.
-    The tests are scanned too: `run_all.py` relays output full of the offending
-    characters, and skipping the directory let exactly that bug through once.
-    """
+    """Directly, or by importing the harness. tests/ is scanned too: run_all.py
+    relays the offending characters, and skipping it let that bug through."""
     return "enable_safe_console" in text or "_harness" in text
 
 
@@ -111,17 +94,10 @@ def main() -> int:
     r.check(chars.returncode == 0 and "DONE" in chars.stdout,
             "every offending character prints without raising")
 
-    # ── the other half of the same problem: text written THROUGH cp1252 ──────
-    # The console guard stops a print from raising. It cannot stop a file being
-    # SAVED through the wrong codec, which is how `devices/pupil_cam/panel.py`
-    # came to render its exposure suffix and its "Sample video" button as
-    # mojibake — visible to the operator in the pupil tab (§7 (u) and (ab)).
-    # Mojibake is UTF-8 bytes once decoded as cp1252 and re-encoded, so the
-    # inverse round trip identifies it exactly: correct text cannot survive
-    # encode('cp1252').decode('utf-8').
-    #
-    # The damaged forms below are written as escapes on purpose — spelling them
-    # literally would make this file fail its own check.
+    # ── source SAVED through cp1252 (pupil_cam/panel.py showed mojibake) ─────
+    # Correct text cannot survive encode('cp1252').decode('utf-8'); mojibake
+    # round-trips exactly. The damaged forms below are escapes on purpose —
+    # spelled literally, this file would fail its own check.
     import re
     runs = re.compile(r"[^\x00-\x7f]+")
     damaged: list[str] = []
@@ -147,8 +123,7 @@ def main() -> int:
     r.check(not damaged,
             f"no source file is doubly-encoded ({scanned} scanned)"
             + ("" if not damaged else f" — {damaged[:3]}"))
-    # CONTROL: the detector must actually fire on the real thing, or the check
-    # above passes by being blind.
+    # Control: without it, the check above could pass by being blind.
     micro = chr(0xB5)                       # µ
     broken = chr(0xC3 - 1) + micro + "s"    # what "µs" turns into: U+00C2 U+00B5
     r.check(broken.encode("cp1252").decode("utf-8") == micro + "s",

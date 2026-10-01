@@ -1,11 +1,6 @@
-"""A small dialog for choosing a saved FOV bookmark: `fov_store`'s Qt front
-end.
-
-Shared by the Stage tab's "Go to FOV…" button and a routine step's "FOV…"
-button. Same `widgets.SessionPicker` shape as the DMD's `RoiSetPicker`
-(`devices/dmd/roi_picker.py`), plus the two things a FOV wants that an ROI
-set doesn't: its position in the row, and a thumbnail so a saved spot is
-recognized by eye rather than by name.
+"""Picker for a saved FOV bookmark (`fov_store`'s Qt front end), used by the
+Stage tab's "Go to FOV…" and a routine step's "FOV…". A `SessionPicker` like
+the DMD's `RoiSetPicker`, plus the position in each row and a thumbnail.
 """
 from __future__ import annotations
 

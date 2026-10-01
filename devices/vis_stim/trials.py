@@ -1,8 +1,7 @@
-"""Trial expansion: loop variables -> a full-factorial list of StimParams.
+"""Loop variables -> a full-factorial list of StimParams.
 
-Port of logicLibHelpers.genParamCombos (MATLAB ndgrid) without MATLAB structs.
-Trial order differs from ndgrid's column-major flattening, but the SET of
-combinations is identical, which is what a full-factorial design needs.
+Port of logicLibHelpers.genParamCombos. Order differs from ndgrid's
+column-major flattening; the set of combinations is identical.
 """
 from __future__ import annotations
 
@@ -14,13 +13,8 @@ from .settings import LoopVar, StimParams
 
 def gen_param_combos(base: StimParams,
                       loops: dict[str, LoopVar]) -> list[StimParams]:
-    """Every combination of the loop variables' values, applied over `base`.
-
-    A loop name that doesn't match a StimParams field is skipped rather than
-    raising — mirrors MATLAB's dynamic struct-field assignment, which had no
-    such check at all, but without silently corrupting a trial with a
-    misspelled field.
-    """
+    """Every combination of the loop values over `base`. Names that aren't
+    StimParams fields are skipped."""
     names = [n for n, lv in loops.items()
              if lv.values and n in StimParams.__dataclass_fields__]
     if not names:

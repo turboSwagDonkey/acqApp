@@ -1,15 +1,6 @@
-"""
-End-to-end test of the session + recording path, in Emulate mode.
-
-Drives the real MainWindow through: build UI (all modules) -> Live view ->
-Record -> fire a puff -> run the DMD -> stop -> close, then opens the resulting
-HDF5 and verifies it contains every stream it should, on one timebase, with the
-metadata that makes the file interpretable later.
-
-This is the broad regression net: it touches the module adapters, the shared
-clock, the ring buffer, the writer and the save-path logic in one go.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_session_recording.py
+"""The broad net: the real MainWindow, all modules, Emulate — Live view ->
+Record -> puff -> DMD -> stop -> close, then the HDF5 must hold every stream on
+one timebase with the metadata that makes it interpretable later.
 """
 from __future__ import annotations
 
@@ -20,9 +11,7 @@ from _harness import MemorySettings, Report, isolate_user_state, make_window, pu
 
 EXPECTED_STREAMS = [
     "voltage_cam", "voltage_cam_index", "pupil_cam",
-    # The pupil trace. Written whether or not EyeLoop is installed: with no
-    # clone every frame is a NaN row, which is the contract — a gap in the
-    # trace has to be visible in the file.
+    # Written even without EyeLoop (NaN rows): a gap must show in the file.
     "pupil_x", "pupil_y", "pupil_major", "pupil_minor", "pupil_angle",
     "wheel_voltage", "wheel_speed", "wheel_distance",
     "stage_x_um", "stage_y_um", "puffer", "dmd",
@@ -35,25 +24,20 @@ PUPIL_THRESHOLD = 57                    # not the default, so a stuck one shows
 CONFIG_ATTRS = ["created", "emulated", "modules", "mouse_id", "cam_exposure_us",
                 "wheel_rate_hz", "pupil_rate_hz", "stage_port", "dmd_on_time_ms",
                 "puffer_channel", "puffer_duration_s",
-                # A pupil trace without the threshold that produced it is not
-                # reproducible: threshold SETS the radius.
+                # The threshold SETS the radius; without it no reproduction.
                 "pupil_track_threshold", "pupil_track_model"]
 
-# Written when the file closes, not when it opens — they describe what the run
-# actually did rather than how it was configured.
+# Written at close: what the run did, not how it was configured.
 FINAL_ATTRS = ["cam_timestamp_source", "cam_dropped_frames",
                "wheel_timestamp_source", "wheel_rate_actual_hz",
                "recorder_dropped_samples", "recorder_late_samples",
                "recorder_unstamped_samples",
-               # Frames are dropped when a fit is slower than the camera, so
-               # the trace is sparser than the frames and the file has to say
-               # by how much.
+               # A fit slower than the camera drops frames; say by how much.
                "pupil_frames_tracked", "pupil_fits"]
 
-TEST_CHANNEL = "Dev3/port0/line3"       # not the default, and not one of the
-                                         # three lines already claimed by the
-                                         # puffer/pupil-cam LED/primary LED
-TEST_DURATION = 0.250                   # likewise
+# Not the defaults, and not a line the puffer or either LED already claims.
+TEST_CHANNEL = "Dev3/port0/line3"
+TEST_DURATION = 0.250
 
 
 def main() -> int:
@@ -77,16 +61,13 @@ def main() -> int:
     win._save_panel._on_edited()
     r.check(win._save_panel.writable_error() is None, "save target is writable")
 
-    # Editing the Save tab persists to disk as a side effect. Prove that landed
-    # in the temp config and not in the operator's real one — otherwise this
-    # test would quietly repoint their save folder at a temp directory.
+    # Unisolated, this would repoint the operator's save folder at a temp dir.
     tmp_cfg = tmp / "acqapp_local.json"
     r.check(tmp_cfg.is_file() and "smoke" in tmp_cfg.read_text(encoding="utf-8"),
             "panel edits persisted to the isolated config, not the user's")
 
-    # Both LEDs' Follow Live view default on; explicitly override pupil_cam's
-    # off BEFORE Live view starts — the control that proves the checkbox
-    # isn't vacuously ignored, using the override path an operator would.
+    # Control: pupil_cam's override off, before Live view, proves the checkbox
+    # is not ignored.
     r.check(mod["pupil_cam"].panel.settings.led_follow_live,
             "pupil_cam's Follow Live view defaults on")
     mod["pupil_cam"].panel._chk_led_follow.setChecked(False)
@@ -106,9 +87,8 @@ def main() -> int:
     r.check(not mod["pupil_cam"].controller.is_on,
             "eye-tracking LED did NOT follow Live view (explicitly overridden off)")
 
-    # Tracking on, with the eye region the mock frame needs (240x320): the
-    # crop is what EyeLoop needs to fit anything at all, and without a region
-    # nothing is tracked. Set before Record so the trace covers the file.
+    # Without an eye region nothing is tracked (mock frame is 240x320). Before
+    # Record, so the trace covers the file.
     pupil_panel = mod["pupil_cam"].panel
     pupil_panel.set_limit(60.0, 20.0, 260.0, 220.0)
     pupil_panel._chk_track.setChecked(True)
@@ -134,9 +114,7 @@ def main() -> int:
     # ── Record ───────────────────────────────────────────────────────────────
     win._btn_rec.setChecked(True)
     r.check(win._recorder is not None, "recorder created")
-    # Ask the window where it recorded rather than re-resolving: the template
-    # is second-granular, so a resolve() on either side of a second boundary
-    # names a different file.
+    # Not re-resolved: the template is second-granular.
     path = win._rec_path
     if not r.check(path is not None, "window reported the recording path"):
         return r.finish()
@@ -158,10 +136,8 @@ def main() -> int:
     mod["dmd"].stop_display()
     win._btn_run.setChecked(False)
     r.check(not win._sync.running, "session clock stopped")
-    # Stage is the one exception: its poll worker is "always-on" (built and
-    # released with the CONNECTION — build_controller/close_controller, the
-    # same pair puffer/DMD/LED use — not the session), so jogging works with
-    # no Live view running. Session stop must not touch it either way.
+    # The stage's poll worker lives with the connection, not the session, so
+    # jogging works with no Live view running.
     r.check(all(m.worker is None for m in win._modules if m.key != "stage"),
             "every session-scoped worker is released")
     r.check(mod["stage"].worker is not None,
@@ -171,20 +147,14 @@ def main() -> int:
 
     win.close()
     pump(app, 0.2)
-    # closeEvent saves the dock layout via QSettings — same argument as above:
-    # it must land in the substitute, not in the operator's real registry key.
-    # (Asserting it was *written* also proves the substitution is on the path
-    # actually used, rather than silently bypassed.)
+    # Written, not just substituted: proves the substitute is on the real path.
     r.check("dockState" in MemorySettings.store,
             "dock layout written to the substituted QSettings, not the user's")
     import PyQt6.QtCore
     r.check(PyQt6.QtCore.QSettings is MemorySettings,
             "QSettings substitution is in place")
-    # The settings window writes its geometry through its OWN module-level
-    # QSettings, so when it moved out of main.py the substitution had to follow
-    # it. A module that imported the name before the patch keeps the real class
-    # and writes the operator's registry — which is not visible from any
-    # assertion about `main`, so assert it about every module that writes.
+    # Each writing module binds its own QSettings; one bound before the patch
+    # writes the operator's registry, invisibly to any check on `main`.
     import acqApp.dialogs
     import acqApp.main
     for mod in (acqApp.main, acqApp.dialogs):
@@ -216,9 +186,7 @@ def main() -> int:
         for key in CONFIG_ATTRS:
             r.check(key in attrs, f"metadata attr '{key}'")
 
-        # Attributes keep their own type. Everything used to be str()-ed, so
-        # `emulated` read back as "False" — which is truthy — and every number
-        # had to be parsed by whoever opened the file.
+        # All used to be str()-ed: `emulated` read back as truthy "False".
         NUM   = (int, float, np.integer, np.floating)
         BOOL  = (bool, np.bool_)
         for key, kind, label in (
@@ -239,26 +207,22 @@ def main() -> int:
                 f"puffer channel recorded (got {attrs.get('puffer_channel')!r})")
         for key in FINAL_ATTRS:
             r.check(key in attrs, f"close-time metadata attr '{key}'")
-        # The placeholder written at open must have been overwritten at close.
+        # The placeholder written at open is overwritten at close.
         r.check(attrs.get("cam_timestamp_source") == "camera",
                 f"cam_timestamp_source resolved "
                 f"(got {attrs.get('cam_timestamp_source')!r})")
-        # The mock encoder is paced by a sleep loop, and the file has to say so
-        # rather than implying these came off the board's sample clock.
+        # The mock encoder is sleep-paced; the file must not claim a clock.
         r.check(attrs.get("wheel_timestamp_source") == "software",
                 f"the mock wheel admits a software timebase "
                 f"(got {attrs.get('wheel_timestamp_source')!r})")
 
-        # Frame times must come from the worker's acquisition instants, not the
-        # writer thread's arrival times.
+        # Acquisition instants, not the writer thread's arrival times.
         fts = f["voltage_cam"]["timestamps"][:]
         fdt = np.diff(fts)
         r.check(bool(np.all(fdt > 0)), "no two camera frames share a timestamp")
         r.info(f"camera frame interval: mean {fdt.mean()*1e3:.1f} ms "
                f"std {fdt.std()*1e3:.2f} ms")
-        # The pupil streams are one per TRACKED frame, and there is one of
-        # each per frame — a trace missing a semi-axis cannot be read as an
-        # ellipse.
+        # One of each per tracked frame: a missing semi-axis is no ellipse.
         ns = {k: len(f[k]["values"]) for k in PUPIL_FIT_STREAMS if k in f}
         r.check(len(set(ns.values())) == 1 and min(ns.values()) > 0,
                 f"the five pupil streams are the same length ({ns})")

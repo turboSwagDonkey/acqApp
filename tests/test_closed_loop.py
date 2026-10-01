@@ -1,23 +1,12 @@
-"""
-Closed loop (phase 5): a rule that fires an output from a live signal.
+"""Closed loop: a rule that fires an output from a live signal.
 
-Four layers, because the ways this can be wrong are at four different levels:
-
-  1. `LoopRule` as a pure function. Every gate (hold, refractory, retrigger,
-     max) exists to stop a bare threshold misbehaving on a real signal, so each
-     is driven past a control that removes it — an ungated rule fires 3200
-     times on the same trace where the real one fires 4. Without that control
-     the whole file would keep passing if the gating quietly stopped working.
-  2. `_EncoderBase.snapshot()` really is non-consuming, measured against the
-     control that motivated it: a second `get_latest()` consumer halves what
-     the display receives, and `snapshot()` costs it nothing.
-  3. The reported and live wheel speeds are ~1 s apart. That is why the panel
-     offers both, and it is measured here rather than asserted from the
-     constants — a rule on the recorded speed acts a second late by design.
-  4. The whole app: arm a rule, run a session, and check the puffer actually
-     fired and the file recorded it.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_closed_loop.py
+  1. `LoopRule`, pure. Each gate (hold, refractory, retrigger, max) is driven
+     past a control without it — ungated, the trace fires 3200 times, not 4.
+  2. `snapshot()` is non-consuming; the control is a second `get_latest()`
+     consumer, which halves what the display receives.
+  3. The recorded wheel speed lags the live one (~1 s, measured), which is why
+     the panel offers both.
+  4. The whole app: arm, record, and the puffer fired and the file has it.
 """
 from __future__ import annotations
 
@@ -58,9 +47,7 @@ def check_rule(r: Report) -> None:
     r.check(fires == [2.25, 7.25, 12.25, 17.25],
             f"holds 0.25 s, then re-fires every 5 s while it lasts (got {fires})")
 
-    # CONTROL: the same trace with every gate removed. If this does not fire
-    # wildly, the trace is not exercising the gates and the check above is
-    # vacuous.
+    # CONTROL: or the trace is not exercising the gates.
     ungated = run_rule(LoopRule(LoopSettings(
         **{**base, "hold_s": 0.0, "refractory_s": 0.0})))
     r.check(len(ungated) == 3200,
@@ -68,24 +55,20 @@ def check_rule(r: Report) -> None:
             f"({len(ungated)} times — this is what the gates prevent)")
     r.info(f"gating turns {len(ungated)} actuations into {len(fires)}")
 
-    # hold: a longer hold delays the event by exactly that much
     slow = run_rule(LoopRule(LoopSettings(**{**base, "hold_s": 1.0})))
     r.check(slow and slow[0] == 3.0,
             f"a 1 s hold delays the first fire to 3.0 s (got {slow[:1]})")
 
-    # retrigger off: one event per bout, however long the bout
     once = run_rule(LoopRule(LoopSettings(**{**base, "retrigger": False})))
     r.check(once == [2.25, 12.25],
             f"retrigger off fires once per bout, not once per refractory "
             f"(got {once})")
 
-    # below: the complementary condition, on the same trace
     below = run_rule(LoopRule(LoopSettings(
         **{**base, "comparison": "below"})))
     r.check(below == [0.25, 10.25],
             f"'below' fires on the stationary stretches (got {below})")
 
-    # max_fires: a hard session ceiling
     capped = run_rule(LoopRule(LoopSettings(**{**base, "max_fires": 2})))
     r.check(capped == [2.25, 7.25], f"max_fires caps the session (got {capped})")
 
@@ -94,8 +77,7 @@ def check_rule(r: Report) -> None:
                      values=lambda _t: None)
     r.check(quiet == [],
             f"no signal never fires, even for 'below' (got {quiet})")
-    # CONTROL: the same rule on a real zero does fire — so the check above is
-    # about None, not about the rule being dead.
+    # CONTROL: or the check above could be a dead rule, not None.
     zeros = run_rule(LoopRule(LoopSettings(**{**base, "comparison": "below"})),
                      values=lambda _t: 0.0)
     r.check(len(zeros) > 0,
@@ -122,7 +104,7 @@ def check_snapshot(r: Report) -> None:
     w = MockEncoderWorker(4.912, 150.0)
     w.start()
     try:
-        # Steady forward spin is 0.4 rev/s; in mm/s that is 0.4·π·150.
+        # The mock spins at 0.4 rev/s on a 150 mm wheel.
         steady = 0.4 * 3.14159265 * 150.0
         half = steady / 2.0
         t_live = t_rep = None
@@ -164,9 +146,7 @@ def check_snapshot(r: Report) -> None:
                 f"snapshot() returns a value on every call ({snaps} of {calls}); "
                 f"get_latest() only on new samples ({alone})")
 
-        # CONTROL: a second *thread* pulling get_latest() — which is what the
-        # loop would be if it consumed instead of watching. The display's share
-        # collapses, and that is the bug snapshot() exists to avoid.
+        # CONTROL: a loop that consumed instead of watching.
         import threading
         stop = threading.Event()
 
@@ -219,37 +199,23 @@ def check_worker(r: Report, app) -> None:
     r.check(latest is not None and latest[1] is True,
             f"…but the readout still shows the condition is met (got {latest})")
 
-    # Arm it: now the same condition fires, repeatedly, paced by the refractory.
-    #
-    # Waited for, not slept through. This used to be `pump(app, 0.5)` against a
-    # 0.15 s refractory — three fires' worth of room, and it failed about twice
-    # in fifteen full-suite runs and never once on its own. The claim is that it
-    # re-fires on the refractory, NOT that this machine schedules a thread
-    # inside a particular half-second, so a busy machine was failing a claim the
-    # test was not making. The deadline is what keeps it from hanging if the
-    # worker really is dead.
+    # Waited for, not slept through: a fixed 0.5 s window failed ~2 in 15
+    # full-suite runs on a busy machine. The deadline stops a dead worker.
     t_arm = time.perf_counter()
     w.set_armed(True)
     while len(fired) < 3 and time.perf_counter() - t_arm < 4.0:
         pump(app, 0.02)
     waited = time.perf_counter() - t_arm
-    # stop() joins the thread, so `events` is final after it. `fired` is not:
-    # the sink is called ON the worker's thread while `fired` crosses back as a
-    # QUEUED signal, so it lags by however long the GUI thread takes to get
-    # round to it — and the worker can fire once more in that gap. Comparing
-    # the two counters before flushing the queue is a race, and it is the race
-    # this test was actually losing (`one recorded event per fire`, 4 vs 3),
-    # not the pacing it looked like.
+    # `events` is final once stop() joins; `fired` is a QUEUED signal and lags,
+    # so compare only after flushing (unflushed: 4 vs 3, a race).
     w.stop()
     pump(app, 0.2)
     n = len(fired)
     r.info(f"{n} fires in {waited:.2f}s "
            f"(hold {s.hold_s:g}s, refractory {s.refractory_s:g}s)")
     r.check(n >= 2, f"armed, it fires and re-fires (got {n} in {waited:.2f}s)")
-    # …and the pacing itself, which the old fixed window only implied. A gap
-    # SHORTER than the refractory is the bug that check was reaching for.
-    # events are (value, at) — `at` is the sample's own instant, and that is
-    # what the refractory is measured against, not the GUI hop after it.
+    # events are (value, at): the sample's own instant, which the refractory
+    # is measured against.
     gaps = [b[1] - a[1] for a, b in zip(events, events[1:])]
     r.check(gaps and min(gaps) >= s.refractory_s - 0.02,
             f"…paced by the refractory, never faster "
@@ -282,8 +248,7 @@ def check_app(r: Report, app, tmp) -> int:
             f"the wheel offers both speeds to the loop (got {srcs})")
     r.check(panel._cmb_source.count() == 2,
             f"…and they reach the panel (got {panel._cmb_source.count()})")
-    # The DMD is not loaded in this subset, so it must not be offered as a
-    # target: a rule aimed at it would fire onto the bus with nothing there.
+    # The DMD is not loaded: a rule aimed at it would fire at nothing.
     targets = [panel._cmb_target.itemData(i)
                for i in range(panel._cmb_target.count())]
     r.check(targets == ["puffer"],
@@ -333,10 +298,8 @@ def check_app(r: Report, app, tmp) -> int:
         if "closed_loop" in f:
             vals = f["closed_loop"]["values"][:]
             ts = f["closed_loop"]["timestamps"][:]
-            # Against `recorded_fires`, not `n_fires`: the rule runs under Live
-            # view too, so it can fire before Record is pressed. Those actuated
-            # the hardware but are in no file — which is why the two counters
-            # exist and why loop_fires is the recorded one.
+            # The rule also fires under Live view before Record: those
+            # actuated but are in no file, hence two counters.
             r.check(len(vals) == n_recorded,
                     f"one entry per RECORDED fire ({len(vals)} vs {n_recorded})")
             r.check(n_fires >= n_recorded,
@@ -362,10 +325,7 @@ def check_app(r: Report, app, tmp) -> int:
                 f"loop_fires equals the stream's own length — an attribute and "
                 f"the data beside it cannot disagree "
                 f"(got {attrs.get('loop_fires')} vs {len(vals)})")
-        # `>=`, not `==`: the loop keeps evaluating until Live view stops, and
-        # final_metadata() reads the counter after this test snapshotted it, so
-        # the snapshot is a lower bound. (An equality here failed exactly once,
-        # by one fire — which is the race, not a bug.)
+        # `>=`: the loop runs on until Live view stops, after the snapshot.
         r.check(int(attrs.get("loop_fires_session", -1)) >= n_fires,
                 f"loop_fires_session records the whole session, so it is at "
                 f"least the mid-run snapshot "

@@ -1,21 +1,15 @@
-"""
-`acq/devices.py`'s protocols are honoured — devices (§5b A1) and window (§5b A4).
+"""`acq/devices.py`'s protocols are honoured — there is no type checker here,
+so an unasserted Protocol catches nothing.
 
-Those protocols are structural and this project ships no type checker, so one
-that is never asserted catches nothing. See `acq/devices.py` for why they exist.
-
-  1. **Conformance** — every twin satisfies the protocol its adapter reads it
+  1. Conformance — every twin satisfies the protocol its adapter reads it
      through. Checked on the classes, never by constructing a real driver.
-  2. **Parity** — both halves of a pair expose the same public API, bar an
-     explicit allowlist. This is the one that catches a property added to the
-     real class and forgotten on the mock.
-  3. **The probes are gone** from the `adapters/` adapters.
-  4. **The window surface** — that `MainWindow` provides all of `ModuleHost`,
-     and that no adapter reaches past it. A Protocol cannot see the second.
+  2. Parity — real and mock expose the same public API, bar an allowlist
+     (a property added to the real class and forgotten on the mock).
+  3. The getattr/hasattr probes are gone from `adapters/`.
+  4. The window surface — `MainWindow` provides all of `ModuleHost`, and no
+     adapter reaches past it (which a Protocol cannot see).
 
-Each layer carries a control that must FAIL, so none can pass by being vacuous.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_device_contracts.py
+Each layer carries a control that must FAIL.
 """
 from __future__ import annotations
 
@@ -32,12 +26,8 @@ from acqApp.acq.devices import (            # noqa: E402
 
 
 def has_all(cls, proto) -> list[str]:
-    """Members of `proto` that `cls` does not provide.
-
-    Checked against the CLASS, not an instance: constructing an `OrcaFireWorker`
-    or a `DmdController` opens hardware, which a test must never do. Properties,
-    plain methods and class attributes all answer to `hasattr` here.
-    """
+    """Members of `proto` that `cls` does not provide. On the CLASS: building
+    an `OrcaFireWorker` or a `DmdController` opens hardware."""
     wanted = [m for m in getattr(proto, "__protocol_attrs__", None)
               or _members(proto)]
     return sorted(m for m in wanted if not hasattr(cls, m))
@@ -78,7 +68,6 @@ def main() -> int:
     from acqApp.closed_loop import ClosedLoopWorker
 
     # ── 1. conformance ───────────────────────────────────────────────────────
-    # Each entry is what the adapter actually reads that object through.
     CONFORM = [
         (OrcaFireWorker,          CameraWorker),
         (MockCameraWorker,        CameraWorker),
@@ -96,8 +85,7 @@ def main() -> int:
         (MockPufferController,    RecordingOutput),
         (DmdController,           ProjectorController),
         (MockDmdController,       ProjectorController),
-        # The calibration sweep programs against this and nothing wider: what
-        # it needs is the guarantee that the frame is not reshaped.
+        # The calibration sweep: needs the frame not reshaped, nothing wider.
         (DmdController,           RawProjector),
         (MockDmdController,       RawProjector),
     ]
@@ -107,8 +95,7 @@ def main() -> int:
                 f"{cls.__name__} satisfies {proto.__name__}"
                 + (f" — MISSING {missing}" if missing else ""))
 
-    # The LED is deliberately NOT a RecordingOutput — its state is illumination,
-    # not an event. `detach_sink` asks exactly this, so assert the answer.
+    # The LED's state is illumination, not an event; `detach_sink` asks this.
     for cls in (LedController, MockLedController):
         r.check(bool(has_all(cls, RecordingOutput)),
                 f"{cls.__name__} is deliberately NOT a RecordingOutput "
@@ -116,30 +103,28 @@ def main() -> int:
         r.check(bool(has_all(cls, OutputController)),
                 f"…nor an OutputController (it has no apply_settings)")
 
-    # CONTROL: a stand-in missing one member must fail, or `has_all` is vacuous
-    # and every check above passes for free.
+    # CONTROL: or `has_all` is vacuous and every check above passes for free.
     class AlmostAProjector:
         def apply_settings(self, s): ...
         def close(self): ...
         def set_sink(self, s): ...
         device_name = "fake"
         resolution = (1, 1)
-        # on_pixels deliberately absent — this is the exact omission A1 names
+        # on_pixels deliberately absent
 
     missing = has_all(AlmostAProjector, ProjectorController)
     r.check(missing == ["on_pixels"],
             f"control: a projector missing only on_pixels is caught "
             f"(got {missing})")
-    # …and the split is real: a full ProjectorController is not automatically a
-    # RawProjector. Merging the two would let a controller that can only
-    # project THROUGH build_frame be handed to the sweep.
+    # Merged, a controller that projects only THROUGH build_frame could be
+    # handed to the sweep.
     r.check(has_all(AlmostAProjector, RawProjector) == ["project_frame", "stop"],
             f"control: RawProjector is a separate promise, not implied by "
             f"ProjectorController (missing "
             f"{has_all(AlmostAProjector, RawProjector)})")
 
     # ── 2. parity ────────────────────────────────────────────────────────────
-    # Differences that are deliberate. Anything else is drift and fails.
+    # (real, mock, base, deliberately real-only, deliberately mock-only)
     PAIRS = [
         (OrcaFireWorker, MockCameraWorker, PullWorker,
          # Qt signals and a query that only means something against a device.
@@ -162,12 +147,8 @@ def main() -> int:
                 + (f" — real-only {sorted(real_only)}" if real_only else "")
                 + (f" — mock-only {sorted(mock_only)}" if mock_only else ""))
 
-    # CONTROL: the drift this exists to catch. `skipped_frames` was on
-    # OrcaFireWorker only until A1, read through a getattr default — so a lossy
-    # real run and a mock both filed 0.
-    class MockCameraWithoutSkipped(MockCameraWorker):
-        skipped_frames = property(lambda self: (_ for _ in ()).throw(
-            AttributeError("skipped_frames")))
+    # The drift this exists to catch: `skipped_frames` was real-only, read
+    # through a getattr default, so a lossy real run and a mock both filed 0.
     drifted = public(OrcaFireWorker, PullWorker) - (
         public(MockCameraWorker, PullWorker) | {"drops_update", "timing_update",
                                                 "achievable_hz"})
@@ -178,12 +159,9 @@ def main() -> int:
             "is read rather than defaulted")
 
     # ── 3. the probes are actually gone from the adapters ────────────────────
-    # Comments are stripped first: the replacement code explains itself by
-    # naming the old probes, and a raw-text search reads that prose as the thing
-    # it warns about. (It did, on this test's first run.)
-    #
-    # The whole `adapters/` package is scanned — pinned to one path it would have
-    # gone vacuous the moment A5 moved the DMD's adapter out of it.
+    # Comments are stripped: the replacement code names the old probes, and a
+    # raw-text search read that as the thing it warns about. The whole package
+    # is scanned — pinned to one file, it went vacuous when that file moved.
     import io
     import tokenize
     from pathlib import Path
@@ -196,8 +174,7 @@ def main() -> int:
     pkg = Path(__file__).resolve().parents[1] / "adapters"
     sources = sorted(pkg.glob("*.py"))
     raw = "\n".join(p.read_text(encoding="utf-8") for p in sources)
-    # Stripped per file: `untokenize` works from token positions, so feeding it
-    # a concatenation of files would hand it coordinates from several of them.
+    # Per file: `untokenize` works from token positions.
     text = "\n".join(strip(p.read_text(encoding="utf-8"), tokenize.COMMENT)
                      for p in sources)
     r.check(len(sources) >= 8 and "device_name" in text
@@ -215,16 +192,12 @@ def main() -> int:
                 f"the adapters no longer guess {why} with a default")
 
     # ── 4. the window surface stays narrow (A4) ──────────────────────────────
-    # The protocols above point down (module -> device); `ModuleHost` points up.
-    # BOTH halves are needed, because each misses what the other catches:
-    # conformance alone lets an adapter reach past the surface into
-    # `win._save_panel`; the source scan alone lets the window drop a service
-    # every adapter still calls.
+    # Both halves: conformance alone misses an adapter reaching into
+    # `win._save_panel`; the scan alone misses the window dropping a service.
     import re
     from acqApp.acq.devices import ModuleHost
 
-    # Safe to import: block_real_devices() stubbed pylablib, so main.py's DCAM
-    # pre-init takes its "no camera" branch. No QApplication at import.
+    # Safe: pylablib is stubbed, so main.py's DCAM pre-init finds no camera.
     from acqApp.main import MainWindow
 
     missing = has_all(MainWindow, ModuleHost)
@@ -233,9 +206,8 @@ def main() -> int:
             + (f" — MISSING {missing}" if missing else ""))
 
     declared = _members(ModuleHost)
-    # Docstrings go too: the package header says "every `self.win.X`" in prose.
-    # Section 3 keeps its strings — its needles are code *containing* string
-    # literals, so stripping those would make it pass by finding nothing.
+    # Strings go too (the package docstring says "every `self.win.X`"); section
+    # 3 keeps them, since its needles contain string literals.
     used = set(re.findall(
         r"self\.win\.(\w+)",
         "\n".join(strip(p.read_text(encoding="utf-8"),
@@ -245,21 +217,17 @@ def main() -> int:
             f"every self.win.X in adapters/ is declared on ModuleHost"
             + (f" — undeclared {extra}" if extra else ""))
 
-    # CONTROL 1: the scan has to actually find the calls. A regex that matched
-    # nothing would pass the check above for free, forever.
+    # CONTROL 1: a regex that matched nothing would pass the above forever.
     r.check(len(used) >= 7 and "status" in used,
             f"control: the scan found the adapters' calls ({len(used)} distinct)")
 
-    # CONTROL 2: and it has to reject one. This is the drift A4 exists to stop —
-    # an adapter helping itself to a private widget on the window.
+    # CONTROL 2: an adapter helping itself to a private widget is rejected.
     rogue = set(re.findall(r"self\.win\.(\w+)",
                            "self.win._save_panel.setEnabled(False)")) - declared
     r.check(rogue == {"_save_panel"},
             f"control: a reach past the surface is caught (got {sorted(rogue)})")
 
-    # CONTROL 3: conformance must fail on an incomplete host. `signal_sources`
-    # is the newest member, and the exact drift that prompted A4 — services
-    # added to the window with only a docstring to notice.
+    # CONTROL 3: conformance must fail on an incomplete host.
     class AlmostAHost:
         sync = None
         cam_handle = None

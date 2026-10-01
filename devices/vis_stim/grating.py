@@ -1,11 +1,7 @@
-"""Grating texture + aperture geometry. No Qt, pure numpy.
-
-Ports genGratingTex and the circular-aperture math in visStimCode's
-runStimManager.m. `window.py` turns these into what it actually paints: the
-grating row into a QImage tiled/rotated by Orientation, and the aperture
-geometry into a QPainterPath clip — a clip achieves the same visible result as
-MATLAB's alpha-masked overlay texture without needing a second full-screen
-image per frame.
+"""Grating texture + aperture geometry, ported from visStimCode's
+genGratingTex and runStimManager.m. No Qt. `window.py` paints the row
+rotated by Orientation and clips it to the aperture (in place of MATLAB's
+alpha-masked overlay texture).
 """
 from __future__ import annotations
 
@@ -17,13 +13,9 @@ GAMMA = 2.2
 
 
 def build_grating(p: StimParams, white: float = 255.0) -> np.ndarray:
-    """One period-tiled row of a gamma-corrected sinusoidal grating, uint8,
-    `ceil(StimDiameter / WaveSpPeriod) + 2` cycles wide.
-
-    A single row, not a 2-D field: the texture is a horizontal band rotated at
-    paint time by `Orientation`, exactly as PTB's DrawTexture(..., Orientation)
-    rotates the same 1-D texture in runStimManager.m.
-    """
+    """One row of a gamma-corrected sinusoidal grating, uint8,
+    `ceil(StimDiameter / WaveSpPeriod) + 2` cycles wide. Rotated at paint
+    time, as PTB's DrawTexture(..., Orientation) did."""
     period = max(float(p.WaveSpPeriod), 1e-6)
     n_cycles = int(np.ceil(p.StimDiameter / period)) + 2
     size = max(int(round(n_cycles * period)), 1)
@@ -36,8 +28,8 @@ def build_grating(p: StimParams, white: float = 255.0) -> np.ndarray:
 
 def aperture_geometry(p: StimParams, screen_w: int, screen_h: int
                       ) -> tuple[float, float, float]:
-    """(center_x, center_y, radius) of the circular aperture, in screen px —
-    the same geometry as the circleIdx/maskRadius block in runStimManager.m."""
+    """(center_x, center_y, radius) in screen px (runStimManager.m's
+    circleIdx/maskRadius)."""
     cx = screen_w / 2.0 + p.StimXPosition
     cy = screen_h / 2.0 + p.StimYPosition
     r = max(p.StimDiameter / 2.0, 0.0)

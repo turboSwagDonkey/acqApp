@@ -1,26 +1,10 @@
-"""
-The Stage panel's Z controls and the calibration dialog's two-stage Z
-warning gate.
+"""The Stage panel's Z controls and the calibration dialog's Z gate — the
+Qt-level half of test_stage.py's stage-z part. Z is right under the objective:
 
-`tests/test_stage_z.py` covers the settings/controller/worker layers with no
-Qt at all; nothing there ever builds a `SettingsPanel` or opens
-`CalibrationDialog`, so none of the actual widget code added alongside those
-layers was exercised. This file is the Qt-level half.
-
-Z used to have its own vertical-slider control, separate from X/Y's grid —
-combined into one Motion grid (2026-09-13) since the day-to-day jog/goto shape
-is identical for all three axes; only Z's *calibration* (below) is genuinely
-higher-risk, being right under the objective, and keeps its own section and
-warnings. Two things matter enough to pin down:
-
-  1. Z's Go button confirms against its OWN, tighter `confirm_move_z_um`, not
-     X/Y's much larger `confirm_move_um` — the whole reason the field exists.
-  2. `_reestablish_frame_z` is a "multiple warnings" gate BY DESIGN — it must
-     take two separate Yes answers before a `_FrameWorker` is ever
-     constructed, and a No at either stage must abort with no worker started
-     (no motion attempted) at all.
-
-  acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_stage_focus_ui.py
+  1. Z's Go confirms against its OWN, tighter `confirm_move_z_um`, not X/Y's
+     `confirm_move_um`.
+  2. `_reestablish_frame_z` takes two separate Yes answers before a
+     `_FrameWorker` exists; a No at either aborts with nothing started.
 """
 from __future__ import annotations
 
@@ -32,8 +16,7 @@ from _harness import Report, pump, qt_app
 
 from acqApp.devices.stage import settings as stage_settings
 
-# Bind the temp path before `panel` does `from ... import config_path`, or it
-# keeps a reference to the real one — same reason as test_stage_panel.py.
+# Before `panel` binds `config_path` by import.
 _TMP = Path(tempfile.mkdtemp(prefix="acqapp_stagefocus_"))
 stage_settings.config_path = lambda: _TMP / "config.json"
 
@@ -62,10 +45,8 @@ class FakeCtrl:
 
 
 class NoReframeCtrl(FakeCtrl):
-    """Stands in for a real StageController connected to a backend with no
-    establish_frame (e.g. this app's actual MCM301 driver) — a real property
-    here, not FakeCtrl's catch-all __getattr__, so CalibrationDialog's
-    getattr(self._ctrl, "supports_reframe", True) sees False."""
+    """A backend with no establish_frame (the real MCM301 driver). A real
+    property: FakeCtrl's __getattr__ would answer with a truthy function."""
 
     @property
     def supports_reframe(self) -> bool:
@@ -79,8 +60,7 @@ def _settings(has_frame: bool = False) -> StageSettings:
     return StageSettings(z=z, confirm_move_z_um=500.0)
 
 
-# ── a queue-driven dialog fake: each .warning()/.question() call pops the
-#    next answer, so a two-stage gate's Yes/Yes vs Yes/No can be told apart ──
+# Each .warning()/.question() pops the next answer (then No).
 _ANSWERS: list[QMessageBox.StandardButton] = []
 
 
@@ -92,8 +72,7 @@ def _fake_dialogs() -> None:
 
 
 def check_z_rides_the_motion_grid(r: Report) -> None:
-    """Z is a row in the same Motion grid as X/Y now, not a separate group —
-    the whole point of combining them was one control shape for every axis."""
+    """One Motion grid, one control shape for every axis (2026-09-13)."""
     p = SettingsPanel(_settings())
     r.check("z" in p._axis_widgets, "z is registered in _axis_widgets")
     w = p._axis_widgets["z"]
@@ -112,9 +91,7 @@ def check_z_rides_the_motion_grid(r: Report) -> None:
 
 
 def check_z_gauge_exists_and_updates(r: Report) -> None:
-    """The Z visualization: a gauge beside the XY map (not a third axis
-    squeezed into it) — `set_readout` feeds it the way it feeds the map,
-    through the same sub-visual-move repaint guard."""
+    """`set_readout` feeds the Z gauge through the map's repaint guard."""
     p = SettingsPanel(_settings(has_frame=True))
     r.check(p._z_gauge is not None, "a has_z rig gets a Z gauge")
     p.bind_controller(FakeCtrl())
@@ -138,10 +115,7 @@ def check_z_gauge_exists_and_updates(r: Report) -> None:
 
 
 def check_z_gauge_geometry(r: Report) -> None:
-    """ZGauge's own value->pixel mapping: a bigger value reads higher on
-    screen (there's only one sensible "up" for a single axis, unlike
-    StageMap's invert_y), and an out-of-range value clamps into the bar
-    instead of escaping it."""
+    """Bigger Z reads higher on screen; out of range clamps into the bar."""
     from acqApp.devices.stage.map_widget import ZGauge
 
     g = ZGauge()
@@ -179,8 +153,7 @@ def check_jog_arrows(r: Report) -> None:
 
 
 def check_frame_gating_disables_z_goto(r: Report) -> None:
-    """Same rule X/Y already have (test_stage_panel.py's check_frame_gating):
-    absolute go-to is meaningless without a frame, jog is not."""
+    """As X/Y: absolute go-to needs a frame, jog does not."""
     p = SettingsPanel(_settings(has_frame=False))
     p.bind_controller(FakeCtrl())
     w = p._axis_widgets["z"]
@@ -209,8 +182,6 @@ def check_set_readout_updates_z(r: Report) -> None:
 
 
 def check_goto_uses_z_threshold(r: Report) -> None:
-    """_goto('z', ...) must confirm against confirm_move_z_um, not the much
-    larger X/Y confirm_move_um — the whole reason the field exists."""
     _fake_dialogs()
     s = _settings(has_frame=True)
     s.confirm_move_um, s.confirm_move_z_um = 50000.0, 500.0
@@ -228,10 +199,8 @@ def check_goto_uses_z_threshold(r: Report) -> None:
 
 
 def check_active_fov(r: Report) -> None:
-    """goto_fov() marks a FOV active; set_readout() clears it again the
-    moment the live position drifts off it — the Save panel's "append
-    active FOV name" option reads exactly this (StageModule.active_fov_name,
-    adapters/stage.py)."""
+    """goto_fov() marks a FOV active until the position drifts off it; the
+    Save panel's "append active FOV name" reads this."""
     from acqApp.devices.stage.fov_store import SavedFov
 
     s = _settings(has_frame=True)
@@ -295,8 +264,6 @@ def check_set_zero_z_here(r: Report) -> None:
 
 
 def check_reframe_z_needs_both_warnings(r: Report, app) -> None:
-    """The core "multiple warnings" property: only Yes-then-Yes may ever
-    start a worker; either No must abort with NOTHING started."""
     _fake_dialogs()
 
     # Yes, then No at the second (stage-is-clear) re-check: must abort.
@@ -325,7 +292,6 @@ def check_reframe_z_needs_both_warnings(r: Report, app) -> None:
     dlg3._reestablish_frame_z()
     r.check(dlg3._worker is not None,
             "Yes then Yes: a _FrameWorker is started")
-    # Let the (instant, fake-backed) worker thread finish and clean up.
     worker = dlg3._worker
     pump(app, 0.5)
     if worker is not None:
@@ -337,9 +303,8 @@ def check_reframe_z_needs_both_warnings(r: Report, app) -> None:
 
 
 def check_reframe_hidden_when_unsupported(r: Report) -> None:
-    """A rig whose backend can't ever re-establish a Z frame (this app's real
-    MCM301 driver) shouldn't offer a button that always refuses — 'Set Z = 0'
-    is that rig's complete Z calibration on its own."""
+    """No button that always refuses; 'Set Z = 0' is that rig's whole Z
+    calibration."""
     s = _settings()
     dlg = CalibrationDialog(NoReframeCtrl(), s)
     r.check(dlg._btn_set_zero_z is not None,

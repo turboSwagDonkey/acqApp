@@ -1,9 +1,7 @@
-"""
-SessionClock — monotonic wall-clock for a single acquisition session.
+"""SessionClock: seconds since session start, on time.perf_counter().
 
-v1 uses time.perf_counter() (software). The NI PCIe-6363 timing engine can
-replace this later by swapping in a DaqClock subclass; device code never
-calls time.perf_counter() directly — it only calls clock.now().
+Device code only calls clock.now()/at(), so a DAQ-backed clock can replace
+it without touching them.
 """
 from __future__ import annotations
 
@@ -18,19 +16,12 @@ class AbstractClock(ABC):
     @abstractmethod
     def now(self) -> float:
         """Seconds since session start."""
-        ...
 
     @abstractmethod
     def at(self, mono: float) -> float:
-        """Seconds since session start for a `time.perf_counter()` reading.
-
-        Devices that carry their own hardware timestamps (the camera, and later
-        the DAQ) know when a sample was really acquired, which isn't when it
-        reached us. They convert that to the perf_counter domain and pass it
-        here, so their samples land on the shared timebase at their true
-        acquisition time rather than at their arrival time.
-        """
-        ...
+        """Seconds since session start for a `time.perf_counter()` reading:
+        how a hardware-timestamped sample lands at its acquisition time, not
+        its arrival."""
 
     @abstractmethod
     def stop(self) -> None: ...

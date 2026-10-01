@@ -1,21 +1,8 @@
 """Visual stim — the settings panel.
 
-Groups guiVisStimDAQ.m's four panels (Parameters, Loop Variables, Actions,
-Hardware Status) into acqApp-style QFormLayout sections rather than the .m
-code's flat "click a listbox row, edit one text box" UI — each parameter gets
-its own labeled spinbox, matching every other module's panel (see
-devices/dmd/panel.py). Loop variables stay a QListWidget + Add/Delete, since
-that part of the .m UI is inherently dynamic. Group boxes are made
-collapsible centrally by dialogs.py (widgets.collapsible_groups), same as
-every other panel — this file doesn't call it itself.
-
-No DAQ channel/status here: unlike the .m code, blank/stim gating rides the
-shared session clock's own tick (control.py's `on_tick`), not a hardware line
-this module reads itself — so there's no per-module connection state to show.
-
-The Trial type combo picks the paradigm for the whole run; entries not yet
-built (settings.IMPLEMENTED_TRIAL_TYPES) are listed but disabled, so the
-roadmap is visible without being selectable.
+One spinbox per parameter (guiVisStimDAQ.m's listbox + text box replaced).
+No DAQ status: gating rides the shared clock tick, not a hardware line.
+Trial types not in settings.IMPLEMENTED_TRIAL_TYPES are listed but disabled.
 """
 from __future__ import annotations
 
@@ -44,14 +31,8 @@ _TRIAL_TYPE_LABELS = {
     TRIAL_VISUOMOTOR: "Visuomotor",
 }
 
-# The shared session clock ticks at DEFAULT_TICK_MS (main.py constructs its
-# one SyncController with it) — StimParams still stores these as raw tick
-# counts (control.py's on_tick counts them directly, and the field names
-# match the original MATLAB code for config parity), but the operator
-# shouldn't have to think in ticks, so the panel shows/edits them as seconds.
-# `_TICK_FIELDS` names which fields get that conversion; MapRepeats/
-# TuningRepeats/ContrastRepeats are sweep counts, not durations, so they're
-# left alone.
+# Stored as shared-clock tick counts, shown in seconds. Assumes main.py's
+# SyncController runs at DEFAULT_TICK_MS.
 _TICK_HZ = 1000.0 / DEFAULT_TICK_MS
 _TICK_FIELDS = frozenset({
     "WaitTrigger", "TriggersBlank", "TriggersStim",
@@ -62,8 +43,7 @@ _TICK_FIELDS = frozenset({
     "VisuomotorDurationTicks",
 })
 
-# (field, label, min, max, step, decimals) — min/max/step are in ticks for
-# any field in _TICK_FIELDS; _field_group converts them to seconds.
+# (field, label, min, max, step, decimals); ticks for _TICK_FIELDS.
 _GEOMETRY_FIELDS = [
     ("StimDiameter",  "Diameter (px)",     0, 20000, 10, 0),
     ("StimXPosition", "X position (px)", -10000, 10000, 5, 0),
@@ -84,38 +64,29 @@ _TRIGGER_FIELDS = [
     ("TriggersBlank", "Blank duration", 0, 100000, 1, 0),
     ("TriggersStim",  "Stim duration",  0, 100000, 1, 0),
 ]
-# Only meaningful when Trial type = Map (see regions.py / control.py).
 _MAP_FIELDS = [
     ("MapTicksPerRegion", "Region duration",       1, 100000, 1, 0),
     ("MapTicksPerFlip",   "Flip duration",         1, 100000, 1, 0),
     ("MapRepeats",        "Repeats (full passes)", 1, 1000, 1, 0),
 ]
-# Only meaningful when Trial type = Tuning (see tuning.py / control.py).
 _TUNING_FIELDS = [
     ("TuningRegion",             "Region (1-9)",          1, 9, 1, 0),
     ("TuningTicksPerPretrial",   "Pretrial duration",     1, 100000, 1, 0),
     ("TuningTicksPerOrientation", "Orientation duration", 1, 100000, 1, 0),
     ("TuningRepeats",            "Repeats (full sweeps)", 1, 1000, 1, 0),
 ]
-# Only meaningful when Trial type = Contrast (see contrast.py / control.py).
 _CONTRAST_FIELDS = [
     ("ContrastRegion",           "Region (1-9)",          1, 9, 1, 0),
     ("ContrastTicksPerPretrial", "Pretrial duration",     1, 100000, 1, 0),
     ("ContrastTicksPerLevel",    "Level duration",        1, 100000, 1, 0),
     ("ContrastRepeats",          "Repeats (full sweeps)", 1, 1000, 1, 0),
 ]
-# Only meaningful when Trial type = Size (see size.py / control.py). Sweeps
-# fractions of the region's own width (size.SIZE_FRACTIONS), not a field.
 _SIZE_FIELDS = [
     ("SizeRegion",           "Region (1-9)",          1, 9, 1, 0),
     ("SizeTicksPerPretrial", "Pretrial duration",     1, 100000, 1, 0),
     ("SizeTicksPerLevel",    "Size step duration",    1, 100000, 1, 0),
     ("SizeRepeats",          "Repeats (full sweeps)", 1, 1000, 1, 0),
 ]
-# Only meaningful when Trial type = Visuomotor (see control.py's
-# _begin_visuomotor_trial/_visuomotor_frame). Everything else the grating
-# needs (geometry, spatial period, contrast, ...) is shared with Grating —
-# only the drift source and trial length differ.
 _VISUOMOTOR_FIELDS = [
     ("VisuomotorGain", "Gain (px drift / wheel unit)", -100, 100, 0.1, 3),
     ("VisuomotorDurationTicks", "Trial duration", 1, 100000, 1, 0),
@@ -123,9 +94,9 @@ _VISUOMOTOR_FIELDS = [
 
 
 class SettingsPanel(QWidget):
-    settings_changed    = pyqtSignal(object)   # emits VisStimSettings
-    run_requested        = pyqtSignal()
-    stop_requested        = pyqtSignal()
+    settings_changed = pyqtSignal(object)   # VisStimSettings
+    run_requested    = pyqtSignal()
+    stop_requested   = pyqtSignal()
 
     def __init__(self, settings: VisStimSettings | None = None, parent=None):
         super().__init__(parent)
@@ -137,16 +108,8 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # Build every group `_update_group_visibility` touches BEFORE
-        # `_trial_type_group()` — which wires the trial-type combo's
-        # `currentIndexChanged` straight to it — rather than leaning on
-        # construction order alone to keep that signal from firing before
-        # its targets exist. Today nothing changes the combo's index between
-        # that connect and here, so building it first would still work, but
-        # that's fragile: any future reorder, or a second addItem/
-        # setCurrentIndex on `_cmb_trial` added later in `_build`, would
-        # raise `AttributeError` on a not-yet-created `_grp_*`. Visual order
-        # is set by the `addWidget` calls below, independent of this one.
+        # Every group `_update_group_visibility` touches exists before the
+        # trial combo is wired to it; visual order is the addWidget calls.
         self._grp_geometry = self._field_group("Stimulus geometry",
                                                 _GEOMETRY_FIELDS)
         self._grp_grating = self._field_group("Grating & timing", _GRATING_FIELDS)
@@ -200,27 +163,10 @@ class SettingsPanel(QWidget):
         return grp
 
     def _update_group_visibility(self, *_a) -> None:
-        """Show only what control.py actually reads for the selected Trial
-        type. Map/Tuning/Contrast/Size each build their own trial in
-        control.py's `_begin_map_trial`/`_begin_tuning_trial`/
-        `_begin_contrast_trial`/`_begin_size_trial`; Grating and Visuomotor
-        both fall through to the plain-grating code path instead
-        (`_begin_grating_trial`/`_begin_visuomotor_trial`), so grating
-        fields stay live for Visuomotor too — only its own duration/gain
-        fields and the drift source differ (`_visuomotor_frame`).
-
-        Within "Stimulus geometry", all four region trial types override
-        Diameter/X/Y entirely (region-derived geometry) so none of it
-        applies; of those, Contrast and Size leave Orientation live (it
-        still rotates the grating drawn inside the circle) while Tuning/Map
-        don't — see control.py's `_begin_*_trial` methods.
-
-        Loop variables are a Grating/Visuomotor-only concept too: Map/
-        Tuning/Contrast/Size each run their own dedicated internal sweep
-        (regions.py / tuning.py / contrast.py / size.py) already, and
-        control.py's `run()` skips the generic loop-variable expansion for
-        all four — so this hides a control that would otherwise look live
-        but do nothing (or worse, once a caller stops skipping it)."""
+        """Show only what control.py reads for the selected trial type.
+        Region types derive Diameter/X/Y and skip loop variables; Contrast
+        and Size still use Orientation. Visuomotor drifts from the wheel, so
+        temporal frequency and periods don't apply."""
         t = self._cmb_trial.currentData()
         region_like = t in REGION_TRIAL_TYPES
         grating_like = not region_like
@@ -232,9 +178,6 @@ class SettingsPanel(QWidget):
         self._grp_loops.setVisible(grating_like)
 
         self._grp_grating.setVisible(grating_like)
-        # WaveTempPeriodInHz/PeriodsToShow drive the fixed-frequency drift
-        # _begin_grating_trial uses; Visuomotor drives drift from the wheel
-        # instead (_visuomotor_frame), so neither applies there.
         grating_lay = self._grp_grating.layout()
         for name in ("WaveTempPeriodInHz", "PeriodsToShow"):
             grating_lay.setRowVisible(self._spins[name], t != TRIAL_VISUOMOTOR)
@@ -256,7 +199,7 @@ class SettingsPanel(QWidget):
         lay.setSpacing(4)
         for name, label, lo, hi, step, dec in fields:
             value = getattr(self._s.params, name)
-            if name in _TICK_FIELDS:    # stored in ticks, shown in seconds
+            if name in _TICK_FIELDS:
                 box = spin(lo / _TICK_HZ, hi / _TICK_HZ, value / _TICK_HZ,
                            decimals=max(dec, 2), suffix=" s",
                            step=max(step / _TICK_HZ, 0.1 / _TICK_HZ))
@@ -372,10 +315,7 @@ class SettingsPanel(QWidget):
         self._cmb_screen.blockSignals(False)
 
     def _identify_displays(self) -> None:
-        """One borderless window per connected screen, each showing that
-        screen's index/name — the same index/name shown in "Show on:" — so
-        the operator can match a combo entry to a physical monitor without
-        trial-and-error. Self-closes after a few seconds."""
+        """Show each screen's "Show on:" index/name on it for 3 s."""
         self._identify_windows: list[QWidget] = []
         for i, scr in enumerate(QGuiApplication.screens()):
             win = QWidget(None, Qt.WindowType.FramelessWindowHint

@@ -1,16 +1,11 @@
-"""Manually nudging an auto-fit calibration's four corners against a frame,
-and marking the optical vignette (where the projector's own optics dim the
-image below what's usable — some rigs show a circle well inside the panel's
-own rectangle on an all-on frame, not the full field the geometry alone
-would suggest).
+"""Nudge an auto-fit calibration's four corners against an all-on frame, and
+mark the optical vignette.
 
-The stripe sweep (`calibration.py`) gets close; a residual few px of
-registration error is often easier for an eye to remove — by dragging the
-DMD's own four corners onto where they actually land in an all-on frame —
-than another sweep. `with_corners` turns the dragged positions into an exact
-4-point homography. The vignette circle is a separate, independent mark —
-`with_vignette` just records it — since dimness isn't something a
-registration fit measures at all, only where light lands.
+The sweep leaves a few px of error that an eye removes more easily than
+another sweep; `with_corners` makes the dragged corners an exact 4-point
+homography. The vignette (where the optics dim the field, often a circle well
+inside the panel) is an independent advisory mark (`with_vignette`): a
+registration fit doesn't measure dimness.
 """
 from __future__ import annotations
 
@@ -24,6 +19,7 @@ from acqApp import style
 from acqApp.devices.dmd.calibration import (CalibrationError, DmdCalibration,
                                             with_corners, with_vignette,
                                             without_vignette)
+from acqApp.devices.dmd.roi_panel import snapshot_levels
 
 _FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
 _CORNER_PEN = pg.mkPen("#00d0ff", width=2)
@@ -32,9 +28,8 @@ _VIGNETTE_PEN = pg.mkPen(style.WARN, width=2, style=Qt.PenStyle.DotLine)
 
 
 class CornerAdjustDialog(QDialog):
-    """Drag the DMD field's four corners onto a frame (Apply refits exactly
-    through the new positions), and optionally mark a vignette circle where
-    the optics dim past use — two independent corrections, applied together."""
+    """Drag the field's corners onto a frame (Apply refits exactly through
+    them), and optionally mark a vignette circle; both applied together."""
 
     def __init__(self, calib: DmdCalibration, frame: np.ndarray, *,
                  parent=None):
@@ -62,16 +57,10 @@ class CornerAdjustDialog(QDialog):
         gv = pg.GraphicsLayoutWidget()
         vb = pg.ViewBox(lockAspect=True, invertY=True)
         gv.addItem(vb)
-        img = pg.ImageItem(np.asarray(frame), axisOrder="row-major")
-        vb.addItem(img)
-        # Same 1st/99th-percentile contrast as the ROI editor's snapshot — an
-        # ORCA frame's signal lives in a fraction of the 16-bit range, and
-        # pyqtgraph's own autoLevels (min/max) collapses that to near-black.
         f = np.asarray(frame)
-        lo, hi = np.percentile(f[::4, ::4], (1, 99))
-        if hi <= lo:
-            lo, hi = float(f.min()), float(f.max()) or 1.0
-        img.setLevels((float(lo), float(hi)))
+        img = pg.ImageItem(f, axisOrder="row-major")
+        vb.addItem(img)
+        img.setLevels(snapshot_levels(f))
         root.addWidget(gv, 1)
 
         self._outline = pg.PlotCurveItem(pen=_FIELD_PEN)
@@ -88,10 +77,7 @@ class CornerAdjustDialog(QDialog):
             vb.addItem(t)
             self._targets.append(t)
 
-        # ── the vignette circle: where the optics dim below usable, not where
-        # the DMD's own field is (the outline/corners above). On some rigs an
-        # all-on frame shows the lit area as a circle well inside the panel's
-        # rectangle — this marks it, for RoiSet.dim()/roi_panel's warning.
+        # The vignette circle, for RoiSet.dim() / the ROI editor's warning.
         cw, ch = self._calib.cam_size
         seed = self._calib.vignette or (cw / 2.0, ch / 2.0,
                                         0.4 * min(cw, ch))

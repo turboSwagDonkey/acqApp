@@ -1,4 +1,4 @@
-"""Configuration: rigs.json, modes.json, settings persistence, mirror startup default.
+"""Configuration: rigs.json, modes.json, settings persistence, mirror startup.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_config.py [-q] [--part NAME]
 """
@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+
 from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
                       run_parts)
 from acqApp import config
@@ -120,15 +121,12 @@ def check_profile_beats_saved(r: Report, tmp: Path) -> None:
     r.check(puffer.channel == "",
             "hardware false blanks the line rather than aiming it somewhere")
 
-    # Unrelated saved fields must still survive the override.
     cfg["settings"]["puffer"]["duration_s"] = 0.25
     config._CONFIG_PATH.write_text(json.dumps(cfg), encoding="utf-8")
     r.check(config.load_dataclass(PufferSettings, "puffer").duration_s == 0.25,
             "overriding the channel leaves the panel's other settings alone")
 
-    # Only devices with a blank-channel path may be blanked: the encoder has
-    # none, and EncoderWorker._add_channel would raise on "" inside its own
-    # thread — so a hand-edited `wheel: false` must not reach it.
+    # The encoder has no blank-channel path: "" would raise in its thread.
     _write(tmp, {"nowheel": {"ni_device": "Dev2",
                              "hardware": {"wheel": False},
                              "channels": {"wheel": "ai2"}}}, active="nowheel")
@@ -140,9 +138,7 @@ def check_profile_beats_saved(r: Report, tmp: Path) -> None:
 
 
 def check_dmd_calibration(r: Report, tmp: Path) -> None:
-    """A stable physical fact (camera tilt), not a per-session setting — see
-    rig_dmd_calibration's docstring — so it lives in the profile, seeding the
-    Calibration dialog's controls rather than being re-picked every run."""
+    """Camera tilt is a physical fact, so it lives in the rig profile."""
     _write(tmp, {"tilted": {"ni_device": "Dev2",
                             "dmd_calibration": {"model": "homography",
                                                 "cross_frac": 0.06}}},
@@ -179,7 +175,6 @@ def check_no_profile_is_unchanged(r: Report, tmp: Path) -> None:
 
 def check_puffer_skips_daq(r: Report) -> None:
     """An unfitted puffer must not touch nidaqmx at all."""
-    from _harness import qt_app
     qt_app()
     from acqApp.devices.puffer.control import PufferController
     import builtins
@@ -310,8 +305,7 @@ def check_modes_corrupt(r: Report, tmp: Path) -> None:
 
 
 def check_round_trip(r: Report, tmp: Path) -> None:
-    """save_modes -> load_modes must be lossless for every field set_mode()
-    reads, the new two included — this is the "Save as preset" path."""
+    """The "Save as preset" path: lossless for every field set_mode() reads."""
     _write_modes(tmp, {})
     recipe = {
         "dmd_all_on": True,
@@ -328,10 +322,7 @@ def check_round_trip(r: Report, tmp: Path) -> None:
 
 
 def check_scan_mode_shipped(r: Report) -> None:
-    """The repo's own modes.json ships a "Scan" mode — internal trigger,
-    full frame, 1x1 binning, ~30 Hz, full DMD display at 1-in-2
-    sub-sampling — so this is a regression guard on the actual shipped
-    file, not just the sanitizer logic above."""
+    """The shipped modes.json's "Scan" mode, not just the sanitizer."""
     saved = config._MODES_PATH
     config._MODES_PATH = Path(__file__).resolve().parent.parent / "modes.json"
     try:
@@ -372,8 +363,6 @@ def _part_modes() -> int:
 
 # ═══ settings (was test_settings_persistence.py) ════════════════════════
 
-# (module key, panel attribute, setter, reader, expected) — one distinctive,
-# non-default value per panel so a stuck default cannot pass.
 def _add_step(panel) -> None:
     """A routine step, added the way the +Step button does."""
     from acqApp.routines.settings import Step
@@ -383,6 +372,8 @@ def _add_step(panel) -> None:
     panel._emit()
 
 
+# (module key, label, setter, reader, expected) — one distinctive,
+# non-default value per panel so a stuck default cannot pass.
 EDITS = [
     ("voltage_cam", "capture rate", lambda p: p._spn_target_hz.setValue(321.0),
      lambda p: p.get_config().target_hz,       321.0),
@@ -394,9 +385,8 @@ EDITS = [
      lambda p: p._spn_exp.value(),              4321.0),
     ("pupil_cam",   "region X1", lambda p: p._spn_lx1.setValue(118.0),
      lambda p: p.settings.limit_x1,             118.0),
-    # The tracking knobs. The operator lost one set of tuning to a panel that
-    # held these and never wrote them, so each is checked through a restart —
-    # threshold above all, since it sets the reported radius.
+    # The operator once lost tuning to a panel that never wrote these;
+    # threshold sets the reported radius.
     ("pupil_cam",   "track on",  lambda p: p._chk_track.setChecked(True),
      lambda p: p.settings.track,                True),
     ("pupil_cam",   "threshold", lambda p: p._spn_thr.setValue(63),
@@ -416,9 +406,7 @@ EDITS = [
      lambda p: p.settings.blink_baseline_window, 23),
     ("pupil_cam",   "CR reach",  lambda p: p._spn_cr_reach.setValue(0.55),
      lambda p: p.settings.cr_reach,             0.55),
-    # Pins are rig geometry, not a preference — and the only pupil setting
-    # that is a nested list, so they are also what proves JSON's loss of the
-    # tuple type is normalised back on load.
+    # A nested list: proves JSON's lost tuple type is normalised on load.
     ("pupil_cam",   "CR pins",   lambda p: p.set_pins([(11.0, 22.0, 3.0)]),
      lambda p: p.settings.cr_pins,              [(11.0, 22.0, 3.0)]),
     ("wheel",       "V/rev",     lambda p: p._spn_vpr.setValue(3.210),
@@ -439,26 +427,18 @@ EDITS = [
      lambda p: p.settings.frame_rotation_deg,   45.0),
     ("dmd",         "trigger",   lambda p: p._cmb_trig.setCurrentText("Software"),
      lambda p: p.settings.trigger_mode,         "Software"),
-    # The geometry is the registration to the optics — the DMD settings that
-    # most need to survive a restart, since a session recorded at the wrong
-    # scale/rotation cannot be located in the field of view afterwards.
-    # (On-time / static-hold / repeats are no longer panel controls: the panel
-    # hardcodes static_hold and the DMD innately holds one image.)
+    # Registration to the optics: at the wrong scale/rotation a session
+    # cannot be located in the field of view afterwards.
     ("dmd",         "scale",     lambda p: p._spn_scale.setValue(132.4),
      lambda p: p.settings.scale_pct,            132.4),
     ("dmd",         "rotation",  lambda p: p._spn_rot.setValue(12.5),
      lambda p: p.settings.rotation_deg,         12.5),
     ("dmd",         "offset X",  lambda p: p._spn_dx.setValue(37.0),
      lambda p: p.settings.offset_x,             37.0),
-    # The display mode replaced the all-on checkbox. `all_on` is still written,
-    # because the session metadata has always carried it.
-    # Only ONE mode row: the three are exclusive radios, so a second would
-    # simply overwrite the first and prove nothing.
+    # One mode row only: the radios are exclusive.
     ("dmd",         "mode-roi",  lambda p: p._rb["roi"].setChecked(True),
      lambda p: p.settings.display_mode,         "roi"),
-    # The step list is the operator's PROTOCOL. Losing it at a restart loses
-    # the design of an experiment, not a spinbox value — and it is the only
-    # setting here that is a nested list rather than a flat scalar.
+    # The operator's protocol — the only nested list here.
     ("routines",    "step list", _add_step,
      lambda p: [(s.label, s.x_um, s.length, s.unit, s.settle_s)
                 for s in p.settings.steps],
@@ -489,7 +469,6 @@ def _part_settings() -> int:
 
     sys.argv = ["main.py", "--mock"]
     app = qt_app()
-    from acqApp import config
     import acqApp.main as M
 
     enabled = set(config.MODULES)
@@ -497,17 +476,13 @@ def _part_settings() -> int:
     # ── first launch: edit every panel ───────────────────────────────────────
     win = make_window(enabled)
 
-    # The panels live in a pop-up window, not a dock. Everything below edits them
-    # while it has never been shown, which is the point: the settings window is
-    # built (and wired to the controllers) at startup and only made visible on
-    # demand — a lazily-built one would leave the controllers unconfigured.
+    # Edited below while never shown: a lazily-built window would leave the
+    # controllers unconfigured.
     dlg = win._settings_dialog
     r.check(dlg is not None and dlg.isWindow(), "settings are a top-level window")
     r.check(not isinstance(dlg, M.QDockWidget), "…and not a dock widget")
     r.check(not dlg.isVisible(), "settings window starts hidden")
-    # A page per module plus Save — except the modules that asked for a
-    # window of their own, which are not pages at all (`ModuleAdapter.
-    # own_window`); they still get a sidebar item, checked just below.
+    # Modules with `own_window` are not pages, but get a sidebar item.
     paged = len(config.MODULES) - sum(1 for m in win._modules if m.own_window)
     r.check(dlg.tabs.count() == paged + 1,
             f"a page per module plus Save (got {dlg.tabs.count()}, "
@@ -516,8 +491,7 @@ def _part_settings() -> int:
             and all(dlg.panel_index(m.panel) < 0
                     for m in win._modules if m.own_window),
             "…and a module with its own window is not among them")
-    # Two selectors since 2026-08-25, and they stay in step: the tab bar, and
-    # one sidebar item per page.
+    # Two selectors, kept in step: the tab bar and the sidebar.
     r.check(set(win._page_actions) == set(config.MODULES) | {"saving"},
             f"a sidebar item per page (got {sorted(win._page_actions)})")
     win._page_actions["wheel"].trigger()
@@ -530,7 +504,6 @@ def _part_settings() -> int:
             "…and checks only that item")
     r.check(dlg.tabs.tabBar().isVisible(),
             "the tab bar is still there — both ways to reach a page")
-    # The other direction: switching tab inside the window moves the highlight.
     dlg.tabs.setCurrentIndex(dlg.panel_index(
         next(m.panel for m in win._modules if m.key == "puffer")))
     pump(app, 0.2)
@@ -538,8 +511,7 @@ def _part_settings() -> int:
             and not win._page_actions["wheel"].isChecked(),
             "choosing a TAB moves the sidebar highlight to match")
 
-    # The Devices monitor (not a module page) gets the same lit-while-open
-    # treatment (2026-08-27) — it used to give no cue it was already open.
+    # The Devices monitor is lit while open too.
     r.check(not win._devices_action.isChecked(),
             "the Devices item starts unlit")
     win._devices_action.trigger()
@@ -552,9 +524,7 @@ def _part_settings() -> int:
             "…and closing it with the window's own Close button un-lights it, "
             "the same way a panel window's own X does (_on_panel_window)")
 
-    # First-run size is measured from the panels, then clamped to the screen —
-    # checked on default_size() rather than on the shown window, whose final
-    # size the window manager has the last word on.
+    # On default_size(): the window manager has the last word on the shown one.
     want  = dlg.default_size()
     from PyQt6.QtGui import QGuiApplication
     avail = QGuiApplication.primaryScreen().availableGeometry()
@@ -566,12 +536,8 @@ def _part_settings() -> int:
     r.check(want.width() <= avail.width() and want.height() <= avail.height(),
             "…and still fits on the screen it opens on")
 
-    # The bug this guards: a SAVED size that is nowhere near sane must not win
-    # forever afterward — corrupted by an interrupted write, or from a window
-    # saved on a monitor that's since been unplugged. restoreGeometry() can
-    # return True on exactly such a QByteArray, so showEvent must not trust
-    # "restore succeeded" alone (dialogs.py's `_looks_sane`). A fresh,
-    # panel-less dialog, so this cannot disturb `dlg`'s own panels/tabs.
+    # An insane SAVED size (interrupted write, unplugged monitor) must not win
+    # forever; restoreGeometry() can succeed on one. Fresh panel-less dialogs.
     from PyQt6.QtCore import QByteArray, QSize
 
     from acqApp.dialogs import SettingsDialog, _looks_sane
@@ -582,7 +548,6 @@ def _part_settings() -> int:
                         SettingsDialog._MIN_DEFAULT),
             "control: _looks_sane accepts a floor-sized window")
 
-    # Corrupted/garbage bytes: restoreGeometry() fails outright.
     bad = SettingsDialog()
     bad._saved_geom = QByteArray(b"not a real geometry blob")
     bad.show()
@@ -594,8 +559,7 @@ def _part_settings() -> int:
             f"({bad.width()}x{bad.height()})")
     bad.close()
 
-    # A GENUINELY saved tiny geometry: restoreGeometry() succeeds — it's a
-    # real, validly-encoded rectangle — but the size itself is not credible.
+    # A validly-encoded tiny geometry: restoreGeometry() succeeds on it.
     seed = SettingsDialog()
     seed.show()
     pump(app, 0.05)
@@ -615,9 +579,7 @@ def _part_settings() -> int:
             f"({tiny.width()}x{tiny.height()})")
     tiny.close()
 
-    # Clicking the page you are already on shuts the window, as the single
-    # ⚙ Settings toggle used to. The tab switch above left `puffer` current, so
-    # that is the item that closes it — clicking any OTHER one just switches.
+    # The tab switch above left `puffer` current.
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)
     r.check(dlg.isVisible(), "clicking a different page switches, not hides")
@@ -636,8 +598,7 @@ def _part_settings() -> int:
     panels = {m.key: m.panel for m in win._modules}
 
     # ── every settings box folds away, and stays folded ──────────────────────
-    # Applied in add_panel(), not in each panel, so a new instrument gets it
-    # without doing anything — which is why this checks across every tab.
+    # Applied in add_panel(), so checked across every tab.
     from PyQt6.QtWidgets import QGroupBox, QWidget as _QW
     from acqApp import widgets as W
     tabs = {dlg.tabs.tabText(i): dlg.tabs.widget(i).findChildren(QGroupBox)
@@ -646,9 +607,7 @@ def _part_settings() -> int:
     r.check(len(flat) >= 10, f"{len(flat)} group boxes across {len(tabs)} tabs")
     r.check(all(b.isCheckable() for b in flat),
             "every settings box has a fold toggle in its title")
-    # The affordance is a disclosure arrow, not a tick box: a tick reads as
-    # "enable this section". Every title carries one, and the base title is
-    # kept so toggling cannot accumulate them.
+    # An arrow, not a tick box: a tick reads as "enable this section".
     r.check(all(b.title().startswith((W.OPEN, W.SHUT)) for b in flat),
             "…drawn as a ▾/▸ dropdown arrow")
 
@@ -660,21 +619,18 @@ def _part_settings() -> int:
     box.setChecked(False); box.setChecked(True); box.setChecked(False)
     r.check(box.title().count(W.SHUT) == 1 and "Eye region" in box.title(),
             f"control: toggling three times leaves one arrow ({box.title()!r})")
-    box.setChecked(True)            # back open, so the height below is the
-    pump(app, 0.05)                 # expanded one
+    box.setChecked(True)
+    pump(app, 0.05)
     tall = box.sizeHint().height()
     box.setChecked(False)
     pump(app, 0.05)
     short = box.sizeHint().height()
     r.check(short < tall, f"folding shrinks the box ({tall} → {short} px)")
-    # isVisibleTo, not isVisible: the settings window is closed at this point,
-    # so isVisible() is False for every widget in it and would pass vacuously.
+    # isVisibleTo: the window is closed, so isVisible() would pass vacuously.
     r.check(not any(c.isVisibleTo(box) for c in box.findChildren(_QW)),
             "…and its contents are hidden, not merely greyed out")
 
-    # A control the panel had deliberately disabled must not come back enabled.
-    # Qt disables the children of an unticked checkable group box, and this
-    # leans on it restoring each child's own state rather than enabling all.
+    # Unfolding must restore each child's own enabled state, not enable all.
     r.check(not p._btn_limit_clear.isEnabled(),
             "control: Clear is disabled while no region is set")
     box.setChecked(True)
@@ -695,8 +651,7 @@ def _part_settings() -> int:
         setter(win._save_panel)
     win._save_panel._on_edited()
 
-    # The LED is runtime state, not a setting: restoring it would switch the
-    # illumination on in an empty rig at launch.
+    # Runtime state: restored, it would light an empty rig at launch.
     panels["pupil_cam"]._chk_led.setChecked(True)
 
     win.close()
@@ -712,20 +667,12 @@ def _part_settings() -> int:
                 "routines", "saving"):
         r.check(key in saved, f"'{key}' section present in the config")
 
-    # The stage's axis calibration belongs to the shared stage_control config;
-    # StageSettings nests two StageAxis objects that would not survive this
-    # flat JSON, so only the panel's own fields may be written here.
+    # Axis calibration belongs to the shared stage_control config.
     r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg"},
             f"stage section is port/poll_hz/frame_rotation_deg only — Z's "
             f"calibration lives in the shared stage_control config, not here "
             f"(got {sorted(saved.get('stage', {}))})")
-    # led_follow_live (a MODE: fire the LED from Live/Record start/stop) and
-    # led_intensity (a dial, like puffer_duration_s) are deliberate
-    # exceptions — the LED's own on/off runtime state must still never
-    # persist (would turn illumination on in an empty rig). Scoped to the two
-    # device sections that actually own an LED — routines has no LED field of
-    # its own to worry about here: the illumination LED now simply follows
-    # capture (engine.py), it is not a per-step setting that gets saved.
+    # Scoped to the two sections that own an LED.
     led_sections = {k: saved.get(k, {}) for k in ("voltage_cam", "pupil_cam")}
     scrubbed = (json.dumps(led_sections).lower()
                .replace("led_follow_live", "").replace("led_intensity", ""))
@@ -734,38 +681,33 @@ def _part_settings() -> int:
             "(led_follow_live/led_intensity, a mode and a dial, are allowed)")
 
     # ── surviving a write that dies partway ──────────────────────────────────
-    # This file is the operator's whole working setup and is rewritten on every
-    # spinbox step, while the app can die natively mid-write (a qFatal out of a
-    # worker, a DCAM segfault — the reason main enables faulthandler). Writing
-    # beside it and renaming is what keeps a half-written file from becoming
-    # "no settings at all".
-    from acqApp import config as C
+    # Rewritten on every spinbox step, while the app can die natively mid-write
+    # (qFatal, a DCAM segfault).
     intact = cfg_path.read_text(encoding="utf-8")
-    real_dump = C.json.dump
+    real_dump = config.json.dump
 
     def die_partway(obj, fh, **kw):
         fh.write('{"settings": {"voltage_cam": {"expos')     # a partial record
         raise OSError("simulated: no space left on device")
 
-    C.json.dump = die_partway
+    config.json.dump = die_partway
     try:
-        C.save_config({"theme": "light", "settings": {"wiped": True}})
+        config.save_config({"theme": "light", "settings": {"wiped": True}})
     finally:
-        C.json.dump = real_dump
+        config.json.dump = real_dump
     r.check(cfg_path.read_text(encoding="utf-8") == intact,
             "a write that dies partway leaves the previous config untouched")
     r.check(not list(tmp.glob("*.tmp")),
             f"…and cleans up after itself ({[p.name for p in tmp.glob('*.tmp')]})")
-    # CONTROL: the damage this prevents is real — the same partial content
-    # written in place is what load_config() would then have to read.
+    # CONTROL: the same partial content written in place.
     (tmp / "wrecked.json").write_text('{"settings": {"voltage_cam": {"expos',
                                       encoding="utf-8")
-    C._CONFIG_PATH, keep_path = tmp / "wrecked.json", C._CONFIG_PATH
-    r.check(C.load_config() == {},
+    config._CONFIG_PATH, keep_path = tmp / "wrecked.json", config._CONFIG_PATH
+    r.check(config.load_config() == {},
             "control: a truncated config really is unreadable")
     r.check((tmp / "wrecked.corrupt.json").is_file(),
             "…and is moved aside rather than silently overwritten with defaults")
-    C._CONFIG_PATH = keep_path
+    config._CONFIG_PATH = keep_path
 
     # ── second launch: read the panels back ──────────────────────────────────
     win2 = make_window(enabled)
@@ -781,8 +723,6 @@ def _part_settings() -> int:
     r.check(not panels2["pupil_cam"]._chk_led.isChecked(),
             "the LED came back OFF, not restored on")
 
-    # Which boxes were folded is remembered too — collapsing the ones a rig
-    # never touches is worth nothing if it has to be redone every launch.
     dlg2 = win2._settings_dialog
     flat2 = [b for i in range(dlg2.tabs.count())
              for b in dlg2.tabs.widget(i).findChildren(QGroupBox)]
@@ -797,7 +737,6 @@ def _part_settings() -> int:
     r.check(find2("Camera").isChecked(),
             "control: a box that was left open comes back open")
 
-    # A session must actually run on the restored values.
     win2._btn_run.setChecked(True)
     r.check(win2._sync.running, "session starts with the restored settings")
     pump(app, 0.5)
@@ -827,7 +766,7 @@ class FakeDriver:
 
     def open(self):
         if self._open_fails:
-            raise PermissionError("Access is denied.")  # matches the real ThorImage-holds-port error
+            raise PermissionError("Access is denied.")  # ThorImage holds it
         self.opened = True
 
     def close(self):

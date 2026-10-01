@@ -49,8 +49,10 @@ def load_bpod_triggers(path: Path) -> np.ndarray:
             trials = np.atleast_1d(sd.RawEvents.Trial)
             for i, tr in enumerate(trials[:len(starts)]):
                 cam = getattr(tr.States, "CamTrigger", None)
-                if cam is not None and np.isfinite(np.atleast_1d(cam)[0]):
-                    onset[i] = float(np.atleast_1d(cam)[0])
+                if cam is not None:
+                    t = np.atleast_1d(cam)[0]
+                    if np.isfinite(t):
+                        onset[i] = float(t)
         except AttributeError:
             pass
         return starts + onset
@@ -141,16 +143,16 @@ def plan(rows: list[dict], m: Match, n_trials: int,
     """Rename each edge's file to its Bpod trial number; void every Bpod
     trial from `first_trial` to the last matched one that has no edge."""
     by_trial = {i + 1: rows[j] for j, i in m.pairs.items()}
-    renames, voids = [], []
-    for trial, row in sorted(by_trial.items()):
-        if row.get("path"):
-            p = Path(row["path"])
-            want = routine_stem(row["fov"], trial)
-            if _stem(p).endswith(BAD_SUFFIX):
-                want += BAD_SUFFIX
-            if _stem(p) != want:
-                renames.append((p, want))
     placed = [(t, r) for t, r in sorted(by_trial.items()) if r.get("path")]
+    renames, voids = [], []
+    for trial, row in placed:
+        p = Path(row["path"])
+        have = _stem(p)
+        want = routine_stem(row["fov"], trial)
+        if have.endswith(BAD_SUFFIX):
+            want += BAD_SUFFIX
+        if have != want:
+            renames.append((p, want))
     last = max(by_trial) if by_trial else 0
     for trial in range(first_trial, last + 1):
         if trial in by_trial or not placed:

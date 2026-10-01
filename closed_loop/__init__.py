@@ -4,17 +4,16 @@
 `settings.py` is the decision (Qt-free), `worker.py` its thread at POLL_HZ,
 `panel.py` the widgets and the arming switch.
 
-- **Its own thread**, because a rule on the 30 Hz display tick inherits every
-  preview stall. It polls a non-consuming snapshot — `get_latest()` hands each
-  sample out once, and the display is already that consumer.
-- **The actuation isn't on this thread**: the worker emits `fired`, the adapter
-  re-emits it on the trigger bus, so a rule-driven puff takes the same path as a
-  scheduled one.
-- **Arming is deliberately not in `LoopSettings`**, so it can't be persisted —
-  as with the LED in audit #4, a restored "armed" fires the puffer at launch.
+- Its own thread: on the 30 Hz display tick a rule inherits every preview
+  stall. It polls a non-consuming snapshot; `get_latest()` hands each sample
+  out once, and the display is already that consumer.
+- Actuation happens elsewhere: `fired` goes onto the trigger bus, the same
+  path as a scheduled puff.
+- Arming is not in `LoopSettings`, so it can't be persisted: a restored
+  "armed" would fire the puffer at launch (as with the LED, audit #4).
 
-Re-exported lazily (PEP 562) so `acqApp.closed_loop.settings` stays importable
-without Qt; eager re-exports would pull PyQt6 in through the parent package.
+Lazy re-exports (PEP 562) keep `acqApp.closed_loop.settings` importable
+without Qt.
 """
 from __future__ import annotations
 
@@ -40,7 +39,7 @@ def __getattr__(name: str) -> Any:
     if where is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(importlib.import_module(f"{__name__}.{where}"), name)
-    globals()[name] = value          # cache, so this runs once per name
+    globals()[name] = value          # once per name
     return value
 
 

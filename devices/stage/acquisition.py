@@ -1,16 +1,7 @@
-"""
-XY(Z) stage — position-polling worker.
+"""XY(Z) stage position poller. Reads only; the controller owns the
+connection, shared with the GUI's motion controls.
 
-StagePollWorker polls a StageController (real or mock) for its position in
-microns and reports it. It does NOT own the serial connection — the controller
-does — so the connection is shared with GUI motion controls. The worker never
-issues motion; it only reads.
-
-Exposes (via acq.worker.PullWorker):
-    worker.get_latest()  -> (x_um, y_um) | (x_um, y_um, z_um) | None — 3-tuple
-                            only on a rig with a Z stage (controller.settings.
-                            has_z); every existing caller already indexes
-                            [0]/[1], so this is additive.
+    worker.get_latest()  -> (x_um, y_um[, z_um]) | None; z only with a Z stage
     worker.set_sink(fn)  -> record every sample
     worker.rate_update   -> pyqtSignal(float)   # samples / second
     worker.error         -> pyqtSignal(str)
@@ -30,17 +21,11 @@ class StagePollWorker(PullWorker):
         super().__init__()
         self._ctrl = controller
         self._hz   = max(0.5, poll_hz)
-        # Read once at construction, not per-tick: has_z is fixed for the
-        # life of a session (set at connect() time from the loaded config).
-        self._has_z = controller.has_z
+        self._has_z = controller.has_z      # fixed for the connection
 
     def _run(self) -> None:
-        # NOTE: pacing uses acq.worker.paced(), which paces this REAL device
-        # poll loop. Verified equivalent to the old inline pacing idiom by
-        # replay test + jitter measurement, but NOT yet run against the
-        # physical stage — confirm poll cadence/no-missed-reads on real
-        # hardware before trusting this in an experiment. See paced()'s
-        # docstring.
+        # paced() is replay-tested but not yet run on the physical stage:
+        # confirm cadence / no missed reads there before trusting it.
         self._stop = False
         period = 1.0 / self._hz
         rate_every = max(1, int(self._hz))   # ~once/sec, fixed for the run
@@ -55,6 +40,7 @@ class StagePollWorker(PullWorker):
                 self.error.emit(f"stage: read failed ({e})")
                 break
             self._publish(pos)
-            elapsed = time.perf_counter() - t0
-            if n % rate_every == 0 and elapsed > 0:
-                self.rate_update.emit(n / elapsed)
+            if n % rate_every == 0:
+                elapsed = time.perf_counter() - t0
+                if elapsed > 0:
+                    self.rate_update.emit(n / elapsed)

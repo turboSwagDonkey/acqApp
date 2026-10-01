@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+
 from _harness import Report, run_parts
 from acqApp.devices.stage import settings as S
 from acqApp.devices.stage.control import (StageController,
@@ -37,8 +38,7 @@ def check_guards(r: Report) -> None:
         ("move_to_um", lambda: ctl.move_to_um("x", 100.0)),
         ("jog_um",     lambda: ctl.jog_um("x", 10.0)),
         ("read_xy_um", lambda: ctl.read_xy_um()),
-        # "not connected" is checked before "no Z stage" (see read_z_um), so
-        # this rig-with-no-Z case still raises the same way as X/Y here.
+        # "not connected" is checked before "no Z stage".
         ("read_z_um",  lambda: ctl.read_z_um()),
     ):
         try:
@@ -50,7 +50,7 @@ def check_guards(r: Report) -> None:
         else:
             r.check(False, f"{label}() while disconnected did not raise")
 
-    # stop/stop_all are called on teardown paths and must stay silent no-ops.
+    # Teardown paths call these.
     try:
         ctl.stop("x")
         ctl.stop_all()
@@ -99,7 +99,8 @@ def check_persist_merges(r: Report, tmp: Path) -> None:
 def check_persist_corrupt(r: Report, tmp: Path) -> None:
     """A truncated config must not swallow a just-measured calibration."""
     path = redirect_config(tmp, "corrupt.json")
-    path.write_text('{"axes": [{"index": 1,', encoding="utf-8")   # killed mid-write
+    # Killed mid-write.
+    path.write_text('{"axes": [{"index": 1,', encoding="utf-8")
 
     try:
         S.save_axis_updates({1: {"true_center": 42}})
@@ -217,8 +218,7 @@ def check_mock_controller(r: Report) -> None:
 
 
 def check_no_z_controller_refuses(r: Report) -> None:
-    """A rig with no Z stage must refuse cleanly, not crash, on every Z entry
-    point — this is the case that matters most: most rigs have no Z."""
+    """Most rigs have no Z: every Z entry point refuses cleanly."""
     s = S.StageSettings()
     c = MockStageController(s)
     c.connect()
@@ -236,9 +236,7 @@ def check_no_z_controller_refuses(r: Report) -> None:
 
 
 def check_real_controller_shape(r: Report) -> None:
-    """No hardware here, so only the parts that don't touch a device: object
-    construction and the has_z passthrough — connect() would need a real
-    port."""
+    """Construction and has_z only; connect() would need a real port."""
     s = S.StageSettings(z=S.StageAxis(6, "Z", 4.7254))
     c = StageController(s)
     r.check(c.has_z is True, "StageController.has_z reflects settings.has_z")
@@ -257,8 +255,7 @@ def check_poll_worker_publishes_z(r: Report) -> None:
     w = StagePollWorker(c, poll_hz=4.0)
     r.check(w._has_z is True, "worker snapshots has_z at construction")
 
-    # Exercise one iteration of the read the worker's _run loop performs,
-    # without spinning up the actual QThread (there is no Qt app here).
+    # One iteration of the worker's _run read, without a QThread (no Qt app).
     xy = c.read_xy_um()
     pos = (*xy, c.read_z_um()) if w._has_z else xy
     r.check(len(pos) == 3, "a has_z worker's published sample carries Z, too")
@@ -271,15 +268,12 @@ def check_poll_worker_publishes_z(r: Report) -> None:
     xy2 = c2.read_xy_um()
     pos2 = (*xy2, c2.read_z_um()) if w2._has_z else xy2
     r.check(len(pos2) == 2,
-            "a no-Z worker's sample stays a 2-tuple (every existing caller "
-            "indexes [0]/[1] only, so this must not change shape for them)")
+            "a no-Z worker's sample stays a 2-tuple (callers index [0]/[1])")
 
 
 def _calibrated_axis(**over) -> S.StageAxis:
-    """A Z axis that IS calibrated — the state a real "Set Z = 0" +
-    Calibrate… session leaves it in, unlike the bare `S.StageAxis(6, "Z",
-    4.7254)` most checks above use (never calibrated at all, jog's known-
-    permissive case)."""
+    """A Z axis as "Set Z = 0" + Calibrate… leaves it (the bare StageAxis
+    used above was never calibrated)."""
     kw = dict(ref_counts=1000.0, origin_set=True, slope=17.78, offset=0.0,
               soft_min=-9000, soft_max=11000)
     kw.update(over)
@@ -287,9 +281,8 @@ def _calibrated_axis(**over) -> S.StageAxis:
 
 
 def check_axis_frame_stale(r: Report) -> None:
-    """StageAxis-level: the core of the fix. A hard-limit hit re-references
-    the controller's command origin (driver.py), silently invalidating
-    `slope`/`offset` — `frame_stale` is how the app is meant to notice."""
+    """A hard-limit hit re-references the command origin, silently
+    invalidating `slope`/`offset`; `frame_stale` is how the app notices."""
     z = _calibrated_axis()
     r.check(z.has_frame, "fixture: a calibrated axis has a frame")
 
@@ -298,10 +291,8 @@ def check_axis_frame_stale(r: Report) -> None:
             "frame_stale alone drops has_frame, even with slope/offset/"
             "origin_set all otherwise intact")
 
-    # Recovery: apply_updates() clears it, but ONLY when the update actually
-    # remeasures the command map (carries "slope") — a plain re-zero
-    # (set_z_zero_here's center_updates() shape) must NOT paper over it, or
-    # "Set Z = 0" would silently un-flag a still-broken command map.
+    # Only a remeasured command map ("slope") clears it; "Set Z = 0" must not
+    # un-flag a still-broken one.
     z.apply_updates({"true_center": 2000, "soft_min": -8000, "soft_max": 12000})
     r.check(z.frame_stale,
             "a center_updates()-shaped update (no 'slope' key) leaves "
@@ -314,18 +305,13 @@ def check_axis_frame_stale(r: Report) -> None:
 
 
 def check_clamp_counts_refuses_when_uncalibrated(r: Report) -> None:
-    """clamp_counts() must never silently pass an unbounded target through —
-    but a genuinely never-calibrated axis (no origin, no soft limits: the
-    state `check_mock_controller` above jogs successfully) is the expected,
-    legitimate bootstrap case and must stay a no-op, or a brand-new axis
-    could never be jogged anywhere to declare its first zero."""
+    """clamp_counts() never passes an unbounded target through — except on a
+    never-calibrated axis, which must be jogged to declare its first zero."""
     fresh = S.StageAxis(6, "Z", 4.7254)      # never touched — origin_set=False
     r.check(fresh.clamp_counts(999_999) == 999_999,
             "a never-calibrated axis's clamp is a no-op (bootstrap jog)")
 
-    # The contradiction normal app code cannot produce: origin_set True (it
-    # claims to be calibrated) with no soft limits — only a hand-edited
-    # config could do this, since center_updates() always sets both together.
+    # Calibrated but no soft limits: only a hand-edited config does this.
     tampered = S.StageAxis(6, "Z", 4.7254, ref_counts=1000.0, origin_set=True)
     try:
         tampered.clamp_counts(999_999)
@@ -341,15 +327,13 @@ def check_clamp_counts_refuses_when_uncalibrated(r: Report) -> None:
 
 
 def check_mock_refuses_uncalibrated_and_stale(r: Report) -> None:
-    """MockStageController mirrors StageController's guards exactly, so the
-    dangerous paths (goto_fov, a routine's Move step — both call
-    `move_to_um` with no calibration check of their own) are protected at
-    this one chokepoint regardless of which controller is behind them."""
+    """The mock mirrors StageController's guards: goto_fov and a routine's
+    Move step rely on `move_to_um` as their only calibration check."""
     s = S.StageSettings(z=_calibrated_axis())
     c = MockStageController(s)
     c.connect()
 
-    # Uncalibrated X: move_to_um refuses (has_frame == False by default).
+    # X is uncalibrated.
     try:
         c.move_to_um("x", 100.0)
         r.check(False, "move_to_um on an uncalibrated axis should refuse")
@@ -369,18 +353,15 @@ def check_mock_refuses_uncalibrated_and_stale(r: Report) -> None:
         except StageControllerError:
             r.check(True, f"{label}('z', ...) refuses while frame_stale")
 
-    # Recovery clears it, same as the real controller.
     s.z.apply_updates({"slope": 17.9, "offset": 1.0})
     c.move_to_um("z", 100.0)
     r.check(c._target["z"] == 100.0,
             "…and moves normally again once frame_stale clears")
 
 
-class _FakeDev:
-    """Just enough of the real MCM6101 surface for StageController's own
-    logic (limit detection, refusal) — no serial port, no ALP. `establish_frame`
-    existing at all is what makes `supports_reframe` True, matching the real
-    MCM6101 driver."""
+class _FakeDevNoReframe:
+    """MCM301-like: no `establish_frame` at all — `supports_reframe` is
+    `hasattr(dev, 'establish_frame')`, so it must be absent, not None."""
 
     def __init__(self) -> None:
         self.statuses: dict[int, object] = {}
@@ -391,36 +372,19 @@ class _FakeDev:
 
     def move_to_readout(self, axis: int, target_readout: int) -> None:
         self.moves.append((axis, target_readout))
+
+
+class _FakeDev(_FakeDevNoReframe):
+    """MCM6101-like: `establish_frame` exists, so `supports_reframe`."""
 
     def establish_frame(self, axis: int, span: int) -> dict:
         raise NotImplementedError("not exercised by these checks")
 
 
-class _FakeDevNoReframe:
-    """An MCM301-like backend: no `establish_frame` at all (unlike _FakeDev),
-    since StageController.supports_reframe gates on `hasattr(dev,
-    'establish_frame')` — assigning None would still pass that check, so
-    this deliberately doesn't subclass `_FakeDev`, it just omits the method."""
-
-    def __init__(self) -> None:
-        self.statuses: dict[int, object] = {}
-        self.moves: list[tuple[int, int]] = []
-
-    def get_status(self, axis: int):
-        return self.statuses[axis]
-
-    def move_to_readout(self, axis: int, target_readout: int) -> None:
-        self.moves.append((axis, target_readout))
-
-
 def check_real_controller_detects_hard_limit(r: Report) -> None:
-    """The centerpiece of the fix. Before this, a hard-limit hit was
-    invisible: the poll loop already read the full status (limit bits
-    included) every cycle but only ever kept `.position` — nothing noticed,
-    the status label kept saying "Frame OK", and the next absolute move (or
-    even a jog) computed its target through a driver-side command<->encoder
-    map the limit hit had just silently invalidated (driver.py's own
-    comments). This is the live detection that closes that gap."""
+    """A hard-limit hit used to be invisible: the poll kept only `.position`,
+    the label said "Frame OK", and the next move went through a command map
+    the hit had invalidated."""
     from acqApp.devices.stage.driver import AxisStatus, STATUS_REV_HWLIMIT
 
     z = _calibrated_axis()
@@ -442,9 +406,7 @@ def check_real_controller_detects_hard_limit(r: Report) -> None:
             "a hard-limit status bit latches frame_stale on the very next "
             "read — the same read path the 4 Hz poll worker already uses")
 
-    # Sticky: backing off the limit switch must not un-flag it — the command
-    # origin re-referenced the INSTANT it was touched, not for as long as the
-    # bit stays set.
+    # Sticky: the origin re-referenced the instant the switch was touched.
     ctrl._dev.statuses[6] = AxisStatus(6, 1490, 1490, 0)
     ctrl.read_z_um()
     r.check(z.frame_stale, "backing off the limit does not clear frame_stale")
@@ -464,9 +426,7 @@ def check_real_controller_detects_hard_limit(r: Report) -> None:
     r.check(ctrl._dev.moves == [],
             "…and in neither case did a command actually reach the device")
 
-    # Recovery: establish_frame() measures a FRESH slope/offset directly in
-    # raw command units (move_absolute, not move_to_readout) — immune to the
-    # very staleness it exists to fix — and apply_updates() clears the flag.
+    # establish_frame()'s update shape (fresh slope/offset) clears the flag.
     z.apply_updates({"slope": 17.9, "offset": 2.0})
     ctrl.move_to_um("z", 100.0)
     r.check(len(ctrl._dev.moves) == 1,
@@ -474,9 +434,7 @@ def check_real_controller_detects_hard_limit(r: Report) -> None:
 
 
 def check_limit_bit_ignored_on_non_drifting_backend(r: Report) -> None:
-    """The MCM301's own position readout never drifts on a limit hit (see
-    StageController.supports_reframe's docstring) — flagging frame_stale
-    there would be a false alarm this backend can't actually have."""
+    """The MCM301's readout never drifts on a limit hit: no false alarm."""
     from acqApp.devices.stage.driver import AxisStatus, STATUS_FWD_HWLIMIT
 
     z = _calibrated_axis()

@@ -1,11 +1,7 @@
 """Pupil camera — the Qt settings panel. The model is in `settings.py`.
 
-Camera, frame source, eye region, tracking, blink detection, corneal
-reflection and LED.
-
-Every control here writes into `settings`, and `settings` is what the adapter
-persists — so a knob that isn't read back in that property is a knob the
-operator loses at the next launch. That has happened; keep them in step.
+The adapter persists exactly `settings`: a knob not read back there is lost
+at the next launch. That has happened; keep them in step.
 """
 from __future__ import annotations
 
@@ -24,27 +20,20 @@ _VIDEO_FILTER = "Uncompressed AVI (*.avi);;All files (*)"
 
 
 class SettingsPanel(QWidget):
-    exposure_changed = pyqtSignal(float)   # hot-applied to the worker while running
-    led_toggled      = pyqtSignal(bool)    # eye-tracking illumination on/off
-    led_intensity_changed = pyqtSignal(float)  # 0..1, hot-applied like exposure_changed
-    # Any parameter edit. The LED is deliberately NOT one of these: it's
-    # runtime state, and restoring it at launch would turn the illumination on
-    # in an empty rig.
-    settings_changed = pyqtSignal(object)  # emits PupilSettings
+    exposure_changed = pyqtSignal(float)
+    led_toggled      = pyqtSignal(bool)
+    led_intensity_changed = pyqtSignal(float)  # 0..1
+    # Not the LED on/off: restoring it at launch would light an empty rig.
+    settings_changed = pyqtSignal(object)  # PupilSettings
 
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
         self._s = settings or PupilSettings()
-        # (hz, exposure_limited) reported by the running camera, or None when
-        # we only have the requested rate (before Start) — voltage_cam's
-        # pattern (devices/voltage_cam/panel.py).
+        # (hz, exposure_limited) from the running camera; None before Start.
         self._measured: tuple[float, bool] | None = None
-        self._video = self._s.video_path     # held as state, shown by basename
-        # Placed on the preview, so held here rather than in a widget — label
-        # and Clear button are only a readout of this list.
-        self._pins = list(self._s.cr_pins)
-        # Widgets emit as they're built, and `settings` reads all of them —
-        # so nothing is emitted until every group exists.
+        self._video = self._s.video_path
+        self._pins = list(self._s.cr_pins)      # placed on the preview
+        # Widgets emit as they're built; `settings` needs all of them.
         self._ready = False
         self._build()
         self._ready = True
@@ -62,12 +51,10 @@ class SettingsPanel(QWidget):
         self._spn_exp.valueChanged.connect(self.exposure_changed)
         cl.addRow("Exposure:", self._spn_exp)
 
-        # A frame period can't be shorter than the exposure inside it, so Rate
-        # always caps Exposure's maximum to 1/rate — independent of Link, which
-        # only decides whether moving one *also* moves the other. Matches
-        # devices/voltage_cam/panel.py's Rate/Exposure pair.
+        # Rate always caps Exposure at 1/rate; Link also moves one with the
+        # other (as in devices/voltage_cam/panel.py).
         self._spn_hz = spin(1.0, 200.0, self._s.rate_hz,
-                            decimals=2, suffix=" Hz")   # 2 = Qt's own default
+                            decimals=2, suffix=" Hz")
         self._chk_hz_link = QCheckBox("Link")
         self._chk_hz_link.setToolTip(
             "Keep Rate and Exposure locked together (Exposure = 1 / Rate)")
@@ -79,9 +66,7 @@ class SettingsPanel(QWidget):
         hz_lay.addWidget(self._chk_hz_link)
         cl.addRow("Rate:", hz_row)
 
-        # What the rate actually is: the requested value until Start, then the
-        # camera's own measured one (set_measured_rate). Built before the
-        # initial cap below, since that call refreshes this label.
+        # Before the initial cap below, which refreshes it.
         self._lbl_rate = QLabel()
         cl.addRow("Frame rate:", self._lbl_rate)
 
@@ -114,7 +99,7 @@ class SettingsPanel(QWidget):
         self._chk_auto.setChecked(self._s.auto_levels)
         self._chk_auto.setToolTip(
             "On: levels are recomputed from each frame's own brightness "
-            "range.\nOff (default): the LUT is pinned to 0-255 and you drag "
+            "range.\nOff: the LUT is pinned to 0-255 and you drag "
             "its handles yourself — the app leaves them alone.")
         self._chk_auto.toggled.connect(self._emit)
 
@@ -166,15 +151,15 @@ class SettingsPanel(QWidget):
         for w in (self._spn_exp, self._spn_hz):
             w.valueChanged.connect(self._emit)
 
-    # ── rate / exposure link (devices/voltage_cam/panel.py's pattern) ─────────
+    # ── rate / exposure link ─────────────────────────────────────────────────
     def _on_hz_changed(self, hz: float) -> None:
-        """Rate always caps Exposure's ceiling; Link also drives it to the cap."""
+        """Cap Exposure at 1/rate; with Link, also set it there."""
         if self._hz_syncing:
             return
         self._hz_syncing = True
         try:
             max_us = 1e6 / hz if hz > 0 else self._spn_exp.maximum()
-            self._spn_exp.setMaximum(max_us)   # Qt clamps the value too
+            self._spn_exp.setMaximum(max_us)   # clamps the value too
             if self._chk_hz_link.isChecked():
                 self._spn_exp.setValue(max_us)
         finally:
@@ -182,7 +167,7 @@ class SettingsPanel(QWidget):
         self._refresh_rate()
 
     def _on_exposure_changed_for_hz(self, us: float) -> None:
-        """Only Link pulls Rate along; otherwise Rate stays the operator's cap."""
+        """Only Link pulls Rate along."""
         if not self._hz_syncing and self._chk_hz_link.isChecked():
             self._hz_syncing = True
             try:
@@ -216,20 +201,13 @@ class SettingsPanel(QWidget):
 
     def set_measured_rate(self, hz: float | None,
                           exposure_limited: bool = False) -> None:
-        """Show the camera's own measured frame rate. Pass None to revert to the
-        requested-rate estimate (e.g. when the session stops)."""
+        """The camera's measured rate; None reverts to the requested one."""
         self._measured = None if hz is None else (float(hz), bool(exposure_limited))
         self._refresh_rate()
 
     # ── eye region ───────────────────────────────────────────────────────────
     def _build_limit(self) -> QGroupBox:
-        """The rectangle the eye sits in — the numbers only.
-
-        **It's placed on the preview, not here**: a region of the frame is
-        picked by looking at the frame. These four exist for typing an exact
-        box and for reading back the one in force, and are what persists and
-        what the session file records.
-        """
+        """The eye region's numbers; it's drawn on the preview."""
         box = QGroupBox("Eye region")
         box.setToolTip(
             "The eye only ever appears in one part of the frame on a head-fixed "
@@ -246,8 +224,6 @@ class SettingsPanel(QWidget):
         self._spn_lx0, self._spn_ly0, self._spn_lx1, self._spn_ly1 = (
             self._px_spin(v) for v in
             (self._s.limit_x0, self._s.limit_y0, self._s.limit_x1, self._s.limit_y1))
-        # One row, not four form rows: it's a single box, and four labelled
-        # rows made a numeric-entry form out of something spatial.
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         for label, w in (("X0", self._spn_lx0), ("Y0", self._spn_ly0),
@@ -267,13 +243,8 @@ class SettingsPanel(QWidget):
 
     # ── tracking ─────────────────────────────────────────────────────────
     def _build_track(self) -> QGroupBox:
-        """The EyeLoop knobs. Off by default — see `settings.py` for why.
-
-        Threshold is the one that matters: it sets the reported radius (a 60 %
-        swing over 25-60 on the rig clips) at an unchanged 151/151 fit rate, so
-        no fit-rate readout will tell the operator it's wrong. It's
-        illumination-dependent and belongs to a session, not to the rig.
-        """
+        """EyeLoop knobs. Threshold sets the radius (60% swing over 25-60 on
+        the rig clips) at an unchanged 151/151 fit rate."""
         box = QGroupBox("Pupil tracking")
         box.setToolTip(
             "Fits an ellipse to the pupil inside the eye region, which is the "
@@ -311,9 +282,6 @@ class SettingsPanel(QWidget):
         form.addRow("Model:", self._cmb_model)
         vb.addLayout(form)
 
-        # Stabilization: a rolling mean of the last N fits, applied to both the
-        # drawn outline and the recorded trace — off by default so a session
-        # captures the raw fit unless the operator opts into smoother numbers.
         self._chk_smooth = QCheckBox("Stabilize outline")
         self._chk_smooth.setChecked(self._s.smooth)
         self._chk_smooth.setToolTip(
@@ -341,10 +309,7 @@ class SettingsPanel(QWidget):
 
     # ── blink detection ─────────────────────────────────────────────────────
     def _build_blink(self) -> QGroupBox:
-        """A blink read off the radius trace: a sudden, large drop against a
-        rolling baseline of recent good fits — see `settings.py` for why this
-        runs on the raw fit regardless of the Stabilize option above.
-        """
+        """A sudden radius drop against a rolling baseline, on the raw fit."""
         box = QGroupBox("Blink detection")
         box.setToolTip(
             "Flags a frame whose radius has suddenly dropped, likely a "
@@ -383,13 +348,9 @@ class SettingsPanel(QWidget):
 
     # ── corneal reflection ───────────────────────────────────────────────
     def _build_cr(self) -> QGroupBox:
-        """Removal of the IR reflections, done here because EyeLoop's own never
-        runs (disabled upstream in three places at once).
-
-        The gain is real but clip-dependent — it tightened radius scatter by
-        0.9 px on one rig clip and couldn't safely reach the reflection on the
-        other. The defaults are chosen not to inflate the radius.
-        """
+        """IR reflection removal (EyeLoop's own is disabled upstream).
+        Clip-dependent: 0.9 px less radius scatter on one rig clip, no reach
+        on the other; defaults chosen not to inflate the radius."""
         box = QGroupBox("Corneal reflection")
         vb = QVBoxLayout(box)
         vb.setSpacing(4)
@@ -432,9 +393,8 @@ class SettingsPanel(QWidget):
             "threshold is set.")
         vb.addWidget(self._chk_cr_mask)
 
-        # Pins are placed on the preview, like the eye region and for the same
-        # reason: they're positions in the frame. Said here too — this group
-        # has no button of its own, and that read as "pins can't be added".
+        # This group has no add button; without the hint that read as "pins
+        # can't be added".
         pin_hint = QLabel("Add one with Pin reflection, above the pupil preview.")
         pin_hint.setWordWrap(True)
         pin_hint.setStyleSheet("color:#9aa0a6;")
@@ -463,7 +423,7 @@ class SettingsPanel(QWidget):
 
     # ── pins (placed on the preview) ─────────────────────────────────────
     def set_pins(self, pins) -> None:
-        """Write the pin list in from the preview, as ONE settings change."""
+        """From the preview, as ONE settings change."""
         self._pins = [tuple(float(v) for v in pin) for pin in pins]
         self._show_pins()
         self._emit()
@@ -484,9 +444,7 @@ class SettingsPanel(QWidget):
 
     @staticmethod
     def _px_spin(value: float) -> QDoubleSpinBox:
-        # 0-20,000 px covers any sensor, and 0 is a valid edge. Untracked:
-        # typing "150" would otherwise emit at 1, 15 and 150 — three saves for
-        # one edit, with the box jumping across the frame on the way.
+        # Untracked: typing "150" would otherwise emit at 1, 15 and 150.
         return spin(0.0, 20_000.0, value, decimals=0, suffix=" px", track=False)
 
     def _limit_edited(self, *_a) -> None:
@@ -496,7 +454,7 @@ class SettingsPanel(QWidget):
         self._emit()
 
     def set_limit(self, x0: float, y0: float, x1: float, y1: float) -> None:
-        """Write the box in from the preview, as ONE settings change."""
+        """From the preview, as ONE settings change."""
         for w, v in ((self._spn_lx0, x0), (self._spn_ly0, y0),
                      (self._spn_lx1, x1), (self._spn_ly1, y1)):
             w.blockSignals(True)
@@ -508,7 +466,7 @@ class SettingsPanel(QWidget):
         self.set_limit(0.0, 0.0, 0.0, 0.0)
 
     def _emit(self, *_a) -> None:
-        if not self._ready:             # mid-build: not a whole panel yet
+        if not self._ready:
             return
         self.settings_changed.emit(self.settings)
 
@@ -528,7 +486,7 @@ class SettingsPanel(QWidget):
         start = str(Path(self._video).parent) if self._video else ""
         path, _ = QFileDialog.getOpenFileName(
             self, "Pupil footage to replay", start, _VIDEO_FILTER)
-        if path:                       # empty = cancelled, which must not clear
+        if path:                        # "" = cancelled; must not clear
             self._set_video(path)
 
     def _set_video(self, path: str) -> None:
@@ -546,7 +504,7 @@ class SettingsPanel(QWidget):
 
     @property
     def settings(self) -> PupilSettings:
-        """Everything the panel holds. The adapter persists exactly this."""
+        """Everything the panel holds; the adapter persists exactly this."""
         return PupilSettings(
             exposure_us=self._spn_exp.value(),
             rate_hz=self._spn_hz.value(),
@@ -578,9 +536,7 @@ class SettingsPanel(QWidget):
         )
 
     def set_led(self, on: bool) -> None:
-        """Sync the checkbox to actual state without re-emitting led_toggled
-        — the adapter calls this when Follow Live view fires the LED itself,
-        so the checkbox still shows the truth without a feedback loop."""
+        """Show the LED's state without re-emitting `led_toggled`."""
         self._chk_led.blockSignals(True)
         self._chk_led.setChecked(on)
         self._chk_led.blockSignals(False)

@@ -175,8 +175,8 @@ def recording_run_ids(routine: "Routine", order: list[int]) -> list[int | None]:
 
 @dataclass
 class Routine:
-    """The whole protocol; `cycles` repeats the step list end to end. Always
-    arms on Start (the camera's first edge starts step 1)."""
+    """The whole protocol; `cycles` repeats the step list end to end. Start
+    arms on the camera's first edge, unless trigger steps wait for their own."""
     name:          str = "routine"
     steps:         list[Step] = field(default_factory=list)
     groups:        list[Group] = field(default_factory=list)

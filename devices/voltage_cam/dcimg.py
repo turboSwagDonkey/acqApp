@@ -19,14 +19,12 @@ _int32 = ctypes.c_int32
 # DCAMREC_STATUSFLAG_RECORDING
 FLAG_RECORDING = 0x01
 
-# A recording's length isn't known when it opens (the operator presses Stop),
-# but `maxframepersession` must be a real cap: 0 is rejected outright, and
+# `maxframepersession` must be a real cap: 0 is rejected, and
 # `dcamcap_record` fails with FAILEDWRITEDATA once cap x frame_bytes exceeds
-# the target drive's FREE SPACE (measured 2026-09-23: 1e6 frames of 128 KB
-# bound on D: with 678 GB free, failed on C:; 1e7 failed on both). So the cap
-# is computed per recording, not fixed. DCAM reserves the whole cap at attach,
-# so a drive-sized one costs 4.3-6.7 s there (11M frames, rig 2026-09-30) vs
-# 0.01 s for 10k: a recording whose length is known passes a smaller cap.
+# the drive's FREE space (2026-09-23: 1e6 x 128 KB bound on D: with 678 GB
+# free, failed on C:; 1e7 failed on both), so it's computed per recording.
+# DCAM reserves the whole cap at attach: 4.3-6.7 s for a drive-sized 11M
+# frames vs 0.01 s for 10k (rig 2026-09-30), so a known length passes less.
 DISK_FRACTION = 0.9         # leave the drive some headroom
 MIN_FRAMES = 16             # refuse to open a recording that can't hold a burst
 
@@ -67,15 +65,16 @@ class RecStatus:
     index: int          # newest frame's index
     missing: int        # frames the recorder never got — real data loss
     recording: bool
-    session: int = 0    # which session within the file; see MAX_FRAMES
+    session: int = 0    # which session within the file
 
 
 def _err_name(code: int) -> str:
+    hexed = f"0x{code & 0xFFFFFFFF:08X}"
     try:
         from pylablib.devices.DCAM.dcamapi4_defs import drDCAMERR
-        return drDCAMERR.get(code, f"0x{code & 0xFFFFFFFF:08X}")
+        return drDCAMERR.get(code, hexed)
     except Exception:                       # noqa: BLE001 — naming is a nicety
-        return f"0x{code & 0xFFFFFFFF:08X}"
+        return hexed
 
 
 def _check(code: int, call: str) -> None:
@@ -98,7 +97,7 @@ def available() -> bool:
 class DcimgRecorder:
     """One `.dcimg` file, from `open()` to `close()`.
 
-        rec = DcimgRecorder(path)
+        rec = DcimgRecorder.for_frames(path, frame_bytes)
         rec.open()
         cam.setup_acquisition(...)   # buffer must exist first
         rec.attach(cam.handle)
@@ -141,8 +140,7 @@ class DcimgRecorder:
         return self._max_frames
 
     def open(self) -> None:
-        # Guards before the bindings: these are the two mistakes worth
-        # catching without a camera present.
+        # Checked before the bindings, so they're caught without a camera.
         if self._hrec is not None:
             raise DcimgError("already open")
         if self._max_frames < 1:

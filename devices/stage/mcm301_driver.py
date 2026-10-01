@@ -1,27 +1,18 @@
-"""
-mcm301_driver.py - Minimal, safe driver for a Thorlabs MCM301 3-channel
-stepper-motor stage controller: the replacement for the MCM6101 this app
-previously drove (see driver.py / docs/STAGE_TRANSFER.md for that hardware).
-
-Unlike the MCM6101, the MCM301 doesn't speak APT over a raw USB-CDC serial
-port. Thorlabs drives it through a vendor DLL (MCM301Lib_x64.dll) that owns
-the serial framing internally, and that DLL is the only documented
-interface -- so this driver wraps it via ctypes rather than reimplementing
-an undocumented wire protocol.
+"""Driver for a Thorlabs MCM301 3-channel stepper controller (the MCM6101's
+successor; see driver.py). Its only documented interface is the vendor DLL
+(MCM301Lib_x64.dll), which owns the serial framing, so this wraps it via
+ctypes.
 
 Verified on this hardware:
-  * Connection : USB CDC. It enumerated as COM3 until Windows handed that
-                 number to a second device as well, which wedged it (see
-                 open()); it now has COM10 to itself. The controller is
-                 identified by SERIAL NUMBER, so the port number is advisory.
-  * Addressing : each installed stepper card lives in a FIXED controller
-                 slot -- 4, 5, 6 (not axis index 0,1,2 like the old driver).
-  * Axes       : slots 4 and 5 hold MMP-201121 stages (0.5 um/count, travel
-                 +-50800 counts); slot 6 holds a PLS-283529, now driven as
-                 the app's Z/focus axis (2026-09-13).
+  * Connection : USB CDC, found by SERIAL NUMBER; the port is advisory. It
+                 was COM3 until Windows gave that number to a second device
+                 too, which wedged it (see open()); now COM10.
+  * Addressing : FIXED slots 4, 5, 6 (not 0-indexed axes like the MCM6101).
+  * Axes       : slots 4/5 are MMP-201121 (0.5 um/count, travel +-50800
+                 counts); slot 6 is a PLS-283529, the Z/focus axis
+                 (2026-09-13).
 
-Every method that causes MOTION is clearly marked. Nothing moves unless you
-call one of those methods.
+Only methods marked MOTION move anything.
 """
 from __future__ import annotations
 import ctypes
@@ -31,10 +22,10 @@ from ctypes import c_int, c_byte, c_uint, c_char_p, create_string_buffer, byref
 from dataclasses import dataclass
 from pathlib import Path
 
-# Fixed slot numbers for this controller (per Thorlabs MCM301 SDK docs).
+# Fixed slots (Thorlabs MCM301 SDK docs).
 SLOT_X = 4
 SLOT_Y = 5
-SLOT_Z = 6  # the rig's focus axis; driven via StageSettings.z when configured
+SLOT_Z = 6  # focus; driven via StageSettings.z when configured
 
 DEFAULT_BAUD = 115200
 DEFAULT_TIMEOUT_S = 3
@@ -91,10 +82,8 @@ class AxisStatus:
 
 
 class _StageParamsInfoStruct(ctypes.Structure):
-    # minimum/maximum_position are declared DWORD (unsigned) in Thorlabs'
-    # header, but the values observed on this hardware are two's-complement
-    # negative numbers (e.g. a homed stage centered at 0 reports a minimum as
-    # a large unsigned value just under 2**32) -- so these are read as signed.
+    # min/max_position are DWORD in Thorlabs' header but hold two's-complement
+    # negatives on this hardware (a minimum just under 2**32), so signed.
     _fields_ = [("counts_per_unit", c_uint), ("nm_per_count", ctypes.c_float),
                 ("minimum_position", c_int), ("maximum_position", c_int),
                 ("maximum_speed", ctypes.c_double), ("maximum_acc", ctypes.c_double)]
@@ -102,9 +91,7 @@ class _StageParamsInfoStruct(ctypes.Structure):
 
 @dataclass
 class StageParams:
-    """The physical stage's own reported parameters (GetStageParams) -- real
-    calibration data straight from the controller, unlike the MCM6101's
-    command-unit scale which had to be measured by hand."""
+    """The stage's own reported parameters (GetStageParams)."""
     counts_per_unit: int
     nm_per_count: float
     minimum_position: int
@@ -128,72 +115,60 @@ _LIB: ctypes.WinDLL | None = None
 _LIB_LOCK = threading.Lock()
 
 
+# Every DLL entry point used, with its argtypes; all return int. Unpinned,
+# ctypes assumes int arguments and silently truncates the pointers.
+_SIGNATURES = {
+    "List":               [c_char_p, c_int],
+    "Open":               [c_char_p, c_int, c_int],
+    "IsOpen":             [c_char_p],
+    "Close":              [c_int],
+    "GetErrorState":      [c_int],
+    "GetHardwareInfo":    [c_int, ctypes.c_void_p, c_int, ctypes.c_void_p,
+                           c_int],
+    "GetSlotDeviceType":  [c_int, c_byte, c_char_p, c_int],
+    "GetMotStatus":       [c_int, c_byte, ctypes.POINTER(c_int),
+                           ctypes.POINTER(c_uint)],
+    "GetStageParams":     [c_int, c_byte,
+                           ctypes.POINTER(_StageParamsInfoStruct)],
+    "MoveAbsolute":       [c_int, c_byte, c_int],
+    "MoveJog":            [c_int, c_byte, c_byte],
+    "MoveStop":           [c_int, c_byte],
+    "Home":               [c_int, c_byte],
+    "SetChanEnableState": [c_int, c_byte, c_byte],
+}
+
+
 def _load_lib() -> ctypes.WinDLL:
-    """The vendor DLL, loaded and signature-declared once. Windows refcounts
-    the module anyway, but re-declaring twenty signatures on every call is
-    pure waste — a single connect() would otherwise do it three times."""
+    """The vendor DLL, loaded and signature-declared once per process."""
     global _LIB
     with _LIB_LOCK:
-        if _LIB is not None:
-            return _LIB
-        lib = ctypes.WinDLL(str(_find_dll()))
-        _declare(lib)
-        _LIB = lib
-        return lib
-
-
-def _declare(lib: ctypes.WinDLL) -> None:
-    """Pin every signature this driver calls. ctypes otherwise assumes int
-    arguments and an int return, which silently truncates the pointers."""
-    lib.List.argtypes = [c_char_p, c_int]
-    lib.List.restype = c_int
-    lib.Open.argtypes = [c_char_p, c_int, c_int]
-    lib.Open.restype = c_int
-    lib.IsOpen.argtypes = [c_char_p]
-    lib.IsOpen.restype = c_int
-    lib.Close.argtypes = [c_int]
-    lib.Close.restype = c_int
-    lib.GetErrorState.argtypes = [c_int]
-    lib.GetErrorState.restype = c_int
-    lib.GetHardwareInfo.argtypes = [c_int, ctypes.c_void_p, c_int, ctypes.c_void_p, c_int]
-    lib.GetHardwareInfo.restype = c_int
-    lib.GetSlotDeviceType.argtypes = [c_int, c_byte, c_char_p, c_int]
-    lib.GetSlotDeviceType.restype = c_int
-    lib.GetMotStatus.argtypes = [c_int, c_byte, ctypes.POINTER(c_int), ctypes.POINTER(c_uint)]
-    lib.GetMotStatus.restype = c_int
-    lib.GetStageParams.argtypes = [c_int, c_byte, ctypes.POINTER(_StageParamsInfoStruct)]
-    lib.GetStageParams.restype = c_int
-    lib.MoveAbsolute.argtypes = [c_int, c_byte, c_int]
-    lib.MoveAbsolute.restype = c_int
-    lib.MoveJog.argtypes = [c_int, c_byte, c_byte]
-    lib.MoveJog.restype = c_int
-    lib.MoveStop.argtypes = [c_int, c_byte]
-    lib.MoveStop.restype = c_int
-    lib.Home.argtypes = [c_int, c_byte]
-    lib.Home.restype = c_int
-    lib.SetChanEnableState.argtypes = [c_int, c_byte, c_byte]
-    lib.SetChanEnableState.restype = c_int
+        if _LIB is None:
+            lib = ctypes.WinDLL(str(_find_dll()))
+            for name, argtypes in _SIGNATURES.items():
+                fn = getattr(lib, name)
+                fn.argtypes = argtypes
+                fn.restype = c_int
+            _LIB = lib
+        return _LIB
 
 
 def com_name(descriptor: str) -> str:
-    """Pull the plain port name out of an enumeration descriptor, e.g.
-    '1313&2016&MCM301&Thorlabs&COM10&COM' -> 'COM10'. Falls back to the whole
-    descriptor if it holds no recognizable COM token."""
+    """'1313&2016&MCM301&Thorlabs&COM10&COM' -> 'COM10'; the descriptor
+    itself if it holds no COM token."""
     m = re.search(r"COM\d+", descriptor.upper())
     return m.group(0) if m else descriptor
 
 
 def list_devices() -> list[tuple[str, str]]:
-    """Return [(serial_number, com_descriptor), ...] for every MCM301-family
-    device Windows currently sees (open or not). Read-only; no port is opened."""
+    """[(serial_number, com_descriptor), ...] for every MCM301-family device
+    Windows sees. Opens no port."""
     lib = _load_lib()
     buf = create_string_buffer(10240)
     n = lib.List(buf, 10240)
     if n < 0:
         raise MCM301Error(f"List() failed (code {n}).")
-    # The DLL returns one flat comma-separated list, alternating serial number
-    # and port descriptor. Empty fields do appear between entries, so pair them
-    # up by state rather than by index.
+    # One flat comma list alternating serial and descriptor, with stray empty
+    # fields between entries: pair by state, not by index.
     devices: list[tuple[str, str]] = []
     pending_serial: str | None = None
     for field in buf.value.decode("utf-8", "ignore").rstrip("\x00").split(","):
@@ -226,21 +201,16 @@ class MCM301:
                 "No MCM301 controller is connected to this computer - the "
                 "Thorlabs SDK enumerates none. Check that the controller is "
                 "powered on and its USB cable is plugged in.")
-        # Compare the extracted port name, not a substring of the descriptor:
-        # "COM1" is a substring of "…COM10&COM" and would match the wrong box.
+        # Whole port names: "COM1" is a substring of "...COM10&COM".
         want = self.port_name.upper()
         matches = [sn for sn, com in devices if com_name(com) == want]
         if matches:
             self._serial = matches[0]
         elif len(devices) == 1:
-            # Windows reassigns COM numbers freely — and will even hand the
-            # same number to two devices if one of them was unplugged at the
-            # time, which routes this controller's traffic to whatever else
-            # claimed it (seen 2026-09: COM3 shared with a Bpod interface;
-            # every query then blocked forever). The SDK's enumeration lists
-            # ONLY MCM301-family devices, so a single unambiguous controller
-            # is the one meant, whatever number it landed on. Record where it
-            # actually was, so logs and metadata don't lie.
+            # Windows renumbers COM ports, even giving one number to two
+            # devices (2026-09: COM3 shared with a Bpod; every query blocked
+            # forever). The SDK lists only MCM301s, so a lone one is the one
+            # meant; record where it really is for logs and metadata.
             self._serial, found_com = devices[0]
             self.port_name = com_name(found_com)
         else:
@@ -257,13 +227,12 @@ class MCM301:
         self._verify_responds()
 
     def _verify_responds(self, budget_s: float = 5.0) -> None:
-        """Confirm the controller actually answers before we call it connected.
+        """Refuse a controller that opens but never answers.
 
-        A wedged MCM301 still enumerates and still opens cleanly, but then
-        answers nothing -- and the vendor DLL does NOT honour its own open
-        timeout there, it blocks forever. Observed after a host process was
-        killed while holding the port. Left undetected, this hangs the
-        position poll worker mid-session -- far worse than refusing to start.
+        A wedged MCM301 (seen after a host process was killed holding the
+        port) enumerates and opens cleanly, then the DLL blocks forever,
+        ignoring its own timeout; undetected, it hangs the poll worker
+        mid-session.
         """
         done = threading.Event()
 
@@ -278,9 +247,8 @@ class MCM301:
         threading.Thread(target=ask, daemon=True).start()
         if done.wait(budget_s):
             return
-        # Deliberately NOT Close()d: that thread is still blocked inside the
-        # DLL, and closing the handle out from under it isn't safe. The
-        # controller needs a power-cycle regardless.
+        # Not Close()d: the thread is still blocked inside the DLL on this
+        # handle, and the controller needs a power-cycle regardless.
         self._hdl = -1
         raise MCM301Error(
             f"The MCM301 on {self.port_name} opened but isn't responding "
@@ -306,14 +274,18 @@ class MCM301:
         if not self.is_open:
             raise MCM301Error("Port isn't open.")
 
+    def _call(self, what: str, fn: str, *args) -> None:
+        """self._lib.<fn>(handle, *args), raising `what failed` on an error."""
+        self._check_open()
+        ret = getattr(self._lib, fn)(self._hdl, *args)
+        if ret < 0:
+            raise MCM301Error(f"{what} failed (code {ret}).")
+
     # ---- device info (read-only) -------------------------------------------
     def get_info(self) -> DeviceInfo:
-        self._check_open()
         fw = (c_byte * 3)()
         cpid = (c_byte * 2)()
-        ret = self._lib.GetHardwareInfo(self._hdl, fw, 3, cpid, 2)
-        if ret < 0:
-            raise MCM301Error(f"GetHardwareInfo failed (code {ret}).")
+        self._call("GetHardwareInfo", "GetHardwareInfo", fw, 3, cpid, 2)
         return DeviceInfo(
             serial=self._serial or "",
             firmware_version=tuple(fw),
@@ -321,11 +293,9 @@ class MCM301:
         )
 
     def get_slot_device_type(self, slot: int) -> str:
-        self._check_open()
         buf = create_string_buffer(64)
-        ret = self._lib.GetSlotDeviceType(self._hdl, slot, buf, 64)
-        if ret < 0:
-            raise MCM301Error(f"GetSlotDeviceType({slot}) failed (code {ret}).")
+        self._call(f"GetSlotDeviceType({slot})", "GetSlotDeviceType",
+                   slot, buf, 64)
         return buf.value.decode("utf-8", "ignore").rstrip("\x00").replace("\r\n", "")
 
     def detect_axes(self, slots=(SLOT_X, SLOT_Y, SLOT_Z)) -> list[int]:
@@ -341,22 +311,17 @@ class MCM301:
 
     # ---- per-axis reads (read-only) ----------------------------------------
     def get_status(self, slot: int) -> AxisStatus:
-        self._check_open()
         enc = c_int(0)
         bits = c_uint(0)
-        ret = self._lib.GetMotStatus(self._hdl, slot, byref(enc), byref(bits))
-        if ret < 0:
-            raise MCM301Error(f"GetMotStatus(slot={slot}) failed (code {ret}).")
+        self._call(f"GetMotStatus(slot={slot})", "GetMotStatus",
+                   slot, byref(enc), byref(bits))
         return AxisStatus(slot=slot, position=enc.value, status_bits=bits.value)
 
     def get_stage_params(self, slot: int) -> StageParams:
-        """The connected stage's own reported scale and travel -- real
-        numbers from the controller, not something this app has to measure."""
-        self._check_open()
+        """The connected stage's own reported scale and travel."""
         info = _StageParamsInfoStruct()
-        ret = self._lib.GetStageParams(self._hdl, slot, byref(info))
-        if ret < 0:
-            raise MCM301Error(f"GetStageParams(slot={slot}) failed (code {ret}).")
+        self._call(f"GetStageParams(slot={slot})", "GetStageParams",
+                   slot, byref(info))
         return StageParams(
             counts_per_unit=info.counts_per_unit, nm_per_count=info.nm_per_count,
             minimum_position=info.minimum_position, maximum_position=info.maximum_position,
@@ -368,65 +333,47 @@ class MCM301:
     # ======================================================================
     def move_absolute(self, slot: int, target_encoder: int):
         """MOTION: move `slot` to an absolute encoder position."""
-        self._check_open()
-        ret = self._lib.MoveAbsolute(self._hdl, slot, int(target_encoder))
-        if ret < 0:
-            raise MCM301Error(f"MoveAbsolute(slot={slot}) failed (code {ret}).")
+        self._call(f"MoveAbsolute(slot={slot})", "MoveAbsolute",
+                   slot, int(target_encoder))
 
     def move_to_readout(self, slot: int, target_readout: int):
-        """MOTION: alias for move_absolute(). Unlike the MCM6101, this
-        controller's move target IS the encoder count directly -- there's no
-        coarser command-unit scale to convert through first."""
+        """MOTION: alias for move_absolute(); targets here are encoder counts
+        already (no MCM6101-style command units)."""
         self.move_absolute(slot, target_readout)
 
     def jog_by_readout(self, slot: int, delta_readout: int, current_readout: int | None = None):
-        """MOTION: jog `slot` by delta encoder counts, implemented as an
-        absolute move to (current + delta). Reads current position if not
-        supplied."""
+        """MOTION: absolute move to current + delta encoder counts (reads
+        current if not given)."""
         if current_readout is None:
             current_readout = self.get_status(slot).position
         self.move_to_readout(slot, current_readout + delta_readout)
 
     def jog(self, slot: int, forward: bool = True):
-        """MOTION: start a jog move in one direction (controller's own jog params)."""
-        self._check_open()
-        ret = self._lib.MoveJog(self._hdl, slot, 1 if forward else 0)
-        if ret < 0:
-            raise MCM301Error(f"MoveJog(slot={slot}) failed (code {ret}).")
+        """MOTION: start a jog with the controller's own jog params."""
+        self._call(f"MoveJog(slot={slot})", "MoveJog",
+                   slot, 1 if forward else 0)
 
     def home(self, slot: int):
         """MOTION: begin a homing move."""
-        self._check_open()
-        ret = self._lib.Home(self._hdl, slot)
-        if ret < 0:
-            raise MCM301Error(f"Home(slot={slot}) failed (code {ret}).")
+        self._call(f"Home(slot={slot})", "Home", slot)
 
     def stop(self, slot: int, profiled: bool = True):
-        """Stop motion on `slot`. `profiled` is accepted (and ignored) for
-        signature parity with the MCM6101 driver -- this controller has a
-        single stop behaviour."""
-        self._check_open()
-        ret = self._lib.MoveStop(self._hdl, slot)
-        if ret < 0:
-            raise MCM301Error(f"MoveStop(slot={slot}) failed (code {ret}).")
+        """Stop `slot`. `profiled` is ignored (MCM6101 signature parity): this
+        controller has one stop behaviour."""
+        self._call(f"MoveStop(slot={slot})", "MoveStop", slot)
 
     def stop_all(self, slots):
         for s in slots:
             self.stop(s)
 
     def set_enabled(self, slot: int, enable: bool):
-        """Enable (energize) or disable (de-energize) a stepper."""
-        self._check_open()
-        ret = self._lib.SetChanEnableState(self._hdl, slot, 1 if enable else 0)
-        if ret < 0:
-            raise MCM301Error(f"SetChanEnableState(slot={slot}) failed (code {ret}).")
+        """Energize or de-energize a stepper."""
+        self._call(f"SetChanEnableState(slot={slot})", "SetChanEnableState",
+                   slot, 1 if enable else 0)
 
     # ---- interface parity with the MCM6101 driver --------------------------
-    # StageController.connect() loads a saved slope/offset into the driver
-    # when one is on file. This hardware has no command<->encoder scale to
-    # store -- move_to_readout() already targets true encoder counts -- so
-    # these are no-ops, present only so that code path doesn't need a
-    # backend-specific branch.
+    # No command<->encoder scale here; no-ops so StageController.connect()
+    # needs no backend branch.
     def set_linear_map(self, slot: int, slope: float, offset: float):
         pass
 
@@ -435,17 +382,14 @@ class MCM301:
 
 
 if __name__ == "__main__":
-    # Make the console unable to raise on this script's own output before it
-    # prints anything (see acqApp/console.py -- a UnicodeEncodeError from a
-    # diagnostic print is otherwise indistinguishable from a device failure).
-    import sys as _sys
-    from pathlib import Path as _Path
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from acqApp.console import enable_safe_console
     enable_safe_console()
 
-    # Read-only self test: connect, identify device, print X/Y status. No motion.
-    import sys
+    # Read-only self test: identify, then each slot's status. No motion.
     port = sys.argv[1] if len(sys.argv) > 1 else "COM3"
     print(f"Devices seen by the MCM301 SDK: {list_devices()!r}")
     with MCM301(port) as dev:

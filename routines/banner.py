@@ -71,10 +71,8 @@ class RoutineBanner(QWidget):
         if not self.isVisible():
             self._place()
             self.show()
-        # WindowStaysOnTopHint is a standing OS request, not a one-time raise
-        # — call it on every update (not just first show), so a routine that
-        # runs unattended for a while doesn't stay buried behind whatever the
-        # operator brought forward since the last state change.
+        # On every update, not just on show: StaysOnTop alone doesn't keep an
+        # unattended run's banner above windows the operator raised since.
         self.raise_()
 
     def _place(self) -> None:

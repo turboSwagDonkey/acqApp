@@ -65,10 +65,9 @@ class _EncoderBase(PullWorker):
         """-> (speed, net_distance). Unscaled, speed is the raw voltage."""
         with self._scale_lock:
             vpr, dia = self._vpr, self._dia
-        circ = np.pi * dia if dia else 1.0   # mm per rev, else report in rev
-
         if not vpr:
             return v, 0.0
+        circ = np.pi * dia if dia else 1.0   # mm per rev, else report in rev
 
         frac = min(max(v / vpr, 0.0), 1.0)
         if self._frac_prev is None:
@@ -247,6 +246,7 @@ class EncoderWorker(_EncoderBase):
         self.timestamp_source = "software"
         self.actual_rate = self._rate
         period = 1.0 / self._rate
+        rate_every = max(1, int(self._rate))
         t0 = time.perf_counter()
 
         with Task() as task:
@@ -257,7 +257,7 @@ class EncoderWorker(_EncoderBase):
                 voltage: float = task.read()  # type: ignore[assignment]
                 now = time.perf_counter()
                 self._emit_sample(float(voltage), now - t0, now)
-                if n % max(1, int(self._rate)) == 0 and now > t0:
+                if n % rate_every == 0 and now > t0:
                     self.hz_update.emit(n / (now - t0))
 
 
@@ -271,6 +271,7 @@ class MockEncoderWorker(_EncoderBase):
         self._stop = False
         self.actual_rate = self.RATE
         period = 1.0 / self.RATE
+        rate_every = int(self.RATE)
         vfs = self._vpr or 5.0
         rng = np.random.default_rng()
         t0 = time.perf_counter()
@@ -286,5 +287,5 @@ class MockEncoderWorker(_EncoderBase):
             voltage = float((rev % 1.0) * vfs + rng.normal(0, 0.045))
             voltage = min(max(voltage, 0.0), vfs)
             self._emit_sample(voltage, t, t0 + t)
-            if n % int(self.RATE) == 0 and t > 0:
+            if n % rate_every == 0 and t > 0:
                 self.hz_update.emit(n / t)

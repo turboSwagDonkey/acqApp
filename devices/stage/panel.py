@@ -20,8 +20,7 @@ from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
 
 
 def _available_ports(current: str) -> list[str]:
-    """Present serial ports, `current` first so an unplugged device's saved
-    port isn't dropped."""
+    """Present serial ports, `current` first even if it's unplugged."""
     ports = []
     try:
         from serial.tools import list_ports
@@ -161,40 +160,35 @@ class CalibrationDialog(QDialog):
         return lbl
 
     # ── status ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _show(lbl: QLabel, ok: bool, ok_text: str, bad_text: str) -> None:
+        lbl.setText(ok_text if ok else bad_text)
+        lbl.setStyleSheet("" if ok else f"color: {_BAD};")
+
     def _update_status(self) -> None:
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
-        if missing:
-            self._lbl_status.setText(
-                f"No valid frame for {', '.join(missing)}. Absolute go-to is "
-                "disabled; jog still works. Re-establish the frame, then set 0,0.")
-            self._lbl_status.setStyleSheet(f"color: {_BAD};")
-        else:
-            self._lbl_status.setText(
-                f"Frame OK — 0,0 at {self._s.x.ref_counts:.0f}, "
-                f"{self._s.y.ref_counts:.0f} counts. Invalid from the moment a "
-                "hard limit is hit.")
-            self._lbl_status.setStyleSheet("")
+        self._show(
+            self._lbl_status, not missing,
+            f"Frame OK — 0,0 at {self._s.x.ref_counts:.0f}, "
+            f"{self._s.y.ref_counts:.0f} counts. Invalid from the moment a "
+            "hard limit is hit.",
+            f"No valid frame for {', '.join(missing)}. Absolute go-to is "
+            "disabled; jog still works. Re-establish the frame, then set 0,0.")
         if self._lbl_status_z is not None:
             z = self._s.z
-            if not z.has_frame:
-                self._lbl_status_z.setText(
-                    f"No valid frame for {z.name}. Absolute go-to (Go, slider) "
-                    "is disabled; jog still works.")
-                self._lbl_status_z.setStyleSheet(f"color: {_BAD};")
-            else:
-                self._lbl_status_z.setText(
-                    f"Frame OK — 0,0 at {z.ref_counts:.0f} counts. Invalid "
-                    "from the moment a hard limit is hit.")
-                self._lbl_status_z.setStyleSheet("")
+            self._show(
+                self._lbl_status_z, z.has_frame,
+                f"Frame OK — 0,0 at {z.ref_counts:.0f} counts. Invalid "
+                "from the moment a hard limit is hit.",
+                f"No valid frame for {z.name}. Absolute go-to (Go, slider) "
+                "is disabled; jog still works.")
 
     def _busy(self, on: bool) -> None:
-        self._btn_set_zero.setEnabled(not on)
-        self._btn_reframe.setEnabled(not on)
-        if self._btn_set_zero_z is not None:
-            self._btn_set_zero_z.setEnabled(not on)
-        if self._btn_reframe_z is not None:
-            self._btn_reframe_z.setEnabled(not on)
-        self._btn_close.setEnabled(not on)      # closing mid-move orphans the worker
+        # Close too: closing mid-move orphans the worker.
+        for b in (self._btn_set_zero, self._btn_reframe, self._btn_set_zero_z,
+                  self._btn_reframe_z, self._btn_close):
+            if b is not None:
+                b.setEnabled(not on)
 
     # ── actions ─────────────────────────────────────────────────────────────
     def _set_zero_here(self) -> None:
@@ -233,9 +227,12 @@ class CalibrationDialog(QDialog):
             QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
+        self._start_run(("x", "y"), "Starting…")
+
+    def _start_run(self, axes: tuple[str, ...], text: str) -> None:
         self._busy(True)
-        self._lbl_progress.setText("Starting…")
-        self._worker = _FrameWorker(self._ctrl)
+        self._lbl_progress.setText(text)
+        self._worker = _FrameWorker(self._ctrl, axes=axes)
         self._worker.progress.connect(self._lbl_progress.setText)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.failed.connect(self._on_failed)
@@ -354,14 +351,7 @@ class CalibrationDialog(QDialog):
             QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
-        self._busy(True)
-        self._lbl_progress.setText(f"Starting {z.name}…")
-        self._worker = _FrameWorker(self._ctrl, axes=("z",))
-        self._worker.progress.connect(self._lbl_progress.setText)
-        self._worker.finished_ok.connect(self._on_done)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.start()
-        self.changed.emit()                     # panel locks its motion controls
+        self._start_run(("z",), f"Starting {z.name}…")
 
     def _on_done(self) -> None:
         self._end_run()
@@ -602,7 +592,6 @@ class SettingsPanel(QWidget):
 
         self._set_controls_enabled(False)
         self._update_frame_status()
-        self._update_home_label()
 
     # ── binding to a live controller ────────────────────────────────────────
     def bind_controller(self, controller) -> None:
@@ -619,7 +608,6 @@ class SettingsPanel(QWidget):
                 self._cal_dialog.reject()
                 self._cal_dialog = None
         self._update_frame_status()
-        self._update_home_label()
 
     def _set_controls_enabled(self, on: bool) -> None:
         self._motion.setEnabled(on)      # Z rides along — it's a row in here now
@@ -649,7 +637,6 @@ class SettingsPanel(QWidget):
         self._fovs.setEnabled(connected)
         self._refresh_goto_ranges()
         self._update_frame_status()
-        self._update_home_label()
         self._map.update()
         if self._z_gauge is not None:
             self._z_gauge.update()          # origin/soft-limits may have moved
@@ -657,10 +644,11 @@ class SettingsPanel(QWidget):
 
     # ── frame status ────────────────────────────────────────────────────────
     def _update_frame_status(self) -> None:
-        """Show whether absolute go-to can be trusted, and gate the buttons."""
+        """Show whether absolute go-to can be trusted, and gate the buttons
+        (and the home label)."""
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
         ok = not missing
-        if ok:  # absolute targets are meaningless without a frame; jog isn't
+        if ok:
             self._lbl_frame.setText("Frame OK — absolute go-to calibrated.")
             self._lbl_frame.setStyleSheet("color: gray; font-size: 10px;")
         else:

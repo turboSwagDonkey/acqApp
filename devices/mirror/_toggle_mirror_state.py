@@ -1,15 +1,12 @@
 """
-Toggle chip 7 (PMT/camera light path) on the MCM6101, then return it to the
-CAMERA/epi default -- a one-off manual confirmation that SET_MIRROR_STATE
-actually moves this hardware, not just that ThorImage's own switch does.
+Toggle chip 7 (PMT/camera light path) on the MCM6101 and back: a manual
+check that SET_MIRROR_STATE moves this hardware.
 
     acqApp\\.venv\\Scripts\\python.exe acqApp\\devices\\mirror\\_toggle_mirror_state.py [COM54]
 
-Only run this with ThorImage CLOSED (it holds COM54). Purely mechanical
-light-path redirect -- no laser/light source is switched on by this command
-itself. Always leaves the switch on the CAMERA/epi default when done
-(`devices/mirror/startup.py`'s target), even if interrupted between the two
-SET calls the flip needs.
+Run only with ThorImage CLOSED (it holds COM54). Mechanical only; switches
+no light source. Always ends on the CAMERA/epi default (startup.py's
+target), even if interrupted between the two SETs.
 """
 from __future__ import annotations
 import sys
@@ -55,6 +52,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Before the first print: a UnicodeEncodeError from a diagnostic print
+    # reads as a device failure (acqApp/console.py).
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))

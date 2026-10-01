@@ -1,20 +1,10 @@
-"""The full-screen stimulus display.
+"""The full-screen stimulus display: a QWidget + QPainter repainted on a
+QTimer, in place of PTB's OpenWindow/DrawTexture/Flip. PTB-grade vsync
+precision was traded away deliberately for simplicity.
 
-Port of guiVisStimDAQ.m's PsychImaging('OpenWindow', ...) plus runStimManager.m's
-per-frame Screen('DrawTexture')/Screen('Flip') pair — a plain QWidget + QPainter
-rather than an OpenGL context. Chasing PTB-grade vsync precision was traded
-away deliberately when "native PyQt6" was chosen over PsychoPy: this is a
-drifting grating on a lab rig, not a psychophysics timing study, and a raster
-QTimer repaint is simpler and more robust than reconciling an OpenGL swap
-chain with Qt's own event loop.
-
-VisStimController drives this: it sets a trial's texture/aperture once
-(`set_trial`), the phase every gating tick (`set_visible`), and the drift
-offset every frame (`set_offset`); this widget just paints whatever it was
-last told, on its own QTimer, and reports each paint via `painted` so the
-controller can advance state for the next one — the same shape as PTB's
-`vbl = Screen('Flip', ...)` pacing a while loop, just event-driven instead of
-blocking.
+VisStimController sets the trial (`set_trial`), the phase per tick
+(`set_visible`) and the drift per frame (`set_offset`); this paints what it
+was last told and emits `painted` so the controller can advance.
 """
 from __future__ import annotations
 
@@ -26,10 +16,12 @@ from . import grating as grating_mod
 from .settings import StimParams
 
 DEFAULT_HZ = 60.0
+_WHITE = QColor(255, 255, 255)
+_BLACK = QColor(0, 0, 0)
 
 
 class StimDisplay(QWidget):
-    painted = pyqtSignal()          # one repaint completed — advance for the next
+    painted = pyqtSignal()
     escape_pressed = pyqtSignal()   # abort the whole run
     skip_pressed = pyqtSignal()     # 'n' — skip the current trial
 
@@ -48,9 +40,7 @@ class StimDisplay(QWidget):
         self._bg = QColor(128, 128, 128)
         self._center = (0.0, 0.0)
         self._radius = 0.0
-        # tuning trial only: solid-white fill instead of the grating texture
-        # (the "2 pretrials"), sharing the same aperture geometry.
-        self._solid = False
+        self._solid = False             # sweep pretrials: white aperture
         # map mode
         self._map_ignored: tuple[float, float, float, float] = (0, 0, 0, 0)
         self._map_regions: list[tuple[float, float, float, float]] = []
@@ -72,9 +62,7 @@ class StimDisplay(QWidget):
         self.close()
 
     def set_trial(self, p: StimParams, screen_w: int, screen_h: int) -> None:
-        """One texture/aperture build per trial — matches genGratingTex and
-        the mask rebuild being called once per trial in runStimManager.m, not
-        once per frame."""
+        """Texture and aperture, built once per trial (not per frame)."""
         self._mode = "grating"
         self._solid = False
         row = grating_mod.build_grating(p)
@@ -96,25 +84,19 @@ class StimDisplay(QWidget):
         self._visible = on
 
     def set_orientation(self, deg: float) -> None:
-        """Swap the orientation without rebuilding the texture/aperture —
-        tuning steps through 8 of these inside one trial; Orientation only
-        ever affects the paint-time rotation, never the texture or the
-        aperture geometry, so nothing else needs to change."""
+        """No rebuild: orientation is only the paint-time rotation."""
         self._orientation = deg
 
     def set_solid(self, on: bool) -> None:
-        """Fill the aperture with solid white instead of the grating texture
-        — the tuning trial's 2 pretrial steps, sharing the same aperture
-        `set_trial` already established."""
+        """White aperture instead of the grating (sweep pretrials)."""
         self._solid = on
 
     # ── map trial ────────────────────────────────────────────────────────
     def set_map_trial(self, ignored: tuple[float, float, float, float],
                       regions: list[tuple[float, float, float, float]],
                       grey_level: float) -> None:
-        """Once per trial: the fixed region geometry and the inactive-region
-        grey level (BKGColor, so it reuses the same knob the grating already
-        exposes rather than inventing a second "background" field)."""
+        """Once per trial: region geometry and the inactive-region grey
+        (BKGColor)."""
         self._mode = "map"
         self._map_ignored = ignored
         self._map_regions = regions
@@ -149,7 +131,7 @@ class StimDisplay(QWidget):
         path.addEllipse(QPointF(cx, cy), self._radius, self._radius)
         painter.setClipPath(path)
         if self._solid:
-            painter.fillRect(self.rect(), QColor(255, 255, 255))
+            painter.fillRect(self.rect(), _WHITE)
         else:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             side = self._radius * 2.0
@@ -161,11 +143,10 @@ class StimDisplay(QWidget):
         painter.restore()
 
     def _paint_map(self, painter: QPainter) -> None:
-        # Black first: covers the ignored column and any rounding gaps
-        # between regions, so nothing but the intended colors ever shows.
-        painter.fillRect(self.rect(), QColor(0, 0, 0))
-        painter.fillRect(QRectF(*self._map_ignored), QColor(0, 0, 0))
-        active = QColor(255, 255, 255) if self._map_white else QColor(0, 0, 0)
+        # Black first: covers rounding gaps between regions.
+        painter.fillRect(self.rect(), _BLACK)
+        painter.fillRect(QRectF(*self._map_ignored), _BLACK)
+        active = _WHITE if self._map_white else _BLACK
         for i, rect in enumerate(self._map_regions):
             color = active if i == self._map_active else self._map_grey
             painter.fillRect(QRectF(*rect), color)

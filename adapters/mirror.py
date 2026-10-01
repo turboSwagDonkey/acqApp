@@ -1,9 +1,7 @@
 """
-The PMT/camera mirror's adapter. Manual only (PLAN.md §6): two ThorImage
-switches (galvo in/out, visualizer path camera/PMT) move together and are
-driven by ThorImage over a serial connection acqApp can't share, so there's
-no worker and no controller here — just a panel the operator clicks to
-say which way they set both, logged to `/mirror` like `/dmd`'s boundaries.
+The PMT/camera mirror's adapter. Manual only (PLAN.md §6): ThorImage drives
+both switches over a port acqApp can't share, so no worker or controller,
+just the operator's assertion logged to `/mirror`.
 """
 from __future__ import annotations
 
