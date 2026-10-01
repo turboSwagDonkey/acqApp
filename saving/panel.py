@@ -16,6 +16,10 @@ from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
                                   SaveConfig, _gb, benchmark_drive,
                                   default_folder, free_bytes, list_drives)
 
+# Match to Bpod… hidden at the operator's request (2026-10-01); the edge log
+# is still written, so a session can be matched later.
+SHOW_BPOD_MATCH = False
+
 
 class SavePanel(QWidget):
     """Settings tab: destination drive/folder, naming, and capacity readout."""
@@ -163,6 +167,7 @@ class SavePanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
         root.addRow(align)
+        align.setVisible(SHOW_BPOD_MATCH)
 
     def _reload_drives(self) -> None:
         self._cmb_drive.blockSignals(True)
