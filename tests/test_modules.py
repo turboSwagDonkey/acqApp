@@ -214,9 +214,9 @@ def check_ui_released(r: Report, win) -> None:
             f"{plots_with})")
 
     before = win._plots_tabs.count()
-    win.set_modules(["voltage_cam"])
+    win.set_modules(["wheel"])
     r.check(win._plots_tabs.count() == before - 1,
-            f"the wheel's Signals tab went ({win._plots_tabs.count()} vs "
+            f"the camera's Signals tab went ({win._plots_tabs.count()} vs "
             f"{before})")
 
 

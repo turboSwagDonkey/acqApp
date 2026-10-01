@@ -132,6 +132,19 @@ def _part_derive() -> int:
             f"a clean single-sample reset gives the same distance "
             f"({di_clean[-1]:.0f} vs {di[-1]:.0f} mm)")
 
+    # ── live speed: current (no lag), accurate, and follows a stop at once ───
+    enc = _EncoderBase(volts_per_rev=VPR, wheel_dia_mm=DIA)
+    t, v = sim(3.0)
+    for ti, vi in zip(t, v):
+        enc._derive(float(vi), float(ti))
+    live = enc._live_speed()
+    r.check(abs(live - want) < 0.03 * want,
+            f"live speed {live:.1f} mm/s, expected {want:.1f} (within 3 %)")
+    for k in range(int(0.6 * RATE)):               # wheel stops dead
+        enc._derive(float(v[-1]), float(t[-1] + (k + 1) / RATE))
+    r.check(enc._live_speed() == 0.0,
+            f"live speed reads zero 0.6 s after a stop ({enc._live_speed():.1f})")
+
     # ── stationary: the deadband must stop noise from integrating ────────────
     n = int(3.0 * RATE)
     ts = np.arange(n) / RATE

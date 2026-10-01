@@ -17,7 +17,7 @@ stream, no image, no device SDK (just `nidaqmx`). Two contexts:
   nothing else loaded. Where wheel work should happen first. It replaced
   `wheel/_toy.py`, which duplicated the panel and had drifted from it.
 - **Main app** — `main.py`: recorded as the `/wheel` scalar stream on the shared
-  clock; shown as the "Wheel velocity" trace in the Signals dock.
+  clock; its live speed and net distance show as a readout in the Wheel panel (no plot).
 
 The rig NI board is a **PCIe-6363 ("Dev3")**, shared with the puffer (`port0/
 line0`) and the eye-tracking LED (`port0/line1`); the wheel uses analog-in `ai2`.

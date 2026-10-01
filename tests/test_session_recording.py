@@ -96,7 +96,7 @@ def main() -> int:
     r.check(mod["pupil_cam"].panel.settings.track, "pupil tracking is on")
 
     r.check(len(mod["voltage_cam"]._y) > 0, "voltage-cam ΔF/F reached the plot")
-    r.check(len(mod["wheel"]._y) > 0, "wheel samples reached the plot")
+    r.check(mod["wheel"]._readout_text is not None, "wheel speed reached the readout")
     r.check(mod["pupil_cam"]._img.image is not None,
             "pupil frames reached the preview")
 

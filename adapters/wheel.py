@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.acq.devices import ClockedWorker, SignalSource
-from acqApp.adapters.base import PLOT_HISTORY, ModuleAdapter, _plot
+from acqApp.adapters.base import ModuleAdapter
 from acqApp.devices.wheel.acquisition import EncoderWorker, MockEncoderWorker
 from acqApp.devices.wheel.panel import SettingsPanel as WheelSettingsPanel
 from acqApp.devices.wheel.settings import EncoderSettings
@@ -17,18 +17,12 @@ from acqApp.devices.wheel.settings import EncoderSettings
 class WheelModule(ModuleAdapter):
     key = "wheel"
     tab_label = "Wheel"
-    plot_label = "Wheel"
 
     worker: ClockedWorker | None
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        self._plot_w = None
-        self._curve = None
-        self._y: list[float] = []
-        # Last-set labels: each set is a relayout, so only on change.
-        self._units: str | None = None
-        self._title_text: str | None = None
+        # Last-set label: each set is a relayout, so only on change.
         self._readout_text: str | None = None
         # Cached: `panel.settings` rebuilds from widgets per call.
         self._cfg = EncoderSettings()
@@ -40,11 +34,6 @@ class WheelModule(ModuleAdapter):
         self.panel.settings_changed.connect(self._on_settings)
         self._cfg = self.panel.settings
         return self.panel
-
-    def build_plot(self) -> QWidget:
-        self._plot_w, self._curve = _plot(
-            "Wheel distance", "Distance", "m", "Sample", self.key)
-        return self._plot_w
 
     def _on_settings(self, st) -> None:
         """V/rev and diameter apply live; they scale every wheel number filed."""
@@ -61,58 +50,28 @@ class WheelModule(ModuleAdapter):
         else:
             self._adopt(EncoderWorker(s.channel, s.rate,
                                       s.volts_per_rev, s.wheel_dia_mm))
-        self._y.clear()
 
     # ── display ──
     def update_display(self) -> None:
         sample = self.worker.get_latest() if self.worker is not None else None
-        if sample is None:
+        snap = self._snapshot()
+        if sample is None or snap is None:
             return
-        v, speed, dist, _t = sample
-        self._y.append(self._show(v, speed, dist))
-        del self._y[:-PLOT_HISTORY]
-        self._curve.setData(self._y)
-
-    def _show(self, v: float, speed: float, dist: float) -> float:
-        """Label for the current scaling and return what to plot (raw volts
-        without V/rev)."""
+        v, _speed, dist, _t = sample
         cfg = self._cfg
         if not cfg.volts_per_rev:
-            self._axis("Voltage", "V")
-            self._title(None, "")
             self._readout(f"{v:.4f} V   (set V/rev to get speed)")
-            return v
-        if cfg.wheel_dia_mm:
-            self._axis("Distance", "m")
-            self._title(speed, "mm/s")
+        elif cfg.wheel_dia_mm:
             self._readout(
-                f"speed {speed:+.1f} mm/s      net {dist / 1000:+.2f} m")
-            return dist / 1000.0
-        self._axis("Distance", "rev")
-        self._title(speed, "rev/s")
-        self._readout(f"speed {speed:+.2f} rev/s      net {dist:+.1f} rev")
-        return dist
+                f"speed {snap[2]:+.1f} mm/s      net {dist / 1000:+.2f} m")
+        else:
+            self._readout(
+                f"speed {snap[2]:+.2f} rev/s      net {dist:+.1f} rev")
 
     def _readout(self, text: str) -> None:
         if text != self._readout_text:
             self._readout_text = text
             self.panel.set_readout(text)
-
-    def _axis(self, name: str, units: str) -> None:
-        if self._units == units:
-            return
-        self._units = units
-        self._plot_w.setLabel("left", name, units=units)
-
-    def _title(self, speed: float | None, units: str) -> None:
-        if speed is None:
-            text = "Wheel distance"
-        else:
-            prec = 1 if units == "mm/s" else 2
-            text = f"Wheel distance   —   speed {speed:+.{prec}f} {units}"
-        if text != self._title_text:
-            self._title_text = text
-            self._plot_w.setTitle(text)
 
     # ── live signal (visuomotor) ──
     def signal_sources(self) -> list[SignalSource]:

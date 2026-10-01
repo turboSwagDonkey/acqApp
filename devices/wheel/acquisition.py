@@ -32,6 +32,8 @@ class _EncoderBase(PullWorker):
     _TAU_S = 0.15           # EMA time constant of the coasting velocity
     _LAG_S = 1.0            # report this far in the past, for a smooth trace
     _SLOPE_WIN_S = 0.25     # half-width of the least-squares speed window
+    _LIVE_WIN_S = 0.4       # trailing window of the live speed (no lag)
+    _LIVE_DEADBAND_REV_S = 0.01   # ~5 mm/s: ADC noise at rest reads zero
     _HIST_S = _LAG_S + _SLOPE_WIN_S + 0.3
     _SIGN = +1.0            # flip if the wiring inverts
     _DEADBAND_REV_S = 0.05  # below this, speed reads exactly zero
@@ -94,6 +96,21 @@ class _EncoderBase(PullWorker):
 
         return self._report(t, circ)
 
+    def _slope(self, t_lo: float, t_hi: float) -> float:
+        """Least-squares rev/s of the buffered position over [t_lo, t_hi].
+        Closed form: polyfit's SVD is too heavy per sample at 120 Hz."""
+        n = len(self._buf)
+        ts = np.fromiter((b[0] for b in self._buf), float, n)
+        ps = np.fromiter((b[1] for b in self._buf), float, n)
+        lo = int(np.searchsorted(ts, t_lo, side="left"))
+        hi = int(np.searchsorted(ts, t_hi, side="right"))
+        tw, pw = ts[lo:hi], ps[lo:hi]
+        if tw.size < 2:
+            return 0.0
+        dt_ = tw - tw.mean()
+        var = float(dt_ @ dt_)
+        return float(dt_ @ pw / var) if var > 0.0 else 0.0
+
     def _report(self, t: float, circ: float) -> tuple[float, float]:
         """Speed: least-squares slope over a window. Distance: its integral,
         deadband-gated so ADC noise can't random-walk it at rest."""
@@ -102,18 +119,7 @@ class _EncoderBase(PullWorker):
         if n < 8 or self._buf[0][0] > td - self._SLOPE_WIN_S:
             return 0.0, self._SIGN * self._dist_rev * circ
 
-        ts = np.fromiter((b[0] for b in self._buf), float, n)
-        ps = np.fromiter((b[1] for b in self._buf), float, n)
-        lo = int(np.searchsorted(ts, td - self._SLOPE_WIN_S, side="left"))
-        hi = int(np.searchsorted(ts, td + self._SLOPE_WIN_S, side="right"))
-        tw, pw = ts[lo:hi], ps[lo:hi]
-        # Closed-form slope: polyfit's SVD is too heavy per sample at 120 Hz.
-        rev_s = 0.0
-        if tw.size >= 2:
-            dt_ = tw - tw.mean()
-            var = float(dt_ @ dt_)
-            if var > 0.0:
-                rev_s = float(dt_ @ pw / var)
+        rev_s = self._slope(td - self._SLOPE_WIN_S, td + self._SLOPE_WIN_S)
         if abs(rev_s) < self._DEADBAND_REV_S:
             rev_s = 0.0
         elif self._t_report is not None:
@@ -125,19 +131,24 @@ class _EncoderBase(PullWorker):
 
     def snapshot(self) -> tuple[float, float, float, float] | None:
         """Newest (voltage, speed, live_speed, acquired_at), non-consuming.
-        `speed` matches the file but is ~1 s old; `live_speed` is the noisier
-        current EMA, for a rule that must act while the animal runs."""
+        `speed` matches the file but is ~1 s old; `live_speed` is the current
+        trailing-window slope, for the readout and live rules."""
         with self._lock:
             return self._snap
 
     def _live_speed(self) -> float:
-        """Same sign and deadband as `_report`, so thresholds carry over."""
+        """Slope of the newest `_LIVE_WIN_S` of position; same sign as
+        `_report`. Own, smaller deadband than `_report`."""
         with self._scale_lock:
             vpr, dia = self._vpr, self._dia
-        if not vpr or abs(self._vel) < self._DEADBAND_REV_S:
+        if not vpr or len(self._buf) < 4:
+            return 0.0
+        t = self._buf[-1][0]
+        rev_s = self._slope(t - self._LIVE_WIN_S, t)
+        if abs(rev_s) < self._LIVE_DEADBAND_REV_S:
             return 0.0
         circ = np.pi * dia if dia else 1.0
-        return self._SIGN * self._vel * circ
+        return self._SIGN * rev_s * circ
 
     def _emit_sample(self, v: float, t: float, mono: float | None = None) -> None:
         speed, dist = self._derive(v, t)
