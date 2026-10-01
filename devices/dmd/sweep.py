@@ -327,7 +327,7 @@ class CalibrationDialog(QDialog):
             self._proj.project_frame(np.full((h, w), ON, np.uint8))
             grabber = FreshGrabber(self._source, timeout_s=8.0, pump=self._pump)
             frame = grabber.grab()
-        except CalibrationError as e:
+        except Exception as e:   # noqa: BLE001 — escaping a slot aborts the app
             self.log(f"[sweep] could not get a frame for corner adjustment: {e}")
         finally:
             self._go_dark(was_live)

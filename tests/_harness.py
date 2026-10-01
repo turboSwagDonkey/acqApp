@@ -111,11 +111,13 @@ def isolate_user_state() -> Path:
 
     MemorySettings.store = {}
     import PyQt6.QtCore
+    real = PyQt6.QtCore.QSettings
     PyQt6.QtCore.QSettings = MemorySettings
-    # Modules already imported hold their own reference; both write.
-    for name in ("acqApp.main", "acqApp.dialogs"):
-        mod = sys.modules.get(name)
-        if mod is not None and hasattr(mod, "QSettings"):
+    # Modules already imported hold their own reference (widgets.py was
+    # missed here once); every one of them writes the registry.
+    for name, mod in list(sys.modules.items()):
+        if (name.startswith("acqApp")
+                and getattr(mod, "QSettings", None) in (real, MemorySettings)):
             mod.QSettings = MemorySettings
     return tmp
 

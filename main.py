@@ -104,10 +104,14 @@ def _open_camera() -> None:
         # Open first, count only on failure: get_cameras_number()
         # re-enumerates every call (~5 s).
         handle = open_camera(0)
-        _cam_info = handle.get_device_info()
+        # Kept even if the info read fails: a second open would crash natively.
         _cam_handle = handle
-        print(f"Voltage cam: {_cam_info} "
-              f"(opened in {time.perf_counter() - t0:.1f} s)")
+        try:
+            _cam_info = handle.get_device_info()
+        except Exception as e:                    # noqa: BLE001
+            print(f"Voltage cam: device info unreadable ({e})")
+        print(f"Voltage cam: {_cam_info or 'opened'} "
+              f"(in {time.perf_counter() - t0:.1f} s)")
     except Exception as e:                        # noqa: BLE001
         _cam_handle = None
         n = -1

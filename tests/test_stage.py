@@ -216,6 +216,19 @@ def check_mock_controller(r: Report) -> None:
     r.check(c2._target["z"] == c2._pos["z"],
             "stop_all() also freezes Z's target, not just X/Y's")
 
+    # Dropping Z from the target made every later Z read a KeyError.
+    for ax in (s.x, s.y):
+        ax.slope, ax.offset, ax.origin_set = 1.0, 0.0, True
+    c.go_to_center()
+    r.check(c._target["z"] == 50.0 and c.read_z_um() == 50.0,
+            "go_to_center moves X/Y only; Z keeps its target")
+    try:
+        c.go_home()
+        r.check(False, "go_home with no home set must raise")
+    except StageControllerError:
+        r.check(True, "the mock refuses go_home with the real controller's "
+                      "error type")
+
 
 def check_no_z_controller_refuses(r: Report) -> None:
     """Most rigs have no Z: every Z entry point refuses cleanly."""

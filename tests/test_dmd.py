@@ -411,6 +411,19 @@ def check_mode_switch_and_cache(r) -> None:
     r.check(changed is not before,
             "…but a real parameter change rebuilds it")
 
+    # Each trigger used to leave its own stop timer running, so a second
+    # trigger inside the first's duration was cut short by the first's stop.
+    stops: list = []
+    dmd.controller.stop = lambda: stops.append(1)
+    dmd.on_trigger(dmd.key, 0.15)
+    pump(app, 0.10)
+    dmd.on_trigger(dmd.key, 0.15)
+    pump(app, 0.10)
+    r.check(stops == [],
+            "a second trigger isn't cut short by the first trigger's stop")
+    pump(app, 0.15)
+    r.check(stops == [1], f"…and stops once, on its own time ({stops})")
+
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()
     pump(app, 0.1)

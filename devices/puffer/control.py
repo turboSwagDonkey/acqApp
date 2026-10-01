@@ -12,16 +12,24 @@ from PyQt6.QtWidgets import (
     QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
-from acqApp import style
+from acqApp import config, style
 from acqApp.widgets import spin
 
 
 @dataclass
 class PufferSettings:
-    # line7 on this rig (operator-confirmed). line0 is the pupil-cam LED and
-    # line2 the primary LED: two tasks can't own one physical line.
-    channel:     str   = "Dev3/port0/line7"
+    channel:     str   = "Dev3/port0/line7"    # rig-dev3, operator-confirmed
     duration_s:  float = 0.100
+
+
+def free_do_lines(current: str) -> list[str]:
+    """This rig's port0 lines, less those another device claims in rigs.json
+    (two tasks can't own one physical line), `current` first."""
+    taken = {config.rig_channel(k) for k in config.rig_profile()
+             .get("channels", {}) if k != "puffer"}
+    lines = [f"{config.rig_device()}/port0/line{i}" for i in range(8)]
+    head = [current] if current else []
+    return head + [c for c in lines if c not in taken and c != current]
 
 
 class PufferController(QObject):
@@ -178,12 +186,7 @@ class SettingsPanel(QWidget):
 
         self._cmb_chan = QComboBox()
         self._cmb_chan.setEditable(True)
-        self._cmb_chan.addItems([
-            "Dev3/port0/line7",
-            "Dev3/port0/line0",
-            "Dev3/port0/line1",
-            "Dev3/port0/line2",
-        ])
+        self._cmb_chan.addItems(free_do_lines(self._s.channel))
         self._cmb_chan.setCurrentText(self._s.channel)
         lay.addRow("DO channel:", self._cmb_chan)
 

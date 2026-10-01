@@ -197,6 +197,27 @@ def check_puffer_skips_daq(r: Report) -> None:
     r.check(True, "...and fire() on an unfitted puffer is silent, not an error")
 
 
+def check_puffer_lines(r: Report, tmp: Path) -> None:
+    """The puffer's line list never offers a line another device claims —
+    on rig-dev2 the primary LED is line7, the puffer's Dev3 default."""
+    from acqApp.devices.puffer.control import free_do_lines
+    _write(tmp, {"full": FULL}, active="full")
+    got = free_do_lines("Dev3/port0/line7")
+    r.check(got[0] == "Dev3/port0/line7" and len(got) == 7
+            and "Dev3/port0/line2" not in got,
+            f"the current line first; the primary LED's line2 left out ({got})")
+    led_on_7 = {"ni_device": "Dev2",
+                "channels": {"primary_led": "port0/line7"}}
+    _write(tmp, {"dev2": led_on_7}, active="dev2")
+    got = free_do_lines("")
+    r.check("Dev2/port0/line7" not in got and "Dev2/port0/line0" in got
+            and all(c.startswith("Dev2/") for c in got),
+            f"lines follow the rig's NI device, minus its LED's line ({got})")
+    _write(tmp, {}, active=None)
+    r.check(len(free_do_lines("")) == 8,
+            "control: no rig profile, nothing claimed, all eight offered")
+
+
 def _part_rigs() -> int:
     r = Report("rigs")
     saved = (config._RIGS_PATH, config._CONFIG_PATH)
@@ -209,6 +230,7 @@ def _part_rigs() -> int:
         check_profile_beats_saved(r, tmp)
         check_no_profile_is_unchanged(r, tmp)
         check_puffer_skips_daq(r)
+        check_puffer_lines(r, tmp)
     finally:
         config._RIGS_PATH, config._CONFIG_PATH = saved
         shutil.rmtree(tmp, ignore_errors=True)

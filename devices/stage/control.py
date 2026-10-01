@@ -444,7 +444,7 @@ class MockStageController:
             if not ax.has_frame:
                 raise StageControllerError(
                     f"{ax.name}: no valid frame — see StageController.go_to_center.")
-        self._target = {"x": 0.0, "y": 0.0}
+        self._target.update(x=0.0, y=0.0)       # Z stays where it is
 
     def set_home_here(self) -> tuple[float, float]:
         self._s.x.home_counts, self._s.y.home_counts = self.read_xy_counts()
@@ -455,7 +455,7 @@ class MockStageController:
 
     def go_home(self) -> None:
         if self._s.x.home_counts is None or self._s.y.home_counts is None:
-            raise RuntimeError("no home set this session")
+            raise StageControllerError("no home set this session")
         for k, ax in (("x", self._s.x), ("y", self._s.y)):
             if ax.frame_stale:
                 raise StageControllerError(

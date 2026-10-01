@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from acqApp.saving.config import BAD_SUFFIX, rename_trial, routine_stem
 
 TOL_S = 0.5            # far below the ~6.7 s shortest trial
 AMBIGUOUS_S = 0.05     # a runner-up alignment this close in rms is refused
+RENAME_TRIES = 10
+RENAME_RETRY_S = 0.1
 
 
 def load_edges(path: Path) -> list[dict]:
@@ -176,6 +179,18 @@ def _parent(p: Path) -> Path:
     return p.parent
 
 
+def _rename(path: Path, stem: str) -> Path:
+    """`rename_trial`, retried briefly: Windows can hold a just-written folder
+    for a moment (1 in 10 test runs hit "Access is denied", 2026-10-01). A
+    file really still open keeps refusing and raises."""
+    for _ in range(RENAME_TRIES - 1):
+        try:
+            return rename_trial(path, stem)
+        except PermissionError:
+            time.sleep(RENAME_RETRY_S)
+    return rename_trial(path, stem)
+
+
 def apply(pl: Plan, log_dir: Path) -> list[tuple[str, str]]:
     """Two-phase rename (every source to a temporary name first, so T19->T20
     can't collide with the old T20), then the VOID folders. Logged. If a
@@ -185,11 +200,11 @@ def apply(pl: Plan, log_dir: Path) -> list[tuple[str, str]]:
     staged = []
     try:
         for path, stem in pl.renames:
-            tmp = rename_trial(path, f"{stem}__renumbering")
+            tmp = _rename(path, f"{stem}__renumbering")
             staged.append((path, tmp, stem))
     except OSError as e:
         for path, tmp, _stem_ in reversed(staged):
-            rename_trial(tmp, _stem(path))
+            _rename(tmp, _stem(path))
         raise ApplyError(f"{e}; nothing was changed") from e
     log = log_dir / "renumber_log.csv"
     new_log = not log.exists()
@@ -201,7 +216,7 @@ def apply(pl: Plan, log_dir: Path) -> list[tuple[str, str]]:
             w.writerow(["old", "new"])
         try:
             for path, tmp, stem in staged:
-                new = rename_trial(tmp, stem)
+                new = _rename(tmp, stem)
                 done.append((str(path), str(new)))
                 w.writerow(done[-1])
             for folder, _trial, note in pl.voids:

@@ -267,7 +267,11 @@ class OrcaFireWorker(PullWorker):
             if err is not None:
                 raise err
             if rec is not None:
-                rec.attach(cam.handle)
+                try:
+                    rec.attach(cam.handle)
+                except Exception:
+                    rec.close()         # never bound: free the dcamrec handle
+                    raise
                 self._dcimg = rec
                 self._dcimg_total = self._dcimg_missing = 0
                 self._dcimg_full = False

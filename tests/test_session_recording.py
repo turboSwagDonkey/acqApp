@@ -157,7 +157,8 @@ def main() -> int:
     # writes the operator's registry, invisibly to any check on `main`.
     import acqApp.dialogs
     import acqApp.main
-    for mod in (acqApp.main, acqApp.dialogs):
+    import acqApp.widgets
+    for mod in (acqApp.main, acqApp.dialogs, acqApp.widgets):
         r.check(getattr(mod, "QSettings", MemorySettings) is MemorySettings,
                 f"{mod.__name__} uses the substituted QSettings")
     r.check(acqApp.dialogs.SettingsDialog._GEOM_KEY in MemorySettings.store,

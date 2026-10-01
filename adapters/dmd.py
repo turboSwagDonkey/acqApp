@@ -36,6 +36,11 @@ class DmdModule(ModuleAdapter):
         self._live_timer.setSingleShot(True)
         self._live_timer.setInterval(self._LIVE_DEBOUNCE_MS)
         self._live_timer.timeout.connect(self.display)
+        # One timer, restarted per trigger: an earlier trigger's stop must not
+        # cut a later stimulus short.
+        self._stop_timer = QTimer()
+        self._stop_timer.setSingleShot(True)
+        self._stop_timer.timeout.connect(self.stop_display)
 
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
@@ -260,7 +265,9 @@ class DmdModule(ModuleAdapter):
             return
         self.display()
         if duration > 0:
-            QTimer.singleShot(int(duration * 1000), self.stop_display)
+            self._stop_timer.start(int(duration * 1000))
+        else:
+            self._stop_timer.stop()
 
     # ── what a routine may drive ──
     def pattern_target(self):

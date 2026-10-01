@@ -663,6 +663,22 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
 
         w.arm_with_next_file()
         r.check(w._rearm_with_file, "arm_with_next_file sets the latch")
+
+        class BadAttach(FakeRec):
+            def attach(self, h):
+                calls.append("attach-fails")
+                raise RuntimeError("DCAMERR_INVALIDHANDLE")
+        dc.DcimgRecorder = BadAttach
+        calls.clear()
+        try:
+            w._swap_dcimg(FakeCam(), tmp / "c.dcimg")
+            r.check(False, "a failed attach must raise")
+        except RuntimeError:
+            r.check(calls == [("cap", None), "open", "stop", "close",
+                              "attach-fails", "close", ("start", None)]
+                    and w._dcimg is None,
+                    f"a recorder that never bound is closed, and capture "
+                    f"still restarts ({calls})")
     finally:
         dc.DcimgRecorder = real
 
