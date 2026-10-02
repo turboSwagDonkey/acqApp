@@ -56,6 +56,14 @@ Thumbs.db
 /docs/SESSIONLOG.md
 /docs/DECISIONS.md
 /docs/AUDIT-2026-08.md
+/notes.ps1
+/docs/REFERENCE.md
+/docs/RIG.md
+
+# --- Rig-local leftovers: calibration sweep outputs, backups ---
+/dmd_calib_*.json
+*.bak
+/.claude/settings.local.json
 
 # run_pupil_review.py's private environment
 /.venv-pupil/

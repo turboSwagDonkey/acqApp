@@ -1372,7 +1372,7 @@ def check_burst_panel(r: Report) -> None:
 def _part_burst() -> int:
     r = Report("burst")
     isolate_user_state()
-    app = qt_app()                      # unassigned, it's collected (PLAN §0)
+    app = qt_app()                      # unassigned, it's collected (REFERENCE gotchas)
     check_burst_arithmetic(r)
     check_burst_gate(r)
     check_seal_dcimg(r)

@@ -1,6 +1,6 @@
 """PMT/camera mirror — settings model. No Qt.
 
-Two ThorImage switches move together (operator-confirmed, PLAN.md §6), so
+Two ThorImage switches move together (operator-confirmed), so
 acqApp models ONE two-state toggle:
 
     CAMERA = galvo OUT + visualizer -> camera

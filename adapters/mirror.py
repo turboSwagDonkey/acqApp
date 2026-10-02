@@ -1,5 +1,5 @@
 """
-The PMT/camera mirror's adapter. Manual only (PLAN.md §6): ThorImage drives
+The PMT/camera mirror's adapter. Manual only (operator): ThorImage drives
 both switches over a port acqApp can't share, so no worker or controller,
 just the operator's assertion logged to `/mirror`.
 """

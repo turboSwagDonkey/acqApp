@@ -82,9 +82,9 @@ routines still touches no device directly, `adapters/routines.py` still is).
 **`main → devices`** is the odd one out — not a deliberate exception like the
 other three, but drift: `main.py` reaches into
 `devices/voltage_cam/presets.py` and `devices/dmd/control.py` directly for
-preset/mode-recipe lookups (PLAN.md §7 (bm), the Scan-mode work), bypassing
-`adapters/` the way PLAN.md §5b calls out as the thing *not* to do. Drawn so
-the diagram stays true, not endorsed — flagged in PLAN.md §6/§5b for the
+preset/mode-recipe lookups (SESSIONLOG.md (bm), the Scan-mode work), bypassing
+`adapters/` the way REFERENCE.md §5b calls out as the thing *not* to do. Drawn so
+the diagram stays true, not endorsed — flagged in REFERENCE.md §5b for the
 operator to decide whether it gets routed back through an adapter.
 
 **An instrument appears in two places and they are not duplicates:**
@@ -110,7 +110,7 @@ acq/                    acquisition core — no Qt widgets, no vendor SDKs
   worker.py             PullWorker: the QThread guard every device worker uses
   writer.py             Writer / HDF5Writer: one file per session
 archive/                removed-but-kept code; nothing here is imported
-  pupil_tracking/       the pupil tracker, retired 2026-08-24 (PLAN §7 (ai))
+  pupil_tracking/       the pupil tracker, retired 2026-08-24 (SESSIONLOG (ai))
     README.md           why it went, what was kept, how to restore it
     _mark_truth.py      script: mark the pupil edge by hand, then score against it
     _test_tracking.py   script: tracker vs synthetic ground truth
@@ -298,6 +298,8 @@ docs/
   HANDOFF.md
   PUPIL_CAMERA_TRANSFER.md
   README.md
+  REFERENCE.md          layout, gotchas, ground rules (§2), architecture (§5b) — private repo
+  RIG.md                this rig's hardware facts — read before touching a device — private repo
   SESSIONLOG.md         older session entries — archive — gitignored, private repo
   STAGE_TRANSFER.md
   STRUCTURE.md          this file
@@ -344,11 +346,13 @@ probe.py                presence checks; enumeration only, never opens a device
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here — gitignored, private repo
-PLAN.md                 the living plan — read first — gitignored, private repo
+PLAN.md                 the short plan: orientation + next three — private repo
+notes.ps1               commit the private files, push both repos — private repo
 README.md               the authoritative description
 requirements.txt
 .gitignore
 acqapp_local.json       local settings — gitignored
+newCal.json             the rig's active DMD calibration (dmd_calibration setting)
 __init__.py
 ```
 
