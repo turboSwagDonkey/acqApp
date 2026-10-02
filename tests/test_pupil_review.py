@@ -135,6 +135,30 @@ def _part_review() -> int:  # noqa: PLR0915 — one linear scenario
                 zip((got.center_x, got.center_y, got.semi_major,
                      got.semi_minor, got.angle_deg), (70, 50, 20, 10, 30))),
             "ellipse handle round-trips centre, axes and angle")
+    # An edge handle moves its own side; the opposite side stays put.
+    from PyQt6.QtCore import QPointF as _P
+    roi = dlg._roi
+    kinds = sorted((h["type"], round(h["pos"].x(), 1), round(h["pos"].y(), 1),
+                    round(h["center"].x(), 1), round(h["center"].y(), 1))
+                   for h in roi.handles)
+    r.check([k for k in kinds if k[0] == "s"] == [
+                ("s", 0.0, 0.5, 1.0, 0.5), ("s", 0.5, 0.0, 0.5, 1.0),
+                ("s", 0.5, 1.0, 0.5, 0.0), ("s", 1.0, 0.5, 0.0, 0.5)]
+            and sum(k[0] == "r" for k in kinds) == 1,
+            f"one handle per edge, each pinned at the opposite edge, plus a "
+            f"rotate handle ({kinds})")
+    far = roi.mapToParent(_P(20.0, 0.0))        # the edge opposite the drag
+    top = next(h["item"] for h in roi.handles
+               if h["type"] == "s" and h["pos"] == _P(0.5, 1.0))
+    roi.movePoint(top, roi.mapToParent(_P(20.0, 26.0)), finish=True)
+    got = dlg._roi_fit()
+    far2 = roi.mapToParent(_P(20.0, 0.0))
+    r.check(abs(got.semi_minor - 13.0) < 1e-6 and abs(got.semi_major - 20.0) < 1e-6
+            and abs(far2.x() - far.x()) < 1e-6 and abs(far2.y() - far.y()) < 1e-6,
+            f"dragging an edge out 6 px grows that axis by 3 and leaves the "
+            f"opposite edge where it was (minor {got.semi_minor:.2f})")
+    r.check(dlg.review.is_edited(5), "…and the drag is an edit")
+    dlg.review.clear_manual(5)
     dlg.edit_frame(5, PupilFit(70.0, 50.0, 20.0, 10.0, 30.0))
     r.check(dlg.review.is_edited(5) and abs(dlg.review.radius()[5] - 15) < 1e-9,
             "a dialog edit lands in the data")

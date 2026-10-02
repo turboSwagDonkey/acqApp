@@ -257,6 +257,15 @@ class _PlaybackMixin:
         pos = (fit.center_x - (a * c - b * s), fit.center_y - (a * s + b * c))
         self._roi = pg.EllipseROI(pos, (2 * a, 2 * b), angle=fit.angle_deg,
                                   pen=pg.mkPen("#ffffff", width=1))
+        # One handle per edge, pinned at the opposite edge: dragging a side
+        # moves that side only (pyqtgraph's own scales about the centre).
+        # Rotation moves to a corner, clear of the edge handles.
+        for h in list(self._roi.getHandles()):
+            self._roi.removeHandle(h)
+        for p, c in (((0.5, 0.0), (0.5, 1.0)), ((0.5, 1.0), (0.5, 0.0)),
+                     ((0.0, 0.5), (1.0, 0.5)), ((1.0, 0.5), (0.0, 0.5))):
+            self._roi.addScaleHandle(p, c)
+        self._roi.addRotateHandle((1.0, 1.0), (0.5, 0.5))
         self._roi.sigRegionChangeFinished.connect(self._roi_edited)
         self._roi.setVisible(self._view() != "bare")
         self._vb.addItem(self._roi)
@@ -266,9 +275,14 @@ class _PlaybackMixin:
         ang = float(self._roi.angle())
         t = np.radians(ang)
         p = self._roi.pos()
-        return PupilFit(float(p.x() + a * np.cos(t) - b * np.sin(t)),
-                        float(p.y() + a * np.sin(t) + b * np.cos(t)),
-                        float(a), float(b), ang)
+        cx = float(p.x() + a * np.cos(t) - b * np.sin(t))
+        cy = float(p.y() + a * np.sin(t) + b * np.cos(t))
+        # An edge dragged past its opposite flips the box; the major axis
+        # stays the longer one, as the tracker reports it.
+        a, b = abs(a), abs(b)
+        if b > a:
+            a, b, ang = b, a, (ang + 90.0) % 180.0
+        return PupilFit(cx, cy, float(a), float(b), ang % 180.0)
 
     # ── plot ─────────────────────────────────────────────────────────────────
     def _refresh_plot(self) -> None:
