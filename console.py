@@ -25,3 +25,12 @@ def enable_safe_console() -> None:
             reconfigure(encoding="utf-8", errors="replace")
         except (OSError, ValueError):
             pass                        # detached, or refuses to be changed
+
+
+def short_error(e: BaseException) -> str:
+    """A driver error as one line: its first sentence, plus the code NI-DAQmx
+    gives (its message runs to five lines: device, task name, status)."""
+    first = next((ln.strip() for ln in str(e).splitlines() if ln.strip()),
+                 type(e).__name__).rstrip(".")
+    code = getattr(e, "error_code", None)
+    return f"{first} (NI {code})" if isinstance(code, int) else first

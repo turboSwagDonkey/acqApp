@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from acqApp import config, style
+from acqApp.console import short_error
 from acqApp.widgets import compact, spin
 
 
@@ -70,14 +71,17 @@ class PufferController(QObject):
             with self._task_lock:
                 self._task = None
             return
+        task = None
         try:
             import nidaqmx
             task = nidaqmx.Task()
             task.do_channels.add_do_chan(self._s.channel)
             task.start()
         except Exception as e:
-            print(f"[puffer] DAQ init failed on {self._s.channel} ({e}) — "
-                  f"fire() will be a no-op")
+            if task is not None:
+                task.close()        # else nidaqmx warns it was never closed
+            print(f"[puffer] not available on {self._s.channel} — "
+                  f"{short_error(e)}; it won't fire")
             task = None
         with self._task_lock:
             self._task = task

@@ -11,7 +11,11 @@ class LedController:
     def __init__(self, chan: str = "Dev3/port0/line2"):
         from nidaqmx import Task
         self._task = Task()
-        self._task.do_channels.add_do_chan(chan)   # write() auto-starts it
+        try:
+            self._task.do_channels.add_do_chan(chan)   # write() auto-starts it
+        except Exception:
+            self._task.close()      # else nidaqmx warns it was never closed
+            raise
         self._state = False
 
     @property

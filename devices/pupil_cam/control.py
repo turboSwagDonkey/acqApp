@@ -16,8 +16,12 @@ class LedController:
     def __init__(self, chan: str = "Dev3/ao0"):
         from nidaqmx import Task
         self._task = Task()
-        self._task.ao_channels.add_ao_voltage_chan(
-            chan, min_val=0.0, max_val=self.MAX_VOLTS)
+        try:
+            self._task.ao_channels.add_ao_voltage_chan(
+                chan, min_val=0.0, max_val=self.MAX_VOLTS)
+        except Exception:
+            self._task.close()      # else nidaqmx warns it was never closed
+            raise
         self._state = False
         self._intensity = 1.0
 

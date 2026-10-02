@@ -52,6 +52,7 @@ flowchart TD
     saving --> console
     dialogs --> config
     adapters --> widgets
+    adapters --> console
     saving --> widgets
     dialogs --> probe
     dialogs --> style

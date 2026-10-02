@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from acqApp import config, style
+from acqApp.console import short_error
 from acqApp.acq.devices import (DeviceWorker, LedTarget, ModuleHost,
                                 OutputController, PatternTarget, PufferTarget,
                                 RecordingOutput, SignalSource, StageTarget)
@@ -113,14 +114,16 @@ def led_controller(emulate: bool, rig_key: str, real_cls, mock_cls, label: str):
     if emulate:
         return mock_cls()
     if not config.rig_has(rig_key):
-        print(f"[main] {label} not fitted on rig "
-              f"{config.active_rig() or '(none set)'} — using mock")
+        print(f"[main] {label}: not fitted on rig "
+              f"{config.active_rig() or '(none set)'} — continuing without it")
         return mock_cls()
     chan = config.rig_channel(rig_key)
     try:
         return real_cls(chan) if chan else real_cls()
     except Exception as e:
-        print(f"[main] {label} unavailable ({e}) — using mock")
+        where = f" on {chan}" if chan else ""
+        print(f"[main] {label}: not available{where} — {short_error(e)}; "
+              f"continuing without it")
         return mock_cls()
 
 

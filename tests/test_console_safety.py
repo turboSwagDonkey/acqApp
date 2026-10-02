@@ -129,7 +129,71 @@ def main() -> int:
     r.check(broken.encode("cp1252").decode("utf-8") == micro + "s",
             "control: the round trip really does identify mojibake")
 
+    check_missing_daq(r)
     return r.finish()
+
+
+def check_missing_daq(r: Report) -> None:
+    """A DAQ that isn't there: one plain line, and no nidaqmx warning about
+    a task left open. A fake nidaqmx fails as the rig's did (NI -200220)."""
+    import contextlib
+    import io
+    import types
+    import warnings
+
+    from acqApp.console import short_error
+
+    class DaqError(Exception):
+        def __init__(self) -> None:
+            super().__init__("Device identifier is invalid.\nDevice Specified: "
+                             "Dev3\n\nTask Name: _unnamedTask<0>\n\nStatus "
+                             "Code: -200220")
+            self.error_code = -200220
+
+    tasks: list = []
+
+    class Task:
+        def __init__(self) -> None:
+            self.closed = False
+            add = lambda *_a, **_k: (_ for _ in ()).throw(DaqError())  # noqa: E731
+            self.ao_channels = types.SimpleNamespace(add_ao_voltage_chan=add)
+            self.do_channels = types.SimpleNamespace(add_do_chan=add)
+            tasks.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    sys.modules["nidaqmx"] = types.SimpleNamespace(Task=Task)
+
+    r.check(short_error(DaqError()) == "Device identifier is invalid (NI -200220)",
+            f"an NI error is one line with its code ({short_error(DaqError())!r})")
+    r.check(short_error(ValueError("plain\nmore")) == "plain",
+            "any other error: its first line")
+
+    from acqApp import config
+    from acqApp.adapters.base import led_controller
+    from acqApp.devices.pupil_cam.control import LedController, MockLedController
+    from acqApp.devices.voltage_cam.led import LedController as CamLed
+    config.rig_has = lambda _key: True
+    config.rig_channel = lambda _key: "Dev3/ao0"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), warnings.catch_warnings(record=True) as got:
+        warnings.simplefilter("always")
+        led = led_controller(False, "pupil_led", LedController,
+                             MockLedController, "eye-tracking LED")
+    lines = out.getvalue().splitlines()
+    r.check(isinstance(led, MockLedController) and lines == [
+                "[main] eye-tracking LED: not available on Dev3/ao0 — Device "
+                "identifier is invalid (NI -200220); continuing without it"],
+            f"a missing LED says so in one line ({lines})")
+    r.check(tasks and all(t.closed for t in tasks) and not got,
+            "…and its half-made task is closed, so nidaqmx has nothing to warn "
+            "about")
+    try:
+        CamLed("Dev3/port0/line2")
+    except DaqError:
+        pass
+    r.check(tasks[-1].closed, "the voltage camera's LED closes its task too")
 
 
 if __name__ == "__main__":
