@@ -1,17 +1,14 @@
 # STRUCTURE.md — what is where, and what may import what
 
-The map of the tree. **[tests/test_structure.py](../tests/test_structure.py)
-checks this file against the code**, both halves: every file below must exist
-and every file must be listed, and the arrows in the diagram must be exactly the
-imports the AST finds. So this cannot quietly rot — but it *can* fail the suite,
-which is the point. Update it in the same commit as any move, rename or new
-module.
+[tests/test_structure.py](../tests/test_structure.py) enforces both blocks: the
+`text` tree lists exactly the files on disk, and the `mermaid` arrows are
+exactly the imports the AST finds. Update it in the same commit as any move,
+rename or new file (grep for the line; one line per file).
 
 ## The dependency flow
 
-One direction only: the window knows about adapters, adapters know about
-instruments, and **nothing imports back**. `acq/` is the sink — it depends on
-nothing in the app, which is what keeps `DaqClock` (phase 6) a drop-in.
+One direction: window → adapters → instruments; nothing imports back. `acq/`
+depends on nothing in the app.
 
 ```mermaid
 flowchart TD
@@ -65,40 +62,20 @@ flowchart TD
     run_pupil_review --> devices
 ```
 
-Six edges surprise people, so they are drawn rather than explained away:
-`devices → widgets`, and `routines → widgets` with it
-(`widgets.spin()` builds the configured spin boxes every settings panel wants
-— range-before-value, suffix, keyboard tracking; that is what `widgets.py` is
-for, and the alternative was the same six lines a hundred times over),
-`probe.py → devices` (the DMD probe resolves the ALP path through
-`devices/dmd/alp.py`), `probe.py → config` (which NI device to look for is
-the active rig's, from `rigs.json` — imported inside the function, not at
-module scope, so `probe.py` stays runnable as a plain script and the test
-harness can re-point config's file first), `devices → config`
-(`devices/dmd/sweep.py`'s Calibration dialog seeds its Model/cross-length
-controls from the active rig's `dmd_calibration` profile — a steeply tilted
-camera needs the same fit every run, not a re-pick), and
-`routines → devices` (a
-step's pattern picker opens `devices/dmd/roi_picker.py` to choose a saved ROI
-set, and its FOV picker opens `devices/stage/fov_picker.py` the same way —
-routines still touches no device directly, `adapters/routines.py` still is).
-**`main → devices`** is the odd one out — not a deliberate exception like the
-other three, but drift: `main.py` reaches into
-`devices/voltage_cam/presets.py` and `devices/dmd/control.py` directly for
-preset/mode-recipe lookups (SESSIONLOG.md (bm), the Scan-mode work), bypassing
-`adapters/` the way REFERENCE.md §5b calls out as the thing *not* to do. Drawn so
-the diagram stays true, not endorsed — flagged in REFERENCE.md §5b for the
-operator to decide whether it gets routed back through an adapter.
+Edges that look wrong but are deliberate:
+- `* → widgets`: the shared input helpers (`spin`, `compact`, `RangeBar`).
+- `probe → devices`, `probe → config`: the ALP path; the active rig's NI device
+  (imported inside the function, so `probe.py` runs as a plain script).
+- `devices → config`: the DMD Calibration dialog seeds from the rig's profile.
+- `routines → devices`: the step pickers open `roi_picker.py` / `fov_picker.py`;
+  routines still drives no device itself.
+- `main → devices`: drift, not design (preset/mode lookups bypass `adapters/`);
+  flagged in REFERENCE.md §5b.
 
-**An instrument appears in two places and they are not duplicates:**
-
-    adapters/wheel.py   the ADAPTER — how it plugs into THIS window
-    devices/wheel/      the DEVICE  — driver, worker, model, widgets;
-                        knows nothing about acqApp's window
-
-**Inside a device package:** `settings.py` is the model (**no Qt** — measured at
-0 PyQt6 modules, so config/tests/analysis can read it without a QApplication),
-`panel.py` its widgets, and `acquisition.py`/`control.py`/`driver.py` the device.
+`adapters/wheel.py` is how an instrument plugs into this window; `devices/wheel/`
+is the instrument (driver, worker, model, widgets) and knows nothing of the
+window. In a device package `settings.py` is the model (no Qt), `panel.py` the
+widgets, `acquisition.py`/`control.py`/`driver.py` the device.
 
 ## The tree
 
@@ -371,12 +348,10 @@ acqapp_local.json       local settings — gitignored
 __init__.py
 ```
 
-Not listed and deliberately so: `.venv/`, `__pycache__/`, `sessions/` (recordings),
-`routine_templates/` (the operator's saved protocols, written by `routines/templates.py`),
-anything else gitignored, and the per-package `__init__.py` — every package has
-one, and only the two carrying logic are called out above (the adapter registry,
-and the lazy PEP 562 re-exports in `routines/` and `saving/`). Raw rig captures live **outside** the repo in
-`../../rig_captures/`.
+Not listed: `.venv/`, `__pycache__/`, `sessions/`, the operator's saved
+`routine_templates/`, `rois/`, `fov_library/`, anything gitignored, and plain
+`__init__.py` files (the ones with logic are listed). Rig captures live outside
+the repo in `../../rig_captures/`.
 
 ## Adding a module
 
