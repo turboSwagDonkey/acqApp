@@ -111,6 +111,23 @@ def _part_eyeloop() -> int:
     r.check(complex_warnings(True) > 0,
             "control: without the filter that same fit does warn")
 
+    # ── trackers take turns on the shared config, silently and safely ───────
+    from acqApp.devices.pupil_cam.eyeloop_tracker import EyeLoopTracker
+    big, small = EyeLoopTracker(), EyeLoopTracker()
+    with warnings.catch_warnings(record=True) as got:
+        warnings.simplefilter("always")
+        big.arm(200, 100, (100.0, 50.0))
+        small.arm(60, 40, (30.0, 20.0))
+        stale = (el_config.engine.width, el_config.engine.height)
+        big.reset((90.0, 45.0))
+    r.check(stale == (60, 40),
+            "control: the last tracker armed owns the shared frame size")
+    r.check(big._shape.standard_corners == [(0, 0), (200, 100)],
+            f"a tracker re-seeded after another was armed walks its own frame "
+            f"({big._shape.standard_corners})")
+    r.check(not [w for w in got if issubclass(w.category, RuntimeWarning)],
+            "…and taking turns prints nothing")
+
     # ── it tracks, and the crop is what makes it work ───────────────────────
     eye = synthetic_eye(glint=(180, 215, 9))
     full = frame_with_eye(eye)

@@ -9,7 +9,10 @@ Three traps in driving `Shape` directly (docs/EYELOOP.md):
   returns a stale fit. `track()` nulls it first.
 - `center_adj_` opens a modal window and `waitKey(0)` on any failure. Bound to
   a no-op here.
-- `eyeloop.config` is process-global: one tracker per process.
+- `eyeloop.config` is process-global. `Shape` reads the model from it when
+  built and the frame size on `reset()`, so each tracker writes its own
+  before both: several may take turns (Review's preview, its full run, live)
+  but never run at once (review.py's `fitting()` / the host's busy check).
 """
 from __future__ import annotations
 
@@ -83,9 +86,6 @@ class GlintRemoval:
     pins: tuple[Pin, ...] = ()   # exempt from both guards
 
 
-_ARMED: list[str] = []          # process-wide, as eyeloop.config is
-
-
 class EyeLoopTracker:
     """Stateful: walks out from the previous frame's centre. Hold one across
     frames; `reset()` when the seed or frame size changes."""
@@ -145,20 +145,15 @@ class EyeLoopTracker:
         self._size = (int(width), int(height))
         self._shape.reset((float(seed[0]), float(seed[1])))
 
-        mine = str(id(self))
-        if _ARMED and _ARMED[0] != mine:
-            warnings.warn(
-                "a second EyeLoopTracker was armed in this process; they share "
-                "eyeloop.config and will corrupt each other's frame geometry",
-                RuntimeWarning, stacklevel=2)
-        _ARMED[:] = [mine]
-
     def reset(self, seed: tuple[float, float]) -> None:
         """Re-seed without rebuilding; cheap."""
         if self._shape is None:
             raise RuntimeError("arm() first")
         self._last_radius = None
         self._last_shape = None
+        # Shape.reset reads the frame size from the shared config: this
+        # tracker's, not whichever was armed last.
+        self._config.engine.width, self._config.engine.height = self._size
         self._shape.reset((float(seed[0]), float(seed[1])))
 
     def seed(self, fit: PupilFit) -> None:

@@ -198,6 +198,7 @@ class PupilCameraWorker(PullWorker):
             cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 
             n = 0
+            failed = 0          # said once, then counted: it can repeat a lot
             win_n, win_t0 = 0, time.perf_counter()
             try:
                 while not self._stop and cam.IsGrabbing():
@@ -215,8 +216,11 @@ class PupilCameraWorker(PullWorker):
                         continue
                     try:
                         if not grab.GrabSucceeded():
-                            print(f"[pupil_cam] grab failed: "
-                                  f"{grab.GetErrorDescription()}")
+                            failed += 1
+                            if failed == 1:
+                                print(f"[pupil_cam] grab failed: "
+                                      f"{grab.GetErrorDescription()} (more "
+                                      f"are counted, reported at stop)")
                             continue
                         frame = grab.Array.copy()   # buffer is reused
                         if self._frame_shape is None:
@@ -240,6 +244,9 @@ class PupilCameraWorker(PullWorker):
                     finally:
                         grab.Release()
             finally:
+                if failed > 1:
+                    print(f"[pupil_cam] {failed} grabs failed of "
+                          f"{failed + n}")
                 try:
                     cam.StopGrabbing()
                 except Exception:
