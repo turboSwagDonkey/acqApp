@@ -170,6 +170,7 @@ from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
 from acqApp.acq.writer import SessionWriter
+from acqApp.widgets import compact
 
 pg.setConfigOptions(imageAxisOrder="row-major")
 
@@ -717,7 +718,7 @@ class MainWindow(QMainWindow):
 
         self._modes = config.load_modes()
         self._sidebar.addWidget(QLabel("  Mode:"))
-        self._mode_combo = QComboBox()
+        self._mode_combo = compact(QComboBox())
         self._mode_combo.addItems((MODE_NONE, *self._modes))
         self._mode_combo.setToolTip(
             "Apply a named preset across modules (DMD illumination, camera "

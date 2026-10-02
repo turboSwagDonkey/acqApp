@@ -37,6 +37,7 @@ flowchart TD
     main --> style
     main --> console
     main --> devices
+    main --> widgets
     adapters --> devices
     adapters --> routines
     adapters --> saving

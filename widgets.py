@@ -23,7 +23,12 @@ _PATH_ROLE = Qt.ItemDataRole.UserRole
 def compact(w: QWidget, chars: int | None = None) -> QWidget:
     """Keep an input as narrow as its content: Qt's form layouts otherwise
     stretch every spin box, combo and line edit across the whole panel.
-    `chars` caps a free-text box at about that many characters."""
+    `chars` caps a free-text box at about that many characters.
+
+    The panel rules: compact() every combo, line edit and spin box not made
+    with `spin()` (which does it already); put closely related pairs on one
+    row; end a row with addStretch() so its compact widgets stay left. Paths
+    and table-cell editors stay full width."""
     from PyQt6.QtWidgets import QSizePolicy
     w.setSizePolicy(QSizePolicy.Policy.Fixed, w.sizePolicy().verticalPolicy())
     if chars:

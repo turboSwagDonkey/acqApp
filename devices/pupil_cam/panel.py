@@ -19,14 +19,15 @@ from PyQt6.QtWidgets import (
 
 from acqApp import style
 from acqApp.widgets import RangeBar, SegmentedSwitch, sections_help, spin
+from acqApp.devices.pupil_cam.settings import PupilSettings
+from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
 
 EXPOSURE_MIN_US = 20.0      # until the camera says its own minimum
 
 
 def _fmt_us(us: float) -> str:
     return f"{us / 1000:.2f} ms" if us >= 1000 else f"{us:.0f} µs"
-from acqApp.devices.pupil_cam.settings import PupilSettings
-from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
+
 
 _VIDEO_FILTER = "Uncompressed AVI (*.avi);;All files (*)"
 
