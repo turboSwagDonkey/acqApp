@@ -317,6 +317,7 @@ docs/
 tests/                  plain scripts, not pytest; each file (and each part of a
                         multi-part file, `--part NAME`) runs in its own process
   _harness.py           Report, qt_app(), isolate_user_state(), run_parts()
+  _pupil_helpers.py     the test_pupil*.py files' AVI writer and synthetic eyes
   README.md             the two conventions: isolate user state, include a control
   run_all.py            the suite: run this
   test_camera.py              readout table, frame timestamps, .dcimg, recording losses
@@ -327,9 +328,11 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_encoder.py             position -> speed/distance, hardware-timed reads
   test_modules.py             every module subset; loading/unloading in place
   test_pickers.py             the saved-ROI and saved-FOV pickers
-  test_pupil.py               EyeLoop seam, tracking, eye region, clip replay, offline review, Auto, review/live mirror
+  test_pupil.py               EyeLoop seam, tracking, eye region, clip replay, exposure bar, help
+  test_pupil_auto.py          Auto's suggested parameters
+  test_pupil_review.py        offline review, safety, review/live mirror, seed, Apply, mode, recorded, launcher
   test_routines.py            routine engine/adapter/panel, and the timeline
-  test_saving.py              save paths, split writer, direct-chunk HDF5 write
+  test_saving.py              save paths, the session writer (TIFF/CSV/AVI), Bpod match
   test_session_recording.py
   test_stage.py               stage calibration persistence, the Z axis
   test_stage_panel.py

@@ -45,6 +45,8 @@ TESTS = [
     ("vis-stim",  "test_vis_stim.py"),
     ("routines",  "test_routines.py"),
     ("pupil",     "test_pupil.py"),
+    ("pupil-review", "test_pupil_review.py"),
+    ("pupil-auto", "test_pupil_auto.py"),
     ("camera",    "test_camera.py"),
     ("modules",   "test_modules.py"),
     ("session",   "test_session_recording.py"),
