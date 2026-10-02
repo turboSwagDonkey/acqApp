@@ -245,9 +245,12 @@ class PupilReview:
     def preview_fit(self, i: int, settings: PupilSettings | None = None,
                     warmup: int = 2):
         """Frame `i` fitted with `settings` (default: the current ones), for
-        showing a change before it is applied. The tracker walks from the last
-        frame's centre, so it runs over the `warmup` frames before `i` first.
-        Raises when tracking is unavailable."""
+        showing a change before it is applied, and what reflection removal
+        blanked there. The tracker walks from the last frame's centre and
+        looks for reflections around the last fit, so a jump (`warmup` > 0)
+        starts from the run's own fit before `i` when there is one — the
+        state a run through the clip had there — else warms up over the
+        `warmup` frames before. Raises when tracking is unavailable."""
         st = dataclasses.replace(settings or self.settings, track=True)
         with PupilReview._fitting_lock:
             PupilReview._fitting += 1
@@ -258,7 +261,14 @@ class PupilReview:
             if not isinstance(t, PupilTracking):
                 t = self._preview_tracking = PupilTracking()
             fit = None
-            for j in range(max(0, i - warmup), i + 1):
+            start = max(0, i - warmup)
+            if warmup:
+                done = np.flatnonzero(~np.isnan(self.auto[:i, 0]))
+                if done.size:
+                    t.seed((self.reader.height, self.reader.width), st,
+                           _fit_from(self.auto[done[-1]]))
+                    start = i
+            for j in range(start, i + 1):
                 fit = t.track(np.ascontiguousarray(self.reader.luma(j)), st)
                 if not t.available:
                     raise RuntimeError(t.error)

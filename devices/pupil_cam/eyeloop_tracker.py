@@ -161,6 +161,13 @@ class EyeLoopTracker:
         self._last_shape = None
         self._shape.reset((float(seed[0]), float(seed[1])))
 
+    def seed(self, fit: PupilFit) -> None:
+        """Carry on as if `fit` (crop px) had just been tracked: the walk
+        starts at its centre and reflections are searched around it."""
+        self.reset((fit.center_x, fit.center_y))
+        self._last_radius = fit.radius
+        self._last_shape = (fit.semi_major, fit.semi_minor, fit.angle_deg)
+
     @property
     def armed(self) -> bool:
         return self._shape is not None

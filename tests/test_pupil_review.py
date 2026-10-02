@@ -285,18 +285,6 @@ def _part_review_safety() -> int:  # noqa: PLR0915 — one linear scenario
     from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
     from acqApp.devices.pupil_cam.review import PupilReview, sidecar_paths
 
-    class DiscTracking:
-        error = None
-        available = True
-
-        def track(self, frame, st):
-            x0, y0, x1, y1 = st.crop_box(frame.shape)
-            ys, xs = np.nonzero(frame[y0:y1, x0:x1] < st.track_threshold)
-            if xs.size < 20:
-                return None
-            rad = float(np.sqrt(xs.size / np.pi))
-            return PupilFit(xs.mean() + x0, ys.mean() + y0, rad, rad, 0.0)
-
     review_mod.PupilTracking = DiscTracking
     tmp = Path(tempfile.mkdtemp(prefix="pupil_safety_"))
     H, W, N = 120, 160, 10
@@ -426,18 +414,6 @@ def _part_mirror() -> int:  # noqa: PLR0915 — one linear scenario
     from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
     from acqApp.devices.pupil_cam.review import PupilReview, sidecar_paths
     from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
-
-    class DiscTracking:
-        error = None
-        available = True
-
-        def track(self, frame, st):
-            x0, y0, x1, y1 = st.crop_box(frame.shape)
-            ys, xs = np.nonzero(frame[y0:y1, x0:x1] < st.track_threshold)
-            if xs.size < 20:
-                return None
-            rad = float(np.sqrt(xs.size / np.pi))
-            return PupilFit(xs.mean() + x0, ys.mean() + y0, rad, rad, 0.0)
 
     review_mod.PupilTracking = DiscTracking
     tmp = Path(tempfile.mkdtemp(prefix="pupil_mirror_"))
@@ -753,19 +729,6 @@ def _part_apply() -> int:
     frames keeps it; Revert goes back to the previous trace."""
     r = Report("pupil-apply")
     from acqApp.devices.pupil_cam import review as review_mod
-    from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
-
-    class DiscTracking:
-        error = None
-        available = True
-
-        def track(self, frame, st):
-            x0, y0, x1, y1 = st.crop_box(frame.shape)
-            ys, xs = np.nonzero(frame[y0:y1, x0:x1] < st.track_threshold)
-            if xs.size < 20:
-                return None
-            rad = float(np.sqrt(xs.size / np.pi))
-            return PupilFit(xs.mean() + x0, ys.mean() + y0, rad, rad, 0.0)
 
     review_mod.PupilTracking = DiscTracking
     app = qt_app()
@@ -1138,8 +1101,68 @@ def _part_gap() -> int:  # noqa: PLR0915 — one linear scenario
     return r.finish()
 
 
+def _part_glare() -> int:
+    """The red over removed reflections, on a frame jumped to, is what a run
+    through the clip removed there — not a guess from a cold tracker. Real
+    EyeLoop: reflections are searched around the previous fit."""
+    r = Report("pupil-glare")
+    from acqApp.devices.pupil_cam.eyeloop_tracker import EYELOOP_DIR
+    if not (EYELOOP_DIR / "eyeloop").is_dir():
+        print(f"[pupil-glare] no EyeLoop clone at {EYELOOP_DIR} — skipped")
+        return r.finish()
+    from acqApp.devices.pupil_cam.review import PupilReview
+    from acqApp.devices.pupil_cam.tracking import PupilTracking
+
+    tmp = Path(tempfile.mkdtemp(prefix="pupil_glare_"))
+    H, W, N, AT = 120, 220, 24, 20
+
+    def eye(cx: int, cy: int = 60, r: int = 16) -> np.ndarray:
+        """A dim eye (under the reflection threshold) whose pupil holds one
+        small bright reflection; it starts where EyeLoop's walk does."""
+        Y, X = np.ogrid[:H, :W]
+        f = np.full((H, W), 90, np.uint8)
+        f[(X - cx) ** 2 + (Y - cy) ** 2 < r * r] = 20
+        f[(X - cx - 5) ** 2 + (Y - cy + 3) ** 2 < 9] = 250
+        return f
+
+    frames = [eye(110 + 3 * i) for i in range(N)]    # drifts 3 px a frame
+    clip = write_avi(tmp / "eye.avi", [f.tobytes() for f in frames], W, H,
+                     b"Y800", 8)
+    st = PupilSettings(limit_x0=10, limit_y0=10, limit_x1=210, limit_y1=110,
+                       cr_remove=True, track=True)
+
+    run = PupilTracking()
+    for i in range(AT + 1):
+        truth_fit = run.track(frames[i], st)
+    truth = run.last_mask
+    if not r.check(truth_fit is not None and truth is not None and truth.any(),
+                   f"fixture: a run through the clip fits frame {AT} and "
+                   f"blanks its reflection"):
+        return r.finish()
+
+    rev = PupilReview(clip, st)
+    rev.track_all()
+    r.check(not np.isnan(rev.auto[:, 0]).any(), "fixture: every frame tracked")
+    rev.preview_fit(2)                       # the preview was elsewhere...
+    rev.preview_fit(AT)                      # ...then a jump
+    r.check(rev.last_mask is not None and np.array_equal(rev.last_mask, truth),
+            f"after a jump the red is exactly what the run removed "
+            f"({0 if rev.last_mask is None else int(rev.last_mask.sum())} vs "
+            f"{int(truth.sum())} px)")
+
+    cold = PupilReview(clip, st)             # no run to start from
+    cold.preview_fit(2)
+    cold.preview_fit(AT)
+    got = 0 if cold.last_mask is None else int(cold.last_mask.sum())
+    r.check(cold.last_mask is None or not np.array_equal(cold.last_mask, truth),
+            f"control: warming up from where the preview last was misses it "
+            f"({got} px)")
+    return r.finish()
+
+
 PARTS = {
     "review": _part_review,
+    "glare": _part_glare,
     "gap": _part_gap,
     "launcher": _part_launcher,
     "safety": _part_review_safety,

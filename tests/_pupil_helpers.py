@@ -54,6 +54,9 @@ class DiscTracking:
         rad = float(np.sqrt(xs.size / np.pi))
         return PupilFit(xs.mean() + x0, ys.mean() + y0, rad, rad, 0.0)
 
+    def seed(self, shape, st, fit) -> None:
+        """Stateless: nothing to carry over."""
+
 
 def face_frame(h=300, w=420, cx=210, cy=150, r=30, pupil=20, iris=26,
                glint=True, seed=0) -> np.ndarray:

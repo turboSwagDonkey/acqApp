@@ -52,9 +52,34 @@ class PupilTracking:
         x0, y0, x1, y1 = box
         self.last_box = box
         crop = frame[y0:y1, x0:x1]
-        if crop.size == 0:
+        if crop.size == 0 or not self._ready(box, st):
             return None
 
+        fit = self._tracker.track(crop)
+        self.last_mask = self._tracker.last_glint_mask
+        if fit is None:
+            return None
+
+        PupilFit = self._eyeloop_cls[4]
+        return PupilFit(fit.center_x + x0, fit.center_y + y0,
+                        fit.semi_major, fit.semi_minor, fit.angle_deg)
+
+    def seed(self, shape: tuple[int, ...], st: PupilSettings, fit) -> None:
+        """Start the next frame from `fit` (full-frame px), as if it had just
+        been tracked: where the walk begins and where reflections are looked
+        for. A jump in a clip lands where a run through it would have been."""
+        box = st.crop_box(shape)
+        if fit is None or box is None or not self._ready(box, st):
+            return
+        x0, y0 = box[0], box[1]
+        PupilFit = self._eyeloop_cls[4]
+        self._tracker.seed(PupilFit(fit.center_x - x0, fit.center_y - y0,
+                                    fit.semi_major, fit.semi_minor,
+                                    fit.angle_deg))
+
+    def _ready(self, box: tuple[int, int, int, int], st: PupilSettings) -> bool:
+        """The tracker armed for `box` and the model, with `st`'s knobs."""
+        x0, y0, x1, y1 = box
         if self._eyeloop_cls is None:
             try:
                 from acqApp.devices.pupil_cam.eyeloop_tracker import (
@@ -62,10 +87,10 @@ class PupilTracking:
                     PupilFit)
             except ImportError as e:    # pragma: no cover - import guard
                 self._error = str(e)
-                return None
+                return False
             self._eyeloop_cls = (EyeLoopTracker, EyeLoopUnavailable,
                                  GlintRemoval, Pin, PupilFit)
-        EyeLoopTracker, EyeLoopUnavailable, GlintRemoval, Pin, PupilFit = \
+        EyeLoopTracker, EyeLoopUnavailable, GlintRemoval, Pin, _ = \
             self._eyeloop_cls
 
         glint = GlintRemoval(
@@ -92,16 +117,9 @@ class PupilTracking:
             except EyeLoopUnavailable as e:
                 self._tracker = None
                 self._error = str(e)
-                return None
+                return False
         else:
             self._tracker.glint = glint
             self._tracker.apply_settings(threshold=st.track_threshold,
                                          blur=st.track_blur)
-
-        fit = self._tracker.track(crop)
-        self.last_mask = self._tracker.last_glint_mask
-        if fit is None:
-            return None
-
-        return PupilFit(fit.center_x + x0, fit.center_y + y0,
-                        fit.semi_major, fit.semi_minor, fit.angle_deg)
+        return True
