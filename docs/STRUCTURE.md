@@ -207,6 +207,9 @@ devices/                one package per instrument
     review_app.py       the review window as its own program (QApplication + main)
     review_dialog.py    ReviewWidget: the clip review (Review mode of the Pupil tab,
                         or its own window via review_app); scrub, fix, apply
+    review_layout.py    ReviewWidget's layout (_build), a mixin
+    review_playback.py  ReviewWidget's frame display, overlay, playback, trace
+    review_seed.py      ReviewWidget's Auto help: the user marks a few frames
     settings.py         camera, eye region, tracking + corneal-reflection knobs
     track_worker.py     tracking on its own thread; sole consumer of the frames
     tracking_panel.py   the tracking controls (region, fit, blinks, reflections),
