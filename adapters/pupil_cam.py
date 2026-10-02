@@ -25,6 +25,7 @@ from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.autotune import NEEDS_HELP
 from acqApp.devices.pupil_cam.review import PupilReview
 from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker, PupilTrackWorker
+from acqApp.devices.pupil_cam.tracking_panel import pin_click
 from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
 from acqApp.widgets import compact
 
@@ -323,16 +324,18 @@ class PupilCamModule(ModuleAdapter):
 
     def _on_click(self, ev) -> None:
         """Place a pin or an Auto seed (the region uses a drag)."""
-        if self.panel is None or self._vb is None:
+        if (self.panel is None or self._vb is None
+                or ev.button() != Qt.MouseButton.LeftButton):
             return
         if self._seed_clicks is not None:
             self._seed_click(ev)
             return
         if self._btn_pin is None or not self._btn_pin.isChecked():
             return
-        if not self._vb.sceneBoundingRect().contains(ev.scenePos()):
+        if not pin_click(ev, self._vb):
             return
         p = self._vb.mapSceneToView(ev.scenePos())
+        self._btn_pin.setChecked(False)         # one pin per arming
         self._place_pin(p.x(), p.y())
 
     # ── the eye region ──
@@ -352,8 +355,8 @@ class PupilCamModule(ModuleAdapter):
         self._lbl_limit.setMinimumWidth(1)      # clip, don't widen the dock
         self._btn_pin = QPushButton("Pin reflection")
         self._btn_pin.setCheckable(True)
-        self._btn_pin.setToolTip("Then click a fixed reflection to pin it; "
-                                 "click again to unpin.")
+        self._btn_pin.setToolTip("Then click a fixed reflection to pin it, or "
+                                 "a pin to remove it. One click per press.")
         self._btn_pin.toggled.connect(self._arm_pin)
 
         self._cmb_view = compact(QComboBox())

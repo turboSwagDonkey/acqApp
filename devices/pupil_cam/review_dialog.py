@@ -135,6 +135,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
             QMessageBox.warning(self, "Pupil review", f"Can't open {path}:\n{e}")
             return False
         self.pause()
+        self._btn_pin_cr.setChecked(False)
         self.review = rev
         n = len(rev)
         h, w = rev.reader.height, rev.reader.width

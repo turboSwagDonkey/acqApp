@@ -7,6 +7,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import Qt
 
 from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker
+from acqApp.devices.pupil_cam.tracking_panel import pin_click
 
 _SEED_FRAMES = 5        # frames the user marks when Auto needs help
 
@@ -42,11 +43,11 @@ class _SeedMixin:
         if ev.button() != Qt.MouseButton.LeftButton or self.review is None:
             return
         if not self.seeding:
-            if self._btn_pin_cr.isChecked():
-                if self._vb.sceneBoundingRect().contains(ev.scenePos()):
-                    p = self._vb.mapSceneToView(ev.scenePos())
-                    self.toggle_pin(p.x(), p.y())
-                    ev.accept()
+            if self._btn_pin_cr.isChecked() and pin_click(ev, self._vb):
+                p = self._vb.mapSceneToView(ev.scenePos())
+                self._btn_pin_cr.setChecked(False)      # one pin per arming
+                self.toggle_pin(p.x(), p.y())
+                ev.accept()
             return
         if not self._vb.sceneBoundingRect().contains(ev.scenePos()):
             return
@@ -60,6 +61,14 @@ class _SeedMixin:
         self._vb.addItem(self._seed_roi)
         self._btn_seed_next.setEnabled(True)
         ev.accept()
+
+    _PIN_HINT = "click a reflection to pin or unpin it"
+
+    def _pin_armed(self, on: bool) -> None:
+        if on:
+            self._prog.setText(self._PIN_HINT)
+        elif self._prog.text() == self._PIN_HINT:   # keep any newer status
+            self._prog.setText("")
 
     def toggle_pin(self, x: float, y: float) -> None:
         """Unpin the pin under (x, y), or pin the reflection there, sized to

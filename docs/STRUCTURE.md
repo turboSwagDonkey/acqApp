@@ -310,7 +310,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_encoder.py             position -> speed/distance, hardware-timed reads
   test_modules.py             every module subset; loading/unloading in place
   test_pickers.py             the saved-ROI and saved-FOV pickers
-  test_pupil.py               EyeLoop seam, tracking, eye region, clip replay, exposure bar, help
+  test_pupil.py               EyeLoop seam, tracking, pins, eye region, clip replay, exposure bar, help
   test_pupil_auto.py          Auto's suggested parameters
   test_pupil_review.py        offline review, safety, review/live mirror, seed, Apply, mode, recorded, launcher
   test_routines.py            routine engine/adapter/panel, and the timeline

@@ -607,6 +607,7 @@ def _part_track() -> int:
     class _Ev:
         def __init__(self, pt): self._p = pt
         def scenePos(self): return self._p
+        def button(self): return Qt.MouseButton.LeftButton
 
     panel.clear_pins()
     rect = mod._vb.sceneBoundingRect()
@@ -631,6 +632,8 @@ def _part_track() -> int:
     r.check(npoints(mod._pin_curve) > 8,
             f"…and it is drawn ({npoints(mod._pin_curve)} points)")
 
+    r.check(not mod._btn_pin.isChecked(), "…and pinning disarms itself")
+    mod._btn_pin.setChecked(True)
     mod._on_click(_Ev(at))              # the same place again
     r.check(panel.settings.cr_pins == [],
             f"clicking a pinned reflection unpins it ({panel.settings.cr_pins})")
@@ -1115,9 +1118,173 @@ def _part_help() -> int:
     return r.finish()
 
 
+# ═══ pins: real mouse events, Live and Review ═══════════════════════════
+
+def _part_pins() -> int:  # noqa: PLR0915 — one linear scenario
+    """Stray pins: Pin reflection stayed armed, so every later click pinned;
+    right/middle clicks and clicks on the region box pinned too. Driven with
+    QTest through the view's viewport, so pyqtgraph's own dispatch runs."""
+    r = Report("pupil-pins")
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QMouseEvent
+    from PyQt6.QtTest import QTest
+    app = qt_app()
+    isolate_user_state()
+    sys.argv = ["main.py", "--mock"]
+    L, R, M = (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton,
+               Qt.MouseButton.MiddleButton)
+    none = Qt.KeyboardModifier.NoModifier
+
+    def at(gv, vb, x, y):
+        return gv.mapFromScene(vb.mapViewToScene(QPointF(x, y)))
+
+    def click(gv, pt, btn=L):
+        QTest.mouseClick(gv.viewport(), btn, none, pt)
+        pump(app, 0.05)
+        for w in app.topLevelWidgets():      # a right click's menu
+            if w.isVisible() and w.metaObject().className() == "QMenu":
+                w.close()
+
+    def dclick(gv, pt):
+        """As the OS sends it: press, release, double-click, release.
+        (QTest.mouseDClick sends the double-click alone.)"""
+        vp = gv.viewport()
+        QTest.mousePress(vp, L, none, pt)
+        QTest.mouseRelease(vp, L, none, pt)
+        p = QPointF(pt)
+        app.sendEvent(vp, QMouseEvent(QEvent.Type.MouseButtonDblClick, p,
+                                      QPointF(vp.mapToGlobal(p)), L, L, none))
+        QTest.mouseRelease(vp, L, none, pt)
+        pump(app, 0.05)
+
+    def drag(gv, a, b):
+        vp = gv.viewport()
+        QTest.mousePress(vp, L, none, a)
+        for k in range(1, 9):
+            p = QPointF(a + (b - a) * k / 8)
+            app.sendEvent(vp, QMouseEvent(
+                QEvent.Type.MouseMove, p, QPointF(vp.mapToGlobal(p)),
+                Qt.MouseButton.NoButton, L, none))
+            pump(app, 0.01)
+        QTest.mouseRelease(vp, L, none, b)
+        pump(app, 0.05)
+
+    def stray(name, arm, count, clear, act):
+        """Armed, `act` must not pin."""
+        clear()
+        arm(True)
+        act()
+        r.check(count() == 0, f"{name}: no pin ({count()})")
+        arm(False)
+
+    # ── Live ──
+    win = make_window({"pupil_cam"})
+    win.show()
+    mod = win._modules[0]
+    panel = mod.panel
+    win._btn_run.setChecked(True)
+    pump(app, 1.0)
+    for _ in range(4):
+        win._display_tick()
+        pump(app, 0.05)
+    mod._gv.resize(400, 300)
+    mod._vb.setRange(xRange=(0, 320), yRange=(0, 240), padding=0)
+    pump(app, 0.1)
+    gv, vb, btn = mod._gv, mod._vb, mod._btn_pin
+    count = lambda: len(panel.settings.cr_pins)         # noqa: E731
+    panel.clear_pins()
+
+    click(gv, at(gv, vb, 100, 100))
+    r.check(count() == 0, f"live control: unarmed, a click pins nothing ({count()})")
+    btn.setChecked(True)
+    click(gv, at(gv, vb, 100, 100))
+    r.check(count() == 1, f"live control: armed, a real click pins one ({count()})")
+    r.check(not btn.isChecked(), "live: one pin disarms Pin reflection")
+    click(gv, at(gv, vb, 200, 150))
+    r.check(count() == 1, f"live: a later click pins nothing more ({count()}); "
+                          f"it was 2 before the fix")
+    btn.setChecked(True)
+    click(gv, at(gv, vb, 100, 100))
+    r.check(count() == 0 and not btn.isChecked(),
+            f"live: re-armed, clicking the pin removes it, and disarms ({count()})")
+    for name, act in (
+            ("live right click", lambda: click(gv, at(gv, vb, 150, 120), R)),
+            ("live middle click", lambda: click(gv, at(gv, vb, 150, 120), M)),
+            ("live drag", lambda: drag(gv, at(gv, vb, 50, 50), at(gv, vb, 120, 120)))):
+        stray(name, btn.setChecked, count, panel.clear_pins, act)
+    panel.clear_pins()
+    btn.setChecked(True)
+    dclick(gv, at(gv, vb, 60, 60))
+    r.check(count() == 1, f"live: a double click pins once, not on-then-off ({count()})")
+    panel.clear_pins()
+    mod._seed_clicks = []                   # Auto asking for the pupil
+    click(gv, at(gv, vb, 150, 120), R)
+    r.check(mod._seed_clicks == [], "live: a right click is not an Auto seed")
+    click(gv, at(gv, vb, 150, 120))
+    r.check(len(mod._seed_clicks) == 1, "live control: a left click is")
+    mod._seed_clicks = None
+    win._btn_run.setChecked(False)
+    pump(app, 0.2)
+    win.close()
+    pump(app, 0.1)
+
+    # ── Review ──
+    from _pupil_helpers import DiscTracking
+    from acqApp.devices.pupil_cam import review as review_mod
+    from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog
+    review_mod.PupilTracking = DiscTracking
+    tmp = Path(tempfile.mkdtemp(prefix="pupil_pins_"))
+    H, W = 120, 160
+    clip = write_avi(tmp / "eye.avi",
+                     [video_eye_frame(H, W, 80, 60, 14).tobytes()] * 6, W, H,
+                     b"Y800", 8)
+    dlg = PupilReviewDialog(str(clip), settings=PupilSettings(
+        limit_x0=40, limit_y0=30, limit_x1=120, limit_y1=90))
+    dlg.resize(1000, 700)
+    dlg.show()
+    pump(app, 0.3)
+    dlg._vb.setRange(xRange=(0, W), yRange=(0, H), padding=0)
+    pump(app, 0.1)
+    gv, vb, btn = dlg._gv, dlg._vb, dlg._btn_pin_cr
+    count = lambda: len(dlg._read_settings().cr_pins)   # noqa: E731
+    clear = dlg._ctl.clear_pins
+
+    click(gv, at(gv, vb, 20, 20))
+    r.check(count() == 0, f"review control: unarmed, a click pins nothing ({count()})")
+    btn.setChecked(True)
+    click(gv, at(gv, vb, 20, 20))
+    r.check(count() == 1 and not btn.isChecked(),
+            f"review control: armed, a real click pins one and disarms ({count()})")
+    click(gv, at(gv, vb, 140, 100))
+    r.check(count() == 1, f"review: a later click pins nothing more ({count()})")
+    for name, act in (
+            ("review right click", lambda: click(gv, at(gv, vb, 140, 20), R)),
+            ("review drag", lambda: drag(gv, at(gv, vb, 10, 10), at(gv, vb, 30, 30)))):
+        stray(name, btn.setChecked, count, clear, act)
+    clear()
+    btn.setChecked(True)
+    dclick(gv, at(gv, vb, 20, 100))
+    r.check(count() == 1, f"review: a double click pins once ({count()})")
+    clear()
+    btn.setChecked(True)
+    r.check("pin or unpin" in dlg._prog.text(), "review: arming says what to do")
+    dlg._prog.setText("saved eye.avi.pupil.json")
+    click(gv, at(gv, vb, 20, 20))
+    r.check(dlg._prog.text() == "saved eye.avi.pupil.json",
+            f"review: disarming keeps a newer status ({dlg._prog.text()!r})")
+    clear()
+    btn.setChecked(True)
+    dlg.open_video(str(clip))
+    r.check(not btn.isChecked(), "review: opening a clip disarms Pin reflection")
+    dlg._dirty = False
+    dlg.close()
+    return r.finish()
+
+
 PARTS = {
     "eyeloop": _part_eyeloop,
     "track": _part_track,
+    "pins": _part_pins,
     "limit": _part_limit,
     "video": _part_video,
     "exposure": _part_exposure,

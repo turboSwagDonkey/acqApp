@@ -236,11 +236,9 @@ class _LayoutMixin:
         self._btn_new.clicked.connect(self._place_new)
         self._btn_pin_cr = QPushButton("Pin reflection")
         self._btn_pin_cr.setCheckable(True)
-        self._btn_pin_cr.setToolTip("Then click a fixed reflection to pin it; "
-                                    "click again to unpin.")
-        self._btn_pin_cr.toggled.connect(
-            lambda on: self._prog.setText("click a reflection to pin or unpin "
-                                          "it" if on else ""))
+        self._btn_pin_cr.setToolTip("Then click a fixed reflection to pin it, "
+                                    "or a pin to remove it. One click per press.")
+        self._btn_pin_cr.toggled.connect(self._pin_armed)
         for w in (self._lbl_state, self._btn_new, self._btn_pin, self._btn_reset):
             edit.addWidget(w)
         mid.addLayout(edit)

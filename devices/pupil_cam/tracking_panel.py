@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
@@ -25,6 +25,13 @@ def hint(text: str) -> QLabel:
     lbl.setWordWrap(True)
     lbl.setStyleSheet(HINT_STYLE)
     return lbl
+
+
+def pin_click(ev, vb) -> bool:
+    """A click meant for Pin reflection: left (right opens the menu), on
+    the image."""
+    return (ev.button() == Qt.MouseButton.LeftButton
+            and vb.sceneBoundingRect().contains(ev.scenePos()))
 
 
 def _valid(r) -> bool:

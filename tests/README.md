@@ -29,7 +29,7 @@ runs each *part* in its own process too (`_harness.run_parts`).
 Rows keep the original test names; since 2026-09-30 most are a `--part` of a
 file merged by area — the section banners in each file say `(was test_x.py)`.
 The pupil tests are three files (2026-10-02): `test_pupil.py` (eyeloop, track,
-limit, video, exposure, help), `test_pupil_review.py` (review, safety, mirror,
+pins, limit, video, exposure, help), `test_pupil_review.py` (review, safety, mirror,
 seed, apply, mode, recorded, launcher) and `test_pupil_auto.py` (autotune); their
 shared AVI writer and synthetic eyes are in `_pupil_helpers.py`.
 
