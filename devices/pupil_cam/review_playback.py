@@ -22,6 +22,19 @@ def _ellipse_xy(fit: PupilFit, n: int = 64):
             fit.center_y + u * np.sin(t) + v * np.cos(t))
 
 
+class _EdgeEllipseROI(pg.EllipseROI):
+    """One handle per edge, pinned at the opposite edge, so dragging a side
+    moves that side only (pyqtgraph's one handle scales about the centre).
+    Rotation sits at a corner, clear of them. Built here rather than removed
+    after: a handle removed before the ROI is in a scene stays drawn."""
+
+    def _addHandles(self):
+        for p, c in (((0.5, 0.0), (0.5, 1.0)), ((0.5, 1.0), (0.5, 0.0)),
+                     ((0.0, 0.5), (1.0, 0.5)), ((1.0, 0.5), (0.0, 0.5))):
+            self.addScaleHandle(p, c)
+        self.addRotateHandle((1.0, 1.0), (0.5, 0.5))
+
+
 class _PlaybackMixin:
     """Frame navigation and display, playback, the preview, the trace."""
 
@@ -255,17 +268,8 @@ class _PlaybackMixin:
         t = np.radians(fit.angle_deg)
         c, s = np.cos(t), np.sin(t)
         pos = (fit.center_x - (a * c - b * s), fit.center_y - (a * s + b * c))
-        self._roi = pg.EllipseROI(pos, (2 * a, 2 * b), angle=fit.angle_deg,
-                                  pen=pg.mkPen("#ffffff", width=1))
-        # One handle per edge, pinned at the opposite edge: dragging a side
-        # moves that side only (pyqtgraph's own scales about the centre).
-        # Rotation moves to a corner, clear of the edge handles.
-        for h in list(self._roi.getHandles()):
-            self._roi.removeHandle(h)
-        for p, c in (((0.5, 0.0), (0.5, 1.0)), ((0.5, 1.0), (0.5, 0.0)),
-                     ((0.0, 0.5), (1.0, 0.5)), ((1.0, 0.5), (0.0, 0.5))):
-            self._roi.addScaleHandle(p, c)
-        self._roi.addRotateHandle((1.0, 1.0), (0.5, 0.5))
+        self._roi = _EdgeEllipseROI(pos, (2 * a, 2 * b), angle=fit.angle_deg,
+                                    pen=pg.mkPen("#ffffff", width=1))
         self._roi.sigRegionChangeFinished.connect(self._roi_edited)
         self._roi.setVisible(self._view() != "bare")
         self._vb.addItem(self._roi)

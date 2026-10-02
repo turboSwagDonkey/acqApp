@@ -147,6 +147,11 @@ def _part_review() -> int:  # noqa: PLR0915 — one linear scenario
             and sum(k[0] == "r" for k in kinds) == 1,
             f"one handle per edge, each pinned at the opposite edge, plus a "
             f"rotate handle ({kinds})")
+    from pyqtgraph.graphicsItems.ROI import Handle
+    drawn = [c for c in roi.childItems() if isinstance(c, Handle)]
+    r.check(len(drawn) == len(roi.handles) == 5,
+            f"…and nothing else drawn: no leftover default handles "
+            f"({len(drawn)} handle items)")
     far = roi.mapToParent(_P(20.0, 0.0))        # the edge opposite the drag
     top = next(h["item"] for h in roi.handles
                if h["type"] == "s" and h["pos"] == _P(0.5, 1.0))

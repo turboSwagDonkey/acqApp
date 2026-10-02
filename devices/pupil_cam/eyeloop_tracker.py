@@ -22,6 +22,12 @@ from pathlib import Path
 
 import numpy as np
 
+# EyeLoop's ellipse fit (models/ellipsoid.py) casts its eigen-solution to
+# float on purpose and takes np.real a line later; numpy warned on every
+# frame, flooding the console. Only EyeLoop's own modules are silenced.
+warnings.filterwarnings("ignore", category=np.exceptions.ComplexWarning,
+                        module=r"eyeloop\.")
+
 # Patches for a fresh clone: docs/eyeloop-3.14-patches.diff.
 EYELOOP_DIR = Path(
     os.environ.get("ACQAPP_EYELOOP_DIR")

@@ -81,6 +81,36 @@ def _part_eyeloop() -> int:
               f"skipping the tracking checks (see docs/EYELOOP.md)")
         return r.finish()
 
+    # ── a degenerate edge (collinear points) doesn't flood the console ───────
+    # EyeLoop's ellipse fit casts its complex eigen-solution to float there;
+    # numpy warned once per frame. The wrapper silences only EyeLoop's.
+    import types
+    import warnings
+    if str(EYELOOP_DIR) not in sys.path:
+        sys.path.insert(0, str(EYELOOP_DIR))
+    import eyeloop.config as el_config
+    el_config.arguments = types.SimpleNamespace(model="ellipsoid")
+    el_config.engine = types.SimpleNamespace(dataout={}, width=200, height=200,
+                                             angle=0)
+    from eyeloop.engine.models.ellipsoid import Ellipse
+    line = np.column_stack([np.linspace(0, 50, 30), np.linspace(0, 20, 30)])
+
+    def complex_warnings(always: bool) -> int:
+        with warnings.catch_warnings(record=True) as got:
+            if always:
+                warnings.simplefilter("always", np.exceptions.ComplexWarning)
+            try:
+                Ellipse(None).fit(line)
+            except Exception:           # noqa: BLE001 — a bad fit is fine here
+                pass
+        return sum(issubclass(w.category, np.exceptions.ComplexWarning)
+                   for w in got)
+
+    r.check(complex_warnings(False) == 0,
+            "a degenerate edge prints no ComplexWarning")
+    r.check(complex_warnings(True) > 0,
+            "control: without the filter that same fit does warn")
+
     # ── it tracks, and the crop is what makes it work ───────────────────────
     eye = synthetic_eye(glint=(180, 215, 9))
     full = frame_with_eye(eye)
