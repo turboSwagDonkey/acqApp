@@ -169,7 +169,7 @@ from acqApp.acq.sync import DEFAULT_TICK_MS, SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
-from acqApp.acq.writer import HDF5Writer, SplitWriter
+from acqApp.acq.writer import SessionWriter
 
 pg.setConfigOptions(imageAxisOrder="row-major")
 
@@ -288,9 +288,8 @@ class MainWindow(QMainWindow):
         return stage.active_fov_name() if stage is not None else ""
 
     def dcimg_enabled(self) -> bool:
-        """Split mode only: a .dcimg can't live inside a composite .h5."""
         sc = self._save_panel.settings
-        return bool(sc.split and sc.orca_format == "dcimg")
+        return sc.orca_format == "dcimg"
 
     def dcimg_target(self, stream: str) -> Path | None:
         if not self.dcimg_enabled() or self._rec_path is None:
@@ -1145,12 +1144,9 @@ class MainWindow(QMainWindow):
         # unique=True: take the next free name rather than refuse. A routine's
         # (FOV, trial) uses the fixed folder scheme, not the template.
         if ctx is not None:
-            resolve = (sp.resolve_routine_dir if sc.split
-                       else sp.resolve_routine)
-            path = resolve(ctx[0], ctx[1], now, unique=True)
+            path = sp.resolve_routine_dir(ctx[0], ctx[1], now, unique=True)
         else:
-            resolve = sp.resolve_dir if sc.split else sp.resolve
-            path = resolve(now, unique=True)
+            path = sp.resolve_dir(now, unique=True)
         metadata = {
             "created":  now.strftime("%Y%m%d_%H%M%S"),
             "emulated": self._emulate,
@@ -1161,7 +1157,10 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             metadata.update(m.metadata())
 
-        writer = SplitWriter() if sc.split else HDF5Writer()
+        # A folder per recording; a module may ask for its own image format
+        # (the pupil camera's .avi), else TIFF.
+        writer = SessionWriter({m.key: m.image_format for m in self._modules
+                                if m.image_format})
         rec = Recorder(
             self._clock, writer,
             RingBuffer(RING_FRAMES, maxbytes=RING_BYTES, sizeof=_sample_nbytes))

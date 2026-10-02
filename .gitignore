@@ -64,6 +64,9 @@ Thumbs.db
 /dmd_calib_*.json
 *.bak
 /.claude/settings.local.json
+/.claude/settings.json
+# The rig's active DMD calibration (dmd_calibration setting): rig-local.
+/newCal.json
 
 # run_pupil_review.py's private environment
 /.venv-pupil/

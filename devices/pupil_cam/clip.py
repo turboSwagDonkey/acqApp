@@ -1,12 +1,11 @@
 """Pupil footage from a file, frame by frame: what Pupil review reads. No Qt.
 
-    .avi          uncompressed AVI (avi.AviReader)
-    .h5           an acqApp session: the "pupil_cam" stream
-    .tif / .tiff  an acqApp split session's pupil stack (or any 2-D stack)
+    .avi          uncompressed AVI (avi.AviReader); a recording rolled into
+                  `<stem>_002.avi`, `_003`... reads as one clip
+    .tif / .tiff  a 2-D image stack (older sessions saved the pupil so)
 
 All give `len()`, `luma(i)` (H, W) uint8, `width`, `height`, `hz`, `path`
-and `describe()`. `recorded_clip(path)` finds the pupil footage of a session
-acqApp just wrote, whichever writer it used.
+and `describe()`. `recorded_clip(folder)` finds a session's pupil footage.
 """
 from __future__ import annotations
 
@@ -17,14 +16,8 @@ import numpy as np
 from acqApp.devices.pupil_cam.avi import AviReader
 
 STREAM = "pupil_cam"
-FILE_FILTER = ("Pupil footage (*.avi *.h5 *.tif *.tiff);;Uncompressed AVI (*.avi);;"
-               "acqApp session (*.h5);;TIFF stack (*.tif *.tiff);;All files (*)")
-
-
-def _hz(ts: np.ndarray) -> float:
-    d = np.diff(ts[np.isfinite(ts)])
-    d = d[d > 0]
-    return float(1.0 / np.median(d)) if d.size else 0.0
+FILE_FILTER = ("Pupil footage (*.avi *.tif *.tiff);;Uncompressed AVI (*.avi);;"
+               "TIFF stack (*.tif *.tiff);;All files (*)")
 
 
 class _To8:
@@ -41,36 +34,28 @@ class _To8:
         return np.clip(f.astype(np.float32) * self._k, 0, 255).astype(np.uint8)
 
 
-class H5Reader:
-    """The pupil stream of an acqApp .h5 session (read-only, kept open)."""
+class SegmentedAvi:
+    """`<stem>.avi` plus its `<stem>_002.avi`, `_003`... as one clip."""
 
-    def __init__(self, path: str | Path, stream: str = STREAM) -> None:
-        import h5py
-        self.path = Path(path)
-        self._f = h5py.File(self.path, "r")
-        if stream not in self._f or "frames" not in self._f[stream]:
-            self._f.close()
-            raise ValueError(f"{self.path.name}: no '{stream}' frames in it")
-        g = self._f[stream]
-        self._frames = g["frames"]
-        ts = np.asarray(g["timestamps"][:], dtype=float) if "timestamps" in g else np.array([])
-        # Rows past the last written one are NaN-stamped padding.
-        n = int(np.isfinite(ts).sum()) if ts.size else self._frames.shape[0]
-        self._n = min(n, self._frames.shape[0])
-        self.height, self.width = (int(v) for v in self._frames.shape[1:3])
-        self.hz = _hz(ts[:self._n]) if ts.size else 0.0
-        self._to8 = _To8(np.asarray(self._frames[0]) if self._n else np.zeros(1))
+    def __init__(self, parts: list[Path]) -> None:
+        self._parts = [AviReader(p) for p in parts]
+        first = self._parts[0]
+        self.path = first.path
+        self.width, self.height, self.hz = first.width, first.height, first.hz
+        self._starts = np.cumsum([0] + [len(p) for p in self._parts])
 
     def __len__(self) -> int:
-        return self._n
+        return int(self._starts[-1])
 
     def luma(self, i: int) -> np.ndarray:
-        f = np.asarray(self._frames[i])
-        return self._to8(f if f.ndim == 2 else f[..., 0])
+        if not 0 <= i < len(self):
+            raise IndexError(i)
+        k = int(np.searchsorted(self._starts, i, side="right")) - 1
+        return self._parts[k].luma(i - int(self._starts[k]))
 
     def describe(self) -> str:
-        return (f"{self.path.name}: {self.width}x{self.height} session stream, "
-                f"{len(self)} frames @ {self.hz:.2f} Hz")
+        return (f"{self.path.name} (+{len(self._parts) - 1} parts): "
+                f"{self.width}x{self.height}, {len(self)} frames @ {self.hz:.2f} Hz")
 
 
 class TiffReader:
@@ -101,23 +86,33 @@ class TiffReader:
                 f"{len(self)} frames")
 
 
+def _parts(path: Path) -> list[Path]:
+    out, k = [path], 2
+    while (nxt := path.with_name(f"{path.stem}_{k:03d}{path.suffix}")).is_file():
+        out.append(nxt)
+        k += 1
+    return out
+
+
 def open_clip(path: str | Path):
     """The right reader for `path`, by extension."""
-    suffix = Path(path).suffix.lower()
-    if suffix == ".h5":
-        return H5Reader(path)
-    if suffix in (".tif", ".tiff"):
+    path = Path(path)
+    if path.suffix.lower() in (".tif", ".tiff"):
         return TiffReader(path)
-    return AviReader(path)
+    parts = _parts(path)
+    return SegmentedAvi(parts) if len(parts) > 1 else AviReader(path)
 
 
 def recorded_clip(session: str | Path | None) -> Path | None:
-    """The pupil footage of a session acqApp wrote: the .h5 itself, or the
-    split folder's `<name>_pupil_cam.tiff`. None if there is none."""
+    """A session folder's pupil footage, `<name>_pupil_cam.avi` (or .tiff
+    from before it was AVI). None if there is none."""
     if session is None:
         return None
     p = Path(session)
-    if p.is_dir():
-        tif = p / f"{p.name}_{STREAM}.tiff"
-        return tif if tif.is_file() else None
-    return p if p.is_file() else None
+    if not p.is_dir():
+        return p if p.is_file() else None
+    for ext in (".avi", ".tiff"):
+        f = p / f"{p.name}_{STREAM}{ext}"
+        if f.is_file():
+            return f
+    return None

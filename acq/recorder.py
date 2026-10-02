@@ -3,7 +3,7 @@
 Workers call `put()`, which stamps the sample on the session clock and
 enqueues it; no acquisition thread touches disk.
 
-    rec = Recorder(clock, HDF5Writer(), RingBuffer(512))
+    rec = Recorder(clock, SessionWriter(), RingBuffer(512))
     rec.start(path, metadata)
     rec.put("wheel", voltage)
     rec.stop()

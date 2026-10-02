@@ -1,4 +1,4 @@
-"""Saving: paths and naming, the split writer, the HDF5 direct-chunk path.
+"""Saving: paths and naming, the session-folder writer (TIFF, AVI, CSV, JSON).
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_saving.py [-q] [--part NAME]
 """
@@ -7,18 +7,16 @@ from __future__ import annotations
 import csv
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
-import h5py
 import numpy as np
 import tifffile
 from _harness import Report, run_parts
-from acqApp.acq.writer import (HDF5Writer, LongCsvWriter, SplitWriter,
-                               TiffFileWriter)
+from acqApp.acq.writer import (AviFileWriter, LongCsvWriter, SessionWriter,
+                               SplitWriter, TiffFileWriter)
 from acqApp.saving import SaveConfig, benchmark_drive, sanitize
 
 
@@ -59,7 +57,7 @@ def check_stem(r: Report) -> None:
     # FOV<name>_T<n>, but a FOV named "fov…" must not read "FOVfov1".
     for fov, want in (("1", "FOV1_T2"), ("fov1", "fov1_T2"),
                       ("FOV3", "FOV3_T2"), ("custom", "FOVcustom_T2")):
-        got = cfg.resolve_routine(fov, 2, WHEN).stem
+        got = cfg.resolve_routine_dir(fov, 2, WHEN).name
         r.check(got == want, f"routine stem for FOV {fov!r} (got {got!r})")
 
     p = SaveConfig(mouse_id="m17", project="").routine_base(WHEN)
@@ -72,72 +70,24 @@ def check_stem(r: Report) -> None:
 
 
 def check_unique(r: Report, tmp: Path) -> None:
-    """resolve(unique=True) must never name a file that already exists."""
-    for subfolder in (True, False):
-        base = tmp / f"sub{int(subfolder)}"
-        cfg = SaveConfig(folder=str(base), mouse_id="m17",
-                         template="{mouse_id}", subfolder=subfolder)
-        label = "subfolder" if subfolder else "flat"
-
-        first = cfg.resolve(WHEN, unique=True)
-        r.check(first.name == "m17.h5", f"[{label}] first recording keeps the stem")
-        first.parent.mkdir(parents=True, exist_ok=True)
-        first.write_bytes(b"first recording")
-
-        second = cfg.resolve(WHEN, unique=True)
-        r.check(second != first and not second.exists(),
-                f"[{label}] second resolves to a free path ({second.name})")
-        r.check(second.name == "m17_001.h5",
-                f"[{label}] suffix is _001 (got {second.name})")
-        if subfolder:
-            r.check(second.parent.name == "m17_001",
-                    f"[{label}] the subfolder is renamed with it "
-                    f"(got {second.parent.name})")
-        second.parent.mkdir(parents=True, exist_ok=True)
-        second.write_bytes(b"second recording")
-
-        third = cfg.resolve(WHEN, unique=True)
-        r.check(third.name == "m17_002.h5",
-                f"[{label}] numbering continues (got {third.name})")
-        r.check(first.read_bytes() == b"first recording",
-                f"[{label}] the original file was never touched")
-
-        # The preview and the metadata rely on this staying deterministic.
-        r.check(cfg.resolve(WHEN) == first,
-                f"[{label}] unique=False is unchanged")
-
-
-def check_writer_refuses(r: Report, tmp: Path) -> None:
-    """The backstop: opening onto an existing file raises, never truncates."""
-    path = tmp / "existing" / "session.h5"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"not an hdf5 file, but it is somebody's data")
-    size = path.stat().st_size
-
-    w = HDF5Writer()
-    try:
-        w.open(path, {"subject": "m17"})
-    except FileExistsError:
-        r.check(True, "HDF5Writer.open refuses an existing path")
-    except Exception as e:                      # noqa: BLE001 - report, don't hide
-        r.check(False, f"expected FileExistsError, got {type(e).__name__}: {e}")
-    else:
-        w.close()
-        r.check(False, "HDF5Writer.open OVERWROTE an existing file")
-    r.check(path.stat().st_size == size, "the existing file is byte-for-byte intact")
-
-    fresh = tmp / "existing" / "session_001.h5"
-    w = HDF5Writer()
-    w.open(fresh, {"subject": "m17"})
-    w.write("wheel", 0.0, 1.5)
-    w.close()
-    r.check(fresh.is_file() and fresh.stat().st_size > 0,
-            "a free path still records normally")
-
-    w = HDF5Writer(overwrite=True)
-    w.open(fresh, {"subject": "m17"})
-    w.close()
-    r.check(fresh.is_file(), "overwrite=True still truncates when asked for")
+    """resolve_dir(unique=True) must never name a folder that already exists."""
+    cfg = SaveConfig(folder=str(tmp / "u"), mouse_id="m17", template="{mouse_id}")
+    first = cfg.resolve_dir(WHEN, unique=True)
+    r.check(first.name == "m17", "first recording keeps the stem")
+    first.mkdir(parents=True)
+    (first / "m17_data.csv").write_text("first recording")
+    second = cfg.resolve_dir(WHEN, unique=True)
+    r.check(second.name == "m17_001" and not second.exists(),
+            f"second resolves to a free folder ({second.name})")
+    second.mkdir()
+    third = cfg.resolve_dir(WHEN, unique=True)
+    r.check(third.name == "m17_002", f"numbering continues ({third.name})")
+    r.check((first / "m17_data.csv").read_text() == "first recording",
+            "the original was never touched")
+    # The preview and the metadata rely on this staying deterministic.
+    r.check(cfg.resolve_dir(WHEN) == first, "unique=False is unchanged")
+    r.check(not hasattr(cfg, "resolve") and cfg.orca_format == "dcimg",
+            "no .h5 path any more; the voltage camera defaults to DCIMG")
 
 
 def check_benchmark_drive(r: Report, tmp: Path) -> None:
@@ -219,7 +169,6 @@ def _part_paths() -> int:
     try:
         check_stem(r)
         check_unique(r, tmp)
-        check_writer_refuses(r, tmp)
         check_benchmark_drive(r, tmp)
         check_renumber(r, tmp)
     finally:
@@ -319,8 +268,58 @@ def check_split_writer_routes(r: Report, tmp: Path) -> None:
             "update_metadata() after close is reflected in the final JSON")
 
 
+def check_avi_stream(r: Report, tmp: Path) -> None:
+    """A stream asked for as AVI (the pupil camera) is one, readable by
+    Pupil review's reader and by OpenCV; it rolls into parts before 2 GB."""
+    import cv2
+    from acqApp.devices.pupil_cam.avi import AviReader
+    from acqApp.devices.pupil_cam.clip import open_clip
+    session = tmp / "sess_avi"
+    w = SessionWriter({"pupil_cam": "avi"})
+    w.open(session, {})
+    frames = [np.random.default_rng(i).integers(0, 255, (61, 97), dtype=np.uint8)
+              for i in range(5)]
+    for i, f in enumerate(frames):
+        w.write("pupil_cam", i / 20.0, f)
+        w.write("voltage_cam", i / 20.0, f.astype(np.uint16))
+    w.close()
+    avi = session / "sess_avi_pupil_cam.avi"
+    r.check(avi.is_file() and (session / "sess_avi_voltage_cam.tiff").is_file(),
+            "pupil -> .avi, the other image stream still -> .tiff")
+    rd = AviReader(avi)
+    r.check(len(rd) == 5 and abs(rd.hz - 20.0) < 0.1
+            and all(np.array_equal(rd.luma(i), f) for i, f in enumerate(frames)),
+            f"frames and rate round-trip exactly ({rd.describe()})")
+    cap = cv2.VideoCapture(str(avi))
+    ok, img = cap.read()
+    r.check(ok and img.shape[:2] == (61, 97)
+            and int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 5,
+            "a standard player (OpenCV/ffmpeg) opens it")
+    cap.release()
+    with open(session / "sess_avi_pupil_cam_timestamps.csv", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    r.check([float(x["timestamp"]) for x in rows] == [i / 20.0 for i in range(5)],
+            "per-frame timestamps beside it")
+
+    old = AviFileWriter.SEGMENT_BYTES
+    AviFileWriter.SEGMENT_BYTES = 20_000
+    try:
+        w = SessionWriter({"pupil_cam": "avi"})
+        w.open(tmp / "sess_parts", {})
+        for i, f in enumerate(frames):
+            w.write("pupil_cam", i / 20.0, f)
+        w.close()
+    finally:
+        AviFileWriter.SEGMENT_BYTES = old
+    parts = sorted(p.name for p in (tmp / "sess_parts").glob("*.avi"))
+    clip = open_clip(tmp / "sess_parts" / "sess_parts_pupil_cam.avi")
+    r.check(len(parts) > 1 and len(clip) == 5
+            and np.array_equal(clip.luma(4), frames[4]),
+            f"a long recording rolls into parts that read as one clip ({parts})")
+
+
 def check_refuses_existing_folder(r: Report, tmp: Path) -> None:
-    """As HDF5Writer's mode 'x': a session is animal time with no undo."""
+    """A session is animal time with no undo: never write into an old one."""
     session = tmp / "sess_002"
     session.mkdir()
     w = SplitWriter()
@@ -328,8 +327,7 @@ def check_refuses_existing_folder(r: Report, tmp: Path) -> None:
         w.open(session, {})
         r.check(False, "opening an existing session folder should raise")
     except FileExistsError:
-        r.check(True, "opening an existing session folder raises, like "
-                      "HDF5Writer's mode 'x'")
+        r.check(True, "opening an existing session folder raises")
 
 
 def _part_split() -> int:
@@ -339,181 +337,8 @@ def _part_split() -> int:
         check_tiff_roundtrip(r, tmp)
         check_csv_routine_step(r, tmp)
         check_split_writer_routes(r, tmp)
+        check_avi_stream(r, tmp)
         check_refuses_existing_folder(r, tmp)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    return r.finish()
-
-
-# ═══ chunks (was test_writer_chunks.py) ═════════════════════════════════
-
-# >8 MB, so chunk_frames is 1 and the direct path is taken, as for the
-# 4432x2368 camera frame.
-BIG = (2048, 2048)          # uint16 -> 8.4 MB
-SMALL = (64, 64)            # uint16 -> 8 KB, so 16 frames share a chunk
-
-# Run as a child: an unguarded direct write of uint8 bytes into a uint16
-# chunk, then a read. Expected NOT to reach the last line.
-DEMO_SRC = '''
-import sys
-import numpy as np
-import h5py
-
-path = sys.argv[1]
-src = np.zeros((2048, 2048), dtype=np.uint8)
-with h5py.File(path, "w") as f:
-    d = f.create_dataset("frames", shape=(1, 2048, 2048), dtype=np.uint16,
-                         chunks=(1, 2048, 2048))
-    d.id.write_direct_chunk((0, 0, 0), memoryview(src).cast("B"))
-with h5py.File(path, "r") as f:
-    _ = f["frames"][0]
-print("SURVIVED")
-'''
-
-
-def _frames(shape, n, dtype=np.uint16):
-    """n distinct frames, so a mix-up of two of them cannot pass unnoticed."""
-    rng = np.random.default_rng(7)
-    return [rng.integers(0, 4000, size=shape, dtype=dtype) for _ in range(n)]
-
-
-def _write(path, frames, stream="cam", **kw):
-    w = HDF5Writer(**kw)
-    w.open(path, {"bench": False})
-    for i, f in enumerate(frames):
-        w.write(stream, i * 0.01, f)
-    direct = w._streams[stream]["direct"]
-    w.close()
-    return direct
-
-
-def check_direct_roundtrip(r: Report, tmp: Path) -> None:
-    """The fast path stores exactly what it was given."""
-    frames = _frames(BIG, 5)
-    p = tmp / "direct.h5"
-    direct = _write(p, frames)
-
-    r.check(direct, "a full-size frame takes the direct-chunk path "
-                    "(if this fails, the round-trip checks are vacuous)")
-
-    with h5py.File(p, "r") as f:
-        d = f["cam/frames"]
-        r.check(d.shape == (5,) + BIG, f"trimmed to what was written ({d.shape})")
-        r.check(d.chunks == (1,) + BIG, f"one frame per chunk ({d.chunks})")
-        ok = all(np.array_equal(d[i], frames[i]) for i in range(5))
-        r.check(ok, "every frame reads back byte-identical")
-        ts = f["cam/timestamps"][:]
-        r.check(np.array_equal(ts, np.arange(5) * 0.01) and not np.isnan(ts).any(),
-                "timestamps trimmed, no NaN tail after a clean close")
-
-
-def check_guard_rejects(r: Report, tmp: Path) -> None:
-    """A frame the direct write would corrupt goes the slow way instead."""
-    base = _frames(BIG, 3)
-
-    # A transpose: right shape and dtype, wrong memory layout.
-    view = np.ascontiguousarray(base[0]).T
-    r.check(not view.flags.c_contiguous, "the transposed frame really is "
-                                         "non-contiguous (control)")
-    p = tmp / "noncontig.h5"
-    _write(p, [view])
-    with h5py.File(p, "r") as f:
-        r.check(np.array_equal(f["cam/frames"][0], view),
-                "a non-contiguous frame still round-trips (slice fallback)")
-
-    # Unguarded, contiguity raises in the writer thread: a lost recording.
-    try:
-        memoryview(view).cast("B")
-        raised = False
-    except TypeError:
-        raised = True
-    r.check(raised, "a non-contiguous frame cannot be cast to a byte buffer at "
-                    "all, so the guard prevents a raise (control)")
-
-    # Unguarded, a dtype mismatch writes and closes cleanly, then the READER
-    # dies with an access violation (0xC0000005, measured 2026-08-25) — hence
-    # a child process.
-    demo = tmp / "demo_corrupt.py"
-    demo.write_text(DEMO_SRC, encoding="utf-8")
-    proc = subprocess.run([sys.executable, str(demo), str(tmp / "corrupt.h5")],
-                          capture_output=True, text=True, timeout=120)
-    r.check(proc.returncode != 0 and "SURVIVED" not in proc.stdout,
-            f"bypassing the guard on a dtype mismatch writes a file that kills "
-            f"the reader (child exit {proc.returncode}) — so the guard is not "
-            f"superstition (control)")
-
-
-def check_dtype_change(r: Report, tmp: Path) -> None:
-    """A stream whose dtype changes mid-run must not be written raw."""
-    p = tmp / "dtype.h5"
-    w = HDF5Writer()
-    w.open(p, {})
-    first = _frames(BIG, 1)[0]
-    w.write("cam", 0.0, first)
-    r.check(w._streams["cam"]["direct"], "stream opened on the direct path")
-    odd = (first // 16).astype(np.uint8)
-    w.write("cam", 0.01, odd)
-    w.close()
-    with h5py.File(p, "r") as f:
-        d = f["cam/frames"]
-        r.check(np.array_equal(d[0], first), "the uint16 frame is intact")
-        r.check(np.array_equal(d[1], odd.astype(np.uint16)),
-                "the uint8 frame was converted, not written raw")
-
-
-def check_path_disabled(r: Report, tmp: Path) -> None:
-    """Where the direct write is invalid it must be off, and data still land."""
-    # The offset arithmetic assumes one frame per chunk.
-    small = _frames(SMALL, 20)
-    p = tmp / "small.h5"
-    direct = _write(p, small)
-    with h5py.File(p, "r") as f:
-        d = f["cam/frames"]
-        r.check(d.chunks[0] > 1, f"small frames really do share a chunk "
-                                 f"({d.chunks[0]} per chunk — control)")
-        r.check(not direct, "multi-frame chunks disable the direct path")
-        r.check(all(np.array_equal(d[i], small[i]) for i in range(20)),
-                "all 20 small frames round-trip")
-
-    # Raw bytes under a deflate filter would not read back at all.
-    big = _frames(BIG, 2)
-    p = tmp / "gzip.h5"
-    direct = _write(p, big, compression="gzip", compression_opts=1)
-    r.check(not direct, "compression disables the direct path")
-    with h5py.File(p, "r") as f:
-        d = f["cam/frames"]
-        r.check(d.compression == "gzip", "the filter really is on (control)")
-        r.check(all(np.array_equal(d[i], big[i]) for i in range(2)),
-                "compressed frames round-trip")
-
-
-def check_scalars(r: Report, tmp: Path) -> None:
-    """Scalar streams never touch the image branch."""
-    p = tmp / "mixed.h5"
-    w = HDF5Writer()
-    w.open(p, {})
-    frames = _frames(BIG, 2)
-    for i, f in enumerate(frames):
-        w.write("cam", i * 0.01, f)
-        w.write("wheel", i * 0.01, 1.5 + i)
-    r.check(not w._streams["wheel"]["direct"], "a scalar stream is never direct")
-    w.close()
-    with h5py.File(p, "r") as f:
-        r.check(np.array_equal(f["wheel/values"][:], [1.5, 2.5]),
-                "scalar values written and trimmed")
-        r.check(np.array_equal(f["cam/frames"][1], frames[1]),
-                "frames unaffected by an interleaved scalar stream")
-
-
-def _part_chunks() -> int:
-    r = Report("writer-chunks")
-    tmp = Path(tempfile.mkdtemp(prefix="acqapp_writerchunks_"))
-    try:
-        check_direct_roundtrip(r, tmp)
-        check_guard_rejects(r, tmp)
-        check_dtype_change(r, tmp)
-        check_path_disabled(r, tmp)
-        check_scalars(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
@@ -706,7 +531,6 @@ def _part_bpod() -> int:
 PARTS = {
     "paths": _part_paths,
     "split": _part_split,
-    "chunks": _part_chunks,
     "bpod": _part_bpod,
 }
 

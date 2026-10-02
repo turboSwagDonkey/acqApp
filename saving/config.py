@@ -100,10 +100,10 @@ class SaveConfig:
     mouse_id:  str  = ""
     project:   str  = ""
     template:  str  = DEFAULT_TEMPLATE
-    subfolder: bool = True     # each recording in its own directory
     append_fov: bool = False   # suffix the active FOV's name
-    split:       bool = False    # a folder: TIFF/DCIMG + CSV + JSON, no .h5
-    orca_format: str  = "tiff"   # "tiff" or "dcimg"; split mode only
+    # Every recording is a folder (acq/writer.py SessionWriter). The voltage
+    # camera's own format: "dcimg" (written by the driver) or "tiff".
+    orca_format: str  = "dcimg"
     bpod_folder: str  = ""       # where "Match to Bpod…" last found a file
 
     def resolved_folder(self) -> Path:
@@ -127,10 +127,6 @@ class SaveConfig:
             out = f"{out}_{sanitize(fov)}"
         return out
 
-    def _path_for(self, base: Path, stem: str) -> Path:
-        return (base / stem / f"{stem}.h5") if self.subfolder \
-            else (base / f"{stem}.h5")
-
     def _dir_for(self, base: Path, stem: str) -> Path:
         return base / stem
 
@@ -145,14 +141,9 @@ class SaveConfig:
         return self._resolve_at(self.resolved_folder(), self.stem(when, fov=fov),
                                 build, unique=unique)
 
-    def resolve(self, when: datetime | None = None, *,
-                unique: bool = False, fov: str = "") -> Path:
-        """The .h5 for a recording starting now."""
-        return self._resolve(self._path_for, when, unique=unique, fov=fov)
-
     def resolve_dir(self, when: datetime | None = None, *,
                     unique: bool = False, fov: str = "") -> Path:
-        """Split mode's session folder (always its own, whatever `subfolder`)."""
+        """The session folder for a recording starting now."""
         return self._resolve(self._dir_for, when, unique=unique, fov=fov)
 
     def routine_base(self, when: datetime | None = None) -> Path:
@@ -163,17 +154,10 @@ class SaveConfig:
             base /= sanitize(self.project)
         return base / sanitize(self.mouse_id, "mouse_id") / when.strftime("%Y%m%d")
 
-    def resolve_routine(self, fov: str, trial: int,
-                        when: datetime | None = None, *,
-                        unique: bool = False) -> Path:
-        """<routine_base>/FOV<fov>_T<trial>.h5"""
-        return self._resolve_at(self.routine_base(when),
-                                routine_stem(fov, trial),
-                                self._path_for, unique=unique)
-
     def resolve_routine_dir(self, fov: str, trial: int,
                             when: datetime | None = None, *,
                             unique: bool = False) -> Path:
+        """<routine_base>/FOV<fov>_T<trial>/"""
         return self._resolve_at(self.routine_base(when),
                                 routine_stem(fov, trial),
                                 self._dir_for, unique=unique)

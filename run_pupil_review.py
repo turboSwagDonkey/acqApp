@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv-pupil"
-NEEDS = ("PyQt6", "pyqtgraph", "numpy", "cv2", "yaml", "h5py", "tifffile")
+NEEDS = ("PyQt6", "pyqtgraph", "numpy", "cv2", "yaml", "tifffile")
 PATCH = ROOT / "docs" / "eyeloop-3.14-patches.diff"
 EYELOOP_URL = "https://github.com/simonarvin/eyeloop.git"
 

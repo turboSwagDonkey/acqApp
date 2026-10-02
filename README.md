@@ -189,7 +189,7 @@ code.
 ## Recording format
 
 **Start** begins live acquisition + preview. **Record** streams every sample to
-one HDF5 file per session. The **Save** tab picks the destination drive and
+one folder per session. The **Save** tab picks the destination drive and
 folder, names the file from a token template (`{mouse_id}`, `{project}`,
 `{date}`, `{time}`, plus the active FOV's name appended when "Append active
 FOV name" is checked and a saved FOV is currently active on the Stage tab),
@@ -199,22 +199,21 @@ It also shows the exact path the next recording will get:
 - A template that resolves to an existing file is **auto-numbered** (`_001`,
   `_002`) rather than overwriting it, and the numbered name is what the preview
   and the status line show.
-- The writer opens with HDF5 mode `"x"`, so even a path that reached it by some
-  other route raises instead of truncating a session.
+- The writer refuses an existing folder, so even a path that reached it by some
+  other route raises instead of writing into a session.
 
 ```
-<folder>/<name>/<name>.h5          # default: one subfolder per recording
+<folder>/<name>/
+  <name>_settings.json              every module's metadata, the routine protocol
+  <name>_data.csv                   every scalar stream: timestamp,stream,value,routine_step
+  <name>_voltage_cam.dcimg          default — written by the camera driver
+  <name>_voltage_cam.tiff           or this, with _voltage_cam_timestamps.csv
+  <name>_pupil_cam.avi              8-bit uncompressed (Y800); _002.avi… past 1.9 GB
+  <name>_pupil_cam_timestamps.csv   frame,timestamp
 
-/voltage_cam/frames        (N, H, W) uint16   /voltage_cam/timestamps  (N,) float64
-/voltage_cam_index/values  (N,) float64       …/timestamps             (N,) float64
-/pupil_cam/frames          (N, H, W) uint8    /pupil_cam/timestamps    (N,) float64
-/pupil_x /pupil_y /pupil_major /pupil_minor /pupil_angle   (T,) float64 + timestamps
-/wheel_voltage /wheel_speed /wheel_distance    (M,) float64  + timestamps
-/puffer/values             (K,) float64 (dur) /puffer/timestamps       (K,) float64
-/stage_x_um  /stage_y_um   (P,) float64       …/timestamps             (P,) float64
-/stage_z_um  (only on a rig with a Z stage)   …/timestamps             (P,) float64
-/dmd/values                (Q,) float64 (idx) /dmd/timestamps          (Q,) float64
-/routine/values            (S,) float64 (±step) /routine/timestamps   (S,) float64
+data.csv streams: voltage_cam_index, pupil_x pupil_y pupil_major pupil_minor
+pupil_angle, wheel_voltage wheel_speed wheel_distance, puffer (duration),
+stage_x_um stage_y_um [stage_z_um], dmd (pattern index), routine (±step)
 ```
 
 The five **pupil** streams are the fitted ellipse — centre, semi-axes and angle
@@ -228,7 +227,7 @@ reproducible.
 
 ### Frame timing
 
-`/voltage_cam/timestamps` are the times the **camera** says each frame was
+The voltage camera's timestamps (`_voltage_cam_timestamps.csv`, TIFF format) are the times the **camera** says each frame was
 exposed, not the times the app read them. That distinction matters: frames come
 off the camera in batches, so stamping them on arrival would give every frame in
 a batch the same time and quantise the stream to the read cadence instead of the
@@ -502,14 +501,14 @@ All four are written after the drain and before the close, which is the only
 moment they are both final and still writable. Zero across all four means
 nothing was lost.
 
-Metadata attributes keep their **own types** — `f.attrs["wheel_volts_per_rev"]`
-is a float, `f.attrs["emulated"]` is a bool — so nothing needs parsing on the
-way back out. A value that was never set reads as an empty string.
+Metadata in the JSON keeps its **own types** — `wheel_volts_per_rev` is a
+number, `emulated` a bool — and the routine protocol stays a real object. The
+HDF5 writer that came before is in `archive/hdf5/`.
 
 ## Architecture
 
 - `acq/` — device-agnostic infrastructure: `SessionClock`, `RingBuffer`,
-  `Recorder`, `Writer`/`HDF5Writer`.
+  `Recorder`, `Writer`/`SessionWriter`.
 - `acq/sync.py` — `SyncController`: shared clock + tick + trigger bus.
 - `acq/devices.py` — the `Protocol`s an adapter reads its worker/controller
   through, and `ModuleHost`, the surface an adapter may ask of the window.
@@ -586,7 +585,7 @@ acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
 ```
 
 Runs in Emulate mode against fakes — no rig hardware, no windows, ~30 s. Covers
-the session/recording path end to end (including the written HDF5), every
+the session/recording path end to end (including the written session folder), every
 module-subset combination, camera frame timing, settings surviving a restart,
 save-path collisions, stage state, the ways a sample can be lost, the pupil fits
 and tracking thread, the encoder's hardware timing and its position→distance
@@ -599,7 +598,7 @@ conventions to follow when adding one.
 See [PLAN.md](PLAN.md) for the live version — stages, checklist and next
 actions. In short:
 
-- ✅ Unified session Start/Stop, shared software clock, single-file HDF5 recording
+- ✅ Unified session Start/Stop, shared software clock, one folder per recording (DCIMG/TIFF, AVI, CSV, JSON)
 - ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
 - ✅ Pupil tracking moved off the GUI thread; encoder on the DAQ's sample clock
 - ✅ DMD projecting for real (ALP-4.2), verified on the hardware

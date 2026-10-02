@@ -31,6 +31,7 @@ class PupilCamModule(ModuleAdapter):
     key = "pupil_cam"
     tab_label = "Pupil cam"
     plot_label = "Pupil"
+    image_format = "avi"        # recorded as Pupil review reads it
 
     def __init__(self, win) -> None:
         super().__init__(win)

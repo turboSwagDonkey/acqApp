@@ -2740,7 +2740,7 @@ def check_app(r: Report, app, tmp) -> None:
     """The real window in mock mode: the panel refuses, the engine drives
     real adapters through `stage_target`/`pattern_target`, and recording
     boundaries reach the file on the shared clock."""
-    import h5py
+    import csv
 
     out = tmp / "routine_rec"
     win = make_window({"voltage_cam", "stage", "dmd", "routines"})
@@ -2899,41 +2899,46 @@ def check_app(r: Report, app, tmp) -> None:
                 f"control: the window really asks every adapter ({e})")
     mod["stage"].busy_reason = lambda: ""
 
-    with h5py.File(path, "r") as f:
-        r.check("routine" in f, f"/routine is in the file (has {list(f)})")
-        g = f["routine"]
-        ts = [float(v) for v in g["timestamps"][:]]
-        vals = [float(v) for v in g["values"][:]]
-        r.check(all(b >= a for a, b in zip(ts, ts[1:])) and ts[0] >= 0.0,
-                f"…stamped on the session clock, in order "
-                f"({[round(v, 2) for v in ts]})")
-        r.check(len(vals) == 4,
-                f"one entry per boundary, opening and closing each Recording "
-                f"({vals})")
-        r.check(vals[0] > 0 and vals[1] < 0,
-                f"…the sign says which edge it is, keyed on `region` "
-                f"({vals[:2]})")
-        a = dict(f.attrs)
-        r.check(a.get("routine_started") in (True, 1, "True"),
-                "the file says a routine actually ran")
-        r.check(int(a.get("routine_steps_done", 0)) == 5,
-                f"…and how many ATOMIC steps finished "
-                f"({a.get('routine_steps_done')})")
-        r.check(int(a.get("routine_recordings_interrupted", -1)) == 0,
-                "…and that no recording bracket was interrupted")
-        r.check(int(a.get("routine_n_steps", 0)) == 5
-                and "one" in str(a.get("routine_steps", "")),
-                "…and carries the protocol itself, which nothing else records")
-        run_attrs = json.loads(str(a.get("routine_runs", "[]")))
-        r.check(len(run_attrs) == 2
-                and [x["routine_recording_region"] for x in run_attrs] == [0, 1],
-                f"…and every RECORDING execution, not just the counts "
-                f"({len(run_attrs)})")
-        r.check(all(x["routine_recording_interrupted"] is False
-                   for x in run_attrs)
-                and (run_attrs[1]["routine_recording_t0"]
-                    > run_attrs[0]["routine_recording_t0"]),
-                "…each with its own t0 on the shared clock and its fault flag")
+    stem = path.name
+    with open(path / f"{stem}_data.csv", encoding="utf-8") as f:
+        rows = [row for row in csv.DictReader(f) if row["stream"] == "routine"]
+    r.check(bool(rows), "routine rows are in the session's data CSV")
+    ts = [float(row["timestamp"]) for row in rows]
+    vals = [float(row["value"]) for row in rows]
+    r.check(bool(ts) and all(b >= a for a, b in zip(ts, ts[1:])) and ts[0] >= 0.0,
+            f"…stamped on the session clock, in order "
+            f"({[round(v, 2) for v in ts]})")
+    r.check(len(vals) == 4,
+            f"one entry per boundary, opening and closing each Recording "
+            f"({vals})")
+    r.check(len(vals) >= 2 and vals[0] > 0 and vals[1] < 0,
+            f"…the sign says which edge it is, keyed on `region` "
+            f"({vals[:2]})")
+    with open(path / f"{stem}_settings.json", encoding="utf-8") as f:
+        a = json.load(f)
+    r.check(a.get("routine_started") is True,
+            "the file says a routine actually ran")
+    r.check(int(a.get("routine_steps_done", 0)) == 5,
+            f"…and how many ATOMIC steps finished "
+            f"({a.get('routine_steps_done')})")
+    r.check(int(a.get("routine_recordings_interrupted", -1)) == 0,
+            "…and that no recording bracket was interrupted")
+    r.check(int(a.get("routine_n_steps", 0)) == 5
+            and "one" in str(a.get("routine_steps", "")),
+            "…and carries the protocol itself, which nothing else records")
+    run_attrs = a.get("routine_runs", [])
+    if isinstance(run_attrs, str):
+        run_attrs = json.loads(run_attrs)
+    r.check(len(run_attrs) == 2
+            and [x["routine_recording_region"] for x in run_attrs] == [0, 1],
+            f"…and every RECORDING execution, not just the counts "
+            f"({len(run_attrs)})")
+    r.check(len(run_attrs) == 2
+            and all(x["routine_recording_interrupted"] is False
+                    for x in run_attrs)
+            and (run_attrs[1]["routine_recording_t0"]
+                 > run_attrs[0]["routine_recording_t0"]),
+            "…each with its own t0 on the shared clock and its fault flag")
 
 
 def check_file_rolling(r: Report, app, tmp) -> None:
@@ -2951,8 +2956,9 @@ def check_file_rolling(r: Report, app, tmp) -> None:
     win._save_panel._on_edited()
 
     def run_to_done(steps, groups, save_mode) -> int:
-        """Run one routine to completion, -> how many NEW .h5 files appeared."""
-        before = set(out.rglob("*.h5"))
+        """Run one routine to completion, -> how many NEW recordings
+        (session folders) appeared."""
+        before = set(out.rglob("*_settings.json"))
         panel._r.steps = steps
         panel._r.groups = groups
         panel._r.cycles = 1
@@ -2973,7 +2979,7 @@ def check_file_rolling(r: Report, app, tmp) -> None:
         r.check(eng0.phase == Phase.DONE,
                 f"[{save_mode}] the routine ran to the end "
                 f"(phase={eng0.phase}, fault={eng0.fault!r})")
-        return len(set(out.rglob("*.h5")) - before)
+        return len(set(out.rglob("*_settings.json")) - before)
 
     n = run_to_done(
         [Step(kind="move", label="m", x_um=10.0, settle_s=0.0),

@@ -424,16 +424,10 @@ def check_host_wiring(r: Report, app, tmp: Path) -> None:
     win = make_window({"voltage_cam", "routines"})
     sp = win._save_panel
 
-    sp._chk_split.setChecked(False)
     sp._cmb_orca_format.setCurrentIndex(
         sp._cmb_orca_format.findData("dcimg"))
     sp._on_edited()
-    r.check(not win.dcimg_enabled(),
-            "DCIMG off in composite .h5 mode — it cannot live inside one")
-
-    sp._chk_split.setChecked(True)
-    sp._on_edited()
-    r.check(win.dcimg_enabled(), "…on once the session is a folder of files")
+    r.check(win.dcimg_enabled(), "DCIMG on: every session is a folder of files")
 
     r.check(win.dcimg_target("voltage_cam") is None,
             "no target before a recording opens, even when enabled")
@@ -492,7 +486,6 @@ def check_routine_counts_recorder(r: Report, app) -> None:
     # It used to be refused.
     cam.worker = None
     sp = win._save_panel
-    sp._chk_split.setChecked(True)
     sp._cmb_orca_format.setCurrentIndex(sp._cmb_orca_format.findData("dcimg"))
     sp._on_edited()
     adapter._start()

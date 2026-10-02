@@ -5,5 +5,4 @@ pyqtgraph
 numpy
 opencv-python   # EyeLoop imports cv2
 PyYAML          # EyeLoop's package __init__ imports it
-h5py            # opening acqApp session files
-tifffile        # ...and split sessions' TIFF stacks
+tifffile        # older sessions saved the pupil as TIFF

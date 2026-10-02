@@ -2061,42 +2061,43 @@ def _part_mode() -> int:
     return r.finish()
 
 def _part_recorded() -> int:
-    """Review reads what acqApp records (.h5, split TIFF) and opens the newest
-    recording of this run by itself."""
+    """Review reads what acqApp records (the session folder's .avi, or the
+    .tiff older sessions have) and opens the newest recording by itself."""
     r = Report("pupil-recorded")
-    from acqApp.acq.writer import HDF5Writer, SplitWriter
+    from acqApp.acq.writer import SessionWriter
     from acqApp.devices.pupil_cam.clip import open_clip, recorded_clip
 
     tmp = Path(tempfile.mkdtemp(prefix="pupil_rec_"))
     frames = [video_eye_frame(64, 96, 40 + i, 30, 10) for i in range(6)]
 
-    h5 = tmp / "sess.h5"
-    w = HDF5Writer()
-    w.open(h5, {})
+    sess = tmp / "sess"
+    w = SessionWriter({"pupil_cam": "avi"})
+    w.open(sess, {})
     for i, f in enumerate(frames):
         w.write("pupil_cam", i / 30.0, f)
     w.write("wheel", 0.0, 1.0)
     w.close()
-    rd = open_clip(h5)
-    r.check(len(rd) == 6 and (rd.width, rd.height) == (96, 64)
-            and abs(rd.hz - 30.0) < 0.5,
-            f"an acqApp .h5's pupil stream reads ({rd.describe()})")
+    clip_avi = recorded_clip(sess)
+    rd = open_clip(clip_avi)
+    r.check(clip_avi is not None and clip_avi.name == "sess_pupil_cam.avi"
+            and len(rd) == 6 and abs(rd.hz - 30.0) < 0.5,
+            f"a session's pupil .avi is found and reads ({rd.describe()})")
     r.check(np.array_equal(rd.luma(3), frames[3]), "frames come back exact")
 
-    split = tmp / "sess2"
-    w = SplitWriter()
+    split = tmp / "sess2"                       # an older session: TIFF
+    w = SessionWriter()
     w.open(split, {})
     for i, f in enumerate(frames):
         w.write("pupil_cam", i / 30.0, f)
     w.close()
     clip = recorded_clip(split)
     r.check(clip is not None and clip.name == "sess2_pupil_cam.tiff",
-            f"a split session's pupil TIFF is found ({clip})")
+            f"an older session's pupil TIFF is found ({clip})")
     rd = open_clip(clip)
     r.check(len(rd) == 6 and np.array_equal(rd.luma(5), frames[5]),
             "and reads")
-    r.check(recorded_clip(h5) == h5 and recorded_clip(None) is None
-            and recorded_clip(tmp / "nope") is None, "recorded_clip edge cases")
+    r.check(recorded_clip(None) is None and recorded_clip(tmp / "nope") is None,
+            "recorded_clip edge cases")
 
     # The module remembers the recording and Review opens it.
     app = qt_app()
@@ -2123,21 +2124,21 @@ def _part_recorded() -> int:
     m.build_panel()
     m.build_views()
     m.build_session(True)
-    win.path = h5
+    win.path = sess
     m.attach_sink(FakeRec())
     m.detach_sink()
     m.stop()
-    r.check(m._last_recording == h5, "recording with the pupil camera is remembered")
+    r.check(m._last_recording == sess, "recording with the pupil camera is remembered")
     m.panel.mode.button("review").click()
     rv = m._review
-    r.check(rv.review is not None and rv.review.video == h5
+    r.check(rv.review is not None and rv.review.video == clip_avi
             and any("newest recording" in x for x in win.messages),
             "Review opens it by itself")
     rv._dirty = True
     m._last_recording = split
     m.panel.mode.button("live").click()
     m.panel.mode.button("review").click()
-    r.check(rv.review.video == h5 and "save or discard" in win.messages[-1],
+    r.check(rv.review.video == clip_avi and "save or discard" in win.messages[-1],
             "unsaved edits on the open clip are not thrown away for it")
     rv._dirty = False
     m.panel.mode.button("live").click()

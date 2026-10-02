@@ -133,6 +133,7 @@ class ModuleAdapter:
     tab_label: str = ""
     plot_label: str = ""        # empty = no Signals tab
     central_title: str = ""
+    image_format: str = ""      # its image stream's file: "avi", or "" = TIFF
 
     def __init__(self, win: ModuleHost) -> None:
         self.win = win

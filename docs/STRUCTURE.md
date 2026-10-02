@@ -108,7 +108,7 @@ acq/                    acquisition core — no Qt widgets, no vendor SDKs
   ring_buffer.py        bounded per-stream buffer; drops oldest, counts losses
   sync.py               SyncController: shared clock + tick + trigger bus
   worker.py             PullWorker: the QThread guard every device worker uses
-  writer.py             Writer / HDF5Writer: one file per session
+  writer.py             SessionWriter: a folder per session (TIFF/AVI, CSV, JSON)
 archive/                removed-but-kept code; nothing here is imported
   pupil_tracking/       the pupil tracker, retired 2026-08-24 (SESSIONLOG (ai))
     README.md           why it went, what was kept, how to restore it
@@ -121,6 +121,11 @@ archive/                removed-but-kept code; nothing here is imported
     tests/
       test_pupil_fits.py
       test_pupil_tracking_thread.py
+  hdf5/                 the one-.h5-per-session writer, retired 2026-10-01
+    README.md           why it went, what still reads .h5, how to restore it
+    hdf5_writer.py      HDF5Writer
+    tests/
+      test_hdf5_writer.py
   closed_loop/          fire an output from a live signal, retired 2026-10-01
     README.md           why it went, how to restore it
     adapter.py          was adapters/closed_loop.py
@@ -189,7 +194,8 @@ devices/                one package per instrument
     autotune.py         Auto: suggest threshold/blur/reflection (+ eye region)
                         from a few frames; own segmentation, no EyeLoop, no Qt
     avi.py              uncompressed-AVI reader (no Qt); there is no decoder here
-    clip.py             review's readers: AVI, a session .h5's pupil stream, TIFF
+    clip.py             review's readers: AVI (incl. rolled parts), TIFF; finds a
+                        session folder's pupil footage
     control.py          eye-tracking LED
     eyeloop_tracker.py  the ONLY file that touches EyeLoop (GPL-3.0, not vendored)
     panel.py
@@ -352,7 +358,6 @@ README.md               the authoritative description
 requirements.txt
 .gitignore
 acqapp_local.json       local settings — gitignored
-newCal.json             the rig's active DMD calibration (dmd_calibration setting)
 __init__.py
 ```
 

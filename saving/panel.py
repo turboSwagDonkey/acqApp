@@ -111,38 +111,22 @@ class SavePanel(QWidget):
         lay.addRow("", self._chk_fov)
         self._update_fov_checkbox()
 
-        self._chk_subfolder = QCheckBox("Give each recording its own subfolder")
-        self._chk_subfolder.setChecked(self._cfg.subfolder)
-        self._chk_subfolder.toggled.connect(self._on_edited)
-        lay.addRow("", self._chk_subfolder)
-
-        self._chk_split = QCheckBox(
-            "Split into per-device files (instead of one composite .h5)")
-        self._chk_split.setChecked(self._cfg.split)
-        self._chk_split.setToolTip(
-            "Each device in its own file — TIFF image stacks for "
-            "cameras, one combined CSV for wheel/puffer/pupil-fit/routine "
-            "step, one JSON for settings — instead of everything bundled "
-            "into one .h5. Always gets its own session folder.")
-        self._chk_split.toggled.connect(self._on_split_toggled)
-        lay.addRow("", self._chk_split)
-
         self._cmb_orca_format = QComboBox()
-        self._cmb_orca_format.addItem("TIFF — per-frame timestamps", "tiff")
         self._cmb_orca_format.addItem("DCIMG — native, faster", "dcimg")
+        self._cmb_orca_format.addItem("TIFF — per-frame timestamps", "tiff")
         # Preview survives a .dcimg recording (2026-09-23); per-frame reads
         # don't, so there are no per-frame timestamps.
         self._cmb_orca_format.setToolTip(
-            "TIFF: frames go through acqApp, each stamped on the shared "
-            "clock.\n"
+            "Each recording is a folder: this camera's frames, the pupil "
+            "camera as .avi, everything else as CSV, settings as JSON.\n"
             "DCIMG: the camera driver writes the file itself — faster, and "
             "routines still run, but the only times recorded are when the "
-            "file opened and closed (cam_dcimg_t0_s/t1_s), not per frame.")
+            "file opened and closed (cam_dcimg_t0_s/t1_s), not per frame.\n"
+            "TIFF: frames go through acqApp, each stamped on the shared clock.")
         idx = self._cmb_orca_format.findData(self._cfg.orca_format)
         self._cmb_orca_format.setCurrentIndex(max(0, idx))
         self._cmb_orca_format.currentIndexChanged.connect(self._on_edited)
-        self._cmb_orca_format.setEnabled(self._cfg.split)
-        lay.addRow("ORCA format:", self._cmb_orca_format)
+        lay.addRow("Voltage cam:", self._cmb_orca_format)
 
         self._lbl_preview = QLabel()
         self._lbl_preview.setWordWrap(True)
@@ -258,18 +242,12 @@ class SavePanel(QWidget):
         BpodMatchDialog(self._cfg, lambda: self._recording,
                         self.settings_changed.emit, self).exec()
 
-    def _on_split_toggled(self, on: bool) -> None:
-        self._cmb_orca_format.setEnabled(on)
-        self._on_edited()
-
     def _on_edited(self, *_a) -> None:
         self._cfg.folder    = self._ed_folder.text().strip()
         self._cfg.mouse_id  = self._ed_mouse_id.text().strip()
         self._cfg.project   = self._ed_project.text().strip()
         self._cfg.template  = (self._ed_template.text().strip()
                               or DEFAULT_TEMPLATE)
-        self._cfg.subfolder = self._chk_subfolder.isChecked()
-        self._cfg.split       = self._chk_split.isChecked()
         self._cfg.orca_format = self._cmb_orca_format.currentData()
         self._cfg.append_fov  = self._chk_fov.isChecked()
         self._sync_drive_combo()
@@ -295,18 +273,9 @@ class SavePanel(QWidget):
     def as_dict(self) -> dict:
         return asdict(self._cfg)
 
-    def resolve(self, when: datetime | None = None, *,
-                unique: bool = False) -> Path:
-        return self._cfg.resolve(when, unique=unique, fov=self._current_fov())
-
     def resolve_dir(self, when: datetime | None = None, *,
                     unique: bool = False) -> Path:
         return self._cfg.resolve_dir(when, unique=unique, fov=self._current_fov())
-
-    def resolve_routine(self, fov: str, trial: int,
-                        when: datetime | None = None, *,
-                        unique: bool = False) -> Path:
-        return self._cfg.resolve_routine(fov, trial, when, unique=unique)
 
     def resolve_routine_dir(self, fov: str, trial: int,
                             when: datetime | None = None, *,
@@ -348,9 +317,8 @@ class SavePanel(QWidget):
 
     def _refresh(self) -> None:
         # The path a recording now would really get, `_001` included.
-        resolve = self.resolve_dir if self._cfg.split else self.resolve
-        plain = resolve()
-        unique = resolve(unique=True)
+        plain = self.resolve_dir()
+        unique = self.resolve_dir(unique=True)
         self._lbl_preview.setText(str(unique))
         self._lbl_preview.setToolTip(
             f"{plain.name} exists — next recording is auto-numbered."
