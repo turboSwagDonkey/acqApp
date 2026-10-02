@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from _harness import (Report, isolate_user_state, npoints, pump, qt_app,
                       run_parts)
-from _pupil_helpers import face_frame, video_eye_frame, write_avi
+from _pupil_helpers import DiscTracking, face_frame, video_eye_frame, write_avi
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from PyQt6.QtCore import QPointF, Qt
 
@@ -34,21 +34,6 @@ def _part_review() -> int:  # noqa: PLR0915 — one linear scenario
     from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
     from acqApp.devices.pupil_cam import review as review_mod
     from acqApp.devices.pupil_cam.review import PupilReview, sidecar_paths
-
-    class DiscTracking:
-        """Stands in for EyeLoop (needs cv2 and a clone): the dark pixels
-        under `track_threshold` inside the region are the pupil."""
-
-        error = None
-        available = True
-
-        def track(self, frame, st):
-            x0, y0, x1, y1 = st.crop_box(frame.shape)
-            ys, xs = np.nonzero(frame[y0:y1, x0:x1] < st.track_threshold)
-            if xs.size < 20:
-                return None
-            rad = float(np.sqrt(xs.size / np.pi))
-            return PupilFit(xs.mean() + x0, ys.mean() + y0, rad, rad, 0.0)
 
     review_mod.PupilTracking = DiscTracking
 
@@ -507,12 +492,12 @@ def _part_mirror() -> int:  # noqa: PLR0915 — one linear scenario
     p = dlg._region.pos()
     r.check(abs(p.x() - 35) < 1e-6, f"a set region moves the box ({p.x()})")
     r.check(dlg.review.settings.limit_x0 == 35.0, "and the review follows")
-    dlg._ctl._chk_region.setChecked(False)
-    r.check(dlg._region is None and dlg.review.settings.search_limit() is None,
-            "unticking Eye region removes the box")
-    dlg._ctl._chk_region.setChecked(True)
-    r.check(dlg._region is not None and abs(dlg._region.pos().x() - 35) < 1e-6,
-            "ticking it restores the box")
+    r.check(not hasattr(dlg._ctl, "_chk_region"),
+            "no Eye region check box: the box is always on")
+    dlg._ctl.set_limit(0, 0, 0, 0)
+    r.check(dlg._region is not None and abs(dlg._region.pos().x() - 35) < 1e-6
+            and dlg.review.settings.limit_x0 == 35.0,
+            "an empty region is ignored; the box stays")
 
     # Display row and the LUT's own Auto box are one setting, as live.
     dlg._chk_auto.setChecked(False)
@@ -1008,8 +993,125 @@ def _part_recorded() -> int:
     return r.finish()
 
 
+def _part_gap() -> int:  # noqa: PLR0915 — one linear scenario
+    """Many frames at once: fill or re-track the gap back to the last edit,
+    and undo it."""
+    r = Report("pupil-gap")
+    from acqApp.devices.pupil_cam import review as review_mod
+    from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
+    from acqApp.devices.pupil_cam.review import PupilReview
+    review_mod.PupilTracking = DiscTracking
+
+    tmp = Path(tempfile.mkdtemp(prefix="pupil_gap_"))
+    H, W, N = 120, 160, 12
+    frames = [video_eye_frame(H, W, 50 + 4 * i, 60, 14) for i in range(N)]
+    clip = write_avi(tmp / "eye.avi", [f.tobytes() for f in frames], W, H,
+                     b"Y800", 8)
+    st = PupilSettings(limit_x0=20, limit_y0=20, limit_x1=140, limit_y1=100,
+                       cr_remove=False)
+
+    # ── interpolate between two edits ──
+    rev = PupilReview(clip, st)
+    r.check(rev.gap_before(6) is None, "control: no edit before, no gap")
+    rev.set_manual(2, PupilFit(10.0, 20.0, 10.0, 8.0, 170.0))
+    rev.set_manual(6, PupilFit(30.0, 40.0, 20.0, 16.0, 10.0))
+    r.check(rev.gap_before(6) == (2, 6) and rev.gap_before(3) is None,
+            f"the gap runs back to the last edit ({rev.gap_before(6)}); "
+            f"none with nothing between")
+    n = rev.interpolate(2, 6)
+    t = rev.table()
+    r.check(n == 3 and rev.edited[3:6].all(),
+            f"the 3 frames between become edits ({n})")
+    r.check(np.allclose(t[4, :4], [20.0, 30.0, 15.0, 12.0]),
+            f"midway is halfway in centre and size ({np.round(t[4, :4], 2)})")
+    r.check(abs(t[3, 4] - 175.0) < 1e-6 and abs(t[4, 4]) < 1e-6
+            and abs(t[5, 4] - 5.0) < 1e-6,
+            f"the angle turns the short way, through 180/0 "
+            f"({np.round(t[3:6, 4], 1)}), not back through 90")
+    r.check(rev.undo_edits() and not rev.edited[3:6].any()
+            and rev.edited[2] and rev.edited[6],
+            "Undo takes the fill back, leaving both anchors")
+    r.check(not rev.undo_edits(), "…and with nothing left, says so")
+    try:
+        rev.interpolate(6, 9)               # frame 9: never tracked, no fit
+        r.check(False, "an end with no ellipse must be refused")
+    except ValueError:
+        r.check(not rev.edited[7:10].any(),
+                "an end with no ellipse is refused, nothing changed")
+
+    # ── re-track the gap with other settings; kept through a full track ──
+    rev.track_all()
+    rev.manual[:] = np.nan
+    rev.set_manual(2, rev.fit_at(2))        # Keep auto fit: the anchor
+    before = rev.manual.copy()
+    r.check(not rev.retrack_range(2, 8, should_stop=lambda: True)
+            and np.array_equal(rev.manual, before, equal_nan=True),
+            "a stopped re-track changes nothing")
+    seen: list = []
+    r.check(rev.retrack_range(2, 8, lambda i, n: seen.append((i, n))),
+            "re-track runs to the end")
+    r.check(rev.edited[3:9].all() and not rev.edited[9:].any()
+            and seen[-1] == (6, 6),
+            f"frames 3-8 (8 not an edit) are re-fitted as edits ({seen[-1:]})")
+    r.check(all(abs(rev.table()[i, 0] - (50 + 4 * i)) < 1.5 for i in range(3, 9)),
+            "…each on its own frame's pupil")
+    rev.settings = PupilSettings(**{**vars(st), "track_threshold": 5})
+    rev.track_all()                         # selects nothing
+    r.check(not np.isnan(rev.table()[3:9, 0]).any()
+            and np.isnan(rev.table()[9:, 0]).all(),
+            "a later Apply to all keeps the re-tracked gap (control: the "
+            "frames after it lose their fits)")
+    r.check(rev.undo_edits() and not rev.edited[3:9].any(),
+            "Undo takes the re-track back too")
+
+    # ── the buttons ──
+    app = qt_app()
+    isolate_user_state()
+    from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog
+    clip2 = write_avi(tmp / "eye2.avi", [f.tobytes() for f in frames], W, H,
+                      b"Y800", 8)
+    dlg = PupilReviewDialog(str(clip2), settings=st, busy=lambda: False)
+    dlg._track_all()
+    for _ in range(100):
+        pump(app, 0.05)
+        if dlg._worker is None:
+            break
+    dlg.goto(5)
+    r.check(not dlg._btn_fill.isEnabled() and not dlg._btn_retrack.isEnabled(),
+            "with no edit before, Fill and Re-track gap are off")
+    dlg.goto(1)
+    dlg._pin_current()
+    dlg.goto(5)
+    r.check(dlg._btn_fill.isEnabled() and dlg._btn_retrack.isEnabled()
+            and "Frames 2–5" in dlg._btn_fill.toolTip(),
+            f"after an edit they're on, naming the gap ({dlg._btn_fill.toolTip()!r})")
+    dlg._btn_fill.click()
+    r.check(dlg.review.edited[2:6].all() and dlg._dirty
+            and "filled 3 frames" in dlg._prog.text(),
+            f"Fill gap fills it ({dlg._prog.text()!r})")
+    r.check(dlg._btn_undo_gap.isEnabled(), "…and Undo is offered")
+    dlg._btn_undo_gap.click()
+    r.check(not dlg.review.edited[2:5].any(), "Undo empties it again")
+    dlg.goto(8)
+    dlg._btn_retrack.click()
+    r.check(dlg._worker is not None and not dlg._btn_fill.isEnabled(),
+            "Re-track gap runs off the GUI thread, the gap buttons locked")
+    for _ in range(100):
+        pump(app, 0.05)
+        if dlg._worker is None:
+            break
+    r.check(dlg.review.edited[2:9].all()
+            and "re-tracked frames 2–8" in dlg._prog.text(),
+            f"…and re-fits frames 2-8 ({dlg._prog.text()!r})")
+    dlg._dirty = False
+    dlg.close()
+    pump(app, 0.05)
+    return r.finish()
+
+
 PARTS = {
     "review": _part_review,
+    "gap": _part_gap,
     "launcher": _part_launcher,
     "safety": _part_review_safety,
     "mirror": _part_mirror,

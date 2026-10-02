@@ -60,16 +60,17 @@ class _TrackAllWorker(PullWorker):
     progress = pyqtSignal(int, int)
     finished_ok = pyqtSignal(bool)        # False = stopped early
 
-    def __init__(self, review: PupilReview) -> None:
+    def __init__(self, review: PupilReview, job=None) -> None:
+        """`job(progress, should_stop) -> bool`; default the whole clip."""
         super().__init__()
-        self._review = review
+        self._job = job or review.track_all
         self._cancel = threading.Event()
 
     def cancel(self) -> None:
         self._cancel.set()
 
     def _run(self) -> None:
-        done = self._review.track_all(self.progress.emit, self._cancel.is_set)
+        done = self._job(self.progress.emit, self._cancel.is_set)
         self.finished_ok.emit(done)
 
 
@@ -88,6 +89,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self.review: PupilReview | None = None
         self._worker: _TrackAllWorker | None = None
         self._auto_worker: AutoTuneWorker | None = None
+        self._gap_done: str | None = None     # a gap re-track's closing line
         self._frame = 0
         self._data = None
         self._dirty = False
@@ -111,6 +113,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._btn_revert.setEnabled(not (track or auto or seed)
                                     and self.review is not None
                                     and bool(self.review.history))
+        self._refresh_gap()
 
     # ── loading ──────────────────────────────────────────────────────────────
     def _pick_video(self) -> None:
@@ -180,7 +183,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         if self._region is not None:
             self._vb.removeItem(self._region)
             self._region = None
-        if st.search_limit() is None:       # "Eye region" unticked
+        if st.search_limit() is None:       # no clip yet
             return
         x0, y0, x1, y1 = st.search_limit()
         self._region = pg.RectROI((x0, y0), (x1 - x0, y1 - y0),
@@ -198,7 +201,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._ctl.set_limit(p.x(), p.y(), p.x() + s.x(), p.y() + s.y())
 
     def _sync_region_box(self) -> None:
-        """The controls' region (ticked, unticked, restored) -> the box."""
+        """The controls' region (Auto, Revert, a restored clip) -> the box."""
         x0, y0, x1, y1 = self._ctl.region()
         if x1 <= x0 or y1 <= y0:
             if self._region is not None:
@@ -222,14 +225,6 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
             self._region.setSize((x1 - x0, y1 - y0), finish=False)
         finally:
             self._loading = False
-
-    def _default_region(self) -> None:
-        """'Eye region' ticked with none before: the middle half of the clip."""
-        if self.review is None:
-            return
-        h, w = self.review.reader.height, self.review.reader.width
-        self._region_default = True
-        self._ctl.set_limit(w * 0.25, h * 0.25, w * 0.75, h * 0.75)
 
     # ── parameters ───────────────────────────────────────────────────────────
     def _read_settings(self) -> PupilSettings:
@@ -314,17 +309,26 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         if self._worker is not None:        # the button doubles as Stop
             self._worker.cancel()
             return
+        self._start_job(None)
+
+    def _can_fit(self) -> bool:
         if self._busy():
             self._prog.setText("Live tracking is running — stop it first "
                                "(both use the same EyeLoop state).")
-            return
+            return False
         if PupilReview.fitting():
             self._prog.setText("Another clip is being tracked — wait for it "
                                "(both use the same EyeLoop state).")
+            return False
+        return True
+
+    def _start_job(self, job) -> None:
+        """Fit off the GUI thread: the whole clip (`job` None) or a gap."""
+        if not self._can_fit():
             return
         self.pause()
         self.review.settings = self._read_settings()
-        self._worker = _TrackAllWorker(self.review)
+        self._worker = _TrackAllWorker(self.review, job)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished_ok.connect(self._on_tracked)
         self._worker.error.connect(self._on_track_error)
@@ -352,15 +356,17 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         if done:
             self._dirty = True
             self._preview = None
-            self._prog.setText("done")
+            self._prog.setText(self._gap_done or "done")
         else:
             self._prog.setText("stopped — the previous fits are kept")
+        self._gap_done = None
         self._show_stale()
         self.goto(self._frame, force=True)
         self._refresh_plot()
 
     def _on_track_error(self, msg: str) -> None:
         self._end_worker()
+        self._gap_done = None
         self._prog.setText(f"Tracking failed — the previous fits are kept.\n{msg}")
 
     def _end_worker(self) -> None:
@@ -410,6 +416,59 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         r = max(5.0, min(x1 - x0, y1 - y0) / 6.0)
         self.edit_frame(self._frame, PupilFit((x0 + x1) / 2, (y0 + y1) / 2,
                                               r, r, 0.0))
+
+    # ── the gap back to the last edit: fill or re-track it ──────────────────
+    def _gap(self) -> tuple[int, int] | None:
+        return None if self.review is None else self.review.gap_before(self._frame)
+
+    def _refresh_gap(self) -> None:
+        g = self._gap()
+        idle = self._worker is None and self._auto_worker is None
+        fit_here = self.review is not None and self.review.fit_at(self._frame) is not None
+        self._btn_fill.setEnabled(idle and g is not None and fit_here)
+        self._btn_retrack.setEnabled(idle and g is not None)
+        self._btn_undo_gap.setEnabled(idle and self.review is not None
+                                      and bool(self.review.edit_undo))
+        tip = ("" if g is None else f" Frames {g[0] + 1}–{g[1]}, back to the "
+               f"edit at {g[0]}.")
+        self._btn_fill.setToolTip(
+            "Ease the ellipse from the last edited frame to this one." + tip)
+        self._btn_retrack.setToolTip(
+            "Re-fit from the last edited frame to this one with the current "
+            "settings." + tip)
+
+    def _fill_gap(self) -> None:
+        g = self._gap()
+        if g is None:
+            return
+        self.pause()
+        try:
+            n = self.review.interpolate(*g)
+        except ValueError as e:
+            self._prog.setText(f"can't fill: {e}")
+            return
+        self._dirty = True
+        self._prog.setText(f"filled {n} frames between {g[0]} and {g[1]}")
+        self.goto(self._frame, force=True)
+        self._refresh_plot()
+
+    def _retrack_gap(self) -> None:
+        g = self._gap()
+        if g is None or self._worker is not None:
+            return
+        self._gap_done = f"re-tracked frames {g[0] + 1}–{g[1]}"
+        self._start_job(lambda progress, stop: self.review.retrack_range(
+            *g, progress, stop))
+        if self._worker is None:            # refused
+            self._gap_done = None
+
+    def _undo_gap(self) -> None:
+        if self.review is None or not self.review.undo_edits():
+            return
+        self._dirty = True
+        self._prog.setText("undid the last gap fill / re-track")
+        self.goto(self._frame, force=True)
+        self._refresh_plot()
 
     def _next_suspect(self) -> None:
         self._jump_suspect(+1)

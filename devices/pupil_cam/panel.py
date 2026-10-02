@@ -40,7 +40,6 @@ class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)  # PupilSettings
     mode_changed     = pyqtSignal(str)     # "live" | "review" (a click)
     auto_requested   = pyqtSignal()        # suggest tracking parameters
-    region_wanted    = pyqtSignal()        # "Eye region" ticked, none to restore
 
     def __init__(self, settings: PupilSettings | None = None, parent=None):
         super().__init__(parent)
@@ -135,7 +134,6 @@ class SettingsPanel(QWidget):
         self.tracking = TrackingControls(self._s, live=True)
         self.tracking.changed.connect(self._emit)
         self.tracking.auto_requested.connect(self.auto_requested)
-        self.tracking.region_wanted.connect(self.region_wanted)
         root.addWidget(self.tracking)
 
         # ── Illumination ────────────────────────────────────────────────────
@@ -212,9 +210,6 @@ class SettingsPanel(QWidget):
     def set_limit(self, x0: float, y0: float, x1: float, y1: float) -> None:
         """From the preview, as ONE settings change."""
         self.tracking.set_limit(x0, y0, x1, y1)
-
-    def clear_limit(self) -> None:
-        self.tracking.clear_limit()
 
     def set_pins(self, pins) -> None:
         """From the preview, as ONE settings change."""

@@ -1,8 +1,8 @@
 """The pupil-tracking controls: eye region, fit, blinks, reflections.
 
 One widget for both the live panel and Pupil review, so the two match. What
-differs is the `live` flag, not a second copy. The eye region is a check box
-here; the box itself is drawn and dragged on the image by the host.
+differs is the `live` flag, not a second copy. The eye region is held here
+but always on; the box itself is drawn and dragged on the image by the host.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from acqApp.widgets import compact, spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 HINT_STYLE = "color:#9aa0a6;"
-_NO_REGION = (0.0, 0.0, 0.0, 0.0)
 
 
 def hint(text: str) -> QLabel:
@@ -34,20 +33,17 @@ def _valid(r) -> bool:
 
 class TrackingControls(QWidget):
     """`changed` fires on any edit; `settings_into(s)` reads the knobs into a
-    copy of `s`; `show_settings(s)` puts `s` back without firing.
-    `region_wanted` asks the host for a starting box (the check box was
-    ticked with none to restore)."""
+    copy of `s`; `show_settings(s)` puts `s` back without firing. The eye
+    region has no switch here: it is always on, drawn on the host's image."""
 
     changed = pyqtSignal()
     auto_requested = pyqtSignal()
-    region_wanted = pyqtSignal()
 
     def __init__(self, s: PupilSettings, *, live: bool, parent=None) -> None:
         super().__init__(parent)
         self._live = live
         self._pins = list(s.cr_pins)
         self._region = (s.limit_x0, s.limit_y0, s.limit_x1, s.limit_y1)
-        self._last_region = self._region if _valid(self._region) else None
         self._quiet = True          # widgets emit as they're built
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -71,15 +67,6 @@ class TrackingControls(QWidget):
         # folding group box re-shows every child it holds.
         if self._live:
             vb.addWidget(self._chk_track)
-
-        self._chk_region = QCheckBox("Eye region")
-        self._chk_region.setChecked(_valid(self._region))
-        self._chk_region.setToolTip(
-            ("Draw it with Set eye region above the preview."
-             if self._live else "Drag the cyan box on the clip.")
-            + " Tracking only looks inside it, and needs one.")
-        self._chk_region.toggled.connect(self._region_toggled)
-        vb.addWidget(self._chk_region)
 
         form = QFormLayout()
         form.setSpacing(4)
@@ -273,32 +260,14 @@ class TrackingControls(QWidget):
 
     def _set_region(self, r) -> None:
         self._region = tuple(float(v) for v in r)
-        if _valid(self._region):
-            self._last_region = self._region
-        self._chk_region.blockSignals(True)
-        self._chk_region.setChecked(_valid(self._region))
-        self._chk_region.blockSignals(False)
-
-    def _region_toggled(self, on: bool) -> None:
-        if on:
-            if self._last_region is None:
-                self._chk_region.blockSignals(True)
-                self._chk_region.setChecked(False)
-                self._chk_region.blockSignals(False)
-                self.region_wanted.emit()   # the host knows the frame size
-                return
-            self._region = self._last_region
-        else:
-            self._region = _NO_REGION
-        self._fire()
 
     def set_limit(self, x0: float, y0: float, x1: float, y1: float) -> None:
-        """From the image, as ONE change."""
+        """From the image, as ONE change. An empty box is ignored: the region
+        is always on, and the host gives it a default before the first fit."""
+        if not _valid((x0, y0, x1, y1)):
+            return
         self._set_region((x0, y0, x1, y1))
         self._fire()
-
-    def clear_limit(self) -> None:
-        self.set_limit(*_NO_REGION)
 
     # ── pins ────────────────────────────────────────────────────────────────
     def set_pins(self, pins) -> None:

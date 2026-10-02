@@ -81,10 +81,15 @@ separate window, so it can sit on a second monitor while a session runs.
 A few things worth knowing about this one, since they aren't typed as
 numbers:
 
-- **Eye region** — drag a box directly on the pupil preview dock (not here);
-  these fields just show/type the box you already drew.
-- **Rate / Exposure Link** — check it to keep the two locked together
-  (exposure = 1/rate); unchecked, Rate is just a ceiling on Exposure.
+- **Eye region** — always on. It starts as the middle half of the frame;
+  redraw it with **Set eye region** above the preview (in Review, drag the
+  box on the clip). Tracking only looks inside it.
+- **Rate / Exposure** — Rate is typed; Exposure is a bar from the camera's
+  shortest to the longest the Rate allows.
+- **Review: Fill gap / Re-track gap** — fix one frame, step to a later one,
+  then fill every frame between them with the ellipse eased from one to the
+  other, or re-fit just that stretch with the current settings. Both are kept
+  as hand edits; **Undo** takes the last one back.
 - **Stabilize outline** and **Detect blinks** trade a little lag for a
   steadier trace and a flagged-blink overlay on the radius plot,
   respectively — both off by default so a session captures the raw fit

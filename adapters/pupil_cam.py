@@ -43,7 +43,6 @@ class PupilCamModule(ModuleAdapter):
         self._vb = None
         self._gv = None
         self._btn_limit = None
-        self._btn_limit_off = None
         self._lbl_limit = None
         self._cmb_view = None
         self._view_mode = "full"        # "full" | "bare" | "crop"
@@ -90,7 +89,6 @@ class PupilCamModule(ModuleAdapter):
         self.panel.settings_changed.connect(self._on_settings)
         self.panel.mode_changed.connect(self._set_mode)
         self.panel.auto_requested.connect(self._on_auto_requested)
-        self.panel.region_wanted.connect(self._want_region)
         self._settings = self.panel.settings
         return self.panel
 
@@ -149,11 +147,15 @@ class PupilCamModule(ModuleAdapter):
     _AUTO_FRAMES = 16          # gathered from the preview...
     _AUTO_EVERY = 3            # ...one in this many displayed frames
 
-    def _want_region(self) -> None:
-        """'Eye region' ticked with none set: arm the drag on the preview."""
-        if self._btn_limit is not None:
-            self._btn_limit.setChecked(True)
-            self.win.status("drag a box around the eye on the preview")
+    def _ensure_region(self, frame) -> None:
+        """The region is always on: with none saved, the middle half of the
+        first frame, until the user draws one."""
+        if self.panel is None or self.panel.settings.search_limit() is not None:
+            return
+        h, w = frame.shape[:2]
+        self.panel.set_limit(w * 0.25, h * 0.25, w * 0.75, h * 0.75)
+        self.win.status("eye region: the middle of the frame — Set eye region "
+                        "to draw your own")
 
     def _on_auto_requested(self) -> None:
         if self._seed_clicks is not None:          # pressed again: cancel
@@ -345,10 +347,6 @@ class PupilCamModule(ModuleAdapter):
         self._btn_limit.setToolTip("Then drag a box around the eye.")
         self._btn_limit.toggled.connect(self._arm_limit)
 
-        self._btn_limit_off = QPushButton("Clear")
-        self._btn_limit_off.setToolTip("Remove the region.")
-        self._btn_limit_off.clicked.connect(self._clear_limit)
-
         self._lbl_limit = QLabel()
         self._lbl_limit.setStyleSheet("color:#9aa0a6;")
         self._lbl_limit.setMinimumWidth(1)      # clip, don't widen the dock
@@ -367,7 +365,7 @@ class PupilCamModule(ModuleAdapter):
         self._cmb_view.currentIndexChanged.connect(self._on_view_mode_changed)
 
         lay.addWidget(QLabel("Eye:"))
-        for w in (self._btn_limit, self._btn_limit_off, self._btn_pin):
+        for w in (self._btn_limit, self._btn_pin):
             lay.addWidget(w)
         lay.addWidget(self._lbl_limit, 1)
         lay.addWidget(QLabel("View:"))
@@ -400,11 +398,6 @@ class PupilCamModule(ModuleAdapter):
     def _rect_xy(x0: float, y0: float, x1: float, y1: float):
         return (np.array([x0, x1, x1, x0, x0], float),
                 np.array([y0, y0, y1, y1, y0], float))
-
-    def _clear_limit(self) -> None:
-        self._btn_limit.setChecked(False)
-        self.panel.clear_limit()
-        self.win.status("eye region cleared")
 
     # ── pinned reflections (full-frame px, so the region can move) ──
     def _arm_pin(self, on: bool) -> None:
@@ -463,11 +456,10 @@ class PupilCamModule(ModuleAdapter):
         elif self._btn_pin is not None and self._btn_pin.isChecked():
             self._lbl_limit.setText("click a reflection to pin or unpin it")
         elif lim is None:
-            self._lbl_limit.setText("no region")
+            self._lbl_limit.setText("region: set on the first frame")
         else:
             self._lbl_limit.setText(
                 f"({lim[0]:.0f}, {lim[1]:.0f})-({lim[2]:.0f}, {lim[3]:.0f})")
-        self._btn_limit_off.setEnabled(lim is not None)
 
     def _on_view_mode_changed(self, *_a) -> None:
         if self._cmb_view is not None:
@@ -594,6 +586,7 @@ class PupilCamModule(ModuleAdapter):
         if tr is None:
             return
         self._last_frame = tr.frame
+        self._ensure_region(tr.frame)
         if self._auto_frames is not None:
             self._gather_auto(tr.frame)
         shown, rect = self._display_frame(tr.frame)

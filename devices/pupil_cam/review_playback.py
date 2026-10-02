@@ -227,6 +227,7 @@ class _PlaybackMixin:
             self._btn_reset.setEnabled(False)
             self._btn_pin.setEnabled(False)
             self._btn_new.setEnabled(pfit is None)
+            self._refresh_gap()
             return
         self._fit_curve.setPen(pg.mkPen("#ff9d3d" if edited else "#7fff6a",
                                         width=2))
@@ -245,6 +246,7 @@ class _PlaybackMixin:
         self._btn_reset.setEnabled(edited)
         self._btn_pin.setEnabled(fit is not None and not edited)
         self._btn_new.setEnabled(fit is None)
+        self._refresh_gap()
 
     def _make_roi(self, fit: PupilFit) -> None:
         """An ellipse handle at `fit`. ROI pos is the unrotated box's corner,

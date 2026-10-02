@@ -681,46 +681,36 @@ def _part_limit() -> int:
     r.check(len(seen) == 1, f"a placement writes back as one settings change "
                             f"({len(seen)})")
     seen.clear()
-    # The region is a check box now: off removes it, on brings it back.
-    panel.tracking._chk_region.setChecked(False)
-    r.check(len(seen) == 1 and panel.settings.search_limit() is None,
-            "unticking Eye region removes it, as one change")
-    panel.tracking._chk_region.setChecked(True)
-    r.check(len(seen) == 2 and panel.settings.search_limit()
+    # ── 10. always on: no switch, no Clear, an empty box changes nothing ─────
+    r.check(not hasattr(panel.tracking, "_chk_region")
+            and not hasattr(mod, "_btn_limit_off"),
+            "no Eye region check box and no Clear: the region is always on")
+    panel.set_limit(0.0, 0.0, 0.0, 0.0)
+    r.check(not seen and panel.settings.search_limit()
             == (400.0, 150.0, 600.0, 350.0),
-            "ticking it again restores the same box")
+            "an empty box is ignored, the region stays")
 
-    # ── 10. clearing, from either place ──────────────────────────────────────
-    r.check(panel.tracking._chk_region.isChecked(), "Eye region is ticked while one is set")
-    r.check(mod._btn_limit_off.isEnabled(), "…on the preview bar too")
-    mod._btn_limit_off.click()
-    pump(app, 0.05)
-    r.check(panel.settings.search_limit() is None, "…and clearing removes it")
-    r.check(npoints(mod._limit_curve) == 0, "…and un-draws the rectangle")
-    r.check(not panel.tracking._chk_region.isChecked() and
-            not mod._btn_limit_off.isEnabled(),
-            "control: with no region there is nothing to clear")
-
-    # ── 11. the Eye region check box draws and un-draws the rectangle ────────
+    # ── 11. the rectangle is drawn and read back ─────────────────────────────
     panel.set_limit(150.0, 200.0, 500.0, 320.0)
-    pump(app, 0.05)
-    panel.tracking._chk_region.setChecked(False)
-    pump(app, 0.05)
-    r.check(npoints(mod._limit_curve) == 0, "unticked: the rectangle goes")
-    panel.tracking._chk_region.setChecked(True)
     pump(app, 0.05)
     xs = mod._limit_curve.getData()[0]
     r.check(xs is not None and abs(xs.min() - 150.0) < 1.0
             and abs(xs.max() - 500.0) < 1.0,
-            f"ticked: it comes back where it was ({xs.min():.0f}-{xs.max():.0f})")
+            f"the rectangle is drawn where it is ({xs.min():.0f}-{xs.max():.0f})")
     r.check("150" in mod._lbl_limit.text() and "500" in mod._lbl_limit.text(),
             f"…and the preview bar reads it back ({mod._lbl_limit.text()!r})")
-    panel.clear_limit()
-    pump(app, 0.05)
 
-    # ── 12. placing it on the preview: press-drag, release commits + disarms ─
+    # ── 12. none saved: the first frame gives it the middle half ─────────────
+    panel.tracking._set_region((0.0, 0.0, 0.0, 0.0))    # as a fresh install
+    r.check(panel.settings.search_limit() is None, "fixture: no region saved")
     win._btn_run.setChecked(True)
     pump(app, 1.0)                       # frames flow
+    h, w = mod._last_frame.shape[:2]
+    default = (w * 0.25, h * 0.25, w * 0.75, h * 0.75)
+    r.check(panel.settings.search_limit() == default,
+            f"the first frame sets the middle half ({panel.settings.search_limit()})")
+
+    # ── 13. placing it on the preview: press-drag, release commits + disarms ─
 
     # Never shown, the view has no size or range: the drag would span 0 px.
     mod._gv.resize(400, 300)
@@ -752,7 +742,7 @@ def _part_limit() -> int:
     r.check(npoints(mod._limit_ghost) == 5,
             f"the rectangle follows the cursor before it is committed "
             f"({npoints(mod._limit_ghost)} points)")
-    r.check(panel.settings.search_limit() is None,
+    r.check(panel.settings.search_limit() == default,
             "…and commits nothing yet — mid-drag is not a region")
 
     mod._vb.mouseDragEvent(_DragEv(start, end, finish=True))

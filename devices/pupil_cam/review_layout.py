@@ -42,13 +42,13 @@ class _LayoutMixin:
         disp = QHBoxLayout()
         disp.addWidget(self._chk_lut)
         disp.addWidget(self._chk_auto_contrast)
+        disp.addStretch()
         rf.addRow("Display:", disp)
         side.addWidget(rec)
 
         self._ctl = TrackingControls(self._seed or PupilSettings(), live=False)
         self._ctl.changed.connect(self._params_edited)
         self._ctl.auto_requested.connect(self._auto)
-        self._ctl.region_wanted.connect(self._default_region)
         side.addWidget(self._ctl)
 
         act = QGroupBox("Track and save")
@@ -245,6 +245,22 @@ class _LayoutMixin:
             edit.addWidget(w)
         mid.addLayout(edit)
 
+        # Many frames at once: from the last edited frame up to this one.
+        gap = QHBoxLayout()
+        self._btn_fill = QPushButton("Fill gap")
+        self._btn_fill.clicked.connect(self._fill_gap)
+        self._btn_retrack = QPushButton("Re-track gap")
+        self._btn_retrack.clicked.connect(self._retrack_gap)
+        self._btn_undo_gap = QPushButton("Undo")
+        self._btn_undo_gap.setToolTip("Back to before the last Fill or "
+                                      "Re-track gap.")
+        self._btn_undo_gap.clicked.connect(self._undo_gap)
+        gap.addWidget(QLabel("Since the last edit:"))
+        for b in (self._btn_fill, self._btn_retrack, self._btn_undo_gap):
+            gap.addWidget(b)
+        gap.addStretch()
+        mid.addLayout(gap)
+
         self._plot = pg.PlotWidget(title="Pupil radius (px)")
         self._plot.setMaximumHeight(200)
         self._auto_curve = self._plot.plot(pen=pg.mkPen("#888888", width=1))
@@ -266,7 +282,7 @@ class _LayoutMixin:
         mid.addWidget(self._plot)
         self._top_bar.addWidget(QLabel("Eye:"))
         self._top_bar.addWidget(self._btn_pin_cr)
-        self._top_bar.addWidget(QLabel("drag the cyan box"), 1)
+        self._top_bar.addStretch(1)
         self._top_bar.addWidget(QLabel("View:"))
         self._top_bar.addWidget(self._cmb_view)
         if not self._embedded:

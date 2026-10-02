@@ -1,5 +1,5 @@
-"""Shared by the test_pupil*.py files: a real AVI writer and the
-synthetic eyes the clips are made of."""
+"""Shared by the test_pupil*.py files: a real AVI writer, the synthetic
+eyes the clips are made of, and a stand-in for EyeLoop."""
 from __future__ import annotations
 
 import struct
@@ -36,6 +36,23 @@ def video_eye_frame(h: int, w: int, cx: int, cy: int, r: int) -> np.ndarray:
     f[(X - cx) ** 2 + (Y - cy) ** 2 < r * r] = 20
     f[(X - cx - r // 3) ** 2 + (Y - cy) ** 2 < max(2, r // 6) ** 2] = 250
     return f
+
+
+class DiscTracking:
+    """Stands in for EyeLoop (needs cv2 and a clone): the dark pixels under
+    `track_threshold` inside the region are the pupil."""
+
+    error = None
+    available = True
+
+    def track(self, frame, st):
+        from acqApp.devices.pupil_cam.eyeloop_tracker import PupilFit
+        x0, y0, x1, y1 = st.crop_box(frame.shape)
+        ys, xs = np.nonzero(frame[y0:y1, x0:x1] < st.track_threshold)
+        if xs.size < 20:
+            return None
+        rad = float(np.sqrt(xs.size / np.pi))
+        return PupilFit(xs.mean() + x0, ys.mean() + y0, rad, rad, 0.0)
 
 
 def face_frame(h=300, w=420, cx=210, cy=150, r=30, pupil=20, iris=26,

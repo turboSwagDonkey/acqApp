@@ -165,6 +165,8 @@ class PupilReview:
         # Earlier traces, newest last: (auto, blink, tracked_with). Kept for
         # Revert; not saved.
         self.history: list[tuple] = []
+        # Before each gap fill/re-track, newest last: (first frame, old rows).
+        self.edit_undo: list[tuple[int, np.ndarray]] = []
         self._preview_tracking = None
         self.last_mask = None       # from preview_fit: crop-sized bool
         self.last_box = None        # ...and where the crop sits
@@ -282,6 +284,76 @@ class PupilReview:
     @property
     def edited(self) -> np.ndarray:
         return ~np.isnan(self.manual[:, 0])
+
+    # ── many frames at once: the gap between two anchors ─────────────────────
+    def gap_before(self, i: int) -> tuple[int, int] | None:
+        """(a, i), `a` the nearest hand-edited frame before `i`: the anchor a
+        gap is filled or re-tracked from. None with no anchor or no gap."""
+        prev = np.flatnonzero(self.edited[:i])
+        if not prev.size or i - int(prev[-1]) < 2:
+            return None
+        return int(prev[-1]), int(i)
+
+    def interpolate(self, a: int, b: int) -> int:
+        """Frames between `a` and `b` become edits eased linearly from a's
+        ellipse to b's (angle the short way round, mod 180); `b` is pinned
+        too, so it anchors the next gap. Returns the frames filled. Raises
+        ValueError when an end has no ellipse."""
+        t = self.table()
+        if np.isnan(t[a, 0]) or np.isnan(t[b, 0]):
+            raise ValueError("both ends need an ellipse")
+        f = np.linspace(0.0, 1.0, b - a + 1)[1:-1, None]
+        mid = t[a] + (t[b] - t[a]) * f
+        turn = (t[b, 4] - t[a, 4] + 90.0) % 180.0 - 90.0
+        mid[:, 4] = (t[a, 4] + turn * f[:, 0]) % 180.0
+        self._remember_edits(a + 1, b + 1)
+        self.manual[a + 1:b] = mid
+        self.manual[b] = t[b]
+        return b - a - 1
+
+    def retrack_range(self, a: int, b: int,
+                      progress: Callable[[int, int], None] | None = None,
+                      should_stop: Callable[[], bool] | None = None) -> bool:
+        """Re-fit the frames after `a` up to `b` with the current settings,
+        kept as edits so a later full track leaves them alone; `b` only when
+        it isn't an edit already. The tracker starts on `a`, so it walks in
+        from a known pupil. A frame it can't fit keeps its old answer.
+        Stopped (False) or failed (raises): nothing changes."""
+        st = dataclasses.replace(self.settings, track=True)
+        hi = b if self.is_edited(b) else b + 1
+        out = np.full((hi - a - 1, 5), np.nan)
+        with PupilReview._fitting_lock:
+            PupilReview._fitting += 1
+        try:
+            t = PupilTracking()
+            t.track(np.ascontiguousarray(self.reader.luma(a)), st)
+            for k in range(a + 1, hi):
+                if not t.available:
+                    raise RuntimeError(t.error)
+                if should_stop is not None and should_stop():
+                    return False
+                out[k - a - 1] = _row_from(
+                    t.track(np.ascontiguousarray(self.reader.luma(k)), st))
+                if progress is not None:
+                    progress(k - a, hi - a - 1)
+        finally:
+            with PupilReview._fitting_lock:
+                PupilReview._fitting -= 1
+        self._remember_edits(a + 1, hi)
+        got = ~np.isnan(out[:, 0])
+        self.manual[a + 1:hi][got] = out[got]
+        return True
+
+    def _remember_edits(self, lo: int, hi: int) -> None:
+        self.edit_undo.append((lo, self.manual[lo:hi].copy()))
+
+    def undo_edits(self) -> bool:
+        """Back to the edits before the last gap fill or re-track."""
+        if not self.edit_undo:
+            return False
+        lo, rows = self.edit_undo.pop()
+        self.manual[lo:lo + len(rows)] = rows
+        return True
 
     # ── the answer ───────────────────────────────────────────────────────────
     def smoothed_auto(self) -> np.ndarray:
