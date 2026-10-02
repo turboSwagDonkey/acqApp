@@ -4,15 +4,15 @@
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py          # everything
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py -v       # full output
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py session  # one test
-acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py -q # failures only
+acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py -v # every check
 acqApp\.venv\Scripts\python.exe acqApp\tests\test_dmd.py --part calib  # one part
 ```
 
-**`-q`** (or `ACQAPP_QUIET=1`) prints only failures and the closing count — 134
-lines become 3. The passing lines each state a property in a sentence and are
-worth reading when a human is looking at a run; `-q` is for when only the
-verdict is wanted. A failure prints in full either way, and `run_all.py` ignores
-the variable, because it counts those lines.
+Every run is **quiet by default**: only failures and the closing count. **`-v`**
+(or `ACQAPP_VERBOSE=1`) prints the passing lines too; each states a property in
+a sentence, worth reading when a human is looking at a run. `run_all.py` sets
+`ACQAPP_VERBOSE=1` for its children because it counts those lines, then shows
+only failures unless given `-v`. `-q` is still accepted and does nothing.
 
 Everything runs in **Emulate mode against fakes** — no rig hardware, no windows
 on screen, no reaching for real hardware, ~30 s for the set. Each test is also

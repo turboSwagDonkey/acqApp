@@ -87,8 +87,8 @@ def main() -> int:
     results, total_ok = [], 0
     t_start = time.perf_counter()
 
-    # The children's passing lines are counted, so never pass ACQAPP_QUIET.
-    env = {k: v for k, v in os.environ.items() if k != "ACQAPP_QUIET"}
+    # The children's passing lines are counted, so they must print them.
+    env = {**os.environ, "ACQAPP_VERBOSE": "1"}
 
     for name, script in tests:
         t0 = time.perf_counter()

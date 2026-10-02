@@ -128,9 +128,11 @@ class Report:
     """Collects pass/fail lines and returns a process exit code. Not
     assert-based: one run should report every failure, not the first.
 
-    `-q` prints only failures plus the closing summary."""
+    Quiet by default: only failures and the summary. `-v`
+    (or ACQAPP_VERBOSE=1, which run_all sets to count checks) prints every
+    passing check too. `-q` is still accepted."""
 
-    QUIET = "-q" in sys.argv or os.environ.get("ACQAPP_QUIET") == "1"
+    QUIET = not ("-v" in sys.argv or os.environ.get("ACQAPP_VERBOSE") == "1")
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -180,7 +182,7 @@ def run_parts(parts: dict) -> int:
     for name in parts:
         sys.stdout.flush()
         args = [sys.executable, sys.argv[0], "--part", name]
-        args += [a for a in sys.argv[1:] if a == "-q"]
+        args += [a for a in sys.argv[1:] if a in ("-q", "-v")]
         rc |= subprocess.run(args).returncode
     return rc
 
