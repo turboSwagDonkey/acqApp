@@ -323,6 +323,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   _pupil_helpers.py     the test_pupil*.py files' AVI writer and synthetic eyes
   README.md             the two conventions: isolate user state, include a control
   run_all.py            the suite: run this
+  snap.py               one panel rendered offscreen to a PNG (layout checks)
   test_camera.py              readout table, frame timestamps, .dcimg, recording losses
   test_config.py              rigs.json, modes.json, settings persistence, mirror default
   test_console_safety.py
