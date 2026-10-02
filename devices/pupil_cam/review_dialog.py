@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import collapsible_groups, sections_help, spin
+from acqApp.widgets import collapsible_groups, compact, sections_help, spin
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.pupil_cam.autotune import NEEDS_HELP
 from acqApp.devices.pupil_cam.clip import FILE_FILTER as _VIDEO_FILTER
@@ -268,7 +268,7 @@ class ReviewWidget(QWidget):
         nav = QHBoxLayout()
         self._sld = QSlider(Qt.Orientation.Horizontal)
         self._sld.valueChanged.connect(self.goto)
-        self._spn_frame = QSpinBox()
+        self._spn_frame = compact(QSpinBox())
         self._spn_frame.valueChanged.connect(self.goto)
         btn_prev = QPushButton("◀")
         btn_next = QPushButton("▶")
@@ -305,6 +305,7 @@ class ReviewWidget(QWidget):
                            ("Cropped to region", "crop")):
             self._cmb_view.addItem(label, key)
         self._cmb_view.setToolTip("Display only.")
+        compact(self._cmb_view)
         self._cmb_view.currentIndexChanged.connect(self._view_changed)
         mid.addLayout(play)
         self._timer = QTimer(self)

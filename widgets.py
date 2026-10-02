@@ -20,6 +20,17 @@ OPEN, SHUT = "▾", "▸"
 _PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
+def compact(w: QWidget, chars: int | None = None) -> QWidget:
+    """Keep an input as narrow as its content: Qt's form layouts otherwise
+    stretch every spin box, combo and line edit across the whole panel.
+    `chars` caps a free-text box at about that many characters."""
+    from PyQt6.QtWidgets import QSizePolicy
+    w.setSizePolicy(QSizePolicy.Policy.Fixed, w.sizePolicy().verticalPolicy())
+    if chars:
+        w.setFixedWidth(w.fontMetrics().horizontalAdvance("0" * chars) + 16)
+    return w
+
+
 def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
          suffix: str = "", prefix: str = "", tooltip: str = "",
          track: bool = True) -> QSpinBox | QDoubleSpinBox:
@@ -27,6 +38,8 @@ def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
 
     Range is set BEFORE the value (the other order clamps to Qt's 0-99).
     `track=False` emits once per typed number, not per keystroke.
+    As wide as its range and suffix need, never stretched across the panel
+    (see `compact`).
     """
     s = QDoubleSpinBox() if decimals is not None else QSpinBox()
     s.setRange(lo, hi)
@@ -44,6 +57,7 @@ def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
         s.setValue(value if decimals is not None else int(value))
     if tooltip:
         s.setToolTip(tooltip)
+    compact(s)
     return s
 
 
@@ -180,6 +194,14 @@ def _field_label(w: QWidget, box: QGroupBox) -> str:
     its form-row label, looked up through any row layout it sits in."""
     if isinstance(w, QAbstractButton) and w.text():
         return w.text()
+    # In a row of several inputs, the label just before it names it.
+    from PyQt6.QtWidgets import QLayout
+    for lay in box.findChildren(QLayout):
+        i = lay.indexOf(w)
+        if i > 0:
+            prev = lay.itemAt(i - 1).widget()
+            if isinstance(prev, QLabel) and prev.text():
+                return prev.text().rstrip(":")
     for form in box.findChildren(QFormLayout):
         for row in range(form.rowCount()):
             lbl = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
@@ -329,3 +351,100 @@ class SegmentedSwitch(QWidget):
 
     def button(self, key: str) -> QPushButton:
         return self._buttons[key]
+
+
+# ── a bar between two limits ──────────────────────────────────────────────────
+
+class RangeBar(QWidget):
+    """A slider whose ends are limits that move (e.g. exposure: the camera's
+    minimum to the longest the frame rate allows), with the value beside it.
+    Logarithmic, so short values are as easy to pick as long ones.
+    `valueChanged(v)` fires while dragging; `editingFinished` once, on
+    release (or after a key/wheel step)."""
+
+    valueChanged = pyqtSignal(float)
+    editingFinished = pyqtSignal()
+
+    _STEPS = 1000
+
+    def __init__(self, lo: float, hi: float, value: float, *,
+                 fmt=lambda v: f"{v:g}", parent=None) -> None:
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QSlider
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._sld = QSlider(Qt.Orientation.Horizontal)
+        self._sld.setRange(0, self._STEPS)
+        self._lbl = QLabel()
+        self._lbl.setMinimumWidth(50)
+        self._lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                               | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self._sld, 1)
+        lay.addWidget(self._lbl)
+        self._fmt = fmt
+        self._lo, self._hi = float(lo), float(hi)
+        self._v = min(max(float(value), self._lo), self._hi)
+        self._sync = False
+        self._sld.valueChanged.connect(self._moved)
+        self._sld.sliderReleased.connect(self.editingFinished)
+        self._place()
+
+    # value <-> slider position, on a log scale
+    def _to_pos(self, v: float) -> int:
+        if self._hi <= self._lo:
+            return 0
+        import math
+        f = math.log(v / self._lo) / math.log(self._hi / self._lo)
+        return int(round(f * self._STEPS))
+
+    def _from_pos(self, pos: int) -> float:
+        if self._hi <= self._lo:
+            return self._lo
+        return self._lo * (self._hi / self._lo) ** (pos / self._STEPS)
+
+    def _place(self) -> None:
+        self._sync = True
+        try:
+            self._sld.setValue(self._to_pos(self._v))
+        finally:
+            self._sync = False
+        self._lbl.setText(self._fmt(self._v))
+
+    def _moved(self, pos: int) -> None:
+        if self._sync:
+            return
+        self._v = self._from_pos(pos)
+        self._lbl.setText(self._fmt(self._v))
+        self.valueChanged.emit(self._v)
+        if not self._sld.isSliderDown():    # a key or wheel step
+            self.editingFinished.emit()
+
+    def value(self) -> float:
+        return self._v
+
+    def setValue(self, v: float) -> None:
+        """Clamped to the limits; emits like a user change if it moved."""
+        v = min(max(float(v), self._lo), self._hi)
+        if abs(v - self._v) < 1e-9:
+            return
+        self._v = v
+        self._place()
+        self.valueChanged.emit(v)
+        self.editingFinished.emit()
+
+    def setRange(self, lo: float, hi: float) -> None:
+        """New limits; a value outside them is pulled in (and emitted)."""
+        self._lo, self._hi = float(lo), max(float(hi), float(lo))
+        old = self._v
+        self._v = min(max(self._v, self._lo), self._hi)
+        self._place()
+        if abs(self._v - old) > 1e-9:
+            self.valueChanged.emit(self._v)
+            self.editingFinished.emit()
+
+    def minimum(self) -> float:
+        return self._lo
+
+    def maximum(self) -> float:
+        return self._hi
+

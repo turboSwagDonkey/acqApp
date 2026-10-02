@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from acqApp import style
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 from acqApp.acq.sync import DEFAULT_TICK_MS
 from .settings import (IMPLEMENTED_TRIAL_TYPES, REGION_TRIAL_TYPES,
                        TRIAL_CONTRAST, TRIAL_GRATING, TRIAL_MAP, TRIAL_SIZE,
@@ -91,6 +91,8 @@ _VISUOMOTOR_FIELDS = [
     ("VisuomotorGain", "Gain (px drift / wheel unit)", -100, 100, 0.1, 3),
     ("VisuomotorDurationTicks", "Trial duration", 1, 100000, 1, 0),
 ]
+# Fields that share the previous field's row, with their short label.
+_SAME_ROW = {"StimYPosition": "Y", "TriggersStim": "Stim"}
 
 
 class SettingsPanel(QWidget):
@@ -102,6 +104,7 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self._s = settings or VisStimSettings()
         self._spins: dict[str, QDoubleSpinBox] = {}
+        self._rows: dict[str, QWidget] = {}    # field -> its form row's widget
         self._build()
 
     def _build(self) -> None:
@@ -145,7 +148,7 @@ class SettingsPanel(QWidget):
         grp = QGroupBox("Trial type")
         lay = QFormLayout(grp)
         lay.setSpacing(4)
-        self._cmb_trial = QComboBox()
+        self._cmb_trial = compact(QComboBox())
         for t in TRIAL_TYPES:
             label = _TRIAL_TYPE_LABELS.get(t, t.title())
             implemented = t in IMPLEMENTED_TRIAL_TYPES
@@ -180,23 +183,24 @@ class SettingsPanel(QWidget):
         self._grp_grating.setVisible(grating_like)
         grating_lay = self._grp_grating.layout()
         for name in ("WaveTempPeriodInHz", "PeriodsToShow"):
-            grating_lay.setRowVisible(self._spins[name], t != TRIAL_VISUOMOTOR)
+            grating_lay.setRowVisible(self._rows[name], t != TRIAL_VISUOMOTOR)
 
         trig_lay = self._grp_trigger.layout()
         for name in ("TriggersBlank", "TriggersStim"):
-            trig_lay.setRowVisible(self._spins[name], grating_like)
+            trig_lay.setRowVisible(self._rows[name], grating_like)
 
         geo_lay = self._grp_geometry.layout()
         show_orientation = grating_like or t in (TRIAL_CONTRAST, TRIAL_SIZE)
         for name in ("StimDiameter", "StimXPosition", "StimYPosition"):
-            geo_lay.setRowVisible(self._spins[name], grating_like)
-        geo_lay.setRowVisible(self._spins["Orientation"], show_orientation)
+            geo_lay.setRowVisible(self._rows[name], grating_like)
+        geo_lay.setRowVisible(self._rows["Orientation"], show_orientation)
         self._grp_geometry.setVisible(grating_like or show_orientation)
 
     def _field_group(self, title: str, fields) -> QGroupBox:
         grp = QGroupBox(title)
         lay = QFormLayout(grp)
         lay.setSpacing(4)
+        rows: list[list[tuple[str, str, QDoubleSpinBox]]] = []
         for name, label, lo, hi, step, dec in fields:
             value = getattr(self._s.params, name)
             if name in _TICK_FIELDS:
@@ -207,7 +211,28 @@ class SettingsPanel(QWidget):
                 box = spin(lo, hi, value, decimals=dec, step=step)
             box.valueChanged.connect(self._emit)
             self._spins[name] = box
-            lay.addRow(f"{label}:", box)
+            if name in _SAME_ROW and rows:
+                rows[-1].append((name, _SAME_ROW[name], box))
+            else:
+                rows.append([(name, label, box)])
+
+        for row in rows:
+            name, label, box = row[0]
+            if len(row) == 1:
+                lay.addRow(f"{label}:", box)
+                self._rows[name] = box
+                continue
+            # A shared row is one widget, so setRowVisible can find it.
+            holder = QWidget()
+            hl = QHBoxLayout(holder)
+            hl.setContentsMargins(0, 0, 0, 0)
+            for i, (n, short, b) in enumerate(row):
+                if i:
+                    hl.addWidget(QLabel(short))
+                hl.addWidget(b)
+                self._rows[n] = holder
+            hl.addStretch()
+            lay.addRow(f"{label}:", holder)
         return grp
 
     # ── loop variables ───────────────────────────────────────────────────
@@ -220,9 +245,9 @@ class SettingsPanel(QWidget):
         lay.addWidget(self._lst_loops)
 
         form = QFormLayout()
-        self._edt_loop_name = QLineEdit()
+        self._edt_loop_name = compact(QLineEdit(), chars=20)
         self._edt_loop_name.setPlaceholderText("e.g. Orientation")
-        self._edt_loop_vals = QLineEdit()
+        self._edt_loop_vals = compact(QLineEdit(), chars=28)
         self._edt_loop_vals.setPlaceholderText("0,45,90,135  or  0:45:315")
         form.addRow("Field name:", self._edt_loop_name)
         form.addRow("Values:", self._edt_loop_vals)
@@ -285,7 +310,7 @@ class SettingsPanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        self._cmb_screen = QComboBox()
+        self._cmb_screen = compact(QComboBox())
         self._refresh_screens()
         self._cmb_screen.currentIndexChanged.connect(self._emit)
         lay.addRow("Show on:", self._cmb_screen)

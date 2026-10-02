@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
@@ -74,9 +74,9 @@ class SettingsPanel(QWidget):
 
         trow = QHBoxLayout()
         trow.addWidget(QLabel("Template:"))
-        self._cmb_tpl = QComboBox()
+        self._cmb_tpl = compact(QComboBox())
         self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces step list below.")
-        trow.addWidget(self._cmb_tpl, 1)
+        trow.addWidget(self._cmb_tpl)
         self._add_buttons(trow, (
             ("Load", self._on_load_template,
              "Replace protocol below with selected template."),
@@ -84,11 +84,12 @@ class SettingsPanel(QWidget):
              "Save protocol below as template, under chosen name."),
             ("Delete", self._on_delete_template,
              "Delete selected template. Protocol below is untouched.")))
+        trow.addStretch()
         lay.addLayout(trow)
 
         form = QFormLayout()
         form.setSpacing(4)
-        self._txt_name = QLineEdit(self._r.name)
+        self._txt_name = compact(QLineEdit(self._r.name), chars=24)
         form.addRow("Name:", self._txt_name)
 
         self._spn_cycles = spin(
@@ -96,7 +97,7 @@ class SettingsPanel(QWidget):
             tooltip="How many times the whole step list runs.")
         form.addRow("Repeat the list:", self._spn_cycles)
 
-        self._cmb_save = QComboBox()
+        self._cmb_save = compact(QComboBox())
         for key, label in SAVE_MODES.items():
             self._cmb_save.addItem(label, key)
         idx = self._cmb_save.findData(self._r.save_mode)
@@ -137,7 +138,7 @@ class SettingsPanel(QWidget):
         # Per-step actions live on the table's right-click menu.
         btns = QHBoxLayout()
         btns.addWidget(QLabel("+ Step:"))
-        self._cmb_new_kind = QComboBox()
+        self._cmb_new_kind = compact(QComboBox())
         for kind in KINDS:
             self._cmb_new_kind.addItem(KIND_LABELS[kind], kind)
         self._cmb_new_kind.setCurrentIndex(KINDS.index("wait"))
@@ -444,8 +445,13 @@ class SettingsPanel(QWidget):
         form = QFormLayout(dlg)
         spins = [self._position_spin(v)
                  for v in (step.x_um, step.y_um, step.z_um)]
+        xyz = QHBoxLayout()           # X, Y, Z on one row
         for axis, sb in zip("XYZ", spins):
-            form.addRow(f"{axis}:", sb)
+            if axis != "X":
+                xyz.addWidget(QLabel(axis))
+            xyz.addWidget(sb)
+        xyz.addStretch()
+        form.addRow("X:", xyz)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(dlg.accept)

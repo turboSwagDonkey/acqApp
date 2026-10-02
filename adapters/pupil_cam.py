@@ -25,6 +25,7 @@ from acqApp.devices.pupil_cam.autotune import NEEDS_HELP
 from acqApp.devices.pupil_cam.review import PupilReview
 from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker, PupilTrackWorker
 from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
+from acqApp.widgets import compact
 
 
 class PupilCamModule(ModuleAdapter):
@@ -352,7 +353,7 @@ class PupilCamModule(ModuleAdapter):
                                  "click again to unpin.")
         self._btn_pin.toggled.connect(self._arm_pin)
 
-        self._cmb_view = QComboBox()
+        self._cmb_view = compact(QComboBox())
         for label, key in (("Full + region", "full"),
                            ("Full, no overlay", "bare"),
                            ("Cropped to region", "crop")):
@@ -569,6 +570,10 @@ class PupilCamModule(ModuleAdapter):
         """Frames come from the tracker, not the camera: `get_latest()`
         consumes, and the ellipse must be drawn over the frame it was fit to."""
         self._sync_rec_dot()
+        # The exposure bar's short end: the camera's own, once it is open.
+        lo = getattr(self.worker, "exposure_min_us", None)
+        if lo and self.panel is not None:
+            self.panel.set_exposure_min(lo)
         if self._track is None:
             return
         self._say_tracker_state()

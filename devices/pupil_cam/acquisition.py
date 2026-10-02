@@ -113,6 +113,7 @@ class PupilCameraWorker(PullWorker):
         self._device_index = device_index
         self._exposure_us  = exposure_us
         self._hz           = rate_hz
+        self.exposure_min_us: float | None = None   # the camera's, once open
         self._exp_lock     = threading.Lock()
         self._pending_exp: float | None = None
         self._frame_shape: tuple[int, int] | None = None
@@ -152,6 +153,11 @@ class PupilCameraWorker(PullWorker):
 
         exp = _set_clamped(cam, self._exposure_us,
                            "ExposureTime", "ExposureTimeAbs", label="exposure")
+        n = _node(cam, "ExposureTime", "ExposureTimeAbs")
+        try:
+            self.exposure_min_us = float(n.GetMin()) if n is not None else None
+        except Exception:                   # noqa: BLE001 — a node that won't say
+            self.exposure_min_us = None
 
         # Ignored unless the enable node is on.
         rate_on = _node(cam, "AcquisitionFrameRateEnable")

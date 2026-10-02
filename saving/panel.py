@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
                                   SaveConfig, _gb, benchmark_drive,
                                   default_folder, free_bytes, list_drives)
+from acqApp.widgets import compact
 
 # Match to Bpod… hidden at the operator's request (2026-10-01); the edge log
 # is still written, so a session can be matched later.
@@ -52,7 +53,7 @@ class SavePanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        self._cmb_drive = QComboBox()
+        self._cmb_drive = compact(QComboBox())
         self._reload_drives()
         self._cmb_drive.activated.connect(self._on_drive_picked)
         self._btn_scan = QPushButton("Scan drives")
@@ -63,8 +64,9 @@ class SavePanel(QWidget):
         self._btn_scan.clicked.connect(self._on_scan_drives)
         drive_row = QHBoxLayout()
         drive_row.setContentsMargins(0, 0, 0, 0)
-        drive_row.addWidget(self._cmb_drive, 1)
+        drive_row.addWidget(self._cmb_drive)
         drive_row.addWidget(self._btn_scan)
+        drive_row.addStretch()
         drive_row_w = QWidget()
         drive_row_w.setLayout(drive_row)
         lay.addRow("Drive:", drive_row_w)
@@ -90,17 +92,17 @@ class SavePanel(QWidget):
         row_w.setLayout(row)
         lay.addRow("Folder:", row_w)
 
-        self._ed_mouse_id = QLineEdit(self._cfg.mouse_id)
+        self._ed_mouse_id = compact(QLineEdit(self._cfg.mouse_id), chars=16)
         self._ed_mouse_id.setPlaceholderText("animal / mouse ID")
         self._ed_mouse_id.editingFinished.connect(self._on_edited)
         lay.addRow("Mouse ID:", self._ed_mouse_id)
 
-        self._ed_project = QLineEdit(self._cfg.project)
+        self._ed_project = compact(QLineEdit(self._cfg.project), chars=16)
         self._ed_project.setPlaceholderText("optional project label")
         self._ed_project.editingFinished.connect(self._on_edited)
         lay.addRow("Project:", self._ed_project)
 
-        self._ed_template = QLineEdit(self._cfg.template)
+        self._ed_template = compact(QLineEdit(self._cfg.template), chars=28)
         self._ed_template.setToolTip("Tokens: " + "  ".join(TOKENS))
         self._ed_template.editingFinished.connect(self._on_edited)
         lay.addRow("Filename:", self._ed_template)
@@ -111,7 +113,7 @@ class SavePanel(QWidget):
         lay.addRow("", self._chk_fov)
         self._update_fov_checkbox()
 
-        self._cmb_orca_format = QComboBox()
+        self._cmb_orca_format = compact(QComboBox())
         self._cmb_orca_format.addItem("DCIMG — native, faster", "dcimg")
         self._cmb_orca_format.addItem("TIFF — per-frame timestamps", "tiff")
         # Preview survives a .dcimg recording (2026-09-23); per-frame reads

@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 HINT_STYLE = "color:#9aa0a6;"
@@ -93,8 +93,9 @@ class TrackingControls(QWidget):
         self._btn_auto.clicked.connect(self.auto_requested)
         thr_row = QHBoxLayout()
         thr_row.setContentsMargins(0, 0, 0, 0)
-        thr_row.addWidget(self._spn_thr, 1)
+        thr_row.addWidget(self._spn_thr)
         thr_row.addWidget(self._btn_auto)
+        thr_row.addStretch()
         form.addRow("Threshold:", thr_row)
 
         self._spn_blur = spin(1, 21, s.track_blur, step=2, track=False)
@@ -107,6 +108,7 @@ class TrackingControls(QWidget):
             self._cmb_model.addItem(label, key)
         i = self._cmb_model.findData(s.track_model)
         self._cmb_model.setCurrentIndex(i if i >= 0 else 0)
+        compact(self._cmb_model)
         self._cmb_model.setToolTip("Circle is cheaper and a bit steadier if "
                                    "only size matters.")
         form.addRow("Shape:", self._cmb_model)

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from acqApp import config, style
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 
 
 @dataclass
@@ -184,7 +184,7 @@ class SettingsPanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        self._cmb_chan = QComboBox()
+        self._cmb_chan = compact(QComboBox())
         self._cmb_chan.setEditable(True)
         self._cmb_chan.addItems(free_do_lines(self._s.channel))
         self._cmb_chan.setCurrentText(self._s.channel)
@@ -216,6 +216,7 @@ class SettingsPanel(QWidget):
         btn_add = QPushButton("Schedule")
         btn_add.clicked.connect(self._schedule)
         row.addWidget(btn_add)
+        row.addStretch()
         sl.addLayout(row)
 
         self._lst_sched = QListWidget()

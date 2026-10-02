@@ -403,8 +403,8 @@ EDITS = [
      lambda p: p.get_config().binning,          2),
     ("voltage_cam", "preview avg", lambda p: p._spn_preview_avg.setValue(4),
      lambda p: p.get_config().preview_avg,      4),
-    ("pupil_cam",   "exposure",  lambda p: p._spn_exp.setValue(4321.0),
-     lambda p: p._spn_exp.value(),              4321.0),
+    ("pupil_cam",   "exposure",  lambda p: p._exp.setValue(4321.0),
+     lambda p: round(p._exp.value(), 3),        4321.0),
     ("pupil_cam",   "region X1", lambda p: p.set_limit(10.0, 10.0, 118.0, 90.0),
      lambda p: p.settings.limit_x1,             118.0),
     # The operator once lost tuning to a panel that never wrote these;

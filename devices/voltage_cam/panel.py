@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QWidget,
 )
 
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
@@ -48,7 +48,7 @@ class SettingsPanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        self._cmb_preset = QComboBox()
+        self._cmb_preset = compact(QComboBox())
         for key in PRESET_KEYS:
             self._cmb_preset.addItem(PRESETS[key].label, key)
         start = self._cfg.preset_key if self._cfg.preset_key in PRESET_KEYS else DEFAULT_PRESET
@@ -57,7 +57,7 @@ class SettingsPanel(QWidget):
             lambda i: self.resolution_changed.emit(self._cmb_preset.itemData(i)))
         lay.addRow("Resolution:", self._cmb_preset)
 
-        self._cmb_binning = QComboBox()
+        self._cmb_binning = compact(QComboBox())
         for b in BINNING_OPTIONS:
             self._cmb_binning.addItem(f"{b}×{b}", b)
         self._cmb_binning.setCurrentIndex(BINNING_OPTIONS.index(self._cfg.binning))
@@ -66,11 +66,10 @@ class SettingsPanel(QWidget):
         )
         lay.addRow("Binning:", self._cmb_binning)
 
-        self._cmb_trigger = QComboBox()
+        self._cmb_trigger = compact(QComboBox())
         self._cmb_trigger.addItems(TRIGGER_MODES)
         self._cmb_trigger.setCurrentText(self._cfg.trigger_mode)
         self._cmb_trigger.currentTextChanged.connect(self.trigger_changed)
-        lay.addRow("Trigger:", self._cmb_trigger)
 
         # -1 pulse of headroom: SYNCREADOUT asks for N+1 (presets.burst_pulses).
         self._spn_burst = spin(
@@ -82,7 +81,14 @@ class SettingsPanel(QWidget):
                     "A routine sets this from its Record length at Start.")
         self._spn_burst.setSpecialValueText("Off")
         self._spn_burst.valueChanged.connect(self.burst_changed)
-        lay.addRow("Frames per edge:", self._spn_burst)
+        # Frames per edge only applies to the trigger, so it shares its row.
+        trig_row = QHBoxLayout()
+        trig_row.setContentsMargins(0, 0, 0, 0)
+        trig_row.addWidget(self._cmb_trigger)
+        trig_row.addWidget(QLabel("Per edge"))
+        trig_row.addWidget(self._spn_burst)
+        trig_row.addStretch()
+        lay.addRow("Trigger:", trig_row)
         self._cmb_trigger.currentTextChanged.connect(self._sync_burst_enabled)
 
         self._spn_target_hz = spin(
@@ -130,6 +136,7 @@ class SettingsPanel(QWidget):
         disp_lay.addWidget(self._chk_lut)
         disp_lay.addWidget(self._chk_auto)
         disp_lay.addWidget(self._spn_preview_avg)
+        disp_lay.addStretch()
         lay.addRow("Display:", disp_row)
 
         led = QGroupBox("Illumination")
@@ -144,6 +151,7 @@ class SettingsPanel(QWidget):
         self._chk_led_follow.toggled.connect(self.led_follow_changed)
         ll.addWidget(self._chk_led)
         ll.addWidget(self._chk_led_follow)
+        ll.addStretch()
 
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

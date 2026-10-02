@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox, QLabel, QWidget
+from PyQt6.QtWidgets import (QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
+                             QLabel, QWidget)
 
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 
 from acqApp.devices.wheel.settings import EncoderSettings
 
@@ -23,7 +24,7 @@ class SettingsPanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        self._edt_chan = QComboBox()
+        self._edt_chan = compact(QComboBox())
         self._edt_chan.setEditable(True)
         self._edt_chan.addItems(["Dev3/ai2", "Dev3/ai0", "Dev3/ai1"])
         self._edt_chan.setCurrentText(self._s.channel)
@@ -37,12 +38,19 @@ class SettingsPanel(QWidget):
         self._spn_vpr = spin(0.0, 20.0, self._s.volts_per_rev or 0.0,
                              decimals=3, suffix=" V/rev")
         self._spn_vpr.setSpecialValueText("— (raw V)")
-        lay.addRow("V / rev:", self._spn_vpr)
 
         self._spn_dia = spin(0.0, 500.0, self._s.wheel_dia_mm or 0.0,
                              decimals=2, suffix=" mm")
         self._spn_dia.setSpecialValueText("— (no linear)")
-        lay.addRow("Wheel dia:", self._spn_dia)
+
+        # The two calibration values share a row.
+        cal_row = QHBoxLayout()
+        cal_row.setContentsMargins(0, 0, 0, 0)
+        cal_row.addWidget(self._spn_vpr)
+        cal_row.addWidget(QLabel("Wheel dia"))
+        cal_row.addWidget(self._spn_dia)
+        cal_row.addStretch()
+        lay.addRow("V / rev:", cal_row)
 
         # valueChanged, not editingFinished: arrow-key nudges never "finish"
         # editing, so they never reached the worker or the saved settings.

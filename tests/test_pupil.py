@@ -1648,6 +1648,45 @@ def _part_mirror() -> int:  # noqa: PLR0915 — one linear scenario
     dlg.close()
     return r.finish()
 
+def _part_exposure() -> int:
+    """Rate is typed; Exposure is a bar from the camera's minimum to 1/rate."""
+    r = Report("pupil-exposure")
+    app = qt_app()      # held: a collected QApplication takes the process down
+    isolate_user_state()
+    from acqApp.devices.pupil_cam.panel import SettingsPanel
+    from acqApp.widgets import RangeBar
+
+    p = SettingsPanel(PupilSettings(exposure_us=8000.0, rate_hz=20.0))
+    sent, saved = [], []
+    p.exposure_changed.connect(sent.append)
+    p.settings_changed.connect(lambda s: saved.append(s.exposure_us))
+    r.check(isinstance(p._exp, RangeBar) and abs(p._exp.maximum() - 50_000) < 1e-6
+            and p._exp.value() == 8000.0,
+            f"exposure is a bar ending at 1/rate ({p._exp.maximum():g} µs at 20 Hz)")
+    p._spn_hz.setValue(200.0)
+    r.check(abs(p._exp.maximum() - 5000) < 1e-6 and p._exp.value() == 5000.0
+            and sent[-1] == 5000.0 and saved[-1] == 5000.0,
+            "a faster rate shortens the bar and pulls a longer exposure in, "
+            "telling the camera and the settings")
+    p._spn_hz.setValue(10.0)
+    r.check(abs(p._exp.maximum() - 100_000) < 1e-6 and p._exp.value() == 5000.0,
+            "a slower rate lengthens the bar without moving the exposure")
+    p.set_exposure_min(35.0)
+    r.check(p._exp.minimum() == 35.0, "the short end is the camera's own minimum")
+    n = len(saved)
+    p._exp._sld.setSliderDown(True)
+    for pos in (100, 300, 500):
+        p._exp._sld.setValue(pos)
+    r.check(len(sent) >= 3 and len(saved) == n,
+            "dragging updates the camera live but saves nothing yet")
+    p._exp._sld.setSliderDown(False)       # Qt emits sliderReleased
+    r.check(len(saved) == n + 1 and 35.0 < p._exp.value() < 100_000,
+            f"releasing saves once ({p._exp._lbl.text()})")
+    r.check(not hasattr(p, "_chk_hz_link"), "no Link box: the bar is the link")
+    app.processEvents()
+    return r.finish()
+
+
 def _part_help() -> int:
     """Help shows on a section's title only: one tooltip per section naming
     each control, none on the controls themselves."""
@@ -1680,7 +1719,7 @@ def _part_help() -> int:
             "the section's help names each control with its explanation")
     r.check("<b>Search out to</b>" in boxes["Reflections"]._help_text,
             "reflections section too")
-    r.check("<b>Link</b>" in boxes["Camera"]._help_text,
+    r.check("<b>Exposure</b>" in boxes["Camera"]._help_text,
             "camera section too")
 
     shown: list = []
@@ -2163,6 +2202,7 @@ PARTS = {
     "apply": _part_apply,
     "mode": _part_mode,
     "recorded": _part_recorded,
+    "exposure": _part_exposure,
 }
 
 

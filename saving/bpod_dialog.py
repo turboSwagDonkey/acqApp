@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 
 from acqApp.saving import bpod_match
 from acqApp.saving.config import SaveConfig
+from acqApp.widgets import compact
 
 
 def newest_edge_log(cfg: SaveConfig) -> Path | None:
@@ -42,7 +43,7 @@ class BpodMatchDialog(QDialog):
         self._ed_edges.setPlaceholderText("routine_edges_….csv")
         self._ed_bpod = QLineEdit()
         self._ed_bpod.setPlaceholderText("Bpod session data file (.mat)")
-        self._spn_first = QSpinBox()
+        self._spn_first = compact(QSpinBox())
         self._spn_first.setRange(1, 99999)
         self._spn_first.setToolTip(
             "The first Bpod trial the routine was imaging. Unmatched trials "

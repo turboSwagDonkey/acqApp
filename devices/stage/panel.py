@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
@@ -411,7 +411,7 @@ class SettingsPanel(QWidget):
         lay = QFormLayout(grp)
         lay.setSpacing(4)
 
-        self._cmb_port = QComboBox()
+        self._cmb_port = compact(QComboBox())
         self._cmb_port.setEditable(True)
         # Only ports that exist now: Windows renumbers them freely.
         self._cmb_port.addItems(_available_ports(self._s.port))
@@ -434,14 +434,25 @@ class SettingsPanel(QWidget):
         self._spn_rate.valueChanged.connect(self._emit_settings)
         self._spn_rotation.valueChanged.connect(self._emit_settings)
 
-        self._lbl_x = QLabel("—")
-        self._lbl_y = QLabel("—")
-        lay.addRow(f"{self._s.x.name} (µm):", self._lbl_x)
-        lay.addRow(f"{self._s.y.name} (µm):", self._lbl_y)
+        # X, Y (and Z) readouts share one row, each wide enough for its
+        # longest value so the row doesn't jitter as they change.
+        pos_row = QHBoxLayout()
+        pos_row.setContentsMargins(0, 0, 0, 0)
+
+        def _readout(name: str) -> QLabel:
+            lbl = QLabel("—")
+            lbl.setMinimumWidth(lbl.fontMetrics().horizontalAdvance("-00000.0") + 4)
+            pos_row.addWidget(QLabel(name))
+            pos_row.addWidget(lbl)
+            return lbl
+
+        self._lbl_x = _readout(self._s.x.name)
+        self._lbl_y = _readout(self._s.y.name)
         self._lbl_z: QLabel | None = None
         if self._s.has_z:
-            self._lbl_z = QLabel("—")
-            lay.addRow(f"{self._s.z.name} (µm):", self._lbl_z)
+            self._lbl_z = _readout(self._s.z.name)
+        pos_row.addStretch()
+        lay.addRow("Position (µm):", pos_row)
         root.addWidget(grp)
 
         # ── Travel map (+ Z gauge, beside it) ────────────────────────────────
@@ -515,6 +526,8 @@ class SettingsPanel(QWidget):
                 "step": spn_step, "goto": spn_goto,
                 "buttons": [btn_minus, btn_plus, btn_go, btn_stop],
             }
+        # Spare width goes to an empty last column, keeping the rows left.
+        grid.setColumnStretch(7, 1)
         root.addWidget(self._motion)
 
         # ── Session home + go-to-origin (navigation, not calibration) ───────

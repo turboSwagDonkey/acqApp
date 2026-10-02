@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import config, style
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 
 from acqApp.devices.dmd.calibration import (ON, STRIPE_CROSS, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
@@ -146,7 +146,7 @@ class CalibrationDialog(QDialog):
         geom = QGroupBox("Geometry")
         gform = QFormLayout(geom)
         seed = config.rig_dmd_calibration()
-        self._cmb_model = QComboBox()
+        self._cmb_model = compact(QComboBox())
         self._cmb_model.addItem("Affine (rotation + scale) — most rigs", "affine")
         self._cmb_model.addItem("Homography (full perspective) — steeply tilted camera",
                                 "homography")

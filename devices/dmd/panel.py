@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import spin
+from acqApp.widgets import compact, spin
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
@@ -182,13 +182,13 @@ class SettingsPanel(QWidget):
         geom_grp = QGroupBox("Pattern Alignment")
         geom_lay = QGridLayout(geom_grp)
         geom_lay.setSpacing(6)
-        geom_lay.setColumnStretch(1, 1)
-        geom_lay.setColumnStretch(3, 1)
+        # Spins stay compact; the spare width goes to an empty last column.
+        geom_lay.setColumnStretch(4, 1)
 
         self._chk_fit = QCheckBox("Fit to panel (ignore scale/rotation/offset)")
         self._chk_fit.setChecked(self._s.fit)
         self._chk_fit.toggled.connect(self._on_fit_toggled)
-        geom_lay.addWidget(self._chk_fit, 0, 0, 1, 4)
+        geom_lay.addWidget(self._chk_fit, 0, 0, 1, 5)
 
         geom_lay.addWidget(QLabel("Scale:"), 1, 0)
         self._spn_scale = spin(1.0, 1000.0, self._s.scale_pct,
@@ -240,11 +240,11 @@ class SettingsPanel(QWidget):
             "Hold Shift for 10x larger steps."
         )
         self._chk_nudge.toggled.connect(self._on_nudge_toggled)
-        geom_lay.addWidget(self._chk_nudge, 5, 0, 1, 4)
+        geom_lay.addWidget(self._chk_nudge, 5, 0, 1, 5)
 
         lay.addRow(geom_grp)
 
-        self._cmb_trig = QComboBox()
+        self._cmb_trig = compact(QComboBox())
         self._cmb_trig.addItems(["Internal", "External", "Software"])
         self._cmb_trig.setCurrentText(self._s.trigger_mode)
         lay.addRow("Trigger:", self._cmb_trig)

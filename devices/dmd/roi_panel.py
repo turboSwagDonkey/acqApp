@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
+from acqApp.widgets import compact
 from acqApp.devices.dmd import roi_store
 from acqApp.devices.dmd.calibration import DmdCalibration
 from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet
@@ -165,7 +166,7 @@ class RoiEditor(QWidget):
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Shape:"))
-        self._cmb = QComboBox()
+        self._cmb = compact(QComboBox())
         self._cmb.addItems(["rectangle", "circle"])
         bar.addWidget(self._cmb)
         self._btn_draw = QPushButton("Draw")

@@ -18,7 +18,13 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import SegmentedSwitch, sections_help, spin
+from acqApp.widgets import RangeBar, SegmentedSwitch, sections_help, spin
+
+EXPOSURE_MIN_US = 20.0      # until the camera says its own minimum
+
+
+def _fmt_us(us: float) -> str:
+    return f"{us / 1000:.2f} ms" if us >= 1000 else f"{us:.0f} µs"
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
 
@@ -73,33 +79,27 @@ class SettingsPanel(QWidget):
         cam = QGroupBox("Camera")
         cl = QFormLayout(cam)
         cl.setSpacing(4)
-        self._spn_exp = spin(50.0, 100_000.0, self._s.exposure_us,
-                             decimals=0, suffix=" µs")
-        self._spn_exp.valueChanged.connect(self.exposure_changed)
-        cl.addRow("Exposure:", self._spn_exp)
-
-        # Rate always caps Exposure at 1/rate; Link also moves one with the
-        # other (as in devices/voltage_cam/panel.py).
+        # Rate is typed; Exposure is a bar from the camera's minimum to the
+        # longest that rate allows (1/rate), so it can't slow the camera.
         self._spn_hz = spin(1.0, 200.0, self._s.rate_hz,
-                            decimals=2, suffix=" Hz")
-        self._chk_hz_link = QCheckBox("Link")
-        self._chk_hz_link.setToolTip("Exposure = 1 / Rate")
-        self._chk_hz_link.toggled.connect(self._on_hz_link_toggled)
-        hz_row = QWidget()
-        hz_lay = QHBoxLayout(hz_row)
-        hz_lay.setContentsMargins(0, 0, 0, 0)
-        hz_lay.addWidget(self._spn_hz)
-        hz_lay.addWidget(self._chk_hz_link)
-        cl.addRow("Rate:", hz_row)
+                            decimals=1, suffix=" Hz")
+        self._exp_min = EXPOSURE_MIN_US
+        self._exp = RangeBar(self._exp_min, 1e6 / self._spn_hz.value(),
+                             self._s.exposure_us, fmt=_fmt_us)
+        self._exp.setToolTip("From the camera's shortest to the longest the "
+                             "Rate allows.")
+        self._exp.valueChanged.connect(self.exposure_changed)
+        rate_row = QHBoxLayout()
+        rate_row.setContentsMargins(0, 0, 0, 0)
+        rate_row.addWidget(self._spn_hz)
+        rate_row.addWidget(QLabel("Exposure"))
+        rate_row.addWidget(self._exp, 1)
+        cl.addRow("Rate:", rate_row)
 
-        # Before the initial cap below, which refreshes it.
         self._lbl_rate = QLabel()
         cl.addRow("Frame rate:", self._lbl_rate)
-
-        self._hz_syncing = False
         self._spn_hz.valueChanged.connect(self._on_hz_changed)
-        self._spn_exp.valueChanged.connect(self._on_exposure_changed_for_hz)
-        self._on_hz_changed(self._spn_hz.value())    # apply the initial cap
+        self._refresh_rate()
 
         self._chk_lut = QCheckBox("Show LUT")
         self._chk_lut.setChecked(self._s.show_lut)
@@ -160,42 +160,26 @@ class SettingsPanel(QWidget):
             lambda pct: self.led_intensity_changed.emit(pct / 100.0))
         self._spn_intensity.valueChanged.connect(self._emit)
         il.addWidget(self._spn_intensity)
+        il.addStretch()
         ll.addWidget(intensity_row)
 
         root.addWidget(led)
         root.addStretch()
 
-        for w in (self._spn_exp, self._spn_hz):
-            w.valueChanged.connect(self._emit)
+        self._spn_hz.valueChanged.connect(self._emit)
+        self._exp.editingFinished.connect(self._emit)   # not every drag step
 
-    # ── rate / exposure link ─────────────────────────────────────────────────
+    # ── rate / exposure ──────────────────────────────────────────────────────
     def _on_hz_changed(self, hz: float) -> None:
-        """Cap Exposure at 1/rate; with Link, also set it there."""
-        if self._hz_syncing:
-            return
-        self._hz_syncing = True
-        try:
-            max_us = 1e6 / hz if hz > 0 else self._spn_exp.maximum()
-            self._spn_exp.setMaximum(max_us)   # clamps the value too
-            if self._chk_hz_link.isChecked():
-                self._spn_exp.setValue(max_us)
-        finally:
-            self._hz_syncing = False
+        """The bar's long end follows the rate; a longer exposure is pulled in."""
+        self._exp.setRange(self._exp_min, 1e6 / hz if hz > 0 else 1e6)
         self._refresh_rate()
 
-    def _on_exposure_changed_for_hz(self, us: float) -> None:
-        """Only Link pulls Rate along."""
-        if not self._hz_syncing and self._chk_hz_link.isChecked():
-            self._hz_syncing = True
-            try:
-                self._spn_hz.setValue(1e6 / us if us > 0 else self._spn_hz.maximum())
-            finally:
-                self._hz_syncing = False
-        self._refresh_rate()
-
-    def _on_hz_link_toggled(self, linked: bool) -> None:
-        if linked:
-            self._on_hz_changed(self._spn_hz.value())
+    def set_exposure_min(self, us: float) -> None:
+        """The camera's own shortest exposure, once it is open."""
+        if us and us > 0 and abs(us - self._exp_min) > 1e-6:
+            self._exp_min = float(us)
+            self._exp.setRange(self._exp_min, self._exp.maximum())
 
     def _refresh_rate(self) -> None:
         if self._measured is not None:
@@ -205,7 +189,7 @@ class SettingsPanel(QWidget):
             self._lbl_rate.setStyleSheet("color:#2e7d32; font-weight:bold;")
             return
         rate = self._spn_hz.value()
-        exp_us = self._spn_exp.value()
+        exp_us = self._exp.value()
         exp_hz = 1e6 / exp_us if exp_us > 0 else rate
         if exp_hz < rate - 1e-6:
             self._lbl_rate.setText(
@@ -289,7 +273,7 @@ class SettingsPanel(QWidget):
     def settings(self) -> PupilSettings:
         """Everything the panel holds; the adapter persists exactly this."""
         return self.tracking.settings_into(PupilSettings(
-            exposure_us=self._spn_exp.value(),
+            exposure_us=self._exp.value(),
             rate_hz=self._spn_hz.value(),
             video_path=self._video,
             show_lut=self._chk_lut.isChecked(),
