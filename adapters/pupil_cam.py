@@ -3,6 +3,7 @@ tracker (`devices/pupil_cam/track_worker.py`). Tracking never gates the
 camera: off or unavailable, the worker is a pass-through."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict
 from typing import Any
 
@@ -52,6 +53,10 @@ class PupilCamModule(ModuleAdapter):
         self._last_img_rect: QRectF | None = None
         # ── tracking ──
         self._track: PupilTrackWorker | None = None
+        # The newest frames the recorder got, and whether the tracker's current
+        # frame is one: a fit is recorded only with its frame.
+        self._sunk: deque = deque(maxlen=4)
+        self._pulled_sunk = False
         # Review mode: the clip review, built on first use; the dock's stack.
         self._review = None
         self._last_recording = None     # the newest session with pupil frames
@@ -517,7 +522,8 @@ class PupilCamModule(ModuleAdapter):
             panel = self.panel
             cam.hz_update.connect(lambda _n, hz: panel.set_measured_rate(hz))
         # Fresh per session: EyeLoop searches from the previous centre.
-        self._track = PupilTrackWorker(cam.get_latest, s, history=PLOT_HISTORY)
+        self._track = PupilTrackWorker(lambda: self._pull_frame(cam), s,
+                                       history=PLOT_HISTORY)
         self._track.error.connect(self.win.on_worker_error)
         self._trace.clear()
         for reg in self._blink_regions:
@@ -692,7 +698,7 @@ class PupilCamModule(ModuleAdapter):
 
     def attach_sink(self, rec) -> None:
         if self.worker is not None:
-            self.worker.set_sink(lambda fr: rec.put("pupil_cam", fr))
+            self.worker.set_sink(lambda fr: self._record_frame(rec, fr))
             # Remembered for Review, which opens the newest one by itself.
             path = getattr(self.win, "recording_path", lambda: None)()
             if path is not None:
@@ -701,9 +707,25 @@ class PupilCamModule(ModuleAdapter):
             self._track.set_fit_sink(
                 lambda fit, is_blink, at: self._record_fit(rec, fit, is_blink, at))
 
+    def _record_frame(self, rec, frame) -> None:
+        """On the camera thread, before the frame becomes `get_latest()`."""
+        self._sunk.append(frame)
+        rec.put("pupil_cam", frame)
+
+    def _pull_frame(self, cam):
+        """The tracker's source, on its thread: notes whether this frame was
+        recorded (a frame published before attach_sink was not)."""
+        frame = cam.get_latest()
+        if frame is not None:
+            self._pulled_sunk = any(f is frame for f in tuple(self._sunk))
+        return frame
+
     def _record_fit(self, rec, fit, is_blink: bool, at: float) -> None:
         """On the tracker thread. NaN rows where there was no fit. `at` is
-        when the frame was pulled (no camera timestamp)."""
+        when the frame was pulled (no camera timestamp). Skipped when the
+        frame itself wasn't recorded, so fits never outnumber frames."""
+        if not self._pulled_sunk:
+            return
         vals = ((fit.center_x, fit.center_y, fit.semi_major, fit.semi_minor,
                  fit.angle_deg) if fit is not None else (float("nan"),) * 5)
         for name, v in zip(self.FIT_STREAMS, vals):
@@ -715,6 +737,7 @@ class PupilCamModule(ModuleAdapter):
         super().detach_sink()
         if self._track is not None:
             self._track.set_fit_sink(None)
+        self._sunk.clear()
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings

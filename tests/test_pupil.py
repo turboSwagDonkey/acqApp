@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 from pathlib import Path
 
 import numpy as np
@@ -426,6 +427,27 @@ def _part_track() -> int:
 
     # ── 6. what the recorder is offered, stream by stream ────────────────────
     all_streams = list(mod.FIT_STREAMS) + [mod.BLINK_STREAM]
+
+    # A fit is recorded only with its frame: one the camera published before
+    # attach_sink was never recorded, and its fit made fits outnumber frames.
+    class _Cam:
+        f = None
+
+        def get_latest(self):
+            f, self.f = self.f, None
+            return f
+
+    cam, nowhere = _Cam(), types.SimpleNamespace(put=lambda *a, **k: None)
+    cam.f = np.zeros((4, 4), np.uint8)              # published, never recorded
+    mod._pull_frame(cam)
+    early = FakeRec()
+    mod._record_fit(early, None, False, 0.5)
+    r.check(early.puts == [], "a frame published before recording started "
+            "gets no fit rows")
+    frame = np.zeros((4, 4), np.uint8)
+    mod._record_frame(nowhere, frame)                # recorded, then published
+    cam.f = frame
+    mod._pull_frame(cam)
     rec = FakeRec()
     mod._record_fit(rec, PupilFit(101.0, 202.0, 30.0, 20.0, 45.0), False, 1.5)
     r.check([p[0] for p in rec.puts] == all_streams,

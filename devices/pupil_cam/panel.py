@@ -117,6 +117,7 @@ class SettingsPanel(QWidget):
         disp_lay.setContentsMargins(0, 0, 0, 0)
         disp_lay.addWidget(self._chk_lut)
         disp_lay.addWidget(self._chk_auto)
+        disp_lay.addStretch()
         cl.addRow("Display:", disp_row)
 
         # ── Frame source ────────────────────────────────────────────────────
