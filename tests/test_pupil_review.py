@@ -807,12 +807,9 @@ def _part_apply() -> int:
             f"playing overlays every frame ({sorted(set(painted))})")
     dlg._ctl._chk_cr.setChecked(False)
     settle()
-    r.check(dlg._wants_mask(),
-            "reflections off, whiskers still painted: the overlay stays wanted")
-    dlg._ctl._chk_whiskers.setChecked(False)
-    settle()
-    r.check(dlg._mask is None and dlg._mask_img.image is None,
-            "reflection and whisker removal off: nothing painted")
+    r.check(dlg._read_settings().track_whiskers and not dlg._wants_mask()
+            and dlg._mask is None and dlg._mask_img.image is None,
+            "reflections off, whiskers still removed: no red")
     review_mod.PupilTracking = DiscTracking
     dlg._cmb_view.setCurrentIndex(dlg._cmb_view.findData("crop"))
     rect = dlg._img.mapRectToParent(dlg._img.boundingRect())

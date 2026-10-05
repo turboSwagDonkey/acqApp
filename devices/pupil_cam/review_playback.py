@@ -165,7 +165,7 @@ class _PlaybackMixin:
     def _wants_mask(self) -> bool:
         """What removal blanks is always shown while it is on."""
         st = self._read_settings() if self.review is not None else None
-        return (st is not None and (st.cr_remove or st.track_whiskers)
+        return (st is not None and st.cr_remove
                 and st.search_limit() is not None)
 
     def _want_preview(self) -> None:

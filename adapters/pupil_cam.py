@@ -699,7 +699,7 @@ class PupilCamModule(ModuleAdapter):
             return
         show = (tr.mask is not None and tr.box is not None
                 and self._settings is not None
-                and (self._settings.cr_remove or self._settings.track_whiskers))
+                and self._settings.cr_remove)
         if not show:
             self._mask_img.clear()
             return

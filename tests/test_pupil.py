@@ -1606,6 +1606,14 @@ def _part_whiskers() -> int:  # noqa: PLR0915 — one linear scenario
     r.check(paint_whiskers(img, np.zeros_like(m)) is img,
             "nothing found: the frame is passed through untouched")
 
+    import cv2
+    fur = synthetic_eye()
+    cv2.line(fur, (25, 20), (25, 180), 200, 3)      # bright line, bright skin
+    r.check(whisker_mask(fur, ring_q=None)[20:180, 25].mean() > 0.9,
+            "control: a straight line over the skin is ridge-shaped")
+    r.check(not whisker_mask(fur).any(),
+            "...but with no dark eye beside it, it is fur: not painted")
+
     old = {f: v for f, v in PupilSettings().__dict__.items()
            if f != "track_whiskers"}
     r.check(_settings_from(old).track_whiskers is False
@@ -1649,8 +1657,18 @@ def _part_whiskers() -> int:  # noqa: PLR0915 — one linear scenario
             f"control: with it off the whisker spoils the fit (off by {err(off):.1f} px)")
     r.check(err(on) < 2,
             f"with it on the pupil is fitted (within {err(on):.1f} px of the truth)")
-    r.check(pt.last_mask is not None and pt.last_mask.sum() >= m[50:350, 50:350].sum(),
-            "what was painted is in the shown mask (with any reflections)")
+    shown = pt.last_mask
+    r.check(shown is None or not (shown & m[50:350, 50:350]).any(),
+            "the whisker is removed but not shown red (only reflections are)")
+    pt_off = PupilTracking()
+    st_off = PupilSettings(track=True, track_threshold=60, limit_x0=50,
+                           limit_y0=50, limit_x1=350, limit_y1=350,
+                           cr_remove=False, track_whiskers=True)
+    for _ in range(3):
+        bare = pt_off.track(img, st_off)
+    r.check(pt_off.last_mask is None and err(bare) < 2,
+            "Remove reflections off: nothing red, and the whisker is still "
+            f"removed (within {err(bare):.1f} px)")
     clean_on, _ = fit(synthetic_eye(), True)
     clean_off, _ = fit(synthetic_eye(), False)
     r.check(clean_on is not None and clean_off is not None
