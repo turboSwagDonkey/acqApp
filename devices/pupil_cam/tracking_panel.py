@@ -10,11 +10,11 @@ import dataclasses
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-    QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QGroupBox, QLabel, QPushButton, QVBoxLayout,
+    QWidget,
 )
 
-from acqApp.widgets import compact, spin
+from acqApp.widgets import compact, hrow, pairs_grid, spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 HINT_STYLE = "color:#9aa0a6;"
@@ -65,19 +65,10 @@ class TrackingControls(QWidget):
         box = QGroupBox("Pupil tracking")
         box.setToolTip("Start with Auto, then nudge Threshold until the green "
                        "outline hugs the pupil.")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
-
         self._chk_track = QCheckBox("Track the pupil")
         self._chk_track.setChecked(s.track)
         self._chk_track.setToolTip("Needs the EyeLoop clone (docs/EYELOOP.md).")
-        # Review always tracks. Left out of the layout rather than hidden: a
-        # folding group box re-shows every child it holds.
-        if self._live:
-            vb.addWidget(self._chk_track)
 
-        form = QFormLayout()
-        form.setSpacing(4)
         self._spn_thr = spin(1, 254, s.track_threshold, track=False)
         self._spn_thr.setToolTip(
             "Darker than this is pupil. Too high spills into the iris, too "
@@ -86,17 +77,10 @@ class TrackingControls(QWidget):
         self._btn_auto.setToolTip("Suggest Threshold, Blur and Reflections. "
                                   "If unsure it asks you to click the pupil.")
         self._btn_auto.clicked.connect(self.auto_requested)
-        thr_row = QHBoxLayout()
-        thr_row.setContentsMargins(0, 0, 0, 0)
-        thr_row.addWidget(self._spn_thr)
-        thr_row.addWidget(self._btn_auto)
-        thr_row.addStretch()
-        form.addRow("Threshold:", thr_row)
 
         self._spn_blur = spin(1, 21, s.track_blur, step=2, track=False)
         self._spn_blur.setToolTip("Smoothing before the threshold. Raise it "
                                   "for a grainy image.")
-        form.addRow("Blur:", self._spn_blur)
 
         self._cmb_model = QComboBox()
         for label, key in (("Ellipse", "ellipsoid"), ("Circle", "circular")):
@@ -106,8 +90,14 @@ class TrackingControls(QWidget):
         compact(self._cmb_model)
         self._cmb_model.setToolTip("Circle is cheaper and a bit steadier if "
                                    "only size matters.")
-        form.addRow("Shape:", self._cmb_model)
-        vb.addLayout(form)
+
+        # Review always tracks. Left out of the layout rather than hidden: a
+        # folding group box re-shows every child it holds.
+        lead = [(None, self._chk_track)] if self._live else []
+        QVBoxLayout(box).addLayout(self._grid(
+            *lead,
+            ("Threshold:", hrow(self._spn_thr, self._btn_auto),
+             "Blur:", self._spn_blur, "Shape:", self._cmb_model)))
 
         self._chk_track.toggled.connect(self._fire)
         self._cmb_model.currentIndexChanged.connect(self._fire)
@@ -118,8 +108,6 @@ class TrackingControls(QWidget):
     # ── steadier output ─────────────────────────────────────────────────────
     def _build_more(self, s: PupilSettings) -> QGroupBox:
         box = QGroupBox("Smoothing and blinks")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
 
         self._chk_smooth = QCheckBox("Stabilize outline")
         self._chk_smooth.setChecked(s.smooth)
@@ -127,35 +115,34 @@ class TrackingControls(QWidget):
             "Averages recent fits: less jitter, more lag. Also recorded."
             if self._live else
             "Averages neighbouring fits (no lag). Hand edits are kept as drawn.")
-        self._spn_smooth_win = spin(1, 30, s.smooth_window, track=False,
-                                    suffix=" frames")
-        sform = QFormLayout()
-        sform.setSpacing(4)
-        sform.addRow("Average over:", self._spn_smooth_win)
-        vb.addWidget(self._chk_smooth)
-        vb.addLayout(sform)
+        self._spn_smooth_win = spin(
+            1, 30, s.smooth_window, track=False, suffix=" frames",
+            tooltip="How many frames the outline is averaged over. More is "
+                    "steadier but slower to follow the pupil.")
 
         self._chk_blink = QCheckBox("Detect blinks")
         self._chk_blink.setChecked(s.blink_detect)
         self._chk_blink.setToolTip("Flags sudden radius drops; shaded on "
                                    "the plot and saved.")
-        vb.addWidget(self._chk_blink)
-        bform = QFormLayout()
-        bform.setSpacing(4)
         self._spn_blink_drop = spin(
             0.05, 0.90, s.blink_drop_frac, decimals=2, step=0.05, track=False,
             tooltip="Fraction below the recent baseline that counts.")
-        bform.addRow("Drop of:", self._spn_blink_drop)
-        self._spn_blink_win = spin(3, 60, s.blink_baseline_window, track=False,
-                                   suffix=" frames")
-        bform.addRow("Baseline over:", self._spn_blink_win)
-        vb.addLayout(bform)
+        self._spn_blink_win = spin(
+            3, 60, s.blink_baseline_window, track=False, suffix=" frames",
+            tooltip="The pupil's usual size: the median over this many recent "
+                    "frames. A blink is a drop below it.")
 
         self._chk_rim = QCheckBox("No fit on a closed eye")
         self._chk_rim.setChecked(s.track_rim_check)
         self._chk_rim.setToolTip("Drops a fit that isn't dark inside (a lid "
                                  "crease): no fit rather than a wrong one.")
-        vb.addWidget(self._chk_rim)
+
+        # A line per feature: its switch, then its numbers.
+        QVBoxLayout(box).addLayout(self._grid(
+            (None, self._chk_smooth, "Over:", self._spn_smooth_win),
+            (None, self._chk_blink, "Drop of:", self._spn_blink_drop,
+             "Baseline:", self._spn_blink_win),
+            (None, self._chk_rim)))
 
         for w in (self._chk_smooth, self._chk_blink, self._chk_rim):
             w.toggled.connect(self._fire)
@@ -167,50 +154,55 @@ class TrackingControls(QWidget):
     def _build_cr(self, s: PupilSettings) -> QGroupBox:
         box = QGroupBox("Reflections")
         box.setToolTip("Paints over the light's bright spots (and whiskers) "
-                       "before fitting; what it removes is shown red on the "
-                       "image.")
-        vb = QVBoxLayout(box)
-        vb.setSpacing(4)
-
+                       "before fitting; the removed spots are shown red on "
+                       "the image.")
         self._chk_cr = QCheckBox("Remove reflections")
         self._chk_cr.setChecked(s.cr_remove)
-        vb.addWidget(self._chk_cr)
+        self._chk_cr.setToolTip("Paint over the light's bright spots before "
+                                "fitting, so they don't pull the outline.")
 
-        form = QFormLayout()
-        form.setSpacing(4)
-        self._spn_cr_thr = spin(1, 254, s.cr_threshold, track=False)
-        form.addRow("Brighter than:", self._spn_cr_thr)
-        self._spn_cr_pad = spin(0, 20, s.cr_pad, track=False, suffix=" px")
-        form.addRow("Grow by:", self._spn_cr_pad)
-        self._spn_cr_ring = spin(1, 40, s.cr_ring, track=False, suffix=" px")
-        form.addRow("Fill from:", self._spn_cr_ring)
+        self._spn_cr_thr = spin(
+            1, 254, s.cr_threshold, track=False,
+            tooltip="Pixels brighter than this count as a reflection.")
+        self._spn_cr_pad = spin(
+            0, 20, s.cr_pad, track=False, suffix=" px",
+            tooltip="Widen each spot by this much before painting it out; "
+                    "the glare around a spot is dimmer than its core.")
+        self._spn_cr_ring = spin(
+            1, 40, s.cr_ring, track=False, suffix=" px",
+            tooltip="Each spot is filled in from the pixels this far around "
+                    "it.")
         self._spn_cr_reach = spin(
             0.10, 1.20, s.cr_reach, decimals=2, step=0.05, track=False,
             tooltip="Fraction of the ellipse searched. Past ~0.85 it inflates "
                     "the radius.")
-        form.addRow("Search out to:", self._spn_cr_reach)
-        vb.addLayout(form)
 
-        self._chk_whiskers = QCheckBox("Paint over whiskers")
+        self._chk_whiskers = QCheckBox("Remove whiskers")
         self._chk_whiskers.setChecked(s.track_whiskers)
         self._chk_whiskers.setToolTip("Long straight bright lines across the "
-                                      "eye are filled in before fitting.")
-        vb.addWidget(self._chk_whiskers)
+                                      "eye are filled in before fitting. Not "
+                                      "shown red.")
 
-        prow = QHBoxLayout()
-        prow.setContentsMargins(0, 0, 0, 0)
         self._lbl_pins = QLabel()
         self._lbl_pins.setStyleSheet(HINT_STYLE)
+        self._lbl_pins.setToolTip("Reflections you pinned: always removed, "
+                                  "even where the usual size checks would "
+                                  "leave them.")
         self._btn_pins_clear = QPushButton("Clear pins")
         self._btn_pins_clear.setToolTip(
             "Add pins with Pin reflection above the "
             + ("preview" if self._live else "clip")
             + ", then click a reflection that never moves.")
         self._btn_pins_clear.clicked.connect(self.clear_pins)
-        prow.addWidget(self._lbl_pins, 1)
-        prow.addWidget(self._btn_pins_clear)
-        vb.addLayout(prow)
         self._show_pins()
+
+        QVBoxLayout(box).addLayout(self._grid(
+            (None, self._chk_cr, None, self._chk_whiskers,
+             None, hrow(self._lbl_pins, self._btn_pins_clear)),
+            ("Brighter than:", self._spn_cr_thr,
+             "Search out to:", self._spn_cr_reach,
+             "Grow by:", self._spn_cr_pad),
+            ("Fill from:", self._spn_cr_ring)))
 
         for w in (self._chk_cr, self._chk_whiskers):
             w.toggled.connect(self._fire)
@@ -218,6 +210,13 @@ class TrackingControls(QWidget):
                   self._spn_cr_reach):
             w.valueChanged.connect(self._fire)
         return box
+
+    def _grid(self, *rows):
+        """Wide in the Live panel; two items a line, closer, in Review's narrow
+        column."""
+        if self._live:
+            return pairs_grid(*rows)
+        return pairs_grid(*rows, per_row=2, gap=12)
 
     # ── API ─────────────────────────────────────────────────────────────────
     def _fire(self, *_a) -> None:
@@ -319,7 +318,7 @@ class TrackingControls(QWidget):
     def _show_pins(self) -> None:
         n = len(self._pins)
         self._lbl_pins.setText(
-            "no pinned reflections" if not n
+            "None Pinned" if not n
             else f"{n} pinned reflection{'s' if n > 1 else ''}")
         self._btn_pins_clear.setEnabled(bool(n))
 

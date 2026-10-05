@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import RangeBar, SegmentedSwitch, sections_help, spin
+from acqApp.widgets import (RangeBar, SegmentedSwitch, hrow, pairs_grid,
+                            sections_help, spin)
 from acqApp.devices.pupil_cam.rim import LOW_CONTRAST
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
@@ -51,8 +52,8 @@ class SettingsPanel(QWidget):
         # Widgets emit as they're built; `settings` needs all of them.
         self._ready = False
         self._build()
-        # Help on the section titles only, not on every control.
-        sections_help(self)
+        # Every control explains itself on hover; the title lists them all.
+        sections_help(self, keep=True)
         self._ready = True
 
     def _build(self) -> None:
@@ -62,6 +63,8 @@ class SettingsPanel(QWidget):
         # and LED sections for the clip's, and the host fills that page.
         self.mode = SegmentedSwitch([("Live", "live"), ("Review", "review")],
                                     style.HEX["pupil_cam"])
+        self.mode.setToolTip("Live: the camera. Review: go through a saved "
+                             "recording.")
         self.mode.changed.connect(self.mode_changed)
         outer.addWidget(self.mode)
         self._pages = QStackedWidget()
@@ -83,22 +86,19 @@ class SettingsPanel(QWidget):
         # Rate is typed; Exposure is a bar from the camera's minimum to the
         # longest that rate allows (1/rate), so it can't slow the camera.
         self._spn_hz = spin(1.0, 200.0, self._s.rate_hz,
-                            decimals=1, suffix=" Hz")
+                            decimals=1, suffix=" Hz",
+                            tooltip="Frames per second to ask the camera for.")
         self._exp_min = EXPOSURE_MIN_US
         self._exp = RangeBar(self._exp_min, 1e6 / self._spn_hz.value(),
                              self._s.exposure_us, fmt=_fmt_us)
         self._exp.setToolTip("From the camera's shortest to the longest the "
                              "Rate allows.")
         self._exp.valueChanged.connect(self.exposure_changed)
-        rate_row = QHBoxLayout()
-        rate_row.setContentsMargins(0, 0, 0, 0)
-        rate_row.addWidget(self._spn_hz)
-        rate_row.addWidget(QLabel("Exposure"))
-        rate_row.addWidget(self._exp, 1)
-        cl.addRow("Rate:", rate_row)
-
+        self._exp.setMinimumWidth(220)
         self._lbl_rate = QLabel()
-        cl.addRow("Frame rate:", self._lbl_rate)
+        self._lbl_rate.setToolTip("The frame rate you get: measured once the "
+                                  "camera runs. Orange means the exposure is "
+                                  "too long for the Rate.")
         self._spn_hz.valueChanged.connect(self._on_hz_changed)
         self._refresh_rate()
 
@@ -112,14 +112,6 @@ class SettingsPanel(QWidget):
         self._chk_auto.setToolTip("Off: drag the bar's handles. Display only.")
         self._chk_auto.toggled.connect(self._emit)
 
-        disp_row = QWidget()
-        disp_lay = QHBoxLayout(disp_row)
-        disp_lay.setContentsMargins(0, 0, 0, 0)
-        disp_lay.addWidget(self._chk_lut)
-        disp_lay.addWidget(self._chk_auto)
-        disp_lay.addStretch()
-        cl.addRow("Display:", disp_row)
-
         self._chk_dark = QCheckBox("Warn if too dark to track")
         self._chk_dark.setChecked(self._s.warn_dark)
         self._chk_dark.setToolTip(
@@ -127,58 +119,56 @@ class SettingsPanel(QWidget):
             "Recordings note it either way.")
         self._chk_dark.toggled.connect(self._emit)
         self._chk_dark.toggled.connect(lambda _on: self.show_contrast(self._contrast))
-        cl.addRow("Light:", self._chk_dark)
-        self._lbl_dark = QLabel()
-        self._lbl_dark.setWordWrap(True)
-        cl.addRow("", self._lbl_dark)
-        self._cam_form = cl
-        cl.setRowVisible(self._lbl_dark, False)
-        self._contrast: float | None = None
 
         # ── Frame source ────────────────────────────────────────────────────
         self._lbl_vid = QLabel()
-        self._lbl_vid.setWordWrap(True)
+        self._lbl_vid.setToolTip("The clip that Live view replays.")
         self._chk_video = QCheckBox("Replay a clip instead")
         self._chk_video.setToolTip("Uncompressed AVI, from the next Live "
                                    "view. Flagged in the session file.")
         self._chk_video.toggled.connect(self._on_video_toggled)
-        cl.addRow("Source:", self._chk_video)
-        cl.addRow("", self._lbl_vid)
+
+        cl.addRow(pairs_grid(
+            ("Rate:", self._spn_hz, "Exposure:", self._exp,
+             None, self._lbl_rate),
+            (None, self._chk_lut, None, self._chk_auto,
+             None, self._chk_dark),
+            (None, self._chk_video, None, self._lbl_vid)))
+        self._lbl_dark = QLabel()
+        self._lbl_dark.setWordWrap(True)
+        cl.addRow(self._lbl_dark)
+        self._cam_form = cl
+        cl.setRowVisible(self._lbl_dark, False)
+        self._contrast: float | None = None
         self._show_video()
         root.addWidget(cam)
 
         self.tracking = TrackingControls(self._s, live=True)
         self.tracking.changed.connect(self._emit)
         self.tracking.auto_requested.connect(self.auto_requested)
-        root.addWidget(self.tracking)
 
         # ── Illumination ────────────────────────────────────────────────────
         led = QGroupBox("Illumination")
         ll = QVBoxLayout(led)
         self._chk_led = QCheckBox("Eye-tracking LED")
+        self._chk_led.setToolTip("Turn the eye-tracking LED on or off now.")
         self._chk_led.toggled.connect(self.led_toggled)
         self._chk_led_follow = QCheckBox("Follow Live view")
         self._chk_led_follow.setChecked(self._s.led_follow_live)
         self._chk_led_follow.setToolTip("On with Live view/Record, off "
                                         "after.")
         self._chk_led_follow.toggled.connect(self._emit)
-        ll.addWidget(self._chk_led)
-        ll.addWidget(self._chk_led_follow)
-
-        intensity_row = QWidget()
-        il = QHBoxLayout(intensity_row)
-        il.setContentsMargins(0, 0, 0, 0)
-        il.addWidget(QLabel("Intensity:"))
         self._spn_intensity = spin(
             0.0, 100.0, self._s.led_intensity * 100.0, decimals=0, suffix=" %",
             tooltip="Of the LED driver's full scale.")
         self._spn_intensity.valueChanged.connect(
             lambda pct: self.led_intensity_changed.emit(pct / 100.0))
         self._spn_intensity.valueChanged.connect(self._emit)
-        il.addWidget(self._spn_intensity)
-        il.addStretch()
-        ll.addWidget(intensity_row)
+        ll.addLayout(pairs_grid(
+            (None, self._chk_led, None, self._chk_led_follow,
+             "Intensity:", self._spn_intensity)))
 
+        root.addWidget(self.tracking)
         root.addWidget(led)
         root.addStretch()
 
@@ -279,8 +269,8 @@ class SettingsPanel(QWidget):
         self._emit()
 
     def _show_video(self) -> None:
-        self._lbl_vid.setText(Path(self._video).name if self._video
-                              else "camera (live)")
+        self._lbl_vid.setText(Path(self._video).name if self._video else "")
+        self._lbl_vid.setVisible(bool(self._video))
         self._chk_video.blockSignals(True)
         self._chk_video.setChecked(bool(self._video))
         self._chk_video.blockSignals(False)

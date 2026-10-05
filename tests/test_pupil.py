@@ -1063,10 +1063,11 @@ def _part_help() -> int:
     pump(app, 0.05)
     boxes = {getattr(b, "_base_title", b.title()): b
              for b in panel.findChildren(QGroupBox)}
-    tipped = [w for w in panel.findChildren(QWidget) if w.toolTip()
-              and not isinstance(w, QGroupBox)]
-    r.check(not tipped, f"no control carries its own tooltip "
-                        f"({[type(w).__name__ for w in tipped][:5]})")
+    bare = [w for w in (panel._spn_hz, panel._chk_led, panel.tracking._spn_thr,
+                        panel.tracking._spn_cr_thr, panel.tracking._btn_auto)
+            if not w.toolTip()]
+    r.check(not bare, f"every control explains itself on hover "
+                      f"({[type(w).__name__ for w in bare]})")
     r.check(all(not b.toolTip() for b in boxes.values()),
             "nor does a box body (Qt's own tooltip would show anywhere on it)")
     track = boxes["Pupil tracking"]._help_text
@@ -1109,8 +1110,8 @@ def _part_help() -> int:
     rboxes = {getattr(b, "_base_title", b.title()): b
               for b in dlg.findChildren(QGroupBox)}
     r.check("<b>Threshold</b>" in rboxes["Pupil tracking"]._help_text
-            and not dlg._ctl._spn_thr.toolTip(),
-            "review: help moved to the titles as well")
+            and dlg._ctl._spn_thr.toolTip(),
+            "review: the titles list the help and the controls keep theirs")
     r.check("Auto contrast" in rboxes["Recording"]._help_text,
             "review: the Recording section has its help")
     dlg._dirty = False

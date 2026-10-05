@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QAbstractButton, QDialog, QDialogButtonBox,
+from PyQt6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QComboBox,
+                             QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
-                             QGroupBox, QHBoxLayout, QLabel, QListWidget,
+                             QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+                             QListWidget,
                              QListWidgetItem, QPushButton, QSpinBox, QStyle,
                              QStyleOptionGroupBox, QToolTip, QVBoxLayout,
                              QWidget)
@@ -64,6 +66,98 @@ def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
         s.setToolTip(tooltip)
     compact(s)
     return s
+
+
+def hrow(*items) -> QHBoxLayout:
+    """One line of controls, kept left. A str becomes the label of the item
+    after it; a QLayout is nested."""
+    from PyQt6.QtWidgets import QLayout
+    lay = QHBoxLayout()
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(4)
+    for it in items:
+        if isinstance(it, str):
+            lay.addWidget(QLabel(it))
+        elif isinstance(it, QLayout):
+            lay.addLayout(it)
+        else:
+            lay.addWidget(it)
+    lay.addStretch()
+    return lay
+
+
+def pairs_grid(*rows, per_row: int | None = None,
+               gap: int = 28) -> QGridLayout:
+    """Items in aligned columns: each row is (label, widget, label, widget, ...)
+    and each pair is one item. A None label lets the widget (a check box, say)
+    take the item's whole width; a None widget leaves it empty; a QLayout is
+    nested. `gap` is the space between items; `per_row` wraps a row after that
+    many items, keeping the columns lined up (a narrow host). In a column the
+    labels share one width, and the inputs and the check boxes/buttons share
+    the item's width: inputs widen to match a check box above them. A label
+    shows its input's tooltip, so hovering either explains the control."""
+    from PyQt6.QtWidgets import QLayout, QSizePolicy
+    if per_row:
+        n = 2 * per_row
+        rows = tuple(row[k:k + n] for row in rows
+                     for k in range(0, len(row), n))
+    rows = tuple(row for row in rows if row)
+    items = max(len(row) for row in rows) // 2
+    g = QGridLayout()
+    g.setContentsMargins(0, 0, 0, 0)
+    g.setHorizontalSpacing(4)
+    g.setVerticalSpacing(6)
+    grows = False                       # a column that wants the spare width
+    cols = [{"lab": [], "inp": [], "btn": []} for _ in range(items)]
+    for r, row in enumerate(rows):
+        for k in range(len(row) // 2):
+            label, w = row[2 * k], row[2 * k + 1]
+            if w is None:
+                continue
+            base = 3 * k                # label, input, gap
+            if label is not None:
+                lbl = QLabel(label)
+                first = w.itemAt(0).widget() if isinstance(w, QLayout) else w
+                lbl.setToolTip(first.toolTip() if first is not None else "")
+                lbl.setProperty("tipMirror", True)
+                g.addWidget(lbl, r, base)
+                cols[k]["lab"].append(lbl)
+                col, span = base + 1, 1
+            else:
+                col, span = base, 2
+            if isinstance(w, QLayout):
+                g.addLayout(w, r, col, 1, span)
+                continue
+            g.addWidget(w, r, col, 1, span)
+            if w.sizePolicy().horizontalPolicy() in (
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.MinimumExpanding):
+                g.setColumnStretch(col, 1)
+                grows = True
+            elif label is not None and isinstance(
+                    w, (QAbstractSpinBox, QComboBox)):
+                cols[k]["inp"].append(w)
+            elif isinstance(w, QAbstractButton):
+                cols[k]["btn"].append(w)
+    sp = g.horizontalSpacing()
+    for k, c in enumerate(cols):
+        lw = max((x.sizeHint().width() for x in c["lab"]), default=0)
+        if lw:
+            g.setColumnMinimumWidth(3 * k, lw)
+        bw = max((x.sizeHint().width() for x in c["btn"]), default=0)
+        iw = max((x.sizeHint().width() for x in c["inp"]), default=0)
+        if c["inp"]:
+            iw = max(iw, bw - lw - sp)
+            for x in c["inp"]:
+                x.setFixedWidth(iw)
+            bw = lw + sp + iw
+        for x in c["btn"]:
+            x.setMinimumWidth(bw)
+    for k in range(items - 1):
+        g.setColumnMinimumWidth(3 * k + 2, gap)
+    if not grows:
+        g.setColumnStretch(3 * items, 1)
+    return g
 
 
 class SessionPicker(QDialog):
@@ -262,10 +356,11 @@ class _TitleTip(QObject):
         return False
 
 
-def section_help(box: QGroupBox) -> str:
+def section_help(box: QGroupBox, keep: bool = False) -> str:
     """Move the help off the controls in `box` onto its title: one tooltip,
     shown only while hovering the title, explaining each control by name.
-    The box's own tooltip leads. Returns the help text (rich text)."""
+    The box's own tooltip leads. With `keep`, the controls keep their tooltips
+    as well. Returns the help text (rich text)."""
     parts = []
     intro = getattr(box, "_help_intro", None)
     if intro is None:
@@ -280,10 +375,15 @@ def section_help(box: QGroupBox) -> str:
         tip = w.toolTip()
         if not tip:
             continue
+        if w.property("tipMirror"):         # a label echoing its input's tip
+            if not keep:
+                w.setToolTip("")
+            continue
         name = _field_label(w, box)
         found[id(w)] = (f"<li><b>{html.escape(name)}</b> — {_html(tip)}</li>"
                         if name else f"<li>{_html(tip)}</li>")
-        w.setToolTip("")
+        if not keep:
+            w.setToolTip("")
     box._help_items = found                 # type: ignore[attr-defined]
     items = list(found.values())
     if items:
@@ -301,11 +401,12 @@ def section_help(box: QGroupBox) -> str:
     return text
 
 
-def sections_help(panel: QWidget) -> None:
+def sections_help(panel: QWidget, keep: bool = False) -> None:
     """`section_help` on every group box in `panel`. Call once the panel is
-    built; any module's panel can opt in with this one line."""
+    built; any module's panel can opt in with this one line. `keep` leaves
+    each control's own tooltip too, besides the list on the title."""
     for box in panel.findChildren(QGroupBox):
-        section_help(box)
+        section_help(box, keep)
 
 
 def _html(text: str) -> str:

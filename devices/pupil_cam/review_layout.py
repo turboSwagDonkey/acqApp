@@ -87,7 +87,7 @@ class _LayoutMixin:
         if not self._embedded:
             scroll.setFixedWidth(380)
         self.side_widget = scroll
-        sections_help(left)        # help on the section titles, as the live tab
+        sections_help(left, keep=True)  # per-control tips + title list, as live
         collapsible_groups(left, "pupil_review")
 
         self.view_widget = QWidget()
