@@ -69,3 +69,39 @@ def rim_measures(gray: np.ndarray, fit) -> tuple[float, float]:
 def looks_like_pupil(gray: np.ndarray, fit, min_dark: float) -> bool:
     contrast, dark = rim_measures(gray, fit)
     return contrast > 0.0 and dark >= min_dark
+
+
+# Pupil-iris contrast (grey levels) below which one threshold step moves the
+# radius ~2 px or more: VF203.2R at 1.5 moves it ~8; simulated 3x exposure
+# gives 5.2 and ~1 px (SESSIONLOG co).
+LOW_CONTRAST = 4.0
+
+
+class ContrastMeter:
+    """Pupil-iris contrast of the accepted fits, sampled every `every`th
+    frame. `value`: median of the last `window` samples; `samples`: every
+    one so far (append-only, so a recording can take its own stretch)."""
+
+    def __init__(self, every: int = 10, window: int = 15) -> None:
+        self.every, self.window = every, window
+        self.samples: list[float] = []
+        self._n = 0
+
+    def offer(self, gray: np.ndarray, fit) -> None:
+        self._n += 1
+        if self._n % self.every == 1 or self.every == 1:
+            self.samples.append(rim_measures(gray, fit)[0])
+
+    @property
+    def value(self) -> float | None:
+        recent = self.samples[-self.window:]
+        return float(np.median(recent)) if recent else None
+
+
+def contrast_summary(samples: list[float]) -> dict:
+    """For a recording's metadata: median contrast and the verdict."""
+    if not samples:
+        return {}
+    c = float(np.median(samples))
+    return {"pupil_contrast": round(c, 2),
+            "pupil_underexposed": bool(c < LOW_CONTRAST)}

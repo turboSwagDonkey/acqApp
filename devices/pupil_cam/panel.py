@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from acqApp import style
 from acqApp.widgets import RangeBar, SegmentedSwitch, sections_help, spin
+from acqApp.devices.pupil_cam.rim import LOW_CONTRAST
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
 
@@ -118,6 +119,21 @@ class SettingsPanel(QWidget):
         disp_lay.addWidget(self._chk_auto)
         disp_lay.addStretch()
         cl.addRow("Display:", disp_row)
+
+        self._chk_dark = QCheckBox("Warn if too dark to track")
+        self._chk_dark.setChecked(self._s.warn_dark)
+        self._chk_dark.setToolTip(
+            "From the pupil's contrast with the iris, while it is tracked. "
+            "Recordings note it either way.")
+        self._chk_dark.toggled.connect(self._emit)
+        self._chk_dark.toggled.connect(lambda _on: self.show_contrast(self._contrast))
+        cl.addRow("Light:", self._chk_dark)
+        self._lbl_dark = QLabel()
+        self._lbl_dark.setWordWrap(True)
+        cl.addRow("", self._lbl_dark)
+        self._cam_form = cl
+        cl.setRowVisible(self._lbl_dark, False)
+        self._contrast: float | None = None
 
         # ── Frame source ────────────────────────────────────────────────────
         self._lbl_vid = QLabel()
@@ -278,9 +294,23 @@ class SettingsPanel(QWidget):
             video_path=self._video,
             show_lut=self._chk_lut.isChecked(),
             auto_levels=self._chk_auto.isChecked(),
+            warn_dark=self._chk_dark.isChecked(),
             led_follow_live=self._chk_led_follow.isChecked(),
             led_intensity=self._spn_intensity.value() / 100.0,
         ))
+
+    def show_contrast(self, contrast: float | None) -> None:
+        """Pupil-iris contrast (grey levels) from tracking; None = unknown.
+        Only says something when it is too low and the warning is on."""
+        self._contrast = contrast
+        low = (contrast is not None and contrast < LOW_CONTRAST
+               and self._chk_dark.isChecked())
+        if low:
+            self._lbl_dark.setText(
+                f"Too dark: the pupil is {contrast:.1f} grey levels darker "
+                f"than the iris. Raise exposure or the LED.")
+            self._lbl_dark.setStyleSheet("color:#c47f00; font-weight:bold;")
+        self._cam_form.setRowVisible(self._lbl_dark, low)
 
     def set_led(self, on: bool) -> None:
         """Show the LED's state without re-emitting `led_toggled`."""

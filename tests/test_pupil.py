@@ -1659,10 +1659,99 @@ def _part_whiskers() -> int:  # noqa: PLR0915 — one linear scenario
     return r.finish()
 
 
+# ═══ dark: underexposure warning, Live and metadata (session co) ═══════════
+
+def _part_dark() -> int:  # noqa: PLR0915 — one linear scenario
+    """Pupil-iris contrast below LOW_CONTRAST grey levels: an amber line on
+    Live (`warn_dark`) and `pupil_underexposed` in the recording."""
+    isolate_user_state()
+    r = Report("pupil-dark")
+    from acqApp.devices.pupil_cam.eyeloop_tracker import EYELOOP_DIR, PupilFit
+    from acqApp.devices.pupil_cam.panel import SettingsPanel
+    from acqApp.devices.pupil_cam.rim import (LOW_CONTRAST, ContrastMeter,
+                                              contrast_summary)
+
+    fit = PupilFit(160, 120, 40, 40, 0)
+    bright, dim = ContrastMeter(every=10), ContrastMeter(every=10)
+    dim_frame = np.where(eye_frame() == 20, 19, 21).astype(np.uint8)
+    for _ in range(25):
+        bright.offer(eye_frame(), fit)
+        dim.offer(dim_frame, fit)
+    r.check(len(bright.samples) == 3,
+            f"sampled every 10th frame, not every frame ({len(bright.samples)})")
+    r.check(dim.value is not None and dim.value < LOW_CONTRAST,
+            f"a pupil 2 grey levels below the iris is too dark ({dim.value:.1f})")
+    r.check(bright.value > 10 * LOW_CONTRAST,
+            f"control: the mock's eye is far above the bar ({bright.value:.0f})")
+    r.check(ContrastMeter().value is None and contrast_summary([]) == {},
+            "nothing tracked: no verdict, nothing recorded")
+    r.check(contrast_summary([1.5, 2.0])["pupil_underexposed"] is True
+            and contrast_summary([6.0])["pupil_underexposed"] is False,
+            "the recording's verdict follows the median contrast")
+
+    app = qt_app()
+    panel = SettingsPanel(PupilSettings())
+    form, row = panel._cam_form, panel._lbl_dark
+    r.check(not form.isRowVisible(row), "unknown contrast: no warning line")
+    panel.show_contrast(1.5)
+    r.check(form.isRowVisible(row) and "Raise exposure" in row.text(),
+            f"too dark: the warning says what to do ({row.text()!r})")
+    panel.show_contrast(6.0)
+    r.check(not form.isRowVisible(row), "control: enough contrast, no line")
+    panel.show_contrast(1.5)
+    panel._chk_dark.setChecked(False)
+    r.check(not form.isRowVisible(row) and panel.settings.warn_dark is False,
+            "unticked: no line, and the setting says so")
+    panel._chk_dark.setChecked(True)
+    r.check(form.isRowVisible(row), "ticked again: the line is back")
+    panel.deleteLater()
+    pump(app, 0.05)
+
+    if not (EYELOOP_DIR / "eyeloop").is_dir():
+        print(f"[pupil-dark] no EyeLoop clone at {EYELOOP_DIR} — skipping "
+              f"the Live checks")
+        return r.finish()
+
+    win, mod = _live_view(app)
+    mod.panel.tracking._chk_track.setChecked(True)
+    for _ in range(20):
+        win._display_tick()
+        pump(app, 0.05)
+    md = mod.metadata()
+    r.check(all(k in md for k in ("pupil_track_rim_check", "pupil_track_rim_dark",
+                                  "pupil_track_whiskers")),
+            "the new fitting options travel with the trace")
+    for _ in range(20):                      # this recording's frames
+        win._display_tick()
+        pump(app, 0.05)
+    meter = mod._track.contrast
+    r.check(meter.value is not None and meter.value >= LOW_CONTRAST
+            and not mod.panel._cam_form.isRowVisible(mod.panel._lbl_dark),
+            f"Live on the mock's bright eye: measured, no warning "
+            f"({meter.value})")
+    fin = mod.final_metadata()
+    r.check(fin.get("pupil_underexposed") is False and "pupil_contrast" in fin,
+            f"…and the recording says it was bright enough ({fin})")
+    mod.metadata()                           # a new recording starts here
+    meter.samples.extend([1.5] * 15)
+    win._display_tick()
+    pump(app, 0.05)
+    r.check(mod.panel._cam_form.isRowVisible(mod.panel._lbl_dark),
+            "the eye gets dark: the Live warning shows")
+    fin = mod.final_metadata()
+    r.check(fin.get("pupil_underexposed") is True,
+            f"…and this recording, counted from its own start, says so ({fin})")
+    win._btn_run.setChecked(False)
+    pump(app, 0.3)
+    win.close()
+    return r.finish()
+
+
 PARTS = {
     "eyeloop": _part_eyeloop,
     "rim": _part_rim,
     "whiskers": _part_whiskers,
+    "dark": _part_dark,
     "track": _part_track,
     "pins": _part_pins,
     "lock": _part_lock,

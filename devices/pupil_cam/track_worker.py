@@ -160,6 +160,11 @@ class PupilTrackWorker(PullWorker):
         return self._fits
 
     @property
+    def contrast(self):
+        """The tracker's `ContrastMeter` (pupil-iris contrast)."""
+        return self._tracking.contrast
+
+    @property
     def blinks(self) -> int:
         return self._blinks
 

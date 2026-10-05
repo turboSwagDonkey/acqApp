@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from acqApp.devices.pupil_cam.rim import looks_like_pupil
+from acqApp.devices.pupil_cam.rim import ContrastMeter, looks_like_pupil
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.whiskers import paint_whiskers, whisker_mask
 
@@ -36,6 +36,8 @@ class PupilTracking:
         self._error: str | None = None
         self.last_mask: np.ndarray | None = None
         self.last_box: tuple[int, int, int, int] | None = None
+        # Underexposure: how far the pupil stands out from the iris.
+        self.contrast = ContrastMeter()
         # Cached on success only, so a failed import retries every call.
         self._eyeloop_cls: tuple | None = None
 
@@ -76,6 +78,7 @@ class PupilTracking:
         if st.track_rim_check and not looks_like_pupil(
                 self._tracker.last_input, fit, st.track_rim_dark):
             return None
+        self.contrast.offer(self._tracker.last_input, fit)
 
         PupilFit = self._eyeloop_cls[4]
         return PupilFit(fit.center_x + x0, fit.center_y + y0,

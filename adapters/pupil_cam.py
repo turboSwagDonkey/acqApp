@@ -24,6 +24,7 @@ from acqApp.devices.pupil_cam.panel import SettingsPanel as PupilSettingsPanel
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.autotune import NEEDS_HELP
 from acqApp.devices.pupil_cam.review import PupilReview
+from acqApp.devices.pupil_cam.rim import contrast_summary
 from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker, PupilTrackWorker
 from acqApp.devices.pupil_cam.tracking_panel import pin_click
 from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
@@ -47,6 +48,7 @@ class PupilCamModule(ModuleAdapter):
         self._lbl_limit = None
         self._cmb_view = None
         self._view_mode = "full"        # "full" | "bare" | "crop"
+        self._contrast_mark = (None, 0)   # (meter, first sample) per recording
         self._theta = np.linspace(0, 2 * np.pi, 48)
         # Cached: `panel.settings` rebuilds from ~25 widgets per call.
         self._settings: PupilSettings | None = None
@@ -598,6 +600,9 @@ class PupilCamModule(ModuleAdapter):
         if self._track is None:
             return
         self._say_tracker_state()
+        self.panel.show_contrast(self._track.contrast.value
+                                 if self._settings is not None
+                                 and self._settings.track else None)
         tracked = self._track.take_tracked()
         if tracked and self._curve is not None:
             self._trace.extend(tracked)
@@ -693,7 +698,8 @@ class PupilCamModule(ModuleAdapter):
         if self._mask_img is None:
             return
         show = (tr.mask is not None and tr.box is not None
-                and self._settings is not None and self._settings.cr_remove)
+                and self._settings is not None
+                and (self._settings.cr_remove or self._settings.track_whiskers))
         if not show:
             self._mask_img.clear()
             return
@@ -757,6 +763,9 @@ class PupilCamModule(ModuleAdapter):
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
+        # Where this recording's contrast samples begin (final_metadata).
+        meter = self._track.contrast if self._track is not None else None
+        self._contrast_mark = (meter, len(meter.samples) if meter else 0)
         # Everything that shapes the trace travels with it — the threshold
         # above all, which moves the radius ~60% at an unchanged fit rate.
         return {"pupil_exposure_us": s.exposure_us,
@@ -771,6 +780,9 @@ class PupilCamModule(ModuleAdapter):
                 "pupil_track_threshold": s.track_threshold,
                 "pupil_track_blur":      s.track_blur,
                 "pupil_track_model":     s.track_model,
+                "pupil_track_rim_check": s.track_rim_check,
+                "pupil_track_rim_dark":  s.track_rim_dark,
+                "pupil_track_whiskers":  s.track_whiskers,
                 "pupil_smooth":          s.smooth,
                 "pupil_smooth_window":   s.smooth_window,
                 "pupil_blink_detect":         s.blink_detect,
@@ -791,6 +803,11 @@ class PupilCamModule(ModuleAdapter):
             return {}
         out = {"pupil_frames_tracked": self._track.frames_seen,
                "pupil_fits":           self._track.fits}
+        # Underexposure: the pupil-iris contrast over this recording.
+        meter, start = self._contrast_mark
+        samples = self._track.contrast.samples
+        out.update(contrast_summary(
+            samples[start:] if meter is self._track.contrast else samples))
         if s.blink_detect:
             out["pupil_blinks_flagged"] = self._track.blinks
         return out

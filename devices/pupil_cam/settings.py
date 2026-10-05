@@ -57,6 +57,9 @@ class PupilSettings:
     show_lut:     bool = True
     auto_levels:  bool = True
 
+    # Live: say when the pupil barely stands out from the iris (rim.py).
+    warn_dark:       bool = True
+
     led_follow_live: bool = True
     led_intensity:   float = 1.0            # 0..1 of the LEDD1B's MOD range
 
