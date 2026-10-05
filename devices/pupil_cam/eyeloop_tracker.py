@@ -110,6 +110,7 @@ class EyeLoopTracker:
         self._last_shape: tuple[float, float, float] | None = None
         self.last_glint_mask: np.ndarray | None = None
         self.last_glint_px = 0
+        self.last_input: np.ndarray | None = None    # what was fitted
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -199,6 +200,7 @@ class EyeLoopTracker:
             raise ValueError(f"armed for {self._size}, given {(w, h)}; re-arm")
 
         gray = self._deglint(gray)
+        self.last_input = gray
 
         self._shape.fit_model.params = None     # so None means None
         self._config.engine.dataout = {}

@@ -188,6 +188,7 @@ devices/                one package per instrument
     review_layout.py    ReviewWidget's layout (_build), a mixin
     review_playback.py  ReviewWidget's frame display, overlay, playback, trace
     review_seed.py      ReviewWidget's Auto help: the user marks a few frames
+    rim.py              is a fit a pupil? rim darker inside, disc dark; no Qt
     settings.py         camera, eye region, tracking + corneal-reflection knobs
     track_worker.py     tracking on its own thread; sole consumer of the frames
     tracking_panel.py   the tracking controls (region, fit, blinks, reflections),

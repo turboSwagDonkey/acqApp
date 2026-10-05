@@ -1475,8 +1475,99 @@ def _part_lock() -> int:  # noqa: PLR0915 — one linear scenario
     return r.finish()
 
 
+# ═══ rim: no fit on a closed eye (session co) ═════════════════════════════
+
+def slit_eye(h=6):
+    """A closed eye: a thin dark crease on mid-grey. EyeLoop fits it."""
+    img = np.full((400, 400), 150, np.uint8)
+    img[200 - h // 2:200 + h // 2, 140:260] = 20
+    return img
+
+
+def _part_rim() -> int:  # noqa: PLR0915 — one linear scenario
+    """`track_rim_check` drops a fit that isn't dark inside its rim; the
+    control (check off) keeps it. VF203.2R: 24/33 vs 23 (SESSIONLOG co)."""
+    isolate_user_state()
+    r = Report("pupil-rim")
+    import warnings
+    from acqApp.devices.pupil_cam.eyeloop_tracker import EYELOOP_DIR, PupilFit
+    from acqApp.devices.pupil_cam.rim import looks_like_pupil, rim_measures
+
+    r.check(PupilSettings().track_rim_check is False,
+            "off by default (a +1/33 gain on one clip is not a clear win)")
+
+    disc = PupilFit(200, 200, 55, 55, 0)
+    c, d = rim_measures(synthetic_eye(), disc)
+    r.check(c > 50 and d > 0.95 and looks_like_pupil(synthetic_eye(), disc, 0.8),
+            f"a pupil passes: rim darker inside, disc dark (contrast {c:.0f}, "
+            f"dark {d:.2f})")
+    crease = PupilFit(200, 200, 30, 30, 0)     # as on VF203.2R frame 30
+    c, d = rim_measures(slit_eye(), crease)
+    r.check(d < 0.8 and not looks_like_pupil(slit_eye(), crease, 0.8),
+            f"a fit on a closed eye's crease fails: its disc isn't dark "
+            f"(dark {d:.2f})")
+    r.check(looks_like_pupil(slit_eye(), crease, 0.0),
+            "control: the same crease passes with no darkness required "
+            "(it is the disc test that drops it)")
+    bright = 255 - synthetic_eye()
+    r.check(not looks_like_pupil(bright, disc, 0.0),
+            "a rim brighter inside than out fails whatever the darkness bar")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        c, d = rim_measures(synthetic_eye(), PupilFit(900, 900, 40, 40, 0))
+    r.check((c, d) == (0.0, 0.0),
+            "a fit off the image has no vote and warns nothing")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        c, d = rim_measures(synthetic_eye(), PupilFit(10, 200, 40, 40, 0))
+    r.check(c == 0.0 and d == 0.0,
+            "mostly off the image: no vote either (half a rim can't judge)")
+
+    from acqApp.devices.pupil_cam.review import same_tracking
+    r.check(not same_tracking(PupilSettings(),
+                              PupilSettings(track_rim_check=True)),
+            "Review: toggling it marks the trace stale (it changes fits)")
+
+    app = qt_app()
+    from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
+    tc = TrackingControls(PupilSettings(), live=True)
+    tc.show_settings(PupilSettings(track_rim_check=True))
+    r.check(tc.settings_into(PupilSettings()).track_rim_check is True,
+            "panel: the check box round-trips the setting")
+    tc._chk_rim.setChecked(False)
+    r.check(tc.settings_into(PupilSettings()).track_rim_check is False,
+            "panel: unticking it turns it off")
+    tc.deleteLater()
+    pump(app, 0.05)
+
+    if not (EYELOOP_DIR / "eyeloop").is_dir():
+        print(f"[pupil-rim] no EyeLoop clone at {EYELOOP_DIR} — skipping the "
+              f"tracking checks")
+        return r.finish()
+
+    def fit(img, chk):
+        st = PupilSettings(track=True, track_threshold=60, limit_x0=50,
+                           limit_y0=50, limit_x1=350, limit_y1=350,
+                           track_rim_check=chk)
+        pt, out = PupilTracking(), None
+        for _ in range(3):
+            out = pt.track(img, st)
+        return out
+
+    r.check(fit(slit_eye(), False) is not None,
+            "control: EyeLoop fits a closed eye's crease with the check off")
+    r.check(fit(slit_eye(), True) is None,
+            "with the check on, that fit is dropped: none, not a guess")
+    f_on, f_off = fit(synthetic_eye(), True), fit(synthetic_eye(), False)
+    r.check(f_on is not None and f_off is not None
+            and abs(f_on.radius - f_off.radius) < 1e-9,
+            "a real pupil is fitted the same with the check on")
+    return r.finish()
+
+
 PARTS = {
     "eyeloop": _part_eyeloop,
+    "rim": _part_rim,
     "track": _part_track,
     "pins": _part_pins,
     "lock": _part_lock,

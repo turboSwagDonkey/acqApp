@@ -24,6 +24,10 @@ class PupilSettings:
     track_threshold:  int = 45
     track_blur:       int = 3
     track_model:      str = "ellipsoid"     # or "circular" (~2.5x cheaper)
+    # Drop a fit whose disc isn't mostly darker than its rim (closed eye):
+    # none, not a guess. rim.py.
+    track_rim_check:  bool = False
+    track_rim_dark:   float = 0.8
     # Rolling mean; applies to the drawn AND recorded fit.
     smooth:           bool = False
     smooth_window:    int = 5

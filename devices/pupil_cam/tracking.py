@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from acqApp.devices.pupil_cam.rim import looks_like_pupil
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 
@@ -58,6 +59,10 @@ class PupilTracking:
         fit = self._tracker.track(crop)
         self.last_mask = self._tracker.last_glint_mask
         if fit is None:
+            return None
+        # Output only: the walk carries on from EyeLoop's own answer.
+        if st.track_rim_check and not looks_like_pupil(
+                self._tracker.last_input, fit, st.track_rim_dark):
             return None
 
         PupilFit = self._eyeloop_cls[4]

@@ -151,7 +151,13 @@ class TrackingControls(QWidget):
         bform.addRow("Baseline over:", self._spn_blink_win)
         vb.addLayout(bform)
 
-        for w in (self._chk_smooth, self._chk_blink):
+        self._chk_rim = QCheckBox("No fit on a closed eye")
+        self._chk_rim.setChecked(s.track_rim_check)
+        self._chk_rim.setToolTip("Drops a fit that isn't dark inside (a lid "
+                                 "crease): no fit rather than a wrong one.")
+        vb.addWidget(self._chk_rim)
+
+        for w in (self._chk_smooth, self._chk_blink, self._chk_rim):
             w.toggled.connect(self._fire)
         for w in (self._spn_smooth_win, self._spn_blink_drop, self._spn_blink_win):
             w.valueChanged.connect(self._fire)
@@ -226,6 +232,7 @@ class TrackingControls(QWidget):
             blink_detect=self._chk_blink.isChecked(),
             blink_drop_frac=self._spn_blink_drop.value(),
             blink_baseline_window=self._spn_blink_win.value(),
+            track_rim_check=self._chk_rim.isChecked(),
             cr_remove=self._chk_cr.isChecked(),
             cr_threshold=self._spn_cr_thr.value(),
             cr_pad=self._spn_cr_pad.value(), cr_ring=self._spn_cr_ring.value(),
@@ -252,6 +259,7 @@ class TrackingControls(QWidget):
                 w.setValue(int(round(float(v))))
             for w, v in ((self._chk_track, s.track), (self._chk_smooth, s.smooth),
                          (self._chk_blink, s.blink_detect),
+                         (self._chk_rim, s.track_rim_check),
                          (self._chk_cr, s.cr_remove)):
                 w.setChecked(bool(v))
             i = self._cmb_model.findData(s.track_model)

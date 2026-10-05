@@ -31,6 +31,7 @@ _NAN5 = (float("nan"),) * 5
 # What the auto fit depends on; the rest (camera, display, LED) does not.
 _TRACK_FIELDS = ("limit_x0", "limit_y0", "limit_x1", "limit_y1",
                  "track_threshold", "track_blur", "track_model",
+                 "track_rim_check", "track_rim_dark",
                  "blink_detect", "blink_drop_frac", "blink_baseline_window",
                  "cr_remove", "cr_threshold", "cr_pad", "cr_ring", "cr_reach",
                  "cr_pins")
