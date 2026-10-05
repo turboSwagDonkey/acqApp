@@ -11,12 +11,12 @@ from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen, QPixmap,
                          QShortcut)
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
     QRadioButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
-from acqApp.widgets import compact, spin
+from acqApp.widgets import compact, pairs_grid, sections_help, spin
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
@@ -180,48 +180,36 @@ class SettingsPanel(QWidget):
 
         # ── alignment ────────────────────────────────────────────────────────
         geom_grp = QGroupBox("Pattern Alignment")
-        geom_lay = QGridLayout(geom_grp)
-        geom_lay.setSpacing(6)
-        # Spins stay compact; the spare width goes to an empty last column.
-        geom_lay.setColumnStretch(4, 1)
+        geom_lay = QVBoxLayout(geom_grp)
 
         self._chk_fit = QCheckBox("Fit to panel (ignore scale/rotation/offset)")
         self._chk_fit.setChecked(self._s.fit)
         self._chk_fit.toggled.connect(self._on_fit_toggled)
-        geom_lay.addWidget(self._chk_fit, 0, 0, 1, 5)
 
-        geom_lay.addWidget(QLabel("Scale:"), 1, 0)
         self._spn_scale = spin(1.0, 1000.0, self._s.scale_pct,
                                decimals=1, step=1.0, suffix=" %")
-        geom_lay.addWidget(self._spn_scale, 1, 1)
+        self._spn_scale.setToolTip("Pattern size, % of its natural size.")
 
-        geom_lay.addWidget(QLabel("Rot:"), 1, 2)
         self._spn_rot = spin(-360.0, 360.0, self._s.rotation_deg,
                              decimals=1, step=0.5, suffix=" °",
                              tooltip="Clockwise-positive rotation.")
-        geom_lay.addWidget(self._spn_rot, 1, 3)
 
-        geom_lay.addWidget(QLabel("Offset X:"), 2, 0)
         self._spn_dx = spin(-4000.0, 4000.0, self._s.offset_x,
                             decimals=0, step=1.0, suffix=" px")
-        geom_lay.addWidget(self._spn_dx, 2, 1)
+        self._spn_dx.setToolTip("Offset from center in device pixels.")
 
-        geom_lay.addWidget(QLabel("Offset Y:"), 2, 2)
         self._spn_dy = spin(-4000.0, 4000.0, self._s.offset_y,
                             decimals=0, step=1.0, suffix=" px",
                             tooltip="Offset from center in device pixels.")
-        geom_lay.addWidget(self._spn_dy, 2, 3)
 
         self._chk_invert = QCheckBox("Invert mirrors")
         self._chk_invert.setChecked(self._s.invert)
-        geom_lay.addWidget(self._chk_invert, 3, 0, 1, 2)
+        self._chk_invert.setToolTip("Swap which mirrors are on and off.")
 
         btn_reset_geom = QPushButton("Reset Alignment")
         btn_reset_geom.setToolTip("Reset scale to 100%, rotation to 0°, and offsets to (0, 0)")
         btn_reset_geom.clicked.connect(self._reset_geometry)
-        geom_lay.addWidget(btn_reset_geom, 3, 2, 1, 2)
 
-        geom_lay.addWidget(QLabel("Sub-sampling:"), 4, 0)
         self._spn_subsample = spin(
             1, 10, self._s.sub_sampling,
             tooltip="Turn off 1 of every N pixels to cut total light without "
@@ -229,7 +217,6 @@ class SettingsPanel(QWidget):
                     "missing mirrors. 1 = off (every mirror the pattern would "
                     "light stays on); 2 = half off, up to 10 = 1 in 10 off.")
         self._spn_subsample.setSpecialValueText("off")
-        geom_lay.addWidget(self._spn_subsample, 4, 1)
 
         self._chk_nudge = QCheckBox("Enable keyboard nudging")
         self._chk_nudge.setToolTip(
@@ -240,7 +227,12 @@ class SettingsPanel(QWidget):
             "Hold Shift for 10x larger steps."
         )
         self._chk_nudge.toggled.connect(self._on_nudge_toggled)
-        geom_lay.addWidget(self._chk_nudge, 5, 0, 1, 5)
+        geom_lay.addLayout(pairs_grid(
+            (None, self._chk_fit),
+            ("Scale:", self._spn_scale, "Rotation:", self._spn_rot),
+            ("Offset X:", self._spn_dx, "Offset Y:", self._spn_dy),
+            ("Sub-sampling:", self._spn_subsample, None, self._chk_invert),
+            (None, self._chk_nudge, None, btn_reset_geom)))
 
         lay.addRow(geom_grp)
 
@@ -277,6 +269,7 @@ class SettingsPanel(QWidget):
         root.addWidget(grp)
         root.addWidget(self._build_rois())
         root.addStretch(1)
+        sections_help(self, keep=True)
 
         self._on_mode_changed()
         self._update_preview()
@@ -311,10 +304,7 @@ class SettingsPanel(QWidget):
             "the projected field in the snapshot — this button never commands "
             "the camera or the projector itself.")
         btn.clicked.connect(self.rois_edit_requested)
-        v.addWidget(btn)
 
-        flip_row = QHBoxLayout()
-        flip_row.setContentsMargins(0, 0, 0, 0)
         self._chk_roi_flip_x = QCheckBox("Flip X")
         self._chk_roi_flip_x.setChecked(self._s.roi_flip_x)
         self._chk_roi_flip_x.setToolTip(
@@ -331,17 +321,13 @@ class SettingsPanel(QWidget):
             "drew don't move, and neither do the editor's field outline or "
             "its \"outside the field\" checks: only which mirrors light up "
             "changes. Pattern images aren't affected.")
-        flip_row.addWidget(self._chk_roi_flip_x)
-        flip_row.addWidget(self._chk_roi_flip_y)
-        flip_row.addStretch()
-        v.addLayout(flip_row)
+        v.addLayout(pairs_grid((None, btn, None, self._chk_roi_flip_x,
+                                None, self._chk_roi_flip_y)))
 
         self._lbl_calib = QLabel()
         self._lbl_calib.setWordWrap(True)
         self._lbl_calib.setStyleSheet(f"color:{style.muted()};")
         v.addWidget(self._lbl_calib)
-        crow = QHBoxLayout()
-        crow.setContentsMargins(0, 0, 0, 0)
         b_run = QPushButton("Calibrate…")
         b_run.setStyleSheet(style.solid_btn("dmd"))
         b_run.setToolTip(
@@ -355,10 +341,9 @@ class SettingsPanel(QWidget):
         b_load.clicked.connect(self._pick_calib)
         self._btn_calib_clear = QPushButton("Clear")
         self._btn_calib_clear.clicked.connect(lambda: self._set_calib(""))
-        crow.addWidget(b_run)
-        crow.addWidget(b_load)
-        crow.addWidget(self._btn_calib_clear)
-        v.addLayout(crow)
+        self._btn_calib_clear.setToolTip("Forget the loaded calibration.")
+        v.addLayout(pairs_grid((None, b_run, None, b_load,
+                                None, self._btn_calib_clear)))
         self._show_rois()
         return box
 

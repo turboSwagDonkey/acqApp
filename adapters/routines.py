@@ -680,6 +680,15 @@ class RoutinesModule(ModuleAdapter):
     def on_modules_changed(self) -> None:
         if self.panel is not None:
             self.panel.set_frame_rate(self.win.frame_rate_hz())
+            self._show_save_location()
+
+    def _show_save_location(self) -> None:
+        """The file being written, else the folder the next run saves under."""
+        rec = self.win.recording_path()
+        folder = self.win.routine_folder()
+        self.panel.set_save_location(
+            f"Recording to: {rec}" if rec
+            else f"Saves under: {folder}" if folder else "")
 
     def busy_reason(self) -> str:
         if self._engine is not None and self._engine.running:
@@ -695,6 +704,7 @@ class RoutinesModule(ModuleAdapter):
         if self._rate_tick >= RATE_EVERY:
             self._rate_tick = 0
             self.panel.set_frame_rate(self.win.frame_rate_hz())
+            self._show_save_location()
 
         eng = self._engine
         if eng is None:

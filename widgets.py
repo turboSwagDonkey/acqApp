@@ -5,12 +5,12 @@ import html
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QComboBox,
                              QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                             QListWidget,
+                             QLayout, QListWidget,
                              QListWidgetItem, QPushButton, QSpinBox, QStyle,
                              QStyleOptionGroupBox, QToolTip, QVBoxLayout,
                              QWidget)
@@ -86,6 +86,74 @@ def hrow(*items) -> QHBoxLayout:
     return lay
 
 
+class ElidedLabel(QLabel):
+    """One line that never widens its panel: a long path is cut in the middle
+    to fit, and the full text is the tooltip."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QSizePolicy
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def minimumSizeHint(self):
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._elide()
+
+    def _elide(self) -> None:
+        self.setText(self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideMiddle, max(self.width(), 1)))
+
+
+class _EnabledMirror(QObject):
+    """Keeps a label's enabled state in step with its input's, so a greyed
+    input greys its caption too."""
+
+    def __init__(self, src: QWidget, lbl: QLabel) -> None:
+        super().__init__(src)
+        self._lbl = lbl
+        src.installEventFilter(self)
+
+    def eventFilter(self, obj, ev) -> bool:
+        if ev.type() == QEvent.Type.EnabledChange:
+            self._lbl.setEnabled(obj.isEnabled())
+        return False
+
+
+def gate(switches, *dependents: QWidget) -> None:
+    """Grey out `dependents` while none of the check boxes in `switches` is
+    ticked: the numbers behind a switch look dead when the switch is off.
+    Follows the switch however it changes, including code setting it."""
+    if isinstance(switches, QAbstractButton):
+        switches = [switches]
+
+    def sync(*_a) -> None:
+        on = any(s.isChecked() for s in switches)
+        for w in dependents:
+            w.setEnabled(on)
+
+    for s in switches:
+        s.toggled.connect(sync)
+    sync()
+
+
+def show_item(w: QWidget, on: bool) -> None:
+    """Show or hide one `pairs_grid` input together with its caption."""
+    w.setVisible(on)
+    lbl = getattr(w, "_grid_label", None)
+    if lbl is not None:
+        lbl.setVisible(on)
+
+
 def pairs_grid(*rows, per_row: int | None = None,
                gap: int = 28) -> QGridLayout:
     """Items in aligned columns: each row is (label, widget, label, widget, ...)
@@ -120,8 +188,13 @@ def pairs_grid(*rows, per_row: int | None = None,
                 first = w.itemAt(0).widget() if isinstance(w, QLayout) else w
                 lbl.setToolTip(first.toolTip() if first is not None else "")
                 lbl.setProperty("tipMirror", True)
+                if first is not None:       # for _field_label
+                    first.setProperty("gridLabel", label)
                 g.addWidget(lbl, r, base)
                 cols[k]["lab"].append(lbl)
+                if not isinstance(w, QLayout):
+                    _EnabledMirror(w, lbl)
+                    w._grid_label = lbl     # for show_item
                 col, span = base + 1, 1
             else:
                 col, span = base, 2
@@ -254,6 +327,9 @@ def collapsible(box: QGroupBox, expanded: bool = True) -> QGroupBox:
     def _show(on: bool) -> None:
         for w in kids:
             w.setVisible(on)
+        # A nested grid caches its size; without this the box keeps it.
+        for lay in box.findChildren(QLayout):
+            lay.invalidate()
         _arrow(box, on)
 
     box.setCheckable(True)
@@ -293,6 +369,8 @@ def _field_label(w: QWidget, box: QGroupBox) -> str:
     its form-row label, looked up through any row layout it sits in."""
     if isinstance(w, QAbstractButton) and w.text():
         return w.text()
+    if w.property("gridLabel"):             # set by pairs_grid
+        return str(w.property("gridLabel")).rstrip(":")
     # In a row of several inputs, the label just before it names it.
     from PyQt6.QtWidgets import QLayout
     for lay in box.findChildren(QLayout):

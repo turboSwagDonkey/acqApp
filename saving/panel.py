@@ -56,6 +56,7 @@ class SavePanel(QWidget):
         self._cmb_drive = compact(QComboBox())
         self._reload_drives()
         self._cmb_drive.activated.connect(self._on_drive_picked)
+        self._cmb_drive.setToolTip("The drive recordings go to, with its free space.")
         self._btn_scan = QPushButton("Scan drives")
         self._btn_scan.setToolTip(
             "Write ~1 GiB to each drive to measure its real sustained write "
@@ -78,7 +79,9 @@ class SavePanel(QWidget):
 
         self._ed_folder = QLineEdit(self._cfg.folder)
         self._ed_folder.editingFinished.connect(self._on_edited)
+        self._ed_folder.setToolTip("Where each session's folder is made.")
         btn_browse = QPushButton("Browse…")
+        btn_browse.setToolTip("Pick the folder.")
         btn_browse.clicked.connect(self._on_browse)
         btn_open = QPushButton("Open")
         btn_open.setToolTip("Open this folder in Explorer")
@@ -94,11 +97,13 @@ class SavePanel(QWidget):
 
         self._ed_mouse_id = compact(QLineEdit(self._cfg.mouse_id), chars=16)
         self._ed_mouse_id.setPlaceholderText("animal / mouse ID")
+        self._ed_mouse_id.setToolTip("Goes in the filename as {mouse_id}.")
         self._ed_mouse_id.editingFinished.connect(self._on_edited)
         lay.addRow("Mouse ID:", self._ed_mouse_id)
 
         self._ed_project = compact(QLineEdit(self._cfg.project), chars=16)
         self._ed_project.setPlaceholderText("optional project label")
+        self._ed_project.setToolTip("Goes in the filename as {project}.")
         self._ed_project.editingFinished.connect(self._on_edited)
         lay.addRow("Project:", self._ed_project)
 
@@ -109,6 +114,7 @@ class SavePanel(QWidget):
 
         self._chk_fov = QCheckBox("Append active FOV name")
         self._chk_fov.setChecked(self._cfg.append_fov)
+        self._chk_fov.setToolTip("Add the name of the FOV the stage is at to the filename.")
         self._chk_fov.toggled.connect(self._on_edited)
         lay.addRow("", self._chk_fov)
         self._update_fov_checkbox()

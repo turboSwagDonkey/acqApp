@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
-                             QLabel, QWidget)
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox, QLabel, QWidget
 
-from acqApp.widgets import compact, spin
+from acqApp.widgets import compact, pairs_grid, sections_help, spin
 
 from acqApp.devices.wheel.settings import EncoderSettings
 
@@ -28,29 +27,28 @@ class SettingsPanel(QWidget):
         self._edt_chan.setEditable(True)
         self._edt_chan.addItems(["Dev3/ai2", "Dev3/ai0", "Dev3/ai1"])
         self._edt_chan.setCurrentText(self._s.channel)
-        lay.addRow("Channel:", self._edt_chan)
+        self._edt_chan.setToolTip("The DAQ analog input the encoder is wired to.")
 
         self._spn_rate = spin(1.0, 1000.0, self._s.rate, decimals=2,
-                              suffix=" Hz")
-        lay.addRow("Sample rate:", self._spn_rate)
+                              suffix=" Hz",
+                              tooltip="How often the encoder voltage is read.")
 
         # 0 means "not calibrated" (None in the settings).
         self._spn_vpr = spin(0.0, 20.0, self._s.volts_per_rev or 0.0,
                              decimals=3, suffix=" V/rev")
         self._spn_vpr.setSpecialValueText("— (raw V)")
+        self._spn_vpr.setToolTip("Encoder volts per full turn. Empty: report "
+                                 "raw volts.")
 
         self._spn_dia = spin(0.0, 500.0, self._s.wheel_dia_mm or 0.0,
                              decimals=2, suffix=" mm")
         self._spn_dia.setSpecialValueText("— (no linear)")
+        self._spn_dia.setToolTip("Turns the wheel's rotation into distance "
+                                 "run. Empty: no distance.")
 
-        # The two calibration values share a row.
-        cal_row = QHBoxLayout()
-        cal_row.setContentsMargins(0, 0, 0, 0)
-        cal_row.addWidget(self._spn_vpr)
-        cal_row.addWidget(QLabel("Wheel dia"))
-        cal_row.addWidget(self._spn_dia)
-        cal_row.addStretch()
-        lay.addRow("V / rev:", cal_row)
+        lay.addRow(pairs_grid(
+            ("Channel:", self._edt_chan, "Sample rate:", self._spn_rate),
+            ("V / rev:", self._spn_vpr, "Wheel dia:", self._spn_dia)))
 
         # valueChanged, not editingFinished: arrow-key nudges never "finish"
         # editing, so they never reached the worker or the saved settings.
@@ -64,8 +62,10 @@ class SettingsPanel(QWidget):
         f.setPointSize(f.pointSize() + 1)
         f.setBold(True)
         self._lbl_readout.setFont(f)
+        self._lbl_readout.setToolTip("Live speed and net distance run.")
         lay.addRow("Live:", self._lbl_readout)
 
+        sections_help(self, keep=True)
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)

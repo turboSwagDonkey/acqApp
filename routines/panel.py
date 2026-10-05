@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import compact, spin
+from acqApp.widgets import ElidedLabel, compact, spin
 from acqApp.routines import templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
@@ -279,6 +279,11 @@ class SettingsPanel(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet("color:#9aa0a6;")
         rlay.addWidget(note)
+
+        self._lbl_saved = ElidedLabel()
+        self._lbl_saved.setStyleSheet("color:#9aa0a6; font-size:10px;")
+        self._lbl_saved.hide()
+        rlay.addWidget(self._lbl_saved)
         root.addWidget(rgrp)
 
         self._txt_name.editingFinished.connect(self._emit)
@@ -523,6 +528,12 @@ class SettingsPanel(QWidget):
             self._refresh_summary()
 
     # ── run state ────────────────────────────────────────────────────────────
+    def set_save_location(self, text: str) -> None:
+        """Where the routine's files go (or the one being written); empty
+        hides the line."""
+        self._lbl_saved.set_full_text(text)
+        self._lbl_saved.setVisible(bool(text))
+
     def set_state(self, phase: str, text: str, row: int | None = None) -> None:
         """Called from the adapter's display tick. `row` is the step running."""
         self._set_phase(phase, text)

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from acqApp import style
-from acqApp.widgets import compact, spin
+from acqApp.widgets import compact, pairs_grid, sections_help, show_item, spin
 from acqApp.acq.sync import DEFAULT_TICK_MS
 from .settings import (IMPLEMENTED_TRIAL_TYPES, REGION_TRIAL_TYPES,
                        TRIAL_CONTRAST, TRIAL_GRATING, TRIAL_MAP, TRIAL_SIZE,
@@ -91,8 +91,6 @@ _VISUOMOTOR_FIELDS = [
     ("VisuomotorGain", "Gain (px drift / wheel unit)", -100, 100, 0.1, 3),
     ("VisuomotorDurationTicks", "Trial duration", 1, 100000, 1, 0),
 ]
-# Fields that share the previous field's row, with their short label.
-_SAME_ROW = {"StimYPosition": "Y", "TriggersStim": "Stim"}
 
 
 class SettingsPanel(QWidget):
@@ -104,7 +102,7 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self._s = settings or VisStimSettings()
         self._spins: dict[str, QDoubleSpinBox] = {}
-        self._rows: dict[str, QWidget] = {}    # field -> its form row's widget
+        self._rows: dict[str, QWidget] = {}    # field -> its spin box
         self._build()
 
     def _build(self) -> None:
@@ -141,6 +139,7 @@ class SettingsPanel(QWidget):
         root.addWidget(self._display_group())
         root.addWidget(self._run_group())
         root.addStretch()
+        sections_help(self, keep=True)
         self._update_group_visibility()
 
     # ── trial type ────────────────────────────────────────────────────────
@@ -162,7 +161,9 @@ class SettingsPanel(QWidget):
         self._cmb_trial.setCurrentIndex(idx if idx >= 0 else 0)
         self._cmb_trial.currentIndexChanged.connect(self._emit)
         self._cmb_trial.currentIndexChanged.connect(self._update_group_visibility)
-        lay.addRow("Type:", self._cmb_trial)
+        self._cmb_trial.setToolTip("What the stimulus does; the boxes below "
+                                   "show only what this type uses.")
+        lay.addRow(pairs_grid(("Type:", self._cmb_trial)))
         return grp
 
     def _update_group_visibility(self, *_a) -> None:
@@ -181,26 +182,21 @@ class SettingsPanel(QWidget):
         self._grp_loops.setVisible(grating_like)
 
         self._grp_grating.setVisible(grating_like)
-        grating_lay = self._grp_grating.layout()
         for name in ("WaveTempPeriodInHz", "PeriodsToShow"):
-            grating_lay.setRowVisible(self._rows[name], t != TRIAL_VISUOMOTOR)
-
-        trig_lay = self._grp_trigger.layout()
+            show_item(self._rows[name], t != TRIAL_VISUOMOTOR)
         for name in ("TriggersBlank", "TriggersStim"):
-            trig_lay.setRowVisible(self._rows[name], grating_like)
+            show_item(self._rows[name], grating_like)
 
-        geo_lay = self._grp_geometry.layout()
         show_orientation = grating_like or t in (TRIAL_CONTRAST, TRIAL_SIZE)
         for name in ("StimDiameter", "StimXPosition", "StimYPosition"):
-            geo_lay.setRowVisible(self._rows[name], grating_like)
-        geo_lay.setRowVisible(self._rows["Orientation"], show_orientation)
+            show_item(self._rows[name], grating_like)
+        show_item(self._rows["Orientation"], show_orientation)
         self._grp_geometry.setVisible(grating_like or show_orientation)
 
     def _field_group(self, title: str, fields) -> QGroupBox:
+        """Two fields a line, in aligned columns like the other panels."""
         grp = QGroupBox(title)
-        lay = QFormLayout(grp)
-        lay.setSpacing(4)
-        rows: list[list[tuple[str, str, QDoubleSpinBox]]] = []
+        items = []
         for name, label, lo, hi, step, dec in fields:
             value = getattr(self._s.params, name)
             if name in _TICK_FIELDS:
@@ -210,29 +206,10 @@ class SettingsPanel(QWidget):
             else:
                 box = spin(lo, hi, value, decimals=dec, step=step)
             box.valueChanged.connect(self._emit)
-            self._spins[name] = box
-            if name in _SAME_ROW and rows:
-                rows[-1].append((name, _SAME_ROW[name], box))
-            else:
-                rows.append([(name, label, box)])
-
-        for row in rows:
-            name, label, box = row[0]
-            if len(row) == 1:
-                lay.addRow(f"{label}:", box)
-                self._rows[name] = box
-                continue
-            # A shared row is one widget, so setRowVisible can find it.
-            holder = QWidget()
-            hl = QHBoxLayout(holder)
-            hl.setContentsMargins(0, 0, 0, 0)
-            for i, (n, short, b) in enumerate(row):
-                if i:
-                    hl.addWidget(QLabel(short))
-                hl.addWidget(b)
-                self._rows[n] = holder
-            hl.addStretch()
-            lay.addRow(f"{label}:", holder)
+            self._spins[name] = self._rows[name] = box
+            items += [f"{label}:", box]
+        QVBoxLayout(grp).addLayout(pairs_grid(*(items[k:k + 4]
+                                                for k in range(0, len(items), 4))))
         return grp
 
     # ── loop variables ───────────────────────────────────────────────────
@@ -244,23 +221,24 @@ class SettingsPanel(QWidget):
         self._lst_loops.currentRowChanged.connect(self._select_loop)
         lay.addWidget(self._lst_loops)
 
-        form = QFormLayout()
         self._edt_loop_name = compact(QLineEdit(), chars=20)
         self._edt_loop_name.setPlaceholderText("e.g. Orientation")
         self._edt_loop_vals = compact(QLineEdit(), chars=28)
         self._edt_loop_vals.setPlaceholderText("0,45,90,135  or  0:45:315")
-        form.addRow("Field name:", self._edt_loop_name)
-        form.addRow("Values:", self._edt_loop_vals)
-        lay.addLayout(form)
+        self._edt_loop_name.setToolTip("A stimulus parameter to step through.")
+        self._edt_loop_vals.setToolTip("The values it takes, one per trial: "
+                                       "a list, or start:step:stop.")
+        lay.addLayout(pairs_grid(("Field name:", self._edt_loop_name),
+                                 ("Values:", self._edt_loop_vals)))
 
-        row = QHBoxLayout()
         btn_add = QPushButton("Add / update")
         btn_add.clicked.connect(self._add_loop)
         btn_del = QPushButton("Delete")
         btn_del.clicked.connect(self._delete_loop)
-        row.addWidget(btn_add)
-        row.addWidget(btn_del)
-        lay.addLayout(row)
+        btn_add.setToolTip("Add this loop variable, or update it if the "
+                           "name is already listed.")
+        btn_del.setToolTip("Remove the selected loop variable.")
+        lay.addLayout(pairs_grid((None, btn_add, None, btn_del)))
         self._refresh_loops()
         return grp
 
@@ -307,25 +285,27 @@ class SettingsPanel(QWidget):
     # ── display ───────────────────────────────────────────────────────────
     def _display_group(self) -> QGroupBox:
         grp = QGroupBox("Display")
-        lay = QFormLayout(grp)
-        lay.setSpacing(4)
+        lay = QVBoxLayout(grp)
 
         self._cmb_screen = compact(QComboBox())
         self._refresh_screens()
         self._cmb_screen.currentIndexChanged.connect(self._emit)
-        lay.addRow("Show on:", self._cmb_screen)
+        self._cmb_screen.setToolTip("The monitor the stimulus is drawn on.")
 
         self._btn_identify = QPushButton("Identify displays")
         self._btn_identify.setToolTip(
             "Briefly show each display's number/name on that monitor, so "
             "you can match it to a \"Show on:\" entry above.")
         self._btn_identify.clicked.connect(self._identify_displays)
-        lay.addRow(self._btn_identify)
 
         self._chk_stretch = QCheckBox("Stretch to screen")
         self._chk_stretch.setChecked(self._s.stretch_to_screen)
+        self._chk_stretch.setToolTip("Fill the whole screen with the stimulus "
+                                     "field.")
         self._chk_stretch.toggled.connect(self._emit)
-        lay.addRow(self._chk_stretch)
+        lay.addLayout(pairs_grid(
+            ("Show on:", self._cmb_screen, None, self._btn_identify),
+            (None, self._chk_stretch)))
         return grp
 
     def _refresh_screens(self) -> None:

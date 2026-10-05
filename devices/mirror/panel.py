@@ -36,6 +36,10 @@ class SettingsPanel(QWidget):
             b.setCheckable(True)
             b.setStyleSheet(style.solid_btn("mirror"))
             row.addWidget(b)
+        self._btn_cam.setToolTip("The light path goes to the camera. Click "
+                                 "after setting both ThorImage switches.")
+        self._btn_pmt.setToolTip("The light path goes to the PMT. Click after "
+                                 "setting both ThorImage switches.")
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self._group.addButton(self._btn_cam)

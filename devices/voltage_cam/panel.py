@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import compact, spin
+from acqApp.widgets import compact, pairs_grid, sections_help, spin
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
@@ -55,7 +55,8 @@ class SettingsPanel(QWidget):
         self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(start))
         self._cmb_preset.currentIndexChanged.connect(
             lambda i: self.resolution_changed.emit(self._cmb_preset.itemData(i)))
-        lay.addRow("Resolution:", self._cmb_preset)
+        self._cmb_preset.setToolTip("Sensor area and the link rate it allows. "
+                                    "Takes effect at the next Start.")
 
         self._cmb_binning = compact(QComboBox())
         for b in BINNING_OPTIONS:
@@ -64,12 +65,17 @@ class SettingsPanel(QWidget):
         self._cmb_binning.currentIndexChanged.connect(
             lambda i: self.binning_changed.emit(BINNING_OPTIONS[i])
         )
-        lay.addRow("Binning:", self._cmb_binning)
+        self._cmb_binning.setToolTip("Combine pixels: 2×2 quarters the data "
+                                     "per frame. Takes effect at the next "
+                                     "Start.")
 
         self._cmb_trigger = compact(QComboBox())
         self._cmb_trigger.addItems(TRIGGER_MODES)
         self._cmb_trigger.setCurrentText(self._cfg.trigger_mode)
         self._cmb_trigger.currentTextChanged.connect(self.trigger_changed)
+        self._cmb_trigger.setToolTip("Internal: the camera free-runs. External "
+                                     "edge: each pulse on the trigger input "
+                                     "starts capture. Next Start.")
 
         # -1 pulse of headroom: SYNCREADOUT asks for N+1 (presets.burst_pulses).
         self._spn_burst = spin(
@@ -81,14 +87,6 @@ class SettingsPanel(QWidget):
                     "A routine sets this from its Record length at Start.")
         self._spn_burst.setSpecialValueText("Off")
         self._spn_burst.valueChanged.connect(self.burst_changed)
-        # Frames per edge only applies to the trigger, so it shares its row.
-        trig_row = QHBoxLayout()
-        trig_row.setContentsMargins(0, 0, 0, 0)
-        trig_row.addWidget(self._cmb_trigger)
-        trig_row.addWidget(QLabel("Per edge"))
-        trig_row.addWidget(self._spn_burst)
-        trig_row.addStretch()
-        lay.addRow("Trigger:", trig_row)
         self._cmb_trigger.currentTextChanged.connect(self._sync_burst_enabled)
 
         self._spn_target_hz = spin(
@@ -99,16 +97,19 @@ class SettingsPanel(QWidget):
                     "A rate it can't reach is clamped, and the console says so.")
         self._spn_target_hz.setSpecialValueText("Max")
         self._spn_target_hz.valueChanged.connect(self.target_hz_changed)
-        lay.addRow("Capture rate:", self._spn_target_hz)
 
         self._lbl_rate = QLabel()
-        lay.addRow("Frame rate:", self._lbl_rate)
+        self._lbl_rate.setWordWrap(True)
+        self._lbl_rate.setToolTip("The frame rate you get: measured once the "
+                                  "camera runs, the datasheet estimate before.")
 
         # Whether a recording can be written: full frame at bin 1 offers more
         # than the writer sustains and silently sheds the rest.
         self._lbl_rec = QLabel()
         self._lbl_rec.setWordWrap(True)
-        lay.addRow("Recording:", self._lbl_rec)
+        self._lbl_rec.setToolTip("Whether the disk writer keeps up with this "
+                                 "rate at this frame size. Live view is "
+                                 "unaffected.")
 
         self._chk_lut = QCheckBox("Show LUT")
         self._chk_lut.setChecked(self._cfg.show_lut)
@@ -125,22 +126,25 @@ class SettingsPanel(QWidget):
         self._chk_auto.toggled.connect(self.auto_levels_changed)
 
         self._spn_preview_avg = spin(
-            1, 8, self._cfg.preview_avg, prefix="avg ",
+            1, 8, self._cfg.preview_avg, suffix=" frames",
             tooltip="Average this many recent preview frames before display.\n"
                     "1 = off. The recorded file still gets every raw frame.")
         self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
 
-        disp_row = QWidget()
-        disp_lay = QHBoxLayout(disp_row)
-        disp_lay.setContentsMargins(0, 0, 0, 0)
-        disp_lay.addWidget(self._chk_lut)
-        disp_lay.addWidget(self._chk_auto)
-        disp_lay.addWidget(self._spn_preview_avg)
-        disp_lay.addStretch()
-        lay.addRow("Display:", disp_row)
+        # Same shape as the pupil panel: a line per theme, aligned columns.
+        lay.addRow(pairs_grid(("Resolution:", self._cmb_preset)))
+        lay.addRow(pairs_grid(
+            ("Binning:", self._cmb_binning,
+             "Capture rate:", self._spn_target_hz),
+            ("Trigger:", self._cmb_trigger, "Frames per edge:", self._spn_burst)))
+        lay.addRow(self._lbl_rate)
+        lay.addRow(self._lbl_rec)
+        lay.addRow(pairs_grid(
+            (None, self._chk_lut, None, self._chk_auto,
+             "Preview average:", self._spn_preview_avg)))
 
         led = QGroupBox("Illumination")
-        ll = QHBoxLayout(led)
+        ll = QVBoxLayout(led)
         self._chk_led = QCheckBox("Primary LED")
         self._chk_led.toggled.connect(self.led_toggled)
         self._chk_led_follow = QCheckBox("Follow Live view")
@@ -149,15 +153,16 @@ class SettingsPanel(QWidget):
             "Turn the LED on when Live view/Record starts and off when it "
             "stops. The checkbox above still overrides it at any time.")
         self._chk_led_follow.toggled.connect(self.led_follow_changed)
-        ll.addWidget(self._chk_led)
-        ll.addWidget(self._chk_led_follow)
-        ll.addStretch()
+        self._chk_led.setToolTip("Turn the primary LED on or off now.")
+        ll.addLayout(pairs_grid((None, self._chk_led, None,
+                                 self._chk_led_follow)))
 
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addRow(grp)
         root.addRow(led)
 
+        sections_help(self, keep=True)
         self._locked = [self._cmb_preset, self._cmb_binning, self._cmb_trigger,
                         self._spn_burst]
         self._running = False

@@ -484,9 +484,13 @@ def _part_mirror() -> int:  # noqa: PLR0915 — one linear scenario
 
     r.check(titles(panel.tracking) == titles(dlg._ctl),
             f"same sections in the same order ({titles(dlg._ctl)})")
+    dlg._ctl._chk_smooth.setChecked(True)
     r.check(not dlg._ctl._chk_track.isVisibleTo(dlg)
             and dlg._ctl._spn_smooth_win.isEnabled(),
-            "review hides 'Track the pupil'; smoothing is usable")
+            "review hides 'Track the pupil'; smoothing is usable once ticked")
+    dlg._ctl._chk_smooth.setChecked(False)
+    r.check(not dlg._ctl._spn_smooth_win.isEnabled(),
+            "an unticked switch greys out its numbers")
 
     # Region: box dragged -> numbers; numbers typed -> box.
     dlg._region.setPos((30, 20))

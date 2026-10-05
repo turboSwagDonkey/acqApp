@@ -3006,6 +3006,12 @@ def check_file_rolling(r: Report, app, tmp) -> None:
             f"control: single mode never rolls, over the identical protocol "
             f"({n3})")
 
+    adapter._show_save_location()
+    shown = panel._lbl_saved.toolTip()
+    r.check(shown.startswith("Saves under: ") and str(out) in shown
+            and "roll" in shown and panel._lbl_saved.isVisibleTo(panel),
+            f"the Run box says where files are saved ({shown!r})")
+
     win.close()
     pump(app, 0.2)
 

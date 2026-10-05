@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import compact, spin
+from acqApp.widgets import compact, pairs_grid, sections_help, spin
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
@@ -416,11 +416,11 @@ class SettingsPanel(QWidget):
         # Only ports that exist now: Windows renumbers them freely.
         self._cmb_port.addItems(_available_ports(self._s.port))
         self._cmb_port.setCurrentText(self._s.port)
-        lay.addRow("Port:", self._cmb_port)
+        self._cmb_port.setToolTip("The stage controller's serial port.")
 
         self._spn_rate = spin(0.5, 50.0, self._s.poll_hz, decimals=2,
-                              suffix=" Hz")
-        lay.addRow("Poll rate:", self._spn_rate)
+                              suffix=" Hz",
+                              tooltip="How often the stage position is read.")
 
         self._spn_rotation = spin(
             -180.0, 180.0, self._s.frame_rotation_deg, decimals=1, suffix=" °",
@@ -428,7 +428,9 @@ class SettingsPanel(QWidget):
                     "matches 'up' on the camera regardless of how the stage is "
                     "physically mounted. Absolute go-to, soft limits and "
                     "calibration are unaffected. 0 = off.")
-        lay.addRow("Frame rotation:", self._spn_rotation)
+        lay.addRow(pairs_grid(
+            ("Port:", self._cmb_port, "Poll rate:", self._spn_rate),
+            ("Frame rotation:", self._spn_rotation)))
 
         self._cmb_port.currentTextChanged.connect(self._emit_settings)
         self._spn_rate.valueChanged.connect(self._emit_settings)
@@ -454,6 +456,7 @@ class SettingsPanel(QWidget):
         pos_row.addStretch()
         lay.addRow("Position (µm):", pos_row)
         root.addWidget(grp)
+        sections_help(grp, keep=True)
 
         # ── Travel map (+ Z gauge, beside it) ────────────────────────────────
         map_grp = QGroupBox("Position in travel")
@@ -522,6 +525,12 @@ class SettingsPanel(QWidget):
             btn_go = _btn("Go", 34, r, 5, lambda _, k=key: self._goto(k))
             btn_stop = _btn("Stop", 44, r, 6, lambda _, k=key: self._stop(k))
 
+            spn_step.setToolTip(f"How far one {ax.name} jog click moves.")
+            btn_minus.setToolTip(f"Jog {ax.name} down by one Step.")
+            btn_plus.setToolTip(f"Jog {ax.name} up by one Step.")
+            spn_goto.setToolTip(f"Where {ax.name} goes when you press Go.")
+            btn_go.setToolTip(f"Move {ax.name} to the Go to position.")
+            btn_stop.setToolTip(f"Stop {ax.name} now.")
             self._axis_widgets[key] = {
                 "step": spn_step, "goto": spn_goto,
                 "buttons": [btn_minus, btn_plus, btn_go, btn_stop],
@@ -529,6 +538,7 @@ class SettingsPanel(QWidget):
         # Spare width goes to an empty last column, keeping the rows left.
         grid.setColumnStretch(7, 1)
         root.addWidget(self._motion)
+        sections_help(self._motion, keep=True)
 
         # ── Session home + go-to-origin (navigation, not calibration) ───────
         self._nav = QGroupBox("Home (this session)")

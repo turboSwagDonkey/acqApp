@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from acqApp.widgets import compact, hrow, pairs_grid, spin
+from acqApp.widgets import compact, gate, hrow, pairs_grid, spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 HINT_STYLE = "color:#9aa0a6;"
@@ -143,6 +143,8 @@ class TrackingControls(QWidget):
             (None, self._chk_blink, "Drop of:", self._spn_blink_drop,
              "Baseline:", self._spn_blink_win),
             (None, self._chk_rim)))
+        gate(self._chk_smooth, self._spn_smooth_win)
+        gate(self._chk_blink, self._spn_blink_drop, self._spn_blink_win)
 
         for w in (self._chk_smooth, self._chk_blink, self._chk_rim):
             w.toggled.connect(self._fire)
@@ -196,13 +198,17 @@ class TrackingControls(QWidget):
         self._btn_pins_clear.clicked.connect(self.clear_pins)
         self._show_pins()
 
+        # A line per feature, as above; the painting-out numbers serve both.
+        pins = hrow(self._lbl_pins, self._btn_pins_clear)
         QVBoxLayout(box).addLayout(self._grid(
-            (None, self._chk_cr, None, self._chk_whiskers,
-             None, hrow(self._lbl_pins, self._btn_pins_clear)),
-            ("Brighter than:", self._spn_cr_thr,
-             "Search out to:", self._spn_cr_reach,
-             "Grow by:", self._spn_cr_pad),
-            ("Fill from:", self._spn_cr_ring)))
+            (None, self._chk_cr, "Brighter than:", self._spn_cr_thr,
+             "Search out to:", self._spn_cr_reach),
+            (None, pins, "Grow by:", self._spn_cr_pad,
+             "Fill from:", self._spn_cr_ring),
+            (None, self._chk_whiskers)))
+        gate(self._chk_cr, self._spn_cr_thr, self._spn_cr_reach)
+        gate([self._chk_cr, self._chk_whiskers],
+             self._spn_cr_pad, self._spn_cr_ring)
 
         for w in (self._chk_cr, self._chk_whiskers):
             w.toggled.connect(self._fire)
