@@ -195,6 +195,7 @@ devices/                one package per instrument
                         one widget shared by panel.py and review_dialog.py
     tracking.py         settings + a frame in, a PupilFit out; no Qt, no EyeLoop
     video.py            third frame source: replay recorded footage
+    whiskers.py         long straight bright ridges found and painted over; no Qt
   stage/
     acquisition.py      read-only position poller; never issues motion
     backend.py          which driver is plugged in; probes the port and picks

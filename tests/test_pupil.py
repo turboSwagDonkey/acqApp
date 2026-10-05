@@ -1565,9 +1565,104 @@ def _part_rim() -> int:  # noqa: PLR0915 — one linear scenario
     return r.finish()
 
 
+# ═══ whiskers: painted over before the fit (session co) ═══════════════════
+
+def whiskered_eye(glint=None):
+    """The synthetic eye with a bright whisker through the pupil's centre."""
+    import cv2
+    img = synthetic_eye(glint=glint)
+    cv2.line(img, (60, 120), (340, 300), 200, 3)
+    return img
+
+
+def _part_whiskers() -> int:  # noqa: PLR0915 — one linear scenario
+    """`track_whiskers` finds long straight bright ridges and fills them from
+    their surroundings; the control (off) fits around the whisker.
+    VF203.2R: 30/33 vs 26 by the same judges (SESSIONLOG co)."""
+    isolate_user_state()
+    r = Report("pupil-whiskers")
+    from acqApp.devices.pupil_cam.eyeloop_tracker import EYELOOP_DIR
+    from acqApp.devices.pupil_cam.review import _settings_from, same_tracking
+    from acqApp.devices.pupil_cam.whiskers import paint_whiskers, whisker_mask
+
+    r.check(PupilSettings().track_whiskers is True,
+            "on by default (it won on VF203.2R, changed nothing on VF215.4LL)")
+
+    img = whiskered_eye()
+    m = whisker_mask(img)
+    on_line = img >= 200
+    r.check(m[on_line].mean() > 0.95,
+            f"the whisker is found ({m[on_line].mean():.0%} of its pixels)")
+    r.check(not whisker_mask(synthetic_eye(glint=(215, 190, 6))).any(),
+            "control: a pupil and a round reflection are not whiskers")
+    painted = paint_whiskers(img, m)
+    yy, xx = np.ogrid[:400, :400]
+    inside = on_line & ((xx - 200) ** 2 + (yy - 200) ** 2 < 40 ** 2)
+    outside = on_line & ((xx - 200) ** 2 + (yy - 200) ** 2 > 75 ** 2)
+    r.check(painted[inside].max() < 80 and abs(int(np.median(painted[outside])) - 150) < 15,
+            f"painted from its surroundings: dark over the pupil (max "
+            f"{painted[inside].max()}), grey outside "
+            f"(median {np.median(painted[outside]):.0f})")
+    r.check(paint_whiskers(img, np.zeros_like(m)) is img,
+            "nothing found: the frame is passed through untouched")
+
+    old = {f: v for f, v in PupilSettings().__dict__.items()
+           if f != "track_whiskers"}
+    r.check(_settings_from(old).track_whiskers is False
+            and _settings_from({**old, "track_whiskers": True}).track_whiskers,
+            "a sidecar written before the option loads it off (it wasn't "
+            "applied); a newer one keeps what it says")
+    r.check(not same_tracking(PupilSettings(),
+                              PupilSettings(track_whiskers=False)),
+            "Review: toggling it marks the trace stale")
+
+    app = qt_app()
+    from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
+    tc = TrackingControls(PupilSettings(), live=False)
+    tc.show_settings(PupilSettings(track_whiskers=False))
+    r.check(tc.settings_into(PupilSettings()).track_whiskers is False,
+            "panel: the check box round-trips the setting")
+    tc.deleteLater()
+    pump(app, 0.05)
+
+    if not (EYELOOP_DIR / "eyeloop").is_dir():
+        print(f"[pupil-whiskers] no EyeLoop clone at {EYELOOP_DIR} — "
+              f"skipping the tracking checks")
+        return r.finish()
+
+    def fit(frame, on):
+        st = PupilSettings(track=True, track_threshold=60, limit_x0=50,
+                           limit_y0=50, limit_x1=350, limit_y1=350,
+                           track_whiskers=on)
+        pt, out = PupilTracking(), None
+        for _ in range(3):
+            out = pt.track(frame, st)
+        return out, pt
+
+    def err(f):
+        return (99.0 if f is None else
+                max(abs(f.center_x - 200), abs(f.center_y - 200), abs(f.radius - 55)))
+
+    off, _ = fit(img, False)
+    on, pt = fit(img, True)
+    r.check(err(off) > 5,
+            f"control: with it off the whisker spoils the fit (off by {err(off):.1f} px)")
+    r.check(err(on) < 2,
+            f"with it on the pupil is fitted (within {err(on):.1f} px of the truth)")
+    r.check(pt.last_mask is not None and pt.last_mask.sum() >= m[50:350, 50:350].sum(),
+            "what was painted is in the shown mask (with any reflections)")
+    clean_on, _ = fit(synthetic_eye(), True)
+    clean_off, _ = fit(synthetic_eye(), False)
+    r.check(clean_on is not None and clean_off is not None
+            and abs(clean_on.radius - clean_off.radius) < 1e-9,
+            "no whisker: the fit is the same with it on")
+    return r.finish()
+
+
 PARTS = {
     "eyeloop": _part_eyeloop,
     "rim": _part_rim,
+    "whiskers": _part_whiskers,
     "track": _part_track,
     "pins": _part_pins,
     "lock": _part_lock,

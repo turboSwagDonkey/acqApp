@@ -166,8 +166,9 @@ class TrackingControls(QWidget):
     # ── bright spots on the eye ─────────────────────────────────────────────
     def _build_cr(self, s: PupilSettings) -> QGroupBox:
         box = QGroupBox("Reflections")
-        box.setToolTip("Paints over the light's bright spots before fitting; "
-                       "what it removes is shown red on the image.")
+        box.setToolTip("Paints over the light's bright spots (and whiskers) "
+                       "before fitting; what it removes is shown red on the "
+                       "image.")
         vb = QVBoxLayout(box)
         vb.setSpacing(4)
 
@@ -190,6 +191,11 @@ class TrackingControls(QWidget):
         form.addRow("Search out to:", self._spn_cr_reach)
         vb.addLayout(form)
 
+        self._chk_whiskers = QCheckBox("Paint over whiskers")
+        self._chk_whiskers.setChecked(s.track_whiskers)
+        self._chk_whiskers.setToolTip("Long straight bright lines across the "
+                                      "eye are filled in before fitting.")
+        vb.addWidget(self._chk_whiskers)
 
         prow = QHBoxLayout()
         prow.setContentsMargins(0, 0, 0, 0)
@@ -206,7 +212,8 @@ class TrackingControls(QWidget):
         vb.addLayout(prow)
         self._show_pins()
 
-        self._chk_cr.toggled.connect(self._fire)
+        for w in (self._chk_cr, self._chk_whiskers):
+            w.toggled.connect(self._fire)
         for w in (self._spn_cr_thr, self._spn_cr_pad, self._spn_cr_ring,
                   self._spn_cr_reach):
             w.valueChanged.connect(self._fire)
@@ -234,6 +241,7 @@ class TrackingControls(QWidget):
             blink_baseline_window=self._spn_blink_win.value(),
             track_rim_check=self._chk_rim.isChecked(),
             cr_remove=self._chk_cr.isChecked(),
+            track_whiskers=self._chk_whiskers.isChecked(),
             cr_threshold=self._spn_cr_thr.value(),
             cr_pad=self._spn_cr_pad.value(), cr_ring=self._spn_cr_ring.value(),
             cr_reach=self._spn_cr_reach.value(), cr_pins=list(self._pins))
@@ -260,7 +268,8 @@ class TrackingControls(QWidget):
             for w, v in ((self._chk_track, s.track), (self._chk_smooth, s.smooth),
                          (self._chk_blink, s.blink_detect),
                          (self._chk_rim, s.track_rim_check),
-                         (self._chk_cr, s.cr_remove)):
+                         (self._chk_cr, s.cr_remove),
+                         (self._chk_whiskers, s.track_whiskers)):
                 w.setChecked(bool(v))
             i = self._cmb_model.findData(s.track_model)
             self._cmb_model.setCurrentIndex(i if i >= 0 else 0)

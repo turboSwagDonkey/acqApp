@@ -31,7 +31,7 @@ _NAN5 = (float("nan"),) * 5
 # What the auto fit depends on; the rest (camera, display, LED) does not.
 _TRACK_FIELDS = ("limit_x0", "limit_y0", "limit_x1", "limit_y1",
                  "track_threshold", "track_blur", "track_model",
-                 "track_rim_check", "track_rim_dark",
+                 "track_rim_check", "track_rim_dark", "track_whiskers",
                  "blink_detect", "blink_drop_frac", "blink_baseline_window",
                  "cr_remove", "cr_threshold", "cr_pad", "cr_ring", "cr_reach",
                  "cr_pins")
@@ -57,6 +57,9 @@ def _row_from(fit) -> tuple:
     return (fit.center_x, fit.center_y, fit.semi_major, fit.semi_minor,
             fit.angle_deg)
 
+# Fitting options added with the default on.
+_ON_SINCE = ("track_whiskers",)
+
 
 def _settings_from(d) -> PupilSettings | None:
     """Settings from a sidecar's dict, each value coerced to its default's
@@ -68,6 +71,9 @@ def _settings_from(d) -> PupilSettings | None:
     kw = {}
     for f in dataclasses.fields(PupilSettings):
         if f.name not in d:
+            # Newer than the sidecar, so it wasn't applied: off, not the default.
+            if f.name in _ON_SINCE:
+                kw[f.name] = False
             continue
         v, default = d[f.name], getattr(base, f.name)
         if isinstance(default, bool):

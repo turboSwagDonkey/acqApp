@@ -28,6 +28,8 @@ class PupilSettings:
     # none, not a guess. rim.py.
     track_rim_check:  bool = False
     track_rim_dark:   float = 0.8
+    # Paint long straight bright ridges over before the fit. whiskers.py.
+    track_whiskers:   bool = True
     # Rolling mean; applies to the drawn AND recorded fit.
     smooth:           bool = False
     smooth_window:    int = 5

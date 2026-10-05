@@ -10,6 +10,14 @@ import numpy as np
 
 from acqApp.devices.pupil_cam.rim import looks_like_pupil
 from acqApp.devices.pupil_cam.settings import PupilSettings
+from acqApp.devices.pupil_cam.whiskers import paint_whiskers, whisker_mask
+
+
+def _union(a: np.ndarray | None, b: np.ndarray | None) -> np.ndarray | None:
+    """What was painted over, shown red: reflections and whiskers."""
+    if a is None or b is None or not b.any():
+        return a if a is not None else b
+    return a | b
 
 
 class PupilTracking:
@@ -56,8 +64,12 @@ class PupilTracking:
         if crop.size == 0 or not self._ready(box, st):
             return None
 
+        whiskers = None
+        if st.track_whiskers:
+            whiskers = whisker_mask(crop)
+            crop = paint_whiskers(crop, whiskers)
         fit = self._tracker.track(crop)
-        self.last_mask = self._tracker.last_glint_mask
+        self.last_mask = _union(self._tracker.last_glint_mask, whiskers)
         if fit is None:
             return None
         # Output only: the walk carries on from EyeLoop's own answer.
