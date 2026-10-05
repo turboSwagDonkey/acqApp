@@ -17,10 +17,12 @@ import json
 import os
 import threading
 import uuid
+import warnings
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 from acqApp.devices.pupil_cam.clip import open_clip
 from acqApp.devices.pupil_cam.settings import PupilSettings
@@ -424,19 +426,16 @@ class PupilReview:
         skipped: someone already looked."""
         r = self.radius()
         n = len(r)
-        out = []
         half = max(1, window // 2)
-        for i in range(n):
-            if self.is_edited(i):
-                continue
-            if np.isnan(r[i]):
-                out.append(i)
-                continue
-            nb = np.concatenate((r[max(0, i - half):i], r[i + 1:i + 1 + half]))
-            nb = nb[~np.isnan(nb)]
-            if nb.size and abs(r[i] - np.median(nb)) > jump * np.median(nb):
-                out.append(i)
-        return out
+        # Row i holds the `half` frames either side of i, NaN past the ends.
+        pad = np.full(n + 2 * half, np.nan)
+        pad[half:half + n] = r
+        nb = np.delete(sliding_window_view(pad, 2 * half + 1), half, axis=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)   # all-NaN row
+            med = np.nanmedian(nb, axis=1)
+        far = np.abs(r - med) > jump * med          # False where either is NaN
+        return np.flatnonzero(~self.edited & (np.isnan(r) | far)).tolist()
 
     # ── persistence ──────────────────────────────────────────────────────────
     def _identity(self) -> dict:

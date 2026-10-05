@@ -58,8 +58,10 @@ with another, or re-dock it elsewhere. The layout is remembered across runs.
 - **Live view** starts the shared session clock and every loaded worker,
   with preview but nothing saved to disk. Good for framing, focusing,
   checking a signal.
-- **● Record** does the same and additionally streams every sample to one
-  HDF5 file (starting Live first if it wasn't already running).
+- **● Record** does the same and additionally streams every sample into a
+  new session folder: frames as .dcimg/TIFF/AVI, the other streams in one
+  CSV, the settings in a JSON (starting Live first if it wasn't already
+  running).
 - **Emulate** swaps every device for its mock twin — flip it on to rehearse
   or test with no hardware attached, same as `--mock` at launch but
   toggleable per session.

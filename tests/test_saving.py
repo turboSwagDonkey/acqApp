@@ -457,6 +457,19 @@ def check_bpod_rollback(r: Report, tmp: Path) -> None:
             f"an open file stops Apply with every folder put back ({err!r})")
 
 
+def check_scan_idle_while_recording(r: Report, tmp: Path) -> None:
+    """Scan drives writes 1 GiB per drive on the GUI thread, the recording's
+    own included: not while a recording runs."""
+    from acqApp.saving import SavePanel
+
+    panel = SavePanel(SaveConfig(folder=str(tmp / "scan"), mouse_id="m1"))
+    r.check(panel._btn_scan.isEnabled(), "Scan drives is available when idle")
+    panel.set_recording_active(True)
+    r.check(not panel._btn_scan.isEnabled(), "...and off while recording")
+    panel.set_recording_active(False)
+    r.check(panel._btn_scan.isEnabled(), "...and back when it stops")
+
+
 def check_bpod_dialog(r: Report, tmp: Path) -> None:
     """The Save tab's button: Check shows the plan and enables Apply; any
     edit disables it again; Apply is refused while recording."""
@@ -522,6 +535,7 @@ def _part_bpod() -> int:
     try:
         check_bpod_match(r, tmp)
         check_bpod_rollback(r, tmp)
+        check_scan_idle_while_recording(r, tmp)
         check_bpod_dialog(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

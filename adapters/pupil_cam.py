@@ -793,7 +793,7 @@ class PupilCamModule(ModuleAdapter):
                 "pupil_cr_pad":          s.cr_pad,
                 "pupil_cr_ring":         s.cr_ring,
                 "pupil_cr_reach":        s.cr_reach,
-                # Flattened [x, y, r, ...] for HDF5.
+                # Flat [x, y, r, ...]: one list of numbers per file.
                 "pupil_cr_pins":         [v for pin in s.cr_pins for v in pin]}
 
     def final_metadata(self) -> dict[str, Any]:

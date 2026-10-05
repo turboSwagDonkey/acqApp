@@ -267,7 +267,7 @@ def _swatch(color: QColor, text: str) -> QWidget:
 
 def _summary(routine: Routine, hz: float | None) -> str:
     est = estimate(routine, hz)
-    bits = [f"one cycle shown, to scale"
+    bits = ["one cycle shown, to scale"
             + (f" — the whole thing repeats ×{routine.cycles}"
                if routine.cycles > 1 else "")]
     bits.append(est.text() + (f" total (at {est.hz:g} Hz)" if est.hz else

@@ -181,7 +181,7 @@ class VoltageCamModule(ModuleAdapter):
         recording."""
         want = _EXT_TRIGGER if on else _INT_TRIGGER
         if self.panel.get_config().trigger_mode == want:
-            return on
+            return True         # False would read as "refused: recording"
         return self._restart_with(lambda: self.panel.set_trigger_mode(want))
 
     def set_burst_frames(self, n: int) -> bool:
@@ -194,8 +194,10 @@ class VoltageCamModule(ModuleAdapter):
         if self.win.is_recording():
             return False
         was_live = self.win.set_live(False)
-        change()
-        self.win.set_live(was_live)
+        try:
+            change()
+        finally:
+            self.win.set_live(was_live)
         return True
 
     def burst_frames_done(self) -> int | None:

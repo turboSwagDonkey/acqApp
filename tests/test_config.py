@@ -197,6 +197,31 @@ def check_puffer_skips_daq(r: Report) -> None:
     r.check(True, "...and fire() on an unfitted puffer is silent, not an error")
 
 
+def check_puffer_typing(r: Report) -> None:
+    """Typing a channel must not apply (close and reopen the DAQ task) once
+    per keystroke; Enter or focus-out applies it."""
+    app = qt_app()          # held: a collected QApplication aborts the process
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from acqApp.devices.puffer.control import SettingsPanel
+
+    p = SettingsPanel(PufferSettings())
+    got: list[str] = []
+    p.settings_changed.connect(lambda s: got.append(s.channel))
+    p._cmb_chan.setCurrentText("Dev3/port0/line1")
+    r.check(got == ["Dev3/port0/line1"],
+            f"a programmatic change applies at once ({got})")
+    got.clear()
+    le = p._cmb_chan.lineEdit()
+    le.selectAll()
+    QTest.keyClicks(le, "Dev3/port0/line3")
+    r.check(not got, f"typing applies nothing until it is done ({got})")
+    QTest.keyClick(le, Qt.Key.Key_Return)
+    r.check(got and set(got) == {"Dev3/port0/line3"},
+            f"Enter applies the finished channel, and only it ({got})")
+    del app
+
+
 def check_puffer_lines(r: Report, tmp: Path) -> None:
     """The puffer's line list never offers a line another device claims —
     on rig-dev2 the primary LED is line7, the puffer's Dev3 default."""
@@ -230,6 +255,7 @@ def _part_rigs() -> int:
         check_profile_beats_saved(r, tmp)
         check_no_profile_is_unchanged(r, tmp)
         check_puffer_skips_daq(r)
+        check_puffer_typing(r)
         check_puffer_lines(r, tmp)
     finally:
         config._RIGS_PATH, config._CONFIG_PATH = saved

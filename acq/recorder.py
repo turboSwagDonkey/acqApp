@@ -37,6 +37,8 @@ class Recorder:
         self._closed = False
         self._late = 0              # after the file closed
         self._unstamped = 0         # before the session clock started
+        self._write_errors = 0      # samples the writer raised on (disk full)
+        self._last_write_error = ""
         self._offered: dict[str, int] = {}
 
     def start(self, path: Path, metadata: dict[str, Any]) -> None:
@@ -103,10 +105,29 @@ class Recorder:
     def unstamped_count(self) -> int:
         return self._unstamped
 
+    @property
+    def write_error_count(self) -> int:
+        """Samples the writer failed on and the loop moved past."""
+        return self._write_errors
+
+    @property
+    def last_write_error(self) -> str:
+        return self._last_write_error
+
     def _writer_loop(self) -> None:
         while not self._stop_event.is_set() or len(self._buf):
             try:
                 stream, ts, data = self._buf.get(timeout=0.05)
             except queue.Empty:
                 continue
-            self._writer.write(stream, ts, data)
+            try:
+                self._writer.write(stream, ts, data)
+            except Exception as e:                   # noqa: BLE001
+                # An escape would end this thread, and the ring would then shed
+                # every later sample with nothing said.
+                self._write_errors += 1
+                msg = f"{type(e).__name__}: {e}"
+                if msg != self._last_write_error:
+                    print(f"[recorder] write failed ({msg}); data is being "
+                          f"lost")
+                self._last_write_error = msg

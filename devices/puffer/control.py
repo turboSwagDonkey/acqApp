@@ -199,7 +199,10 @@ class SettingsPanel(QWidget):
         lay.addRow("Duration:", self._spn_dur)
 
         # Without these the controller keeps the settings it started with.
-        self._cmb_chan.currentTextChanged.connect(self._emit)
+        self._typing = False
+        self._cmb_chan.lineEdit().textEdited.connect(self._on_channel_typed)
+        self._cmb_chan.currentTextChanged.connect(self._on_channel_changed)
+        self._cmb_chan.lineEdit().editingFinished.connect(self._on_channel_done)
         self._spn_dur.valueChanged.connect(self._emit)
 
         btn_test = QPushButton("Test puff")
@@ -235,6 +238,20 @@ class SettingsPanel(QWidget):
 
     def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)
+
+    # Each applied channel closes and reopens the DAQ task, and every
+    # keystroke changes the combo's text: while typing, wait for Enter or
+    # focus-out (`textEdited` comes before `currentTextChanged`).
+    def _on_channel_typed(self, _text: str) -> None:
+        self._typing = True
+
+    def _on_channel_changed(self, _text: str) -> None:
+        if not self._typing:
+            self._emit()
+
+    def _on_channel_done(self) -> None:
+        self._typing = False
+        self._emit()
 
     def _on_test_clicked(self) -> None:
         """Confirm before a manual puff. Scheduled puffs are their own

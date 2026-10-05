@@ -61,7 +61,7 @@ class SavePanel(QWidget):
         self._btn_scan.setToolTip(
             "Write ~1 GiB to each drive to measure its real sustained write "
             "speed, and flag any that would drop frames at current "
-            "acquisition rate.")
+            "acquisition rate. Not while recording.")
         self._btn_scan.clicked.connect(self._on_scan_drives)
         drive_row = QHBoxLayout()
         drive_row.setContentsMargins(0, 0, 0, 0)
@@ -243,7 +243,7 @@ class SavePanel(QWidget):
             self._lbl_scan.setStyleSheet("")
             self._lbl_scan.setText("<br>".join(html))
         finally:
-            self._btn_scan.setEnabled(True)
+            self._btn_scan.setEnabled(not self._recording)
 
     def _on_match_bpod(self) -> None:
         from acqApp.saving.bpod_dialog import BpodMatchDialog
@@ -302,6 +302,9 @@ class SavePanel(QWidget):
 
     def set_recording_active(self, on: bool) -> None:
         self._recording = bool(on)
+        # The scan writes 1 GiB per drive on the GUI thread, recording drive
+        # included.
+        self._btn_scan.setEnabled(not on)
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """Offered data rate, and what the writer sustains (0 = unknown:

@@ -909,7 +909,7 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
         r.check(False, "MJPG: raises rather than returning garbage")
     except ValueError as e:
         r.check("MJPG" in str(e) and "decoder" in str(e).lower(),
-                f"MJPG: refused, naming the codec and the missing decoder")
+                "MJPG: refused, naming the codec and the missing decoder")
 
     # ── 3. the worker ────────────────────────────────────────────────────────
     app = qt_app()                     # a real QThread needs a real app
@@ -1051,7 +1051,7 @@ def _part_help() -> int:
     isolate_user_state()
     from PyQt6.QtCore import QEvent, QPoint
     from PyQt6.QtGui import QHelpEvent
-    from PyQt6.QtWidgets import QGroupBox, QToolTip, QWidget
+    from PyQt6.QtWidgets import QGroupBox, QToolTip
     from acqApp import widgets as W
     from acqApp.devices.pupil_cam.panel import SettingsPanel
     from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog

@@ -1341,6 +1341,23 @@ def check_edge_log(r: Report) -> None:
     r.check(float(rows[1]["session_s"]) == 8.5 and rows[2]["path"] == "",
             "…with the edge's time, and no file where none opened")
 
+    # A comma in a folder name must not shift the columns, and the rename
+    # that marks a bad file must still find its row.
+    old = tmp / "Smith, J" / "FOVcustom_T3"
+    cur["path"] = old
+    a._trial_count[0] = 3
+    a._on_edge(22.0, run(2))
+    a._put(run(2), opening=True)
+    new = tmp / "Smith, J" / "FOVcustom_T3_BAD"
+    a._repath_edge_log(old, new)
+    rows = list(csv.DictReader(open(a._edge_log, encoding="utf-8")))
+    r.check(len(rows) == 4 and rows[3]["path"] == str(new)
+            and rows[3]["trial"] == "3" and rows[3]["fov"] == "custom",
+            f"a comma in the path keeps its columns, and follows a rename "
+            f"({rows[3] if len(rows) > 3 else rows})")
+    r.check(rows[0]["path"].endswith("T1"),
+            "…without touching the other rows")
+
     # The engine reports every edge, with the run it starts.
     routine = Routine(steps=[Step(kind="trigger"),
                              Step(kind="record", length=0.2, unit="seconds")],
@@ -1512,6 +1529,33 @@ def check_seal_after_burst(r: Report) -> None:
     a = adapter(burst_n=0)
     got = tick(a, lambda: a._on_recording_end(run(1)))
     r.check(got == [], f"control: outside burst mode nothing is sealed ({got})")
+
+    # A tick that raises must pause the engine (DMD light, LED and motion
+    # off), not just stop the timer; one that can't pause stops the timer
+    # rather than spin on the same error.
+    def raising(a, phase_after_pause):
+        stopped, paused = [], []
+        a._stop_ticking = lambda: stopped.append(1)
+
+        def boom():
+            raise RuntimeError("gate read failed")
+
+        def pause(why):
+            paused.append(why)
+            if phase_after_pause is not None:
+                a._engine.phase = phase_after_pause
+        a._engine.tick, a._engine.pause = boom, pause
+        a._tick()
+        return paused, stopped
+
+    paused, stopped = raising(adapter(), Phase.PAUSED)
+    r.check(len(paused) == 1 and "gate read failed" in paused[0] and not stopped,
+            f"a raising tick pauses the engine, timer left running "
+            f"({paused}, {stopped})")
+    paused, stopped = raising(adapter(), None)
+    r.check(len(paused) == 1 and stopped == [1],
+            f"...and if it could not pause, the timer stops ({paused}, "
+            f"{stopped})")
 
 
 def check_first_file_doomed(r: Report) -> None:

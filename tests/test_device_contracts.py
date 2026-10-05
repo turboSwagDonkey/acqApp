@@ -99,7 +99,7 @@ def main() -> int:
                 f"{cls.__name__} is deliberately NOT a RecordingOutput "
                 f"(no set_sink to detach)")
         r.check(bool(has_all(cls, OutputController)),
-                f"…nor an OutputController (it has no apply_settings)")
+                "…nor an OutputController (it has no apply_settings)")
 
     # CONTROL: or `has_all` is vacuous and every check above passes for free.
     class AlmostAProjector:
@@ -212,7 +212,7 @@ def main() -> int:
                         tokenize.COMMENT, tokenize.STRING) for p in sources)))
     extra = sorted(used - declared)
     r.check(not extra,
-            f"every self.win.X in adapters/ is declared on ModuleHost"
+            "every self.win.X in adapters/ is declared on ModuleHost"
             + (f" — undeclared {extra}" if extra else ""))
 
     # CONTROL 1: a regex that matched nothing would pass the above forever.

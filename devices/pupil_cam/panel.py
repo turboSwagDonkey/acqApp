@@ -13,12 +13,12 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QCheckBox, QFileDialog, QFormLayout, QGroupBox, QLabel,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
-from acqApp.widgets import (RangeBar, SegmentedSwitch, hrow, pairs_grid,
+from acqApp.widgets import (RangeBar, SegmentedSwitch, pairs_grid,
                             sections_help, spin)
 from acqApp.devices.pupil_cam.rim import LOW_CONTRAST
 from acqApp.devices.pupil_cam.settings import PupilSettings

@@ -298,9 +298,9 @@ class _PlaybackMixin:
         r_auto = np.where(np.isnan(rev.auto[:, 0]), np.nan,
                           (rev.auto[:, 2] + rev.auto[:, 3]) / 2.0)
         self._auto_curve.setData(x, r_auto, connect="finite")
-        self._final_curve.setData(x, rev.radius(), connect="finite")
-        ed = np.flatnonzero(rev.edited)
         radius = rev.radius()
+        self._final_curve.setData(x, radius, connect="finite")
+        ed = np.flatnonzero(rev.edited)
         self._edit_pts.setData(ed, radius[ed])
         self._draw_suspects(radius)
 

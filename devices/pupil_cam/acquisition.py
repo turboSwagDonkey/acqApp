@@ -191,6 +191,8 @@ class PupilCameraWorker(PullWorker):
         cam = open_camera(self._device_index) if own_cam else self._cam
         if cam is None:
             print("[pupil_cam] no camera — worker exiting")
+            self.error.emit("no pupil camera opened — see the console, or use "
+                            "Emulate")
             return
 
         try:

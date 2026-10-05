@@ -59,8 +59,8 @@ def check_grating(r: Report) -> None:
 
 def check_settings_roundtrip(r: Report) -> None:
     from acqApp.devices.vis_stim.settings import (TRIAL_GRATING, TRIAL_MAP,
-                                                   TRIAL_TYPES, LoopVar,
-                                                   StimParams, VisStimSettings,
+                                                   LoopVar, StimParams,
+                                                   VisStimSettings,
                                                    parse_values)
 
     s = VisStimSettings(

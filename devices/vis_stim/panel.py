@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout,
-    QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel,
+    QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 

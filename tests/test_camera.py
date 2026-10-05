@@ -819,6 +819,31 @@ def check_late_samples(r: Report) -> None:
             "the other counters stayed at zero")
 
 
+def check_write_errors(r: Report) -> None:
+    """A writer that raises (disk full) must not end the writer thread: it
+    would leave the ring shedding every later sample with nothing said."""
+    class FlakyWriter(SpyWriter):
+        def write(self, stream, timestamp, data):
+            if data == 1.0:
+                raise OSError(28, "No space left on device")
+            super().write(stream, timestamp, data)
+
+    clock = SessionClock()
+    w = FlakyWriter()
+    rec = Recorder(clock, w, RingBuffer(512, sizeof=sizeof))
+    clock.start()
+    rec.start(Path("unused"), {})
+    for v in (0.0, 1.0, 2.0, 3.0):
+        rec.put("wheel", v)
+    remaining = rec.stop()
+    r.check([d for _s, _t, d in w.written] == [0.0, 2.0, 3.0],
+            f"samples after a failed write still land ({w.written})")
+    r.check(rec.write_error_count == 1 and "No space" in rec.last_write_error,
+            f"the failure is counted and named ({rec.write_error_count}, "
+            f"{rec.last_write_error!r})")
+    r.check(remaining == 0, f"and the ring drains clean (remaining {remaining})")
+
+
 def check_unstamped(r: Report) -> None:
     """A sample offered before the clock started has no timebase to land on."""
     rec, w, clock = new_recorder()                 # clock NOT started
@@ -1220,6 +1245,7 @@ def _part_losses() -> int:
     qt_app()                            # the camera worker declares pyqtSignals
     check_count_cap(r)
     check_late_samples(r)
+    check_write_errors(r)
     check_unstamped(r)
     check_drops_counted(r)
     check_offered_never_blocks(r)

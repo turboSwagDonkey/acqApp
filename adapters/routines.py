@@ -18,6 +18,8 @@ engine at loaded modules, via `ModuleHost` targets.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import time
 from pathlib import Path
@@ -64,6 +66,13 @@ JUNK_TRIES = 20
 # Floored: the camera thread's count can lag a few hundred ms.
 BURST_STALL_FRAMES = 50
 BURST_STALL_MIN_S = 1.0
+
+
+def _csv_text(rows: list[list]) -> str:
+    """`rows` as CSV text, quoted where a FOV name or path holds a comma."""
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows(rows)
+    return buf.getvalue()
 
 
 def burst_stall_s(hz: float | None) -> float:
@@ -428,8 +437,17 @@ class RoutinesModule(ModuleAdapter):
         try:
             eng.tick()
         except Exception as e:           # noqa: BLE001
-            self._stop_ticking()
-            self._status(f"routine tick failed ({type(e).__name__}: {e})")
+            why = f"routine tick failed ({type(e).__name__}: {e})"
+            self._status(why)
+            # Stopping the timer alone would leave the DMD light, LED and
+            # motion as they were. A pause turns them off; Resume/Skip/Abort
+            # follow as for any fault.
+            try:
+                eng.pause(why)
+            except Exception:            # noqa: BLE001
+                pass
+            if eng.phase != Phase.PAUSED:    # ARMED can't pause: don't spin
+                self._stop_ticking()
             return
         if self._pending_roll_run is not None:
             run, self._pending_roll_run = self._pending_roll_run, None
@@ -502,7 +520,7 @@ class RoutinesModule(ModuleAdapter):
                     f"routine_edges_{time.strftime('%Y%m%d_%H%M%S')}.csv")
                 self._edge_log.write_text(EDGE_LOG_HEADER, encoding="utf-8")
             with open(self._edge_log, "a", encoding="utf-8") as fh:
-                fh.write(f"{n},{t:.4f},{wall},{fov},{trial},{path}\n")
+                fh.write(_csv_text([[n, f"{t:.4f}", wall, fov, trial, path]]))
         except OSError as e:
             self._status(f"could not write the edge log ({e})")
 
@@ -610,9 +628,11 @@ class RoutinesModule(ModuleAdapter):
         if log is None:
             return
         try:
-            text = log.read_text(encoding="utf-8")
-            log.write_text(text.replace(f",{old}\n", f",{new}\n"),
-                           encoding="utf-8")
+            rows = list(csv.reader(io.StringIO(log.read_text(encoding="utf-8"))))
+            for row in rows:
+                if row and row[-1] == str(old):
+                    row[-1] = str(new)
+            log.write_text(_csv_text(rows), encoding="utf-8")
         except OSError as e:
             self._status(f"could not update the edge log for {new.name} ({e})")
 
@@ -785,9 +805,10 @@ class RoutinesModule(ModuleAdapter):
             "routine_save_mode":     r.save_mode,
             "routine_start_trigger": "ttl",     # constant; kept for old readers
             "routine_n_steps":       len(r.steps),
-            # HDF5 attributes are scalars: the steps travel as one string.
+            # One JSON string: the form the retired HDF5 files needed, kept
+            # for readers of those.
             "routine_steps":      json.dumps(proto["steps"]),
-            # Nested copy: SplitWriter's JSON keeps it an object.
+            # Nested copy: the settings JSON keeps it an object.
             "routine_protocol":   proto,
             "routine_started":    False,
         }
