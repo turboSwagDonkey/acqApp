@@ -180,6 +180,13 @@ RING_FRAMES  = 512          # ring item cap (scalar streams)
 RING_BYTES   = 2048 << 20
 
 
+def _folder_bytes(folder: Path) -> int:
+    """Bytes in the session folder's files: stat() on the folder itself is its
+    directory entry (0 on NTFS), not what it holds."""
+    with os.scandir(folder) as it:
+        return sum(e.stat().st_size for e in it if e.is_file())
+
+
 def _sample_nbytes(item) -> int:
     """Payload bytes of a ring item (stream, ts, data); 0 for scalars."""
     return getattr(item[2], "nbytes", 0)
@@ -1268,7 +1275,7 @@ class MainWindow(QMainWindow):
         if now - self._rec_size_t0 >= 1.0:
             self._rec_size_t0 = now
             try:
-                mb = self._rec_path.stat().st_size / (1 << 20)
+                mb = _folder_bytes(self._rec_path) / (1 << 20)
                 self._rec_size_txt = (f"   {mb / 1024:.2f} GB" if mb >= 1024
                                       else f"   {mb:.0f} MB")
             except OSError:
@@ -1306,10 +1313,14 @@ class MainWindow(QMainWindow):
         for win in self._panel_windows.values():
             win.save_geometry()
             win.close()
-        if self._session_on:
-            self._stop_session()
-        for m in self._modules:
-            m.close_controller()
+        try:
+            if self._session_on:
+                self._stop_session()
+            for m in self._modules:
+                m.close_controller()
+        except Exception as e:      # noqa: BLE001 — an escape aborts the process
+            print(f"[main] shutdown raised {type(e).__name__}: {e}")
+        # Always: a handle left open crashes the next launch.
         _close_camera(self._cam_handle)
         self._cam_handle = None
         event.accept()

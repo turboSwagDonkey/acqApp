@@ -111,7 +111,3 @@ def _list(folder: Path) -> list[SavedFov]:
         except (OSError, json.JSONDecodeError):
             continue
     return out
-
-
-def is_fov_file(path: str | Path) -> bool:
-    return Path(path).name.endswith(SUFFIX)

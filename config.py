@@ -179,12 +179,6 @@ def active_rig() -> str:
     return name if isinstance(name, str) else ""
 
 
-def set_active_rig(name: str) -> None:
-    cfg = load_config()
-    cfg["rig"] = name
-    save_config(cfg)
-
-
 def rig_profile() -> dict:
     """The active rig's profile, or {} (every accessor then uses defaults)."""
     return load_rigs().get(active_rig(), {})

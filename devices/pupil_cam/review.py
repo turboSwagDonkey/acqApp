@@ -386,26 +386,25 @@ class PupilReview:
         out = self.auto.copy()
         ok = ~np.isnan(self.auto[:, 0])
         n = len(ok)
-        i = 0
-        while i < n:                        # each run of consecutive fits
-            if not ok[i]:
-                i += 1
-                continue
-            j = i
-            while j < n and ok[j]:
-                j += 1
-            run = self.auto[i:j]
-            # Angles average on the doubled circle: an ellipse at 179 deg
-            # and one at 1 deg are nearly the same.
-            ang = np.radians(run[:, 4] * 2.0)
-            cs = np.cumsum(np.vstack([np.zeros((1, 6)), np.column_stack(
-                [run[:, :4], np.cos(ang), np.sin(ang)])]), axis=0)
-            for k in range(j - i):
-                a, b = max(0, k - half), min(j - i, k + half + 1)
-                m = (cs[b] - cs[a]) / (b - a)
-                out[i + k, :4] = m[:4]
-                out[i + k, 4] = (np.degrees(np.arctan2(m[5], m[4])) / 2.0) % 180.0
-            i = j
+        if not ok.any():
+            return out
+        idx = np.arange(n)
+        # Each fitted frame's run of consecutive fits, as [start, end).
+        starts = np.where(ok & ~np.r_[False, ok[:-1]], idx, 0)
+        ends = np.where(ok & ~np.r_[ok[1:], False], idx + 1, n)
+        run_start = np.maximum.accumulate(starts)
+        run_end = np.minimum.accumulate(ends[::-1])[::-1]
+        # Angles average on the doubled circle: an ellipse at 179 deg and
+        # one at 1 deg are nearly the same.
+        ang = np.radians(self.auto[:, 4] * 2.0)
+        feat = np.where(ok[:, None], np.column_stack(
+            [self.auto[:, :4], np.cos(ang), np.sin(ang)]), 0.0)
+        cs = np.vstack([np.zeros((1, 6)), np.cumsum(feat, axis=0)])
+        a = np.maximum(run_start, idx - half)[ok]
+        b = np.minimum(run_end, idx + half + 1)[ok]
+        m = (cs[b] - cs[a]) / (b - a)[:, None]
+        out[ok, :4] = m[:, :4]
+        out[ok, 4] = (np.degrees(np.arctan2(m[:, 5], m[:, 4])) / 2.0) % 180.0
         return out
 
     def table(self) -> np.ndarray:
