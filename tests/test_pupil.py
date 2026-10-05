@@ -1118,56 +1118,105 @@ def _part_help() -> int:
     return r.finish()
 
 
-# ═══ pins: real mouse events, Live and Review ═══════════════════════════
+# ═══ real mouse events through the viewport (pins, lock) ════════════════
+# QTest on the view's viewport, so pyqtgraph's own dispatch runs.
+
+L, R, M = (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton,
+           Qt.MouseButton.MiddleButton)
+_NONE = Qt.KeyboardModifier.NoModifier
+
+
+def at(gv, vb, x, y):
+    """Image px -> viewport px."""
+    return gv.mapFromScene(vb.mapViewToScene(QPointF(x, y)))
+
+
+def click(gv, pt, btn=L):
+    from PyQt6.QtTest import QTest
+    app = qt_app()
+    QTest.mouseClick(gv.viewport(), btn, _NONE, pt)
+    pump(app, 0.05)
+    for w in app.topLevelWidgets():          # a right click's menu
+        if w.isVisible() and w.metaObject().className() == "QMenu":
+            w.close()
+
+
+def _send(vp, kind, p, button, buttons):
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QMouseEvent
+    p = QPointF(p)
+    qt_app().sendEvent(vp, QMouseEvent(getattr(QEvent.Type, kind), p,
+                                       QPointF(vp.mapToGlobal(p)), button,
+                                       buttons, _NONE))
+
+
+def dclick(gv, pt):
+    """As the OS sends it: press, release, double-click, release.
+    (QTest.mouseDClick sends the double-click alone.)"""
+    from PyQt6.QtTest import QTest
+    vp = gv.viewport()
+    QTest.mousePress(vp, L, _NONE, pt)
+    QTest.mouseRelease(vp, L, _NONE, pt)
+    _send(vp, "MouseButtonDblClick", pt, L, L)
+    QTest.mouseRelease(vp, L, _NONE, pt)
+    pump(qt_app(), 0.05)
+
+
+def drag(gv, a, b):
+    from PyQt6.QtTest import QTest
+    vp = gv.viewport()
+    QTest.mousePress(vp, L, _NONE, a)
+    for k in range(1, 9):
+        _send(vp, "MouseMove", a + (b - a) * k / 8, Qt.MouseButton.NoButton, L)
+        pump(qt_app(), 0.01)
+    QTest.mouseRelease(vp, L, _NONE, b)
+    pump(qt_app(), 0.05)
+
+
+def _live_view(app):
+    """The pupil module running on the mock, its view showing 320x240."""
+    isolate_user_state()
+    sys.argv = ["main.py", "--mock"]
+    win = make_window({"pupil_cam"})
+    win.show()
+    mod = win._modules[0]
+    win._btn_run.setChecked(True)
+    pump(app, 1.0)
+    for _ in range(4):
+        win._display_tick()
+        pump(app, 0.05)
+    pump(app, 0.2)                           # let the dock lay the view out
+    mod._vb.setRange(xRange=(0, 320), yRange=(0, 240), padding=0)
+    pump(app, 0.1)
+    return win, mod
+
+
+def _review_view(app, tag, **st):
+    """A Pupil review window on a 160x120 clip, shown whole."""
+    from _pupil_helpers import DiscTracking
+    from acqApp.devices.pupil_cam import review as review_mod
+    from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog
+    review_mod.PupilTracking = DiscTracking
+    tmp = Path(tempfile.mkdtemp(prefix=f"pupil_{tag}_"))
+    H, W = 120, 160
+    clip = write_avi(tmp / "eye.avi",
+                     [video_eye_frame(H, W, 80, 60, 14).tobytes()] * 6, W, H,
+                     b"Y800", 8)
+    dlg = PupilReviewDialog(str(clip), settings=PupilSettings(**st))
+    dlg.resize(1000, 700)
+    dlg.show()
+    pump(app, 0.3)
+    dlg._vb.setRange(xRange=(0, W), yRange=(0, H), padding=0)
+    pump(app, 0.1)
+    return dlg, clip
+
 
 def _part_pins() -> int:  # noqa: PLR0915 — one linear scenario
     """Stray pins: Pin reflection stayed armed, so every later click pinned;
-    right/middle clicks and clicks on the region box pinned too. Driven with
-    QTest through the view's viewport, so pyqtgraph's own dispatch runs."""
+    right and middle clicks pinned too, and a double click pinned then
+    unpinned."""
     r = Report("pupil-pins")
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtGui import QMouseEvent
-    from PyQt6.QtTest import QTest
     app = qt_app()
-    isolate_user_state()
-    sys.argv = ["main.py", "--mock"]
-    L, R, M = (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton,
-               Qt.MouseButton.MiddleButton)
-    none = Qt.KeyboardModifier.NoModifier
-
-    def at(gv, vb, x, y):
-        return gv.mapFromScene(vb.mapViewToScene(QPointF(x, y)))
-
-    def click(gv, pt, btn=L):
-        QTest.mouseClick(gv.viewport(), btn, none, pt)
-        pump(app, 0.05)
-        for w in app.topLevelWidgets():      # a right click's menu
-            if w.isVisible() and w.metaObject().className() == "QMenu":
-                w.close()
-
-    def dclick(gv, pt):
-        """As the OS sends it: press, release, double-click, release.
-        (QTest.mouseDClick sends the double-click alone.)"""
-        vp = gv.viewport()
-        QTest.mousePress(vp, L, none, pt)
-        QTest.mouseRelease(vp, L, none, pt)
-        p = QPointF(pt)
-        app.sendEvent(vp, QMouseEvent(QEvent.Type.MouseButtonDblClick, p,
-                                      QPointF(vp.mapToGlobal(p)), L, L, none))
-        QTest.mouseRelease(vp, L, none, pt)
-        pump(app, 0.05)
-
-    def drag(gv, a, b):
-        vp = gv.viewport()
-        QTest.mousePress(vp, L, none, a)
-        for k in range(1, 9):
-            p = QPointF(a + (b - a) * k / 8)
-            app.sendEvent(vp, QMouseEvent(
-                QEvent.Type.MouseMove, p, QPointF(vp.mapToGlobal(p)),
-                Qt.MouseButton.NoButton, L, none))
-            pump(app, 0.01)
-        QTest.mouseRelease(vp, L, none, b)
-        pump(app, 0.05)
 
     def stray(name, arm, count, clear, act):
         """Armed, `act` must not pin."""
@@ -1178,18 +1227,8 @@ def _part_pins() -> int:  # noqa: PLR0915 — one linear scenario
         arm(False)
 
     # ── Live ──
-    win = make_window({"pupil_cam"})
-    win.show()
-    mod = win._modules[0]
+    win, mod = _live_view(app)
     panel = mod.panel
-    win._btn_run.setChecked(True)
-    pump(app, 1.0)
-    for _ in range(4):
-        win._display_tick()
-        pump(app, 0.05)
-    mod._gv.resize(400, 300)
-    mod._vb.setRange(xRange=(0, 320), yRange=(0, 240), padding=0)
-    pump(app, 0.1)
     gv, vb, btn = mod._gv, mod._vb, mod._btn_pin
     count = lambda: len(panel.settings.cr_pins)         # noqa: E731
     panel.clear_pins()
@@ -1229,22 +1268,8 @@ def _part_pins() -> int:  # noqa: PLR0915 — one linear scenario
     pump(app, 0.1)
 
     # ── Review ──
-    from _pupil_helpers import DiscTracking
-    from acqApp.devices.pupil_cam import review as review_mod
-    from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog
-    review_mod.PupilTracking = DiscTracking
-    tmp = Path(tempfile.mkdtemp(prefix="pupil_pins_"))
-    H, W = 120, 160
-    clip = write_avi(tmp / "eye.avi",
-                     [video_eye_frame(H, W, 80, 60, 14).tobytes()] * 6, W, H,
-                     b"Y800", 8)
-    dlg = PupilReviewDialog(str(clip), settings=PupilSettings(
-        limit_x0=40, limit_y0=30, limit_x1=120, limit_y1=90))
-    dlg.resize(1000, 700)
-    dlg.show()
-    pump(app, 0.3)
-    dlg._vb.setRange(xRange=(0, W), yRange=(0, H), padding=0)
-    pump(app, 0.1)
+    dlg, clip = _review_view(app, "pins", limit_x0=40, limit_y0=30,
+                             limit_x1=120, limit_y1=90)
     gv, vb, btn = dlg._gv, dlg._vb, dlg._btn_pin_cr
     count = lambda: len(dlg._read_settings().cr_pins)   # noqa: E731
     clear = dlg._ctl.clear_pins
@@ -1281,10 +1306,180 @@ def _part_pins() -> int:  # noqa: PLR0915 — one linear scenario
     return r.finish()
 
 
+def _part_lock() -> int:  # noqa: PLR0915 — one linear scenario
+    """A locked eye region: Set eye region, a drag and Auto can't move it,
+    in Live and Review; saved with the settings. Each blocked move has an
+    unlocked control that does move it."""
+    r = Report("pupil-lock")
+    from PyQt6.QtTest import QTest
+    from acqApp.devices.pupil_cam.autotune import AutoTune
+    app = qt_app()
+    box = (100.0, 80.0, 220.0, 180.0)
+
+    def auto(region):           # what Auto suggests: a new threshold, a region
+        return AutoTune(33, 3, False, None, region, 0.9, "test")
+
+    # ── settings ──
+    r.check(PupilSettings().limit_locked is False, "shipped default: unlocked")
+    st = PupilSettings(limit_x0=1, limit_y0=1, limit_x1=9, limit_y1=9)
+    r.check(auto((0, 0, 50, 50)).apply(st).search_limit() == (0, 0, 50, 50),
+            "control: Auto's region replaces an unlocked one")
+    st.limit_locked = True
+    moved = auto((0, 0, 50, 50)).apply(st)
+    r.check(moved.search_limit() == (1, 1, 9, 9) and moved.track_threshold == 33,
+            "Auto leaves a locked region alone, and still sets the threshold")
+
+    # ── Live ──
+    win, mod = _live_view(app)
+    panel = mod.panel
+    gv, vb = mod._gv, mod._vb
+    panel.set_limit(*box)
+    r.check(mod._btn_lock.isEnabled() and not mod._btn_lock.isChecked(),
+            "live: Lock is offered once there is a region")
+
+    def draw(x0, y0, x1, y1):
+        """Set eye region as the user does it: press the button, drag."""
+        QTest.mouseClick(mod._btn_limit, L)
+        pump(app, 0.1)                       # the dock settles its layout
+        drag(gv, at(gv, vb, x0, y0), at(gv, vb, x1, y1))
+
+    draw(40, 40, 150, 120)
+    lim = panel.settings.search_limit()
+    r.check(lim is not None and abs(lim[0] - 40) < 3 and abs(lim[2] - 150) < 3,
+            f"live control: unlocked, Set eye region moves it ({lim})")
+    panel.set_limit(*box)
+
+    QTest.mouseClick(mod._btn_lock, L)
+    r.check(panel.settings.limit_locked and mod._btn_lock.isChecked(),
+            "live: Lock locks it, in the settings")
+    r.check(not mod._btn_limit.isEnabled() and "locked" in mod._lbl_limit.text(),
+            f"live: Set eye region is greyed out, the bar says so "
+            f"({mod._lbl_limit.text()!r})")
+    draw(40, 40, 150, 120)
+    r.check(not mod._btn_limit.isChecked()
+            and panel.settings.search_limit() == box,
+            f"live: pressing it and dragging moves nothing "
+            f"({panel.settings.search_limit()})")
+    vb.set_draw_mode(True)                   # even if the drag got through
+    drag(gv, at(gv, vb, 40, 40), at(gv, vb, 150, 120))
+    vb.set_draw_mode(False)
+    r.check(panel.settings.search_limit() == box,
+            "live: a drag that reaches the panel is refused too")
+    panel.set_limit(0, 0, 60, 60)
+    r.check(panel.settings.search_limit() == box, "live: so is set_limit")
+    mod._on_auto_done(auto((0, 0, 50, 50)))
+    r.check(panel.settings.search_limit() == box
+            and panel.tracking._spn_thr.value() == 33,
+            f"live: Auto sets the threshold, not the region "
+            f"({panel.settings.search_limit()})")
+    from acqApp import config
+    saved = config.load_settings("pupil_cam") or {}
+    r.check(saved.get("limit_locked") is True, "live: the lock is saved")
+
+    QTest.mouseClick(mod._btn_lock, L)
+    r.check(not panel.settings.limit_locked and mod._btn_limit.isEnabled(),
+            "live: Lock again unlocks")
+    mod._on_auto_done(auto((10.0, 10.0, 90.0, 70.0)))
+    r.check(panel.settings.search_limit() == (10.0, 10.0, 90.0, 70.0),
+            f"live control: unlocked, Auto's region is taken "
+            f"({panel.settings.search_limit()})")
+    win._btn_run.setChecked(False)
+    pump(app, 0.2)
+    win.close()
+    pump(app, 0.1)
+
+    # ── Review ──
+    rbox = (40.0, 30.0, 120.0, 90.0)
+    dlg, clip = _review_view(app, "lock", limit_x0=40, limit_y0=30,
+                             limit_x1=120, limit_y1=90)
+    gv, vb = dlg._gv, dlg._vb
+    region = lambda: dlg._read_settings().search_limit()    # noqa: E731
+
+    drag(gv, at(gv, vb, 80, 60), at(gv, vb, 100, 70))
+    moved = region()
+    r.check(moved is not None and abs(moved[0] - 60) < 3,
+            f"review control: unlocked, dragging the box moves it ({moved})")
+    dlg._ctl.set_limit(*rbox)
+    dlg._sync_region_box()
+
+    QTest.mouseClick(dlg._btn_lock, L)
+    r.check(dlg._read_settings().limit_locked and dlg._btn_lock.isChecked(),
+            "review: Lock region locks it")
+    r.check(not dlg._region.translatable and not dlg._region.getHandles(),
+            "review: the box can't be dragged and has no handles")
+    drag(gv, at(gv, vb, 80, 60), at(gv, vb, 100, 70))
+    drag(gv, at(gv, vb, 120, 90), at(gv, vb, 150, 110))     # where the handle was
+    r.check(region() == rbox, f"review: dragging moves nothing ({region()})")
+    dlg._on_auto(auto((0, 0, 50, 50)))
+    r.check(region() == rbox and dlg._ctl._spn_thr.value() == 33,
+            f"review: Auto sets the threshold, not the region ({region()})")
+    r.check(dlg.save(), "review: saved")
+    dlg._dirty = False
+    dlg.close()
+    pump(app, 0.1)
+
+    from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog
+    dlg = PupilReviewDialog(str(clip))
+    r.check(dlg._btn_lock.isChecked() and region() == rbox
+            and not dlg._region.translatable,
+            "review: reopened, the region is still locked")
+    QTest.mouseClick(dlg._btn_lock, L)
+    r.check(dlg._region.translatable and dlg._region.getHandles(),
+            "review: unlocked, the box drags again")
+    dlg._on_auto(auto((10.0, 10.0, 90.0, 70.0)))
+    r.check(region() == (10.0, 10.0, 90.0, 70.0),
+            f"review control: unlocked, Auto's region is taken ({region()})")
+    dlg._dirty = False
+    dlg.close()
+
+    # Opened with no region: the default is Auto's to move until locked.
+    dlg, _ = _review_view(app, "lock2")
+    r.check(dlg._region_default, "fixture: a clip with no saved region")
+    QTest.mouseClick(dlg._btn_lock, L)
+    r.check(not dlg._region_default,
+            "review: locking the default makes it the user's, so Auto keeps to it")
+    QTest.mouseClick(dlg._btn_lock, L)
+    r.check(dlg._region_default,
+            "review: unlocked again, the default is Auto's to move once more")
+
+    # Revert brings back the older trace, not the older region.
+    def track(box_):
+        dlg._ctl.set_limit(*box_)
+        dlg._track_all()
+        for _ in range(100):
+            pump(app, 0.05)
+            if dlg._worker is None:
+                break
+
+    a, b = (40.0, 30.0, 120.0, 90.0), (30.0, 20.0, 130.0, 100.0)
+    track(a)
+    track(b)
+    dlg._revert()
+    r.check(region() == a, f"review control: unlocked, Revert restores the "
+                           f"trace's region ({region()})")
+    track(b)
+    QTest.mouseClick(dlg._btn_lock, L)
+    dlg._revert()
+    r.check(region() == b and dlg._read_settings().limit_locked
+            and dlg._btn_lock.isChecked() and dlg.review.stale
+            and "locked" in dlg._prog.text(),
+            f"review: locked, Revert keeps the region, says so, and the trace "
+            f"is marked for re-tracking ({region()})")
+    dlg._dirty = False
+    dlg.close()
+
+    empty = PupilReviewDialog()
+    r.check(not empty._btn_lock.isEnabled(),
+            "review: no clip, nothing to lock (the button is off)")
+    empty.close()
+    return r.finish()
+
+
 PARTS = {
     "eyeloop": _part_eyeloop,
     "track": _part_track,
     "pins": _part_pins,
+    "lock": _part_lock,
     "limit": _part_limit,
     "video": _part_video,
     "exposure": _part_exposure,

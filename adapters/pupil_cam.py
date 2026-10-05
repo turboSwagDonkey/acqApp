@@ -73,6 +73,7 @@ class PupilCamModule(ModuleAdapter):
         self._mask_img = None
         self._mask_rgba = None
         self._btn_pin = None
+        self._btn_lock = None
         self._curve = None
         self._trace: list[tuple[float, bool]] = []  # (radius, is_blink)
         self._blink_regions: list = []  # pooled LinearRegionItems
@@ -349,6 +350,11 @@ class PupilCamModule(ModuleAdapter):
         self._btn_limit.setCheckable(True)
         self._btn_limit.setToolTip("Then drag a box around the eye.")
         self._btn_limit.toggled.connect(self._arm_limit)
+        self._btn_lock = QPushButton("Lock")
+        self._btn_lock.setCheckable(True)
+        self._btn_lock.setToolTip("Keep the eye region where it is: Set eye "
+                                  "region and Auto leave it alone. Saved.")
+        self._btn_lock.toggled.connect(self._lock_region)
 
         self._lbl_limit = QLabel()
         self._lbl_limit.setStyleSheet("color:#9aa0a6;")
@@ -368,13 +374,19 @@ class PupilCamModule(ModuleAdapter):
         self._cmb_view.currentIndexChanged.connect(self._on_view_mode_changed)
 
         lay.addWidget(QLabel("Eye:"))
-        for w in (self._btn_limit, self._btn_pin):
+        for w in (self._btn_limit, self._btn_lock, self._btn_pin):
             lay.addWidget(w)
         lay.addWidget(self._lbl_limit, 1)
         lay.addWidget(QLabel("View:"))
         lay.addWidget(self._cmb_view)
         self._refresh_limit_bar()
         return bar
+
+    def _lock_region(self, on: bool) -> None:
+        if on:
+            self._btn_limit.setChecked(False)
+        self.panel.set_region_locked(on)
+        self._refresh_limit_bar()
 
     def _arm_limit(self, on: bool) -> None:
         if on and self._btn_pin is not None:
@@ -453,7 +465,14 @@ class PupilCamModule(ModuleAdapter):
     def _refresh_limit_bar(self) -> None:
         if self.panel is None or self._lbl_limit is None:
             return
-        lim = self.panel.settings.search_limit()
+        s = self.panel.settings
+        lim = s.search_limit()
+        locked = s.limit_locked and lim is not None
+        self._btn_lock.blockSignals(True)
+        self._btn_lock.setChecked(locked)
+        self._btn_lock.blockSignals(False)
+        self._btn_lock.setEnabled(lim is not None)
+        self._btn_limit.setEnabled(not locked)
         if self._btn_limit.isChecked():
             self._lbl_limit.setText("drag from one corner to the other")
         elif self._btn_pin is not None and self._btn_pin.isChecked():
@@ -462,7 +481,8 @@ class PupilCamModule(ModuleAdapter):
             self._lbl_limit.setText("region: set on the first frame")
         else:
             self._lbl_limit.setText(
-                f"({lim[0]:.0f}, {lim[1]:.0f})-({lim[2]:.0f}, {lim[3]:.0f})")
+                f"({lim[0]:.0f}, {lim[1]:.0f})-({lim[2]:.0f}, {lim[3]:.0f})"
+                + (" locked" if locked else ""))
 
     def _on_view_mode_changed(self, *_a) -> None:
         if self._cmb_view is not None:

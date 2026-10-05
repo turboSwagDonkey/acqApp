@@ -46,7 +46,7 @@ class AutoTune:
                   cr_remove=self.cr_remove)
         if self.cr_threshold is not None:
             kw["cr_threshold"] = self.cr_threshold
-        if self.region is not None:
+        if self.region is not None and not st.limit_locked:
             kw.update(limit_x0=float(self.region[0]), limit_y0=float(self.region[1]),
                       limit_x1=float(self.region[2]), limit_y1=float(self.region[3]))
         if self.pins:       # none found: keep any placed by hand

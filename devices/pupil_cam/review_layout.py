@@ -239,6 +239,11 @@ class _LayoutMixin:
         self._btn_pin_cr.setToolTip("Then click a fixed reflection to pin it, "
                                     "or a pin to remove it. One click per press.")
         self._btn_pin_cr.toggled.connect(self._pin_armed)
+        self._btn_lock = QPushButton("Lock region")
+        self._btn_lock.setCheckable(True)
+        self._btn_lock.setToolTip("Keep the eye region where it is: a drag "
+                                  "and Auto leave it alone. Saved.")
+        self._btn_lock.toggled.connect(self._lock_region)
         for w in (self._lbl_state, self._btn_new, self._btn_pin, self._btn_reset):
             edit.addWidget(w)
         mid.addLayout(edit)
@@ -279,6 +284,7 @@ class _LayoutMixin:
         self._plot.addItem(self._cursor)
         mid.addWidget(self._plot)
         self._top_bar.addWidget(QLabel("Eye:"))
+        self._top_bar.addWidget(self._btn_lock)
         self._top_bar.addWidget(self._btn_pin_cr)
         self._top_bar.addStretch(1)
         self._top_bar.addWidget(QLabel("View:"))

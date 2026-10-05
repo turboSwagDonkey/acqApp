@@ -96,6 +96,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._loading = False        # programmatic widget/ROI updates
         # The eye region was invented on open, not drawn: Auto may move it.
         self._region_default = False
+        self._default_before_lock = False
         self._build()
         self._set_running()
         if video:
@@ -109,6 +110,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._ctl.set_auto_busy(auto or seed, text="…" if auto else "marking",
                                 enabled=not track and self.review is not None)
         self._btn_track.setEnabled(not auto)
+        self._btn_lock.setEnabled(self.review is not None)
         self._btn_track.setText("Stop" if track else "Apply to all frames")
         self._btn_revert.setEnabled(not (track or auto or seed)
                                     and self.review is not None
@@ -140,6 +142,7 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         n = len(rev)
         h, w = rev.reader.height, rev.reader.width
         self._region_default = rev.settings.search_limit() is None
+        self._default_before_lock = False
         if self._region_default:
             # Tracking returns nothing without a region.
             rev.settings = dataclasses.replace(
@@ -176,7 +179,25 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._loading = True
         try:
             self._ctl.show_settings(st)
+            self._btn_lock.setChecked(self._ctl.locked())
             self._build_region(st)
+        finally:
+            self._loading = False
+
+    def _lock_region(self, on: bool) -> None:
+        if self._loading or self.review is None:
+            return
+        # Locked, the invented default is kept on purpose: Auto works in it.
+        # Unlocked again, it is Auto's to move as before.
+        if on:
+            self._default_before_lock = self._region_default
+            self._region_default = False
+        else:
+            self._region_default = self._default_before_lock
+        self._ctl.set_locked(on)
+        self._loading = True
+        try:
+            self._build_region(self._read_settings())
         finally:
             self._loading = False
 
@@ -187,8 +208,12 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         if st.search_limit() is None:       # no clip yet
             return
         x0, y0, x1, y1 = st.search_limit()
-        self._region = pg.RectROI((x0, y0), (x1 - x0, y1 - y0),
+        locked = st.limit_locked
+        self._region = pg.RectROI((x0, y0), (x1 - x0, y1 - y0), movable=not locked,
                                   pen=pg.mkPen("#00e5ff", width=2))
+        if locked:
+            for h in self._region.getHandles():
+                self._region.removeHandle(h)
         self._region.sigRegionChangeFinished.connect(self._region_dragged)
         self._region.setVisible(self._view() != "bare")
         self._vb.addItem(self._region)
@@ -337,8 +362,17 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._worker.start()
 
     def _revert(self) -> None:
-        if self.review is None or not self.review.revert():
+        if self.review is None:
             return
+        held = self._read_settings() if self._ctl.locked() else None
+        if not self.review.revert():
+            return
+        kept = held is not None and held.search_limit() != self.review.settings.search_limit()
+        if held is not None:            # the trace comes back, the region stays
+            self.review.settings = dataclasses.replace(
+                self.review.settings, limit_locked=True,
+                **{k: getattr(held, k) for k in
+                   ("limit_x0", "limit_y0", "limit_x1", "limit_y1")})
         self._show_settings(self.review.settings)
         self._draw_pins()
         self._dirty = True
@@ -347,7 +381,9 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
         self._set_running()
         self.goto(self._frame, force=True)
         self._refresh_plot()
-        self._prog.setText("reverted to the previous trace")
+        self._prog.setText("reverted to the previous trace"
+                           + (" (it was tracked in another region: the locked "
+                              "one is kept)" if kept else ""))
 
     def _on_progress(self, i: int, n: int) -> None:
         self._prog.setText(f"tracking {i}/{n}")

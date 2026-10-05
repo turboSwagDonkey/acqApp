@@ -431,6 +431,8 @@ EDITS = [
     # A nested list: proves JSON's lost tuple type is normalised on load.
     ("pupil_cam",   "CR pins",   lambda p: p.set_pins([(11.0, 22.0, 3.0)]),
      lambda p: p.settings.cr_pins,              [(11.0, 22.0, 3.0)]),
+    ("pupil_cam",   "region lock", lambda p: p.set_region_locked(True),
+     lambda p: p.settings.limit_locked,         True),
     ("wheel",       "V/rev",     lambda p: p._spn_vpr.setValue(3.210),
      lambda p: p.settings.volts_per_rev,        3.210),
     ("wheel",       "diameter",  lambda p: p._spn_dia.setValue(123.0),

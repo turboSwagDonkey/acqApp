@@ -51,6 +51,7 @@ class TrackingControls(QWidget):
         self._live = live
         self._pins = list(s.cr_pins)
         self._region = (s.limit_x0, s.limit_y0, s.limit_x1, s.limit_y1)
+        self._locked = bool(s.limit_locked)
         self._quiet = True          # widgets emit as they're built
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -216,7 +217,7 @@ class TrackingControls(QWidget):
         x0, y0, x1, y1 = self._region
         kw = dict(
             limit_x0=float(x0), limit_y0=float(y0),
-            limit_x1=float(x1), limit_y1=float(y1),
+            limit_x1=float(x1), limit_y1=float(y1), limit_locked=self._locked,
             track_threshold=self._spn_thr.value(),
             track_blur=self._spn_blur.value() | 1,
             track_model=self._cmb_model.currentData(),
@@ -258,6 +259,7 @@ class TrackingControls(QWidget):
             self._pins = list(s.cr_pins)
             self._show_pins()
             self._set_region((s.limit_x0, s.limit_y0, s.limit_x1, s.limit_y1))
+            self._locked = bool(s.limit_locked)
         finally:
             self._quiet = False
 
@@ -268,10 +270,21 @@ class TrackingControls(QWidget):
     def _set_region(self, r) -> None:
         self._region = tuple(float(v) for v in r)
 
+    def locked(self) -> bool:
+        """Locked and there is a region to hold (none yet: the default may
+        still be placed)."""
+        return self._locked and _valid(self._region)
+
+    def set_locked(self, on: bool) -> None:
+        if bool(on) != self._locked:
+            self._locked = bool(on)
+            self._fire()
+
     def set_limit(self, x0: float, y0: float, x1: float, y1: float) -> None:
         """From the image, as ONE change. An empty box is ignored: the region
-        is always on, and the host gives it a default before the first fit."""
-        if not _valid((x0, y0, x1, y1)):
+        is always on, and the host gives it a default before the first fit.
+        A locked region ignores it too."""
+        if not _valid((x0, y0, x1, y1)) or self.locked():
             return
         self._set_region((x0, y0, x1, y1))
         self._fire()
@@ -302,7 +315,8 @@ class TrackingControls(QWidget):
             self._spn_blur.setValue(int(s.track_blur))
             self._chk_cr.setChecked(bool(s.cr_remove))
             self._spn_cr_thr.setValue(int(s.cr_threshold))
-            self._set_region((s.limit_x0, s.limit_y0, s.limit_x1, s.limit_y1))
+            if not self.locked():
+                self._set_region((s.limit_x0, s.limit_y0, s.limit_x1, s.limit_y1))
             self._pins = list(s.cr_pins)
             self._show_pins()
         finally:

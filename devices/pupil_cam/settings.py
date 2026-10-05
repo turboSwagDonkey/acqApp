@@ -12,6 +12,8 @@ class PupilSettings:
     limit_y0:     float = 0.0
     limit_x1:     float = 0.0
     limit_y1:     float = 0.0
+    # A drag, Set eye region and Auto leave a locked region where it is.
+    limit_locked: bool = False
     # Replay a clip instead of the camera; "" = camera/mock.
     video_path:   str = ""
 

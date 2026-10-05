@@ -211,6 +211,9 @@ class SettingsPanel(QWidget):
         """From the preview, as ONE settings change."""
         self.tracking.set_limit(x0, y0, x1, y1)
 
+    def set_region_locked(self, on: bool) -> None:
+        self.tracking.set_locked(on)
+
     def set_pins(self, pins) -> None:
         """From the preview, as ONE settings change."""
         self.tracking.set_pins(pins)
