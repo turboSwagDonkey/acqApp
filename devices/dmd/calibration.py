@@ -645,6 +645,22 @@ def with_corners(calib: DmdCalibration, corners_cam) -> DmdCalibration:
                    created=datetime.now().isoformat(timespec="seconds"))
 
 
+def manual_seed(dmd_size: tuple[int, int], cam_size: tuple[int, int],
+                frac: float = 0.6) -> DmdCalibration:
+    """A starting point for dragging corners when no sweep exists: the panel
+    drawn as a centred `frac`-wide rectangle in the camera frame, panel aspect."""
+    dw, dh = dmd_size
+    cw, ch = cam_size
+    hw = frac * cw / 2.0
+    hh = min(hw * dh / dw, frac * ch / 2.0)
+    hw = hh * dw / dh
+    cx, cy = (cw - 1) / 2.0, (ch - 1) / 2.0
+    blank = DmdCalibration(cam_to_dmd=np.eye(3), dmd_size=dmd_size,
+                           cam_size=cam_size, model="manual")
+    return with_corners(blank, [(cx - hw, cy - hh), (cx + hw, cy - hh),
+                                (cx + hw, cy + hh), (cx - hw, cy + hh)])
+
+
 def with_vignette(calib: DmdCalibration, cx: float, cy: float,
                   r: float) -> DmdCalibration:
     """Record the operator-drawn vignette circle (advisory; see `well_lit`)."""

@@ -1378,8 +1378,119 @@ def check_corner_editor(r: Report) -> None:
             "unchecking before Apply clears a previously marked vignette")
 
 
+def check_manual_live(r: Report) -> None:
+    """Manual (live): works with no sweep, seeds sanely, projects all-on and
+    ends dark whatever happens, the editor image follows the camera, and only
+    Apply replaces `_calib`."""
+    _app = qt_app()          # kept alive — see check_geometry_controls
+    import acqApp.devices.dmd.corner_editor as CE
+    import acqApp.devices.dmd.sweep as SW
+    from acqApp.devices.dmd.calibration import manual_seed
+
+    seed = manual_seed((64, 48), (400, 300))
+    c = seed.accessible_corners()
+    r.check(seed.model == "manual+corners", f"seed is labelled manual ({seed.model})")
+    r.check(c[:, 0].min() > 0 and c[:, 0].max() < 399
+            and c[:, 1].min() > 0 and c[:, 1].max() < 299,
+            "the seed rectangle sits inside the camera frame")
+    r.check(abs((c[1, 0] - c[0, 0]) / (c[3, 1] - c[0, 1]) - 64 / 48) < 1e-6,
+            "…at the panel's aspect ratio")
+
+    projected: list = []
+    events: list = []
+
+    class FakeProjector:
+        resolution = (64, 48)
+
+        def project_frame(self, f):
+            projected.append(np.asarray(f).copy())
+
+        def stop(self):
+            events.append("dark")
+
+    counter = {"n": 0}
+
+    def source():
+        counter["n"] += 1
+        return np.full((30, 40), counter["n"] % 256, np.uint8)
+
+    seen: dict = {}
+
+    class FakeEditor:
+        result = None
+
+        def __init__(self, calib, frame, *, live_source=None, start_label="",
+                     parent=None):
+            seen.update(calib=calib, live=live_source, label=start_label)
+
+        def exec(self):
+            events.append("exec")
+            return SW.QDialog.DialogCode.Accepted if self.result is not None \
+                else SW.QDialog.DialogCode.Rejected
+
+        @property
+        def calibration(self):
+            return self.result
+
+    dlg = SW.CalibrationDialog(FakeProjector(), source, real=True)
+    r.check(dlg._btn_manual.isEnabled() and dlg._calib is None,
+            "Manual is available with no sweep done")
+    real_editor = CE.CornerAdjustDialog
+    CE.CornerAdjustDialog = FakeEditor
+    try:
+        dlg._cancel = True               # as a stopped sweep leaves it
+        dlg._manual_live()
+        r.check(len(projected) == 1 and bool(np.all(projected[0] == ON)),
+                "it projects ALL-ON")
+        r.check(seen["calib"].model == "manual+corners" and seen["live"] is source
+                and seen["label"] == "starting rectangle",
+                "with no sweep the editor starts from the seed, fed by the camera")
+        r.check(events == ["exec", "dark"], f"light is off after the editor ({events})")
+        r.check(dlg._calib is None, "Cancel leaves the calibration unset")
+        r.check(not dlg._btn_save.isEnabled() and not dlg._btn_adjust.isEnabled(),
+                "…and Save / Adjust stay off")
+
+        FakeEditor.result = manual_seed((64, 48), (40, 30))
+        events.clear()
+        dlg._manual_live()
+        r.check(dlg._calib is FakeEditor.result and dlg._btn_save.isEnabled()
+                and dlg._btn_adjust.isEnabled(),
+                "Apply adopts the calibration and enables Save / Adjust")
+
+        dlg._manual_live()
+        r.check(seen["calib"] is FakeEditor.result and seen["label"] == "sweep fit",
+                "with a fit in hand the editor starts from it")
+
+        class Boom(FakeEditor):
+            def exec(self):
+                raise RuntimeError("boom")
+        CE.CornerAdjustDialog = Boom
+        events.clear()
+        dlg._manual_live()
+        r.check(events == ["dark"] and dlg._btn_run.isEnabled()
+                and dlg._btn_manual.isEnabled(),
+                "an editor failure still ends dark and re-enables the buttons")
+    finally:
+        CE.CornerAdjustDialog = real_editor
+
+    # The real editor: a new frame object reaches the image; the same one doesn't.
+    calib = manual_seed((64, 48), (400, 300))
+    frames = [np.zeros((300, 400), np.uint8)]
+    ed = CE.CornerAdjustDialog(calib, frames[0], live_source=lambda: frames[-1])
+    r.check(ed._timer.isActive(), "a live editor polls the camera")
+    bright = np.full((300, 400), 200, np.uint8)
+    frames.append(bright)
+    ed._refresh()
+    r.check(ed._img.image.max() == 200, "a newer frame replaces the image")
+    ed.reject()
+    r.check(not ed._timer.isActive(), "closing the editor stops the polling")
+    still = CE.CornerAdjustDialog(calib, frames[0])
+    r.check(not still._timer.isActive(), "a still editor never polls")
+
+
 def _part_sweep() -> int:
     r = Report("dmd-sweep")
+    check_manual_live(r)
     check_fresh_grabber(r)
     check_end_to_end(r)
     check_display_modes(r)

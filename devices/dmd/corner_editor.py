@@ -9,9 +9,11 @@ registration fit doesn't measure dimness.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
                              QLabel, QPushButton, QVBoxLayout)
 
@@ -25,6 +27,7 @@ _FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
 _CORNER_PEN = pg.mkPen("#00d0ff", width=2)
 _CORNER_HOVER = pg.mkPen("#4dff88", width=3)
 _VIGNETTE_PEN = pg.mkPen(style.WARN, width=2, style=Qt.PenStyle.DotLine)
+_LIVE_MS = 50
 
 
 class CornerAdjustDialog(QDialog):
@@ -32,15 +35,36 @@ class CornerAdjustDialog(QDialog):
     them), and optionally mark a vignette circle; both applied together."""
 
     def __init__(self, calib: DmdCalibration, frame: np.ndarray, *,
-                 parent=None):
+                 live_source: Callable[[], object] | None = None,
+                 start_label: str = "auto fit", parent=None):
+        """`live_source` -> the camera's latest frame (or None); given, the
+        image refreshes while the corners are dragged. `start_label` names the
+        fit the corners begin at, in the labels."""
         super().__init__(parent)
         self._calib = calib
         self._auto_corners = np.asarray(calib.accessible_corners(), float)
         self._result: DmdCalibration | None = None
+        self._start_label = start_label
+        self._live_source = live_source
+        self._last_frame = frame
         self.setWindowTitle("Adjust calibration corners / vignette")
         self.setStyleSheet(style.accent_panel("dmd"))
         self.resize(900, 720)
         self._build(frame)
+        self._timer = QTimer(self)
+        if live_source is not None:
+            self._timer.timeout.connect(self._refresh)
+            self._timer.start(_LIVE_MS)
+
+    def done(self, result: int) -> None:
+        self._timer.stop()
+        super().done(result)
+
+    def _refresh(self) -> None:
+        f = self._live_source()
+        if f is not None and f is not self._last_frame:
+            self._last_frame = f
+            self._img.setImage(np.asarray(f), autoLevels=False)
 
     # ── construction ─────────────────────────────────────────────────────────
     def _build(self, frame: np.ndarray) -> None:
@@ -58,9 +82,9 @@ class CornerAdjustDialog(QDialog):
         vb = pg.ViewBox(lockAspect=True, invertY=True)
         gv.addItem(vb)
         f = np.asarray(frame)
-        img = pg.ImageItem(f, axisOrder="row-major")
-        vb.addItem(img)
-        img.setLevels(snapshot_levels(f))
+        self._img = pg.ImageItem(f, axisOrder="row-major")
+        vb.addItem(self._img)
+        self._img.setLevels(snapshot_levels(f))
         root.addWidget(gv, 1)
 
         self._outline = pg.PlotCurveItem(pen=_FIELD_PEN)
@@ -102,7 +126,7 @@ class CornerAdjustDialog(QDialog):
         vb.autoRange()
 
         row = QHBoxLayout()
-        btn_reset = QPushButton("Reset to auto fit")
+        btn_reset = QPushButton(f"Reset to {self._start_label}")
         btn_reset.clicked.connect(self._reset)
         row.addWidget(btn_reset)
         row.addStretch()
@@ -126,10 +150,10 @@ class CornerAdjustDialog(QDialog):
         self._outline.setData(closed[:, 0], closed[:, 1])
         d = np.hypot(*(c - self._auto_corners).T)
         if d.max() < 0.5:
-            self._lbl_delta.setText("No change from the auto fit yet.")
+            self._lbl_delta.setText(f"No change from the {self._start_label} yet.")
         else:
             self._lbl_delta.setText(
-                "Moved from the auto fit: "
+                f"Moved from the {self._start_label}: "
                 + ", ".join(f"{v:.1f} px" for v in d))
 
     def _reset(self) -> None:
