@@ -2858,6 +2858,22 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(not win._btn_rec.isChecked(),
             "ending the routine stops the recording it started")
 
+    # The Start button asks first; Cancel starts nothing, OK runs as above.
+    from acqApp.adapters.routines import start_summary
+    text = start_summary("m1", Path("D:/rec/m1/20261007"), "full", 2, 100.0,
+                         "DCIMG")
+    r.check(all(s in text for s in ("m1", "D:", "full", "binning 2",
+                                    "100 Hz", "DCIMG", "LED")),
+            "the start summary names mouse, path, camera settings and the LED")
+    adapter._confirm_start = lambda: False
+    adapter._on_start_clicked()
+    r.check(adapter._engine is None, "Cancel on the start popup starts nothing")
+    adapter._confirm_start = lambda: True
+    adapter._on_start_clicked()
+    r.check(adapter._engine is not None, "OK on the start popup starts the routine")
+    adapter._abort()
+    del adapter._confirm_start
+
     # A manual recording is Internal-mode and a routine won't switch mode
     # under it, so it refuses rather than adopt it (2026-09-28).
     win._btn_rec.setChecked(True)

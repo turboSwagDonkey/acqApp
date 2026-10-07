@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
@@ -73,6 +73,17 @@ def _csv_text(rows: list[list]) -> str:
     buf = io.StringIO()
     csv.writer(buf, lineterminator="\n").writerows(rows)
     return buf.getvalue()
+
+
+def start_summary(mouse: str, folder: Path, preset: str | None,
+                  binning: int | None, rate_hz: float | None,
+                  fmt: str) -> str:
+    """The pre-flight text Start shows: where it saves, how the camera is set."""
+    rate = f"{rate_hz:g} Hz" if rate_hz else "max"
+    camera = ("no camera loaded" if preset is None else
+              f"{preset}, binning {binning}, {rate}, {fmt}")
+    return (f"Mouse: {mouse}\nSaving to: {folder}\nCamera: {camera}\n\n"
+            f"Turn the LED power up before you continue.")
 
 
 def burst_stall_s(hz: float | None) -> float:
@@ -154,7 +165,7 @@ class RoutinesModule(ModuleAdapter):
         saved = config.load_settings(self.key).get("routine")
         self.panel = RoutinePanel(Routine.from_dict(saved or {}))
         self.panel.settings_changed.connect(self._save)
-        self.panel.start_requested.connect(self._start)
+        self.panel.start_requested.connect(self._on_start_clicked)
         self.panel.pause_requested.connect(self._pause)
         self.panel.resume_requested.connect(self._resume)
         self.panel.skip_requested.connect(self._skip)
@@ -249,6 +260,29 @@ class RoutinesModule(ModuleAdapter):
             return False
         return any(s.kind == "trigger"
                    for s in routine.steps[:_first_record_index(routine)])
+
+    def _confirm_start(self) -> bool:
+        """Pre-flight check for the operator: OK starts, Cancel does nothing."""
+        folder = self.win.routine_folder()
+        text = start_summary(
+            folder.parent.name,         # routine_base = <...>/<mouse_id>/<date>
+            folder,
+            self.win.camera_preset(FRAME_STREAM),
+            self.win.camera_binning(FRAME_STREAM),
+            self.win.frame_rate_hz(),
+            "DCIMG" if self.win.dcimg_enabled() else "TIFF")
+        box = QMessageBox(self.panel)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Start routine")
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok
+                               | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        return box.exec() == QMessageBox.StandardButton.Ok
+
+    def _on_start_clicked(self) -> None:
+        if self._confirm_start():
+            self._start()
 
     def _start(self) -> None:
         """Validate, arm, open the recording, run — refusals leave no file."""
