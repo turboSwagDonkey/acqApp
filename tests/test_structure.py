@@ -19,7 +19,7 @@ DOC = APP_DIR / "docs" / "STRUCTURE.md"
 # protocols, ROI sets and FOV bookmarks, written by the app at runtime like
 # sessions/ — their contents are not part of the tree.
 SKIP_DIRS = {".venv", "__pycache__", ".git", "sessions", "routine_templates",
-            "rois", "fov_library", ".vs"}
+            "rois", "fov_library", ".vs", ".claude"}
 KEEP_SUFFIX = {".py", ".json", ".txt", ".md", ".ps1"}
 # Root modules are their own node; these packages are one node each.
 PACKAGES = {"acq", "adapters", "devices", "routines", "saving"}

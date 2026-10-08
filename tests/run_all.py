@@ -5,6 +5,7 @@ Run the acqApp test suite.
     acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\run_all.py -v      (full output)
     acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\run_all.py console  (one test)
 
+Tests run DEFAULT_JOBS at a time (`-j N` to change, `-j 1` for serial).
 Each test (and each part of a multi-part file) runs in its own process:
 QApplications and module patches don't mix in one, and a hard crash reports as
 a failure instead of ending the run. Emulate mode against fakes only.
@@ -18,6 +19,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Relays "Δ", "≤", "→", which kill a print on a non-UTF-8 console (this file
@@ -26,6 +28,7 @@ import _harness  # noqa: F401  (imported for its console hardening)
 
 HERE = Path(__file__).resolve().parent
 MAX_FAIL_LINES = 40         # per failing test, without -v
+DEFAULT_JOBS = min(8, os.cpu_count() or 1)
 
 # Cheapest and most diagnostic first: a console-guard failure would fail the
 # GUI tests for an unrelated reason.
@@ -79,25 +82,38 @@ def _failure_lines(out: str) -> list[str]:
 def main() -> int:
     args = [a for a in sys.argv[1:]]
     verbose = "-v" in args
+    jobs = DEFAULT_JOBS
+    if "-j" in args:
+        i = args.index("-j")
+        jobs = max(1, int(args[i + 1]))
+        del args[i:i + 2]
     wanted = [a for a in args if not a.startswith("-")]
     tests = [t for t in TESTS if not wanted or t[0] in wanted]
     if not tests:
         print(f"no test matches {wanted}; known: {[n for n, _ in TESTS]}")
         return 2
 
-    print(f"running {len(tests)} test(s) under {sys.executable}\n")
+    jobs = min(jobs, len(tests))
+    print(f"running {len(tests)} test(s) under {sys.executable}"
+          f" ({jobs} at a time)\n")
     results, total_ok = [], 0
     t_start = time.perf_counter()
 
     # The children's passing lines are counted, so they must print them.
     env = {**os.environ, "ACQAPP_VERBOSE": "1"}
 
-    for name, script in tests:
+    def run_one(test):
         t0 = time.perf_counter()
-        proc = subprocess.run([sys.executable, str(HERE / script)],
+        proc = subprocess.run([sys.executable, str(HERE / test[1])],
                               capture_output=True, text=True, env=env,
                               encoding="utf-8", errors="replace")
-        dt = time.perf_counter() - t0
+        return proc, time.perf_counter() - t0
+
+    # map() yields in TESTS order, so the report reads the same as a serial run.
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        finished = list(zip(tests, pool.map(run_one, tests)))
+
+    for (name, script), (proc, dt) in finished:
         out = proc.stdout + proc.stderr
         n_ok = sum(1 for ln in proc.stdout.splitlines()
                    if ln.startswith("  ok   "))
@@ -123,6 +139,8 @@ def main() -> int:
     print(f"\n{'=' * 72}")
     print(f"{total_ok} checks, {len(results) - len(failed)}/{len(results)} "
           f"tests passed in {time.perf_counter() - t_start:.1f}s")
+    slow = sorted(results, key=lambda r: -r[3])[:3]
+    print("slowest: " + ", ".join(f"{n} {dt:.0f}s" for n, _, _, dt in slow))
     if failed:
         print(f"FAILED: {', '.join(failed)}")
         return 1

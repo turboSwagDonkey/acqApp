@@ -471,6 +471,19 @@ def check_own_window(r: Report, win) -> None:
     win._settings_dialog.hide()
 
 
+def check_matplotlib_stays_lazy(r: Report, win) -> None:
+    """pyqtgraph's LUT menu used to import matplotlib (~0.4 s) at window build;
+    style.py defers it to the first open of the "Others" colormap submenu."""
+    r.check("matplotlib" not in sys.modules,
+            "building a window with an image view does not import matplotlib")
+    from pyqtgraph.widgets.ColorMapMenu import ColorMapMenu
+    menu = ColorMapMenu(showColorMapSubMenus=True)      # held: a collected one deletes its actions
+    mpl = next(a for a in menu.actions() if a.text() == "matplotlib").menu()
+    others = next(a for a in mpl.actions() if a.text() == "Others").menu()
+    others.aboutToShow.emit()
+    r.check(len(others.actions()) > 0, "the Others colormap submenu still fills on open")
+
+
 def _part_hotload() -> int:
     r = Report("hotload")
     isolate_user_state()
@@ -478,6 +491,7 @@ def _part_hotload() -> int:
 
     win = make_window({"voltage_cam", "wheel"})
     try:
+        check_matplotlib_stays_lazy(r, win)
         check_always_on(r, win)
         check_own_window(r, win)
         check_add_remove(r, win)

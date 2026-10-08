@@ -156,9 +156,37 @@ def plot_colors(theme: str) -> tuple[str, str]:
     return (t["plot_bg"], t["plot_fg"])
 
 
+_MPL_SCAN_DEFERRED = False
+
+
+def _defer_matplotlib_scan() -> None:
+    """pyqtgraph's LUT colormap menu imports matplotlib (~0.4 s, at the first
+    LUT widget) only to decide whether to list an "Others" submenu. List it
+    always and do the scan when that submenu opens. Any change in pyqtgraph's
+    internals leaves it untouched: slower start, same behaviour."""
+    global _MPL_SCAN_DEFERRED
+    if _MPL_SCAN_DEFERRED:
+        return
+    _MPL_SCAN_DEFERRED = True
+    try:
+        from pyqtgraph.widgets import ColorMapMenu as cmm
+        from pyqtgraph.Qt import QtCore
+        real = cmm.find_mpl_leftovers
+
+        @QtCore.Slot()
+        def build_others(self):
+            self.buildSubMenu(real(), "matplotlib")
+
+        cmm.find_mpl_leftovers = lambda: True
+        cmm.ColorMapMenu.buildMplOthersSubMenu = build_others
+    except (ImportError, AttributeError):
+        pass
+
+
 def apply_theme(app, theme: str) -> None:
     """Palette + QSS + pyqtgraph. Before building windows/plots."""
     import pyqtgraph as pg
+    _defer_matplotlib_scan()
     global _ACTIVE
     dark = theme == "dark"
     _ACTIVE = "dark" if dark else "light"

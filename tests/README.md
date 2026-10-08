@@ -6,7 +6,13 @@ acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py -v       # full output
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py session  # one test
 acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py -v # every check
 acqApp\.venv\Scripts\python.exe acqApp\tests\test_dmd.py --part calib  # one part
+acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py --part routines --check burst  # check_* names containing "burst"
+acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py -j 1  # serial (default: 8 files at a time, 4 parts each; ~18 s)
 ```
+
+`ACQAPP_PART_JOBS=N` sets how many parts of one file run at once. `qt_app()` applies the theme only
+when it changed (it was re-styling every live widget on each of ~100 calls). The `dcimg` part of
+test_camera.py reports SKIPPED where there is no DCAM driver (the desk machines).
 
 Every run is **quiet by default**: only failures and the closing count. **`-v`**
 (or `ACQAPP_VERBOSE=1`) prints the passing lines too; each states a property in

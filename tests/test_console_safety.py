@@ -60,7 +60,7 @@ def main() -> int:
 
     # ── 1. static: every entry point opts in ─────────────────────────────────
     entries = sorted(p for p in APP_DIR.rglob("*.py")
-                     if ".venv" not in p.parts
+                     if not {".venv", ".claude"} & set(p.parts)
                      and 'if __name__ == "__main__":' in p.read_text(encoding="utf-8"))
     r.note(f"{len(entries)} runnable entry points")
     missing = [str(p.relative_to(APP_DIR)) for p in entries

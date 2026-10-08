@@ -676,8 +676,20 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         dc.DcimgRecorder = real
 
 
+def _have_dcam() -> bool:
+    import ctypes
+    try:
+        ctypes.windll.dcamapi
+    except (AttributeError, OSError):
+        return False
+    return True
+
+
 def _part_dcimg() -> int:
     r = Report("dcimg")
+    if not _have_dcam():                # every check builds a real DcimgRecorder
+        print("[dcimg] SKIPPED: no DCAM driver on this machine (runs on the rig)")
+        return 0
     isolate_user_state()
     app = qt_app()
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_dcimg_"))

@@ -174,16 +174,40 @@ class Report:
 def run_parts(parts: dict) -> int:
     """Run each part of a test file in its own process, as separate files did:
     parts patch modules and build QApplications, which don't mix in one.
-    `--part NAME` runs one part here; `-q` is passed through."""
+    `--part NAME` runs one part here; `-q` is passed through. Parts run
+    ACQAPP_PART_JOBS at a time (default 4), output printed in part order.
+    `--check TEXT` runs only the check_* functions whose name contains TEXT."""
     import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+    flags = [a for a in sys.argv[1:] if a in ("-q", "-v")]
+    if "--check" in sys.argv:
+        text = sys.argv[sys.argv.index("--check") + 1]
+        flags += ["--check", text]
+        if "--part" in sys.argv:
+            main = sys.modules["__main__"]
+            names = [n for n, f in vars(main).items()
+                     if n.startswith("check_") and callable(f)]
+            if not any(text in n for n in names):
+                print(f"no check_* contains {text!r}; known: {names}")
+                return 2
+            for n in names:
+                if text not in n:
+                    setattr(main, n, lambda *a, **k: None)
     if "--part" in sys.argv:
         return parts[sys.argv[sys.argv.index("--part") + 1]]()
+
+    def one(name):
+        return subprocess.run(
+            [sys.executable, sys.argv[0], "--part", name, *flags],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+
     rc = 0
-    for name in parts:
-        sys.stdout.flush()
-        args = [sys.executable, sys.argv[0], "--part", name]
-        args += [a for a in sys.argv[1:] if a in ("-q", "-v")]
-        rc |= subprocess.run(args).returncode
+    jobs = int(os.environ.get("ACQAPP_PART_JOBS", "4"))
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        for proc in pool.map(one, parts):
+            print(proc.stdout, end="")
+            print(proc.stderr, end="", file=sys.stderr)
+            rc |= proc.returncode
     return rc
 
 
@@ -193,8 +217,12 @@ def qt_app():
     """The QApplication, created once per process, with the app's own theme."""
     from PyQt6.QtWidgets import QApplication
     from acqApp import config, style
-    app = QApplication.instance() or QApplication(sys.argv)
-    style.apply_theme(app, config.get_theme())
+    app = QApplication.instance()
+    theme = "dark" if config.get_theme() == "dark" else "light"
+    # Re-applying restyles every live widget (~0.2 s each, 100+ calls in a part).
+    if app is None or style._ACTIVE != theme:
+        app = app or QApplication(sys.argv)
+        style.apply_theme(app, theme)
     return app
 
 
