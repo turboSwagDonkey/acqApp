@@ -7,18 +7,19 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QPushButton, QWidget
 
-from acqApp import config
+from acqApp import config, style
 from acqApp.acq.devices import ProjectorController
 from acqApp.devices.dmd import alp
-from acqApp.devices.dmd.control import DmdController, DmdSettings, MockDmdController
+from acqApp.devices.dmd.control import (MODE_PATTERN, MODE_ROI, DmdController,
+                                        DmdSettings, MockDmdController)
 from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
 
 # The standalone dmdGUI_project app's alignment keys -> DmdSettings attribute.
 _SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
-
+_LIGHT_OFF, _LIGHT_ON = "DMD OFF", "● DMD ON"       # the status-bar switch's labels
 
 class DmdModule(ModuleAdapter):
     key = "dmd"
@@ -41,6 +42,82 @@ class DmdModule(ModuleAdapter):
         self._stop_timer = QTimer()
         self._stop_timer.setSingleShot(True)
         self._stop_timer.timeout.connect(self.stop_display)
+        self._light_btn: QPushButton | None = None
+
+    # ── the status-bar light switch ──
+    def status_widget(self) -> QWidget:
+        """A large DMD on/off toggle beside Record: it projects what the DMD
+        tab has selected, or all-on when nothing is."""
+        if self._light_btn is None:
+            b = QPushButton()
+            b.setCheckable(True)
+            # Record's box (the window sizes it to match), in the DMD accent.
+            c = style.HEX["dmd"]
+            b.setStyleSheet(
+                style.record_btn("dmd")
+                + f"QPushButton:checked{{background:{c};color:white;"
+                  f"border:2px solid {c}}}")
+            b.setToolTip(
+                "THIS PROJECTS LIGHT.\nTurns the DMD on or off using the "
+                "display selected on the DMD tab (Image, ROIs or All on). "
+                "With nothing selected it projects all-on.")
+            b.toggled.connect(self._on_light_button)
+            # The window gives it a fixed box: tell it the widest label.
+            widest = 0
+            for text in (_LIGHT_OFF, _LIGHT_ON):
+                b.setText(text)
+                widest = max(widest, b.sizeHint().width())
+            b.setMinimumWidth(widest)
+            self._light_btn = b
+            self._show_light(False)
+        return self._light_btn
+
+    def _show_light(self, lit: bool) -> None:
+        """Make the button say what the projector is doing; never re-triggers it."""
+        b = self._light_btn
+        if b is None:
+            return
+        b.blockSignals(True)
+        b.setChecked(lit)
+        b.blockSignals(False)
+        b.setText(_LIGHT_ON if lit else _LIGHT_OFF)
+        b.setEnabled(self.controller is not None)
+
+    def _display_problem(self) -> str:
+        """Why the SELECTED display can't be shown ('' = it can). It is never
+        swapped for all-on: a stale file or a missing calibration is a fault to
+        report, not a licence to light the whole field."""
+        s = self.panel.settings
+        if s.display_mode == MODE_PATTERN and s.pattern_path is not None \
+                and not Path(s.pattern_path).is_file():
+            return f"DMD not lit: pattern file {Path(s.pattern_path).name} is missing"
+        if s.display_mode == MODE_ROI and s.rois and not s.calib_path:
+            return "DMD not lit: ROIs need a calibration (run Calibrate… first)"
+        return ""
+
+    def _nothing_selected(self) -> bool:
+        s = self.panel.settings
+        return ((s.display_mode == MODE_PATTERN and s.pattern_path is None)
+                or (s.display_mode == MODE_ROI and not s.rois))
+
+    def _on_light_button(self, on: bool) -> None:
+        if not on:
+            self.stop_display()
+            self.win.status("DMD off")
+            return
+        why = self._display_problem()
+        if why:
+            self._show_light(False)
+            self.win.status(why)
+            return
+        fallback = self._nothing_selected()
+        if fallback:
+            self.panel.set_all_on()     # the tab shows what is lit
+        self.display()
+        name = {"pattern": "the pattern", "roi": "the ROIs",
+                "all_on": "all-on"}[self.panel.mode]
+        self.win.status(f"DMD on: {name}"
+                        + (" (nothing was selected)" if fallback else ""))
 
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
@@ -278,6 +355,7 @@ class DmdModule(ModuleAdapter):
         path = s.pattern_path
         if path is not None and Path(path).is_file():
             self.controller.load_pattern(Path(path))
+        self._show_light(False)         # a new controller starts dark
 
     def load(self, path) -> None:
         if self.controller is not None:
@@ -287,10 +365,12 @@ class DmdModule(ModuleAdapter):
         if self.controller is not None:
             self.controller.apply_settings(self.panel.settings)
             self.controller.display()
+            self._show_light(True)
 
     def stop_display(self) -> None:
         if self.controller is not None:
             self.controller.stop()
+            self._show_light(False)
 
     def on_trigger(self, name: str, duration: float) -> None:
         """The ALP holds until Stop, so a timed stimulus is display plus a

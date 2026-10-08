@@ -163,6 +163,12 @@ class ModuleAdapter:
     def build_plot(self) -> QWidget | None:
         return None
 
+    def status_widget(self) -> QWidget | None:
+        """A control for the window's status bar, beside Record. The same
+        widget on every call; the window places it on load and removes it on
+        unload."""
+        return None
+
     def build_views(self) -> None:
         """Any further UI, after the panels."""
 

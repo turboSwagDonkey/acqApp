@@ -245,6 +245,7 @@ class MainWindow(QMainWindow):
         self._module_docks: dict[str, list] = {}
         self._module_views: dict[str, list] = {}
         self._module_plots: dict[str, QWidget] = {}
+        self._status_widgets: dict[str, QWidget] = {}   # beside Record
         self._central_owner: str | None = None
 
         self._modules = adapters.build_adapters(self, self._enabled)
@@ -701,6 +702,39 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self._btn_run)
         sb.addPermanentWidget(self._btn_rec)
         sb.showMessage("Ready")
+        for m in self._modules:
+            self._add_status_widget(m)
+        self._size_status_boxes()
+
+    def _add_status_widget(self, m) -> None:
+        """Place the control a module offers (the DMD's light switch) beside Record."""
+        w = m.status_widget()
+        if w is not None:
+            self.statusBar().addPermanentWidget(w)
+            w.show()
+            self._status_widgets[m.key] = w
+
+    def _size_status_boxes(self) -> None:
+        """Record and each module switch get one fixed box, wide enough for
+        every label any of them shows: no resizing between states, no clipping."""
+        rec, keep = self._btn_rec, self._btn_rec.text()
+        w = h = 0
+        for text in ("● Record", "■ Stop rec"):
+            rec.setText(text)
+            hint = rec.sizeHint()
+            w, h = max(w, hint.width()), max(h, hint.height())
+        rec.setText(keep)
+        for b in self._status_widgets.values():
+            w, h = max(w, b.minimumWidth(), b.sizeHint().width()), max(h, b.sizeHint().height())
+        for b in (rec, *self._status_widgets.values()):
+            b.setFixedSize(w, h)
+
+    def _remove_status_widget(self, key: str) -> None:
+        w = self._status_widgets.pop(key, None)
+        if w is not None:
+            self.statusBar().removeWidget(w)
+            w.setParent(None)
+            w.deleteLater()
 
     def _build_sidebar(self) -> None:
         self._sidebar = QToolBar("Sidebar")
@@ -1016,6 +1050,8 @@ class MainWindow(QMainWindow):
         self._add_plot_tab(m, index=self._plot_tab_index(key))
         self._build_views_for(m)
         m.build_controller(self._emulate)
+        self._add_status_widget(m)
+        self._size_status_boxes()
 
         if self._session_on:
             m.build_session(self._emulate)
@@ -1056,6 +1092,7 @@ class MainWindow(QMainWindow):
         for view in self._module_views.pop(key, []):
             if view in self._pg_views:
                 self._pg_views.remove(view)
+        self._remove_status_widget(key)
 
         self._modules.remove(m)
 

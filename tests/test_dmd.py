@@ -21,7 +21,8 @@ from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             holdout_error, offset_stripe,
                                             stripe_sweep, with_corners,
                                             with_vignette, without_vignette)
-from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet, roi_from_dict
+from acqApp.devices.dmd.roi import (CircleRoi, PolyRoi, RectRoi, RoiSet,
+                                    roi_from_dict, simplify_polygon)
 from acqApp.devices.dmd.sweep import FreshGrabber, sweep_exposures
 
 
@@ -309,6 +310,7 @@ def _part_dmd() -> int:
 
     check_roi_wiring(r)
     check_mode_switch_and_cache(r)
+    check_light_switch(r)
     check_sub_sampling(r)
     return r.finish()
 
@@ -424,6 +426,135 @@ def check_mode_switch_and_cache(r) -> None:
     pump(app, 0.15)
     r.check(stops == [1], f"…and stops once, on its own time ({stops})")
 
+    shutil.rmtree(tmp, ignore_errors=True)
+    win.close()
+    pump(app, 0.1)
+
+
+def check_light_switch(r) -> None:
+    """The status-bar DMD toggle projects the tab's selected display, all-on if
+    none is selected, and never swaps a broken selection for all-on."""
+    from PIL import Image
+
+    from acqApp.devices.dmd.control import MODE_ALL_ON, MODE_PATTERN, MODE_ROI
+
+    isolate_user_state()
+    app = qt_app()
+    sys.argv = ["main.py", "--mock"]
+    win = make_window({"voltage_cam", "dmd"})
+    dmd = next(m for m in win._modules if m.key == "dmd")
+    panel = dmd.panel
+    btn = win._status_widgets.get("dmd")
+    lit = lambda: bool(dmd.controller._running)             # noqa: E731
+    msg = lambda: win.statusBar().currentMessage()          # noqa: E731
+
+    r.check(btn is not None and btn is dmd.status_widget()
+            and win.statusBar().isAncestorOf(btn),
+            "the DMD module puts a switch in the window's status bar")
+    rec = win._btn_rec
+    box = rec.minimumSize()
+    r.check(rec.maximumSize() == box and btn.minimumSize() == box
+            and btn.maximumSize() == box,
+            f"Record and the DMD switch share one fixed box "
+            f"({box.width()}x{box.height()}): neither resizes with its state")
+    clipped = []
+    for who, labels in ((rec, ("● Record", "■ Stop rec")),
+                        (btn, ("DMD OFF", "● DMD ON"))):
+        keep = who.text()
+        for text in labels:
+            who.setText(text)
+            hint = who.sizeHint()
+            if hint.width() > box.width() or hint.height() > box.height():
+                clipped.append((text, hint.width(), hint.height()))
+        who.setText(keep)
+    r.check(not clipped,
+            f"…and every label either shows fits it, none clipped ({clipped})")
+    r.check("font-size:11pt" in btn.styleSheet().replace(" ", "")
+            and "padding:6px22px" in btn.styleSheet().replace(" ", ""),
+            "…in the same type and padding")
+    r.check(btn.isEnabled() and not btn.isChecked() and btn.text() == "DMD OFF"
+            and not lit(), "it starts off, with the projector dark")
+
+    # Nothing selected: Image mode, no pattern file.
+    r.check(panel.mode == MODE_PATTERN and panel.settings.pattern_path is None,
+            "fixture: nothing is selected")
+    btn.click()
+    pump(app, 0.05)
+    r.check(btn.isChecked() and btn.text().startswith("●") and lit()
+            and panel.mode == MODE_ALL_ON and dmd.controller.on_pixels > 0,
+            "nothing selected: it lights all-on, and the DMD tab shows All on")
+    r.check("all-on" in msg() and "nothing was selected" in msg(),
+            f"…and the status bar says why ({msg()!r})")
+    btn.click()
+    pump(app, 0.05)
+    r.check(not btn.isChecked() and btn.text() == "DMD OFF" and not lit(),
+            "pressed again it turns the light off")
+
+    # A pattern file is selected: that is what lights, not all-on.
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmdlight_"))
+    pat = tmp / "bars.png"
+    img = np.zeros((64, 64), np.uint8)
+    img[:, ::8] = 255
+    Image.fromarray(img, mode="L").save(pat)
+    panel.set_pattern_path(pat)
+    pump(app, 0.05)
+    btn.click()
+    pump(app, 0.05)
+    full = dmd.controller.DEFAULT_W * dmd.controller.DEFAULT_H \
+        if hasattr(dmd.controller, "DEFAULT_W") else None
+    r.check(lit() and panel.mode == MODE_PATTERN
+            and 0 < dmd.controller.on_pixels
+            and (full is None or dmd.controller.on_pixels < full),
+            f"a selected pattern is what lights, not all-on "
+            f"({dmd.controller.on_pixels} mirrors, mode {panel.mode})")
+
+    # The tab's own buttons, a trigger and a routine keep the switch honest.
+    dmd.stop_display()
+    r.check(not btn.isChecked() and btn.text() == "DMD OFF",
+            "the tab's Stop turns the switch off")
+    dmd.display()
+    r.check(btn.isChecked() and lit(), "the tab's Display turns it on")
+    dmd.set_light(False)
+    r.check(not btn.isChecked(), "a routine's set_light(False) turns it off")
+    dmd.set_light(True)
+    r.check(btn.isChecked(), "…and set_light(True) on")
+    dmd.build_controller(True)
+    r.check(not btn.isChecked() and not lit(),
+            "a rebuilt controller (Emulate toggle) starts dark, and the switch says so")
+
+    # A selection that can't be shown is reported, never swapped for all-on.
+    panel.set_pattern_path(tmp / "gone.png")
+    btn.click()
+    pump(app, 0.05)
+    r.check(not btn.isChecked() and not lit() and panel.mode == MODE_PATTERN
+            and "missing" in msg(),
+            f"a missing pattern file isn't swapped for all-on ({msg()!r})")
+    roi = RectRoi(x=100, y=80, w=40, h=20).to_dict()
+    panel.set_roi_pattern("cells", [roi])
+    pump(app, 0.05)
+    btn.click()
+    pump(app, 0.05)
+    r.check(not btn.isChecked() and not lit() and panel.mode == MODE_ROI
+            and "calibration" in msg(),
+            f"ROIs without a calibration aren't swapped for all-on ({msg()!r})")
+    panel.set_rois(())
+    panel._rb[MODE_ROI].setChecked(True)
+    pump(app, 0.05)
+    btn.click()
+    pump(app, 0.05)
+    r.check(btn.isChecked() and lit() and panel.mode == MODE_ALL_ON,
+            "ROIs mode with no ROIs drawn is 'nothing selected': all-on")
+    btn.click()
+
+    # Unloading the module takes the switch with it.
+    try:
+        win.set_modules({"voltage_cam"})
+    except RuntimeError as e:
+        r.check(False, f"fixture: module unload refused ({e})")
+    else:
+        pump(app, 0.05)
+        r.check("dmd" not in win._status_widgets,
+                "unloading the DMD module removes its switch")
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()
     pump(app, 0.1)
@@ -1563,6 +1694,59 @@ def _part_roi() -> int:
     r.check(abs(cm.sum() - np.pi * 25 ** 2) / (np.pi * 25 ** 2) < 0.03,
             f"circle mask is pi*r^2 within 3% ({cm.sum()})")
 
+    # ── free-form outlines ───────────────────────────────────────────────────
+    tri = PolyRoi(points=[[100, 50], [200, 50], [150, 150]])        # area 5000
+    tm = tri.mask((CH, CW))
+    r.check(abs(tm.sum() - 5000) / 5000 < 0.03,
+            f"a triangle's mask is its area within 3% ({tm.sum()} vs 5000)")
+    r.check(tri.contains(np.array([150.0, 110.0, 10.0]),
+                         np.array([80.0, 140.0, 10.0])).tolist()
+            == [True, False, False],
+            "contains() agrees: inside, outside beside the slanted edge, far away")
+    ell = PolyRoi(points=[[0, 0], [100, 0], [100, 40], [40, 40], [40, 100],
+                          [0, 100]])                                 # an L, 6400
+    r.check(abs(ell.mask((CH, CW)).sum() - 6400) / 6400 < 0.03
+            and not ell.contains(np.array([70.0]), np.array([70.0]))[0]
+            and ell.contains(np.array([20.0]), np.array([70.0]))[0],
+            "a concave outline is filled even-odd: the notch stays dark")
+    gx, gy = np.arange(0, 300.0), np.arange(0, 200.0)
+    # Half-pixel offsets: a point exactly ON an edge is a convention, not a fact.
+    by_grid = tri.mask_at(gx + 0.5, gy + 0.5)
+    by_points = tri.contains((gx + 0.5)[None, :], (gy + 0.5)[:, None])
+    r.check((by_grid != by_points).sum() < 0.002 * by_grid.sum(),
+            "the grid test and the scattered-point test agree "
+            f"({(by_grid != by_points).sum()} px differ)")
+    r.check((tri.x, tri.y, tri.w, tri.h) == (150.0, 100.0, 100.0, 100.0),
+            "x, y, w, h are the bounding box")
+    sq = PolyRoi(points=[[0, 0], [40, 0], [40, 20], [0, 20]])
+    sq.x, sq.y = 100.0, 80.0
+    sq.w = 80.0
+    r.check(abs(sq.x - 100) < 1e-9 and abs(sq.y - 80) < 1e-9
+            and abs(sq.w - 80) < 1e-9 and abs(sq.h - 20) < 1e-9,
+            "moving then widening scales about the centre: "
+            f"({sq.x:g}, {sq.y:g}) {sq.w:g}x{sq.h:g}")
+    back = roi_from_dict(tri.to_dict())
+    r.check(isinstance(back, PolyRoi) and back.points == tri.points,
+            "a free-form ROI survives to_dict/roi_from_dict")
+    tt = np.linspace(0, 2 * np.pi, 600, endpoint=False)
+    noisy = np.column_stack((300 + 80 * np.cos(tt), 240 + 60 * np.sin(tt))) \
+        + np.random.default_rng(3).normal(0, 0.3, (600, 2))
+    thin = simplify_polygon(noisy, tol=1.5)
+    thin_area = PolyRoi(points=thin.tolist()).mask((480, 640)).sum()
+    r.check(3 <= len(thin) <= 60
+            and abs(thin_area - np.pi * 80 * 60) / (np.pi * 80 * 60) < 0.05,
+            f"a 600-point trace thins to {len(thin)} corners and keeps its "
+            f"area ({thin_area} vs {np.pi * 80 * 60:.0f})")
+    fc = c.accessible_corners().mean(axis=0)
+    box = PolyRoi(points=[[fc[0] - 30, fc[1] - 30], [fc[0] + 30, fc[1] - 30],
+                          [fc[0] + 30, fc[1] + 30], [fc[0] - 30, fc[1] + 30]])
+    f_poly = _set(box).dmd_frame(c)
+    f_rect = _set(RectRoi(x=fc[0], y=fc[1], w=60, h=60)).dmd_frame(c)
+    on_p, on_r = int((f_poly == f_poly.max()).sum()), int((f_rect == f_rect.max()).sum())
+    r.check(on_r > 0 and abs(on_p - on_r) / on_r < 0.03,
+            f"projected to mirrors, a polygon square lights what the rectangle "
+            f"does ({on_p} vs {on_r} mirrors)")
+
     # ── 2. the set ───────────────────────────────────────────────────────────
     s = RoiSet()
     s.add(RectRoi(x=100, y=80, w=40, h=20))
@@ -1830,7 +2014,8 @@ def _part_roi() -> int:
     # The real drag path: mouseDragEvent maps local coordinates to the image.
     from PyQt6.QtCore import QPointF, Qt as _Qt
     ed._on_clear()
-    ed._btn_draw.setChecked(True)
+    r.check(ed._tool == "rectangle" and ed._tool_btns["rectangle"].isChecked(),
+            "a drag draws from the start: no hidden Draw mode to arm")
     vb = ed._vb
 
     class _Ev:
@@ -1868,7 +2053,7 @@ def _part_roi() -> int:
     r.check(not vb._rect.isVisible(), "…and it clears on release")
 
     ed._on_clear()
-    ed._cmb.setCurrentText("circle")
+    ed.set_tool("circle")
     vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y()), finish=False))
     er = vb._ellipse.rect()
     vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y())))
@@ -1876,10 +2061,22 @@ def _part_roi() -> int:
     r.check(abs(er.width() / 2 - made.r) < 0.5,
             f"the circle band previews the radius it creates "
             f"({er.width() / 2:.1f} vs {made.r:.1f})")
-    ed._cmb.setCurrentText("rectangle")
-    ed._btn_draw.setChecked(False)
+    want_r = float(np.hypot(want_b[0] - want_a[0], want_b[1] - want_a[1]))
+    r.check(abs(made.x - want_a[0]) < 0.5 and abs(made.y - want_a[1]) < 0.5
+            and abs(made.r - want_r) < 0.5,
+            f"a circle is drawn from its centre (the press) out to the pointer: "
+            f"centre ({made.x:.0f}, {made.y:.0f}) r={made.r:.0f}, "
+            f"want {want_a} r={want_r:.0f}")
+    ed._on_clear()
+    vb.mouseDragEvent(_Ev((la.x(), la.y()), (lb.x(), lb.y()), finish=False))
+    ed.set_tool("pan")
     r.check(not vb._rect.isVisible() and not vb._ellipse.isVisible(),
-            "disarming Draw clears any band left on screen")
+            "switching to Pan clears any band left on screen")
+    r.check(not vb._draw and vb.tool == "pan",
+            "…and with Pan armed a left-drag is left to pyqtgraph's panning")
+    ed.set_tool("rectangle")
+    r.check(vb._draw and vb.tool == "rectangle",
+            "…and picking a shape tool arms drawing again")
     ed._on_clear()
 
     n = len(ed.roi_set)
@@ -1890,13 +2087,43 @@ def _part_roi() -> int:
 
     seen: list = []
     ed.rois_changed.connect(seen.append)
-    ed._cmb.setCurrentText("rectangle")
-    ed._on_add()
-    ed._cmb.setCurrentText("circle")
-    ed._on_add()
+    fc = c.accessible_corners().mean(axis=0)
+    fx, fy = float(fc[0]), float(fc[1])
+    ed.set_tool("rectangle")
+    ed._on_drawn((fx - 50, fy - 40), (fx + 50, fy + 40))
+    ed.set_tool("circle")
+    ed._on_drawn((fx, fy), (fx + 40, fy))
     r.check(len(ed.roi_set) == 2 and len(seen) == 2,
             f"adding one of each emits and lands in the set "
             f"({len(ed.roi_set)} rois, {len(seen)} signals)")
+    sizes = lambda: (ed._table.maximumHeight(), ed._hint.maximumHeight(),   # noqa: E731
+                     ed._legend.maximumHeight(), ed._status.maximumHeight())
+    h2 = sizes()
+    for _ in range(7):
+        ed._on_drawn((fx - 50, fy - 40), (fx + 50, fy + 40))
+    h9 = sizes()
+    ed.set_tool("free")
+    ed.set_tool("pan")
+    hp = sizes()
+    ed.set_tool("rectangle")
+    ed._on_clear()
+    h0 = sizes()
+    r.check(h0 == h2 == h9 == hp and ed._table.rowCount() == 0,
+            f"the table, hint and status never change size as ROIs are added "
+            f"or the tool changes (empty {h0}, 2 rois {h2}, 9 rois {h9})")
+    five = (ed._table.verticalHeader().defaultSectionSize() * 5
+            + ed._table.horizontalHeader().sizeHint().height())
+    r.check(five <= ed._table.maximumHeight() <= five + 12,
+            f"…and the table is five rows tall ({ed._table.maximumHeight()} px "
+            f"for {five})")
+    r.check(ed._table.verticalScrollBarPolicy()
+            != _Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+            "…and scrolls once there are more")
+    ed.set_tool("rectangle")
+    ed._on_drawn((fx - 50, fy - 40), (fx + 50, fy + 40))
+    ed.set_tool("circle")
+    ed._on_drawn((fx, fy), (fx + 40, fy))
+    seen.clear()
     kinds = [x.kind for x in ed.roi_set]
     r.check(kinds == ["rect", "circle"], f"both shapes are creatable ({kinds})")
 
@@ -1913,7 +2140,139 @@ def _part_roi() -> int:
             and abs(after[1] - before[1] - 7) < 0.6,
             f"moving the handle moves the model {before} -> {after}")
 
-    ed._list.setCurrentRow(0)
+    # ── selection from the image, typed numbers, the Delete key ──────────────
+    keys_ = [f[0] for f in ed._FIELDS]
+
+    def cell(i, key):
+        return ed._table.item(i, ed._NUM0 + keys_.index(key))
+
+    def edit(i, key, text):
+        cell(i, key).setText(text)      # what committing a typed cell does
+
+    r.check([ed._table.horizontalHeaderItem(c).text()
+             for c in range(ed._table.columnCount())]
+            == ["Name", "Shape", "X", "Y", "W", "H", "Radius", "Angle (°)"],
+            "the ROI table has one labelled column per parameter")
+    ed._select_item(ed._items[1])
+    r.check(ed._table.currentRow() == 1,
+            "clicking an ROI on the image selects its table row")
+    r.check(cell(1, "w").text() == "—" and cell(1, "r").text() != "—"
+            and not cell(1, "w").flags() & _Qt.ItemFlag.ItemIsEditable,
+            "a circle's W/H/Angle cells read '—' and can't be edited")
+    r.check(cell(0, "r").text() == "—" and cell(0, "w").text() != "—",
+            "…and a rectangle's Radius cell does")
+    edit(1, "r", "55")
+    r.check(abs(ed.roi_set[1].r - 55.0) < 0.1
+            and abs(ed._items[1].size()[0] / 2 - 55.0) < 0.1,
+            "typing a radius resizes the circle on the image and in the model")
+    edit(1, "r", "abc")
+    r.check(abs(ed.roi_set[1].r - 55.0) < 0.1 and cell(1, "r").text() == "55.0",
+            "…text that isn't a number is put back")
+    ed._table.setCurrentCell(0, 0)
+    y0 = ed.roi_set[0].y
+    edit(0, "x", "400")
+    edit(0, "angle_deg", "30")
+    got = ed.roi_set[0]
+    r.check(abs(got.x - 400.0) < 0.1 and abs(got.y - y0) < 0.1
+            and abs(got.angle_deg - 30.0) < 0.1,
+            f"typing x and an angle turns the rectangle about its centre "
+            f"({got.x:.1f}, {got.y:.1f}) {got.angle_deg:.0f} deg")
+    ed.load(ed.roi_set)
+    back = ed.roi_set[0]
+    r.check(abs(back.x - got.x) < 0.1 and abs(back.y - got.y) < 0.1
+            and abs(back.angle_deg - 30.0) < 0.1,
+            f"a rotated ROI survives a reload (was dropped to 0 deg before): "
+            f"{back.angle_deg:.0f} deg")
+    # ── handles say what they do ──────────────────────────────────────────────
+    roles = lambda i: sorted(h["item"]._role for h in ed._items[i].handles)  # noqa: E731
+    r.check(roles(0) == ["resize", "rotate"] and roles(1) == ["resize"],
+            f"a rectangle has a resize and a rotate handle, a circle only "
+            f"resize ({roles(0)}, {roles(1)})")
+    curs = {h["item"]._role: h["item"].cursor().shape()
+            for h in ed._items[0].handles}
+    r.check(curs["resize"] == _Qt.CursorShape.SizeFDiagCursor
+            and curs["rotate"] == _Qt.CursorShape.BitmapCursor,
+            "…each with its own cursor: a resize arrow, a drawn rotate arrow")
+    ed._add(PolyRoi(points=[[fx - 20, fy - 20], [fx + 20, fy - 20], [fx, fy + 20]]))
+    r.check(ed._items[-1].handles == [],
+            "a free-form outline has no handles: it moves as one piece")
+    ed._table.setCurrentCell(len(ed.roi_set) - 1, 0)
+    ed._on_delete()
+    r.check("rotate" in ed._legend.text() and "resize" in ed._legend.text(),
+            "the legend under the hint names the handles")
+
+    # ── free-form: trace, reshape, add and remove corners ─────────────────────
+    n0 = len(ed.roi_set)
+    ed.set_tool("free")
+    ring = [(300.0 + 80 * np.cos(t), 240.0 + 60 * np.sin(t))
+            for t in np.linspace(0, 2 * np.pi, 120, endpoint=False)]
+    p0 = vb.mapFromView(QPointF(*ring[0]))
+    for pt in ring[1:-1]:
+        q = vb.mapFromView(QPointF(*pt))
+        vb.mouseDragEvent(_Ev((p0.x(), p0.y()), (q.x(), q.y()), finish=False))
+    r.check(vb._stroke.isVisible() and len(ed.roi_set) == n0,
+            "mid-trace the outline shows and commits nothing")
+    q = vb.mapFromView(QPointF(*ring[-1]))
+    vb.mouseDragEvent(_Ev((p0.x(), p0.y()), (q.x(), q.y())))
+    poly_ok = r.check(len(ed.roi_set) == n0 + 1
+                      and ed.roi_set[n0].kind == "poly",
+                      "letting go closes the trace into a free-form ROI")
+    r.check(not vb._stroke.isVisible(), "…and the trace outline clears")
+    if poly_ok:
+        pr = ed.roi_set[n0]
+        pa = PolyRoi(points=pr.points).mask((480, 640)).sum()
+        r.check(3 <= len(pr.points) <= 60
+                and abs(pa - np.pi * 80 * 60) / (np.pi * 80 * 60) < 0.06
+                and abs(pr.x - 300) < 1.5 and abs(pr.y - 240) < 1.5,
+                f"a 120-sample trace keeps {len(pr.points)} corners, its area "
+                f"and its place ({pa} px, centre {pr.x:.0f}, {pr.y:.0f})")
+        r.check(ed._table.item(n0, 1).text() == "Free-form"
+                and cell(n0, "r").text() == "—" and cell(n0, "angle_deg").text() == "—"
+                and cell(n0, "w").text() != "—",
+                "its table row says Free-form, with W/H but no Radius or Angle")
+        before = [list(p) for p in pr.points]
+        ed._on_item_changed()
+        r.check(np.allclose(ed.roi_set[n0].points, before, atol=1e-6),
+                "reading the corners back off the image is lossless")
+        edit(n0, "w", "100")
+        r.check(abs(ed.roi_set[n0].w - 100) < 0.01
+                and abs(ed.roi_set[n0].x - 300) < 1.5
+                and len(ed.roi_set[n0].points) == len(before),
+                "typing a width rescales it on the image and in the model "
+                f"({ed.roi_set[n0].w:.1f})")
+        it_p = ed._items[n0]
+        mid_before = (ed.roi_set[n0].x, ed.roi_set[n0].y)
+        it_p.setPos([it_p.pos()[0] + 25, it_p.pos()[1] - 10])   # a drag moves the item
+        ed._on_item_changed()
+        r.check(abs(ed.roi_set[n0].x - mid_before[0] - 25) < 0.01
+                and abs(ed.roi_set[n0].y - mid_before[1] + 10) < 0.01,
+                "dragging the outline moves every point of the model with it")
+        edit(n0, "y", "300")
+        r.check(abs(ed.roi_set[n0].y - 300) < 0.01 and it_p.pos()[1] == 0
+                and abs(ed.roi_set[n0].x - mid_before[0] - 25) < 0.01,
+                "…and a typed position after a drag is still exact")
+        r.check(it_p.shape().contains(QPointF(*it_p.local_points()[0]))
+                or it_p.shape().boundingRect().contains(
+                    QPointF(*np.mean(it_p.local_points(), axis=0))),
+                "the outline is hit-testable, so a drag inside it picks it up")
+    ed._table.setCurrentCell(n0, 0)
+    ed._on_delete()
+    r.check(len(ed.roi_set) == n0, "free-form ROIs delete like the others")
+    ed.set_tool("rectangle")
+
+    from PyQt6.QtGui import QShortcut
+    keys = ed.findChildren(QShortcut)
+    r.check(len(keys) == 2, f"Delete and Backspace are both bound ({len(keys)})")
+    ed._table.setCurrentCell(0, 0)
+    keys[0].activated.emit()
+    r.check(len(ed.roi_set) == 1, "the Delete key removes the selected ROI")
+    r.check("Delete" not in ed._hint.text(),
+            "…and the hint stops offering Delete once nothing is selected")
+    ed.set_tool("pan")
+    r.check("pan" in ed._hint.text().lower(), "the hint follows the tool")
+    ed.set_tool("rectangle")
+    ed._on_drawn((fx - 50, fy - 40), (fx + 50, fy + 40))
+    ed._table.setCurrentCell(0, 0)
     ed._on_delete()
     r.check(len(ed.roi_set) == 1, "delete removes the selected ROI")
     ed._on_clear()
@@ -1922,7 +2281,7 @@ def _part_roi() -> int:
     ed2 = RoiEditor(None)
     r.check("calibration" in ed2._status.text().lower(),
             f"with no calibration the editor says so ({ed2._status.text()!r})")
-    ed2._on_add()
+    ed2._on_drawn((50.0, 50.0), (90.0, 80.0))
     r.check(len(ed2.roi_set) == 1,
             "…but still allows drawing, so ROIs can be prepared beforehand")
 
@@ -2106,6 +2465,51 @@ def _part_pair() -> int:
             "no calibration: Illuminate is offered disabled")
     dlg.reject()
 
+    # ── every shape through the pair flow, on a cropped, binned preset ───────
+    from PyQt6.QtCore import Qt as _Q
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QAbstractItemView, QLineEdit
+
+    from acqApp.routines.table import _roi_icon
+
+    ox, oy = 37.0, 82.0
+    cal = calib()
+    ed = RoiEditor(cal, offset=(ox, oy), scale=2.0)
+    ed.set_image(snap)
+    dlg = PairRoiDialog(ed, snap, "cellB_roi", live_source=lambda: live[0],
+                        illuminate=lambda rois: None, set_live=lambda on: False)
+    ed.set_tool("rectangle")
+    ed._on_drawn((10.0, 10.0), (60.0, 50.0))
+    ed.set_tool("circle")
+    ed._on_drawn((100.0, 40.0), (120.0, 40.0))
+    ed.set_tool("free")
+    ed._on_free([(150, 20), (200, 25), (210, 70), (160, 60), (150, 20)])
+    r.check([x.kind for x in ed.roi_set] == ["rect", "circle", "poly"],
+            "the dialog's editor draws all three shapes")
+    ed._table.setCurrentCell(0, 0)
+    QTest.keyClick(ed._table, _Q.Key.Key_Return)
+    r.check(ed._table.state() == QAbstractItemView.State.EditingState
+            and dlg.result() == 0 and dlg.path is None,
+            "Enter on a selected row starts editing it; it doesn't press Save")
+    QTest.keyClick(ed._table.findChild(QLineEdit), _Q.Key.Key_Escape)
+    r.check(ed._table.state() != QAbstractItemView.State.EditingState
+            and dlg.path is None, "…and Escape ends the edit, not the dialog")
+    dlg._save()
+    saved = roi_store.load(dlg.path) if dlg.path else None
+    if r.check(saved is not None and [x.kind for x in saved]
+               == ["rect", "circle", "poly"], "all three shapes save and reload"):
+        r.check(abs(saved[0].x - (35 + ox)) < 0.01
+                and abs(saved[1].x - (100 + ox)) < 0.01
+                and abs(saved[2].points[0][0] - (150 + ox)) < 0.01
+                and abs(saved[2].points[0][1] - (20 + oy)) < 0.01,
+                "…in absolute sensor coordinates, offset applied to each kind")
+        f = saved.dmd_frame(cal)
+        r.check(int((f == f.max()).sum()) > 0
+                and int((f == f.max()).sum()) < f.size // 2,
+                "…and project to a lit frame that isn't all or nothing")
+        r.check(not _roi_icon(str(dlg.path)).isNull(),
+                "…and Routines draws their thumbnail")
+
     # ── the whole flow, from the Stage tab's button ─────────────────────────
     from PyQt6.QtWidgets import QInputDialog
 
@@ -2125,6 +2529,8 @@ def _part_pair() -> int:
     def fake_exec(self):
         seen.append(self.windowTitle())
         self._ed._add(RectRoi(x=100, y=80, w=40, h=20))
+        self._ed.set_tool("free")
+        self._ed._on_free([(150, 20), (200, 25), (210, 70), (160, 60), (150, 20)])
         self._save()
         return 1
 
@@ -2143,8 +2549,12 @@ def _part_pair() -> int:
     roi = pairs.roi_for_fov(fovs[0]) if fovs else None
     r.check(roi is not None and roi_store.load_named(roi)[0] == "cellA_roi",
             f"…saved as <name>_roi, found from the FOV ({roi})")
-    r.check(dmd.panel.mode == "roi" and len(dmd.panel.settings.rois) == 1,
+    r.check(dmd.panel.mode == "roi" and len(dmd.panel.settings.rois) == 2,
             "the DMD tab adopts the saved set")
+    adopted = RoiSet.from_list(list(dmd.panel.settings.rois))
+    r.check([x.kind for x in adopted] == ["rect", "poly"]
+            and len(adopted[1].points) >= 3,
+            "…free-form outline included")
 
     win._btn_run.setChecked(False)
     pump(app, 0.3)

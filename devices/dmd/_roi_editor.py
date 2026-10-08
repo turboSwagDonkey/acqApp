@@ -95,7 +95,7 @@ def main() -> int:
         lambda s: print(f"{len(s)} ROI(s): "
                         + ", ".join(r.name for r in s)))
     ed.show()
-    print("\nAdd / Delete / Clear are under the image; drag and resize on it.\n"
+    print("\nPick Rectangle, Circle or Free-form under the image, then drag on it to draw.\n"
           "The dashed outline is the DMD's reachable field — an ROI outside it\n"
           "is a stimulus that never arrives.")
     return app.exec()

@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from pyqtgraph.graphicsItems.ROI import Handle
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import (QBrush, QColor, QCursor, QKeySequence, QPainter,
+                         QPainterPath, QPen, QPixmap, QPolygonF, QShortcut)
 from PyQt6.QtWidgets import (
-    QComboBox, QGraphicsEllipseItem, QGraphicsRectItem, QHBoxLayout, QInputDialog,
-    QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QGraphicsEllipseItem, QGraphicsPathItem,
+    QGraphicsRectItem, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
-from acqApp.widgets import compact
 from acqApp.devices.dmd import roi_store
 from acqApp.devices.dmd.calibration import DmdCalibration
-from acqApp.devices.dmd.roi import CircleRoi, RectRoi, RoiSet
+from acqApp.devices.dmd.roi import (CircleRoi, PolyRoi, RectRoi, RoiSet,
+                                    simplify_polygon)
 from acqApp.devices.dmd.roi_picker import RoiSetPicker
 
 # The field wears the DMD accent; ROI pens must read against a grey frame
@@ -42,26 +46,43 @@ def snapshot_levels(frame: np.ndarray) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
-class _DrawViewBox(pg.ViewBox):
-    """A ViewBox where a left-drag can mean "make an ROI here", not "pan".
+TOOLS = ("rectangle", "circle", "free", "pan")
+_SHAPE_LABEL = {"rect": "Rectangle", "circle": "Circle", "poly": "Free-form"}
+_TABLE_ROWS = 5                 # rows the ROI table always shows; more scroll
 
-    Gated on a toggle, not a modifier: panning a 4432 px frame is how the
-    target is found. The rubber band shows the mode is armed, in the SAME
-    shape the release creates.
+
+def circle_radius(centre, edge) -> float:
+    """A circle drawn from its centre out to where the pointer is."""
+    return float(np.hypot(edge[0] - centre[0], edge[1] - centre[1]))
+
+
+class _DrawViewBox(pg.ViewBox):
+    """A ViewBox where a left-drag makes an ROI (rectangle, circle or
+    free-form tool) or pans (pan tool). A drag that starts on an existing ROI
+    moves it in every tool: pyqtgraph hands it to the ROI item first.
+
+    The tool is a visible choice, not a modifier: panning a 4432 px frame is
+    how the target is found. The rubber band shows the shape the release
+    creates: a rectangle between the two corners, a circle from its centre
+    (where the drag began) out to the pointer, or the traced outline closed.
     """
 
-    drawn = pyqtSignal(object, object)      # (x0, y0), (x1, y1) in image px
+    drawn = pyqtSignal(object, object)      # press (x, y), release (x, y), image px
+    drawn_free = pyqtSignal(object)         # the traced [(x, y), ...], image px
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
-        self._draw = False
-        # NOT `shape`: QGraphicsItem.shape() is a method Qt calls during hit
-        # testing, and shadowing it with a string raises inside Qt's own paint
-        # path — where the traceback names neither this class nor the assignment.
-        self.roi_shape = "rectangle"
+        self._draw = True
+        self._trace: list = []              # the free-form stroke so far
+        # Never name this `shape`: QGraphicsItem.shape() is a method Qt calls
+        # during hit testing, and shadowing it with a string raises inside Qt's
+        # own paint path, where the traceback names neither this class nor the
+        # assignment.
+        self.tool = "rectangle"
         self._rect = QGraphicsRectItem()
         self._ellipse = QGraphicsEllipseItem()
-        for it in (self._rect, self._ellipse):
+        self._stroke = QGraphicsPathItem()
+        for it in (self._rect, self._ellipse, self._stroke):
             it.setPen(_BAND_PEN)
             it.setBrush(_BAND_FILL)
             it.setZValue(1e6)
@@ -69,30 +90,41 @@ class _DrawViewBox(pg.ViewBox):
             # ignoreBounds: a half-drawn band must not move autoRange.
             self.addItem(it, ignoreBounds=True)
 
-    def set_draw_mode(self, on: bool) -> None:
-        self._draw = bool(on)
-        self.setCursor(Qt.CursorShape.CrossCursor if on
-                       else Qt.CursorShape.ArrowCursor)
-        if not on:
+    def set_tool(self, tool: str) -> None:
+        self.tool = tool
+        self._draw = tool != "pan"
+        self.setCursor(Qt.CursorShape.CrossCursor if self._draw
+                       else Qt.CursorShape.OpenHandCursor)
+        if not self._draw:
             self._hide_band()
+        self._trace.clear()
 
     def _hide_band(self) -> None:
         self._rect.hide()
         self._ellipse.hide()
+        self._stroke.hide()
+
+    def _show_stroke(self) -> None:
+        """The outline so far, closed, in the shape the release will keep."""
+        path = QPainterPath(self._trace[0])
+        for p in self._trace[1:]:
+            path.lineTo(p)
+        path.closeSubpath()
+        self._stroke.setPath(path)
+        self._stroke.show()
 
     def _show_band(self, a, b) -> None:
-        x0, x1 = sorted((a.x(), b.x()))
-        y0, y1 = sorted((a.y(), b.y()))
-        if self.roi_shape.startswith("rect"):
+        if self.tool == "rectangle":
+            x0, x1 = sorted((a.x(), b.x()))
+            y0, y1 = sorted((a.y(), b.y()))
             self._ellipse.hide()
             self._rect.setRect(QRectF(x0, y0, x1 - x0, y1 - y0))
             self._rect.show()
         else:
-            # The circle the release will make: same centre, same radius.
+            # The circle the release will make: centred on the press.
             self._rect.hide()
-            r = ((x1 - x0) + (y1 - y0)) / 4.0
-            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-            self._ellipse.setRect(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            r = circle_radius((a.x(), a.y()), (b.x(), b.y()))
+            self._ellipse.setRect(QRectF(a.x() - r, a.y() - r, 2 * r, 2 * r))
             self._ellipse.show()
 
     def mouseDragEvent(self, ev, axis=None) -> None:
@@ -102,11 +134,153 @@ class _DrawViewBox(pg.ViewBox):
         ev.accept()
         a = self.mapToView(ev.buttonDownPos())
         b = self.mapToView(ev.pos())
+        if self.tool == "free":
+            self._trace += [a, b] if not self._trace else [b]
+            if ev.isFinish():
+                pts = [(p.x(), p.y()) for p in self._trace]
+                self._trace.clear()
+                self._hide_band()
+                self.drawn_free.emit(pts)
+            else:
+                self._show_stroke()
+            return
         if ev.isFinish():
             self._hide_band()
             self.drawn.emit((a.x(), a.y()), (b.x(), b.y()))
         else:
             self._show_band(a, b)
+
+
+_HANDLE_PX = 7                          # handle radius, screen px
+_HANDLE_COLOUR = {"resize": QColor(255, 200, 0), "rotate": QColor(255, 90, 200)}
+_rotate_cursor_cache: list = []
+
+
+def _rotate_cursor() -> QCursor:
+    """A circular arrow: Qt has no stock "rotate" cursor."""
+    if not _rotate_cursor_cache:
+        pm = QPixmap(28, 28)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c, rad = 14.0, 8.0
+        a_end = np.radians(40.0 + 270.0)        # the arc runs 40 -> 310 degrees
+        end = np.array([c + rad * np.cos(a_end), c - rad * np.sin(a_end)])
+        tan = np.array([-np.sin(a_end), -np.cos(a_end)])    # screen y points down
+        nrm = np.array([-tan[1], tan[0]])
+        head = QPolygonF([QPointF(*(end + 5.0 * tan)),
+                          QPointF(*(end + 3.5 * nrm)), QPointF(*(end - 3.5 * nrm))])
+        for colour, w in ((QColor(0, 0, 0), 4.0), (_HANDLE_COLOUR["rotate"], 2.0)):
+            p.setPen(QPen(colour, w))
+            p.setBrush(colour)
+            p.drawArc(QRectF(c - rad, c - rad, 2 * rad, 2 * rad), 40 * 16, 270 * 16)
+            p.drawPolygon(head)
+        p.end()
+        _rotate_cursor_cache.append(QCursor(pm, 14, 14))
+    return _rotate_cursor_cache[0]
+
+
+class _Handle(Handle):
+    """A handle you can read at a glance. Filled, so it shows on any image;
+    its shape and colour say what it does: a yellow diamond resizes, a pink
+    circle rotates. The cursor says it again."""
+
+    def __init__(self, typ, parent):
+        self._role = "rotate" if "r" in (typ or "") else "resize"
+        super().__init__(_HANDLE_PX, typ=typ, pen=pg.mkPen((20, 20, 20), width=2),
+                         hoverPen=pg.mkPen("w", width=2), parent=parent)
+        self._fill = QBrush(_HANDLE_COLOUR[self._role])
+        self.setAcceptHoverEvents(True)             # a QGraphicsItem cursor needs it
+        self.setCursor(_rotate_cursor() if self._role == "rotate"
+                       else QCursor(Qt.CursorShape.SizeFDiagCursor))
+
+    def paint(self, p, opt, widget) -> None:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(self.currentPen)
+        p.setBrush(self._fill)
+        p.drawPath(self.shape())
+
+
+class _StyledHandles:
+    """Mixin for a pyqtgraph ROI: every handle it grows is a `_Handle`."""
+
+    def addHandle(self, info, index=None):
+        if info.get("item") is None:
+            info["item"] = _Handle(info["type"], self)
+        return super().addHandle(info, index)
+
+
+class _RectItem(_StyledHandles, pg.RectROI):
+    pass
+
+
+class _CircleItem(_StyledHandles, pg.CircleROI):
+    pass
+
+
+class _PolyItem(pg.ROI):
+    """A traced outline on the image: drag it to move it, nothing else. No
+    corner handles (they cluttered it); its size is set from the table row."""
+
+    def __init__(self, points, **kw):
+        self._poly = QPolygonF()
+        super().__init__((0.0, 0.0), (1.0, 1.0), **kw)
+        self.set_points(points)
+
+    def set_points(self, points) -> None:
+        """Replace the outline (local coordinates, the item at its origin)."""
+        self.prepareGeometryChange()
+        self._poly = QPolygonF([QPointF(x, y) for x, y in points])
+        self.update()
+
+    def local_points(self) -> list:
+        return [(p.x(), p.y()) for p in self._poly]
+
+    def reset(self, points) -> None:
+        """Back at the origin with a new outline, without announcing it (the
+        caller does): a half-moved one must not reach the model."""
+        self.blockSignals(True)
+        try:
+            self.set_points(points)
+            self.setPos((0.0, 0.0))
+        finally:
+            self.blockSignals(False)
+
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addPolygon(self._poly)
+        path.closeSubpath()
+        return path
+
+    def boundingRect(self) -> QRectF:
+        return self.shape().boundingRect().adjusted(-2, -2, 2, 2)
+
+    def paint(self, p, opt, widget=None) -> None:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(self.currentPen)
+        p.drawPolygon(self._poly)
+
+
+_NUM_COL0 = 2                   # the first numeric column, after Name and Shape
+
+
+class _RoiTable(QTableWidget):
+    """Enter on a selected row edits its number. Unhandled, Enter reaches the
+    dialog the editor sits in and presses its default button (Save), which
+    closes it."""
+
+    def keyPressEvent(self, ev) -> None:
+        if (ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and self.state() != QAbstractItemView.State.EditingState
+                and self.currentRow() >= 0):
+            row, col = self.currentRow(), max(self.currentColumn(), _NUM_COL0)
+            item = self.item(row, col)
+            if item is not None and item.flags() & Qt.ItemFlag.ItemIsEditable:
+                self.setCurrentCell(row, col)
+                self.edit(self.currentIndex())
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
 
 
 class RoiEditor(QWidget):
@@ -131,11 +305,19 @@ class RoiEditor(QWidget):
         self._set = RoiSet()
         self._items: list = []             # pyqtgraph ROI items, index-aligned
         self._image: np.ndarray | None = None
+        self._tool = "rectangle"
         self._build()
 
     # ── construction ─────────────────────────────────────────────────────────
     def _build(self) -> None:
         root = QVBoxLayout(self)
+
+        # Fixed room for their text: a line more or less must never resize the
+        # window (the same reason the table below is always five rows tall).
+        self._hint = self._reserved_label(3)
+        self._legend = self._reserved_label(1)
+        root.addWidget(self._hint)
+        root.addWidget(self._legend)
 
         self._gv = pg.GraphicsLayoutWidget()
         self._vb = _DrawViewBox(lockAspect=True, invertY=True)
@@ -154,6 +336,7 @@ class RoiEditor(QWidget):
         self._vignette = pg.PlotCurveItem(pen=_VIGNETTE_PEN)
         self._vb.addItem(self._vignette)
         self._vb.drawn.connect(self._on_drawn)
+        self._vb.drawn_free.connect(self._on_free)
 
         self._hist = pg.HistogramLUTWidget()
         self._hist.setImageItem(self._img)
@@ -165,29 +348,37 @@ class RoiEditor(QWidget):
         root.addLayout(view_row, 1)
 
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("Shape:"))
-        self._cmb = compact(QComboBox())
-        self._cmb.addItems(["rectangle", "circle"])
-        bar.addWidget(self._cmb)
-        self._btn_draw = QPushButton("Draw")
-        self._btn_draw.setCheckable(True)
-        self._btn_draw.setToolTip(
-            "Drag on the image to place an ROI where you want it.\n"
-            "Off, dragging pans the view as usual.")
-        self._btn_draw.setStyleSheet(style.toggle_btn("dmd"))
-        self._btn_draw.toggled.connect(self._vb.set_draw_mode)
-        self._cmb.currentTextChanged.connect(
-            lambda t: setattr(self._vb, "roi_shape", t))
-        bar.addWidget(self._btn_draw)
-        for label, slot in (("Add", self._on_add), ("Delete", self._on_delete),
-                            ("Clear", self._on_clear)):
+        self._tool_btns: dict[str, QPushButton] = {}
+        group = QButtonGroup(self)          # exactly one tool is always armed
+        for key, label, tip in (
+                ("rectangle", "Rectangle",
+                 "Drag on the image from one corner to the opposite one."),
+                ("circle", "Circle",
+                 "Drag on the image from the circle's centre out to its edge."),
+                ("free", "Free-form",
+                 "Trace any outline: hold the button and drag round the "
+                 "target. Letting go closes it."),
+                ("pan", "Pan",
+                 "Drag to move the view instead of drawing. "
+                 "The scroll wheel zooms in every tool.")):
             b = QPushButton(label)
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.setStyleSheet(style.toggle_btn("dmd"))
+            b.toggled.connect(lambda on, k=key: on and self._on_tool(k))
+            group.addButton(b)
+            bar.addWidget(b)
+            self._tool_btns[key] = b
+        bar.addSpacing(16)
+        for label, tip, slot in (
+                ("Delete", "Remove the selected ROI (Delete key).",
+                 self._on_delete),
+                ("Clear", "Remove every ROI.", self._on_clear)):
+            b = QPushButton(label)
+            b.setToolTip(tip)
             b.clicked.connect(slot)
             bar.addWidget(b)
         bar.addStretch()
-        root.addLayout(bar)
-
-        save_row = QHBoxLayout()
         btn_save = QPushButton("Save…")
         btn_save.setToolTip(
             "Save this set under a name, into this session's quick list.")
@@ -196,19 +387,19 @@ class RoiEditor(QWidget):
         btn_load.setToolTip(
             "Load a set saved this session, or Browse older ones.")
         btn_load.clicked.connect(self._on_load_roi)
-        save_row.addWidget(btn_save)
-        save_row.addWidget(btn_load)
-        save_row.addStretch()
-        root.addLayout(save_row)
+        bar.addWidget(btn_save)
+        bar.addWidget(btn_load)
+        root.addLayout(bar)
 
-        self._list = QListWidget()
-        self._list.currentRowChanged.connect(self._on_row)
-        self._list.setMaximumHeight(110)
-        root.addWidget(self._list)
+        self._build_table(root)
+        for key in ("Delete", "Backspace"):
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._on_delete)
+        self._tool_btns["rectangle"].setChecked(True)
 
-        self._status = QLabel("no calibration — ROIs can't be projected")
-        self._status.setWordWrap(True)
-        self._status.setStyleSheet(f"color:{style.muted()};")
+        self._status = self._reserved_label(2)
+        self._status.setText("no calibration — ROIs can't be projected")
         root.addWidget(self._status)
         self._draw_field()
 
@@ -260,50 +451,86 @@ class RoiEditor(QWidget):
             self._vignette.setData(cx - self._ox + r * np.cos(t),
                                    cy - self._oy + r * np.sin(t))
 
-    # ── add / remove ─────────────────────────────────────────────────────────
-    def _default_centre(self) -> tuple[float, float, float]:
-        """Place a new ROI in the middle of the reachable field, not the image:
-        dropping it where it can't be projected is never what was meant."""
-        if self._calib is not None:
-            c = self._calib.accessible_corners()
-            span = float(min(np.ptp(c[:, 0]), np.ptp(c[:, 1])))
-            return float(c[:, 0].mean()), float(c[:, 1].mean()), max(8.0, span / 8)
-        if self._image is not None:
-            h = self._image.shape[0] * self._scale
-            w = self._image.shape[1] * self._scale
-            return w / 2.0 + self._ox, h / 2.0 + self._oy, max(8.0, min(w, h) / 8)
-        return 50.0 + self._ox, 50.0 + self._oy, 20.0
+    # ── tools ────────────────────────────────────────────────────────────────
+    def set_tool(self, tool: str) -> None:
+        """Arm "rectangle", "circle" or "pan"."""
+        self._tool_btns[tool].setChecked(True)
 
-    def _on_add(self) -> None:
-        cx, cy, s = self._default_centre()
-        if self._cmb.currentText().startswith("rect"):
-            self._add(RectRoi(x=cx, y=cy, w=2 * s, h=2 * s))
+    def _on_tool(self, tool: str) -> None:
+        self._tool = tool
+        self._vb.set_tool(tool)
+        self._refresh_hint()
+
+    @staticmethod
+    def _reserved_label(lines: int) -> QLabel:
+        """A muted, wrapping label that is always `lines` lines tall."""
+        lbl = QLabel()
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        lbl.setStyleSheet(f"color:{style.muted()};")
+        lbl.setFixedHeight(lbl.fontMetrics().lineSpacing() * lines + 4)
+        return lbl
+
+    def _refresh_hint(self) -> None:
+        if self._tool == "pan":
+            self._legend.setText("")
+            msg = "Drag to pan, scroll to zoom. Pick a shape tool to draw."
         else:
-            self._add(CircleRoi(x=cx, y=cy, r=s))
+            hx = {k: c.name() for k, c in _HANDLE_COLOUR.items()}
+            self._legend.setText(
+                f"Handles: <span style='color:{hx['resize']}'>◆</span> resize"
+                f" &nbsp; <span style='color:{hx['rotate']}'>●</span> rotate"
+                f" (rectangles)")
+            what = {"rectangle": "a rectangle, corner to corner",
+                    "circle": "a circle, centre outwards",
+                    "free": "a free-form outline: letting go closes it"
+                    }[self._tool]
+            msg = (f"Drag on the image to draw {what}. Drag a shape to move it, "
+                   f"a handle to resize or rotate it; a free-form outline moves "
+                   f"as one piece, and its row below sets its size. "
+                   f"Scroll to zoom; Pan moves the view.")
+        if self._table.currentRow() >= 0:
+            msg += "  Delete removes the selected ROI."
+        self._hint.setText(msg)
 
+    # ── add / remove ─────────────────────────────────────────────────────────
     def _add(self, roi) -> None:
         self._set.add(roi)
         self._rebuild_items()
-        self._list.setCurrentRow(len(self._set) - 1)
+        self._table.setCurrentCell(len(self._set) - 1, 0)
         self._emit()
 
     def _on_drawn(self, a, b) -> None:
         """A drag on the image became an ROI. Ignores a stray click."""
         x0, y0 = a[0] + self._ox, a[1] + self._oy
         x1, y1 = b[0] + self._ox, b[1] + self._oy
+        if self._tool == "circle":
+            r = circle_radius((x0, y0), (x1, y1))
+            if r >= 2:                  # a click, not a drag
+                self._add(CircleRoi(x=x0, y=y0, r=r))
+            return
         w, h = abs(x1 - x0), abs(y1 - y0)
         if w < 3 or h < 3:              # a click, not a drag
             return
-        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-        if self._cmb.currentText().startswith("rect"):
-            self._add(RectRoi(x=cx, y=cy, w=w, h=h))
-        else:
-            # (w + h) / 4, the band's radius: max() overflows the drag on the
-            # short side, min() collapses a sloppy one.
-            self._add(CircleRoi(x=cx, y=cy, r=(w + h) / 4.0))
+        self._add(RectRoi(x=(x0 + x1) / 2.0, y=(y0 + y1) / 2.0, w=w, h=h))
+
+    def _on_free(self, trace) -> None:
+        """A traced stroke became a free-form ROI: thinned to a few corners
+        that stay editable. Ignores a click or a sliver."""
+        pts = np.asarray(trace, dtype=np.float64).reshape(-1, 2) + [self._ox, self._oy]
+        if len(pts) < 3:
+            return
+        diag = float(np.hypot(*np.ptp(pts, axis=0)))
+        poly = simplify_polygon(pts, tol=max(1.0, 0.01 * diag))
+        x, y = poly[:, 0], poly[:, 1]
+        area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+        if len(poly) < 3 or area < 9.0:
+            return
+        self._add(PolyRoi(points=poly.tolist()))
 
     def _on_delete(self) -> None:
-        i = self._list.currentRow()
+        i = self._table.currentRow()
         if 0 <= i < len(self._set):
             self._set.remove(i)
             self._rebuild_items()
@@ -342,41 +569,164 @@ class RoiEditor(QWidget):
     def _on_row(self, i: int) -> None:
         for j, it in enumerate(self._items):
             it.setPen(_ROI_HOVER if j == i else _ROI_PEN)
+        self._refresh_hint()
+
+    def _select_item(self, it) -> None:
+        """A click or drag on an ROI on the image selects its table row."""
+        if it in self._items:
+            self._table.setCurrentCell(self._items.index(it), 0)
+
+    # ── the ROI table: one row per ROI, its numbers editable in place ────────
+    _FIELDS = (                 # key, header, lo, hi, kinds that use it
+        ("x", "X", -1e5, 1e5, ("rect", "circle", "poly")),
+        ("y", "Y", -1e5, 1e5, ("rect", "circle", "poly")),
+        ("w", "W", 1.0, 1e5, ("rect", "poly")),
+        ("h", "H", 1.0, 1e5, ("rect", "poly")),
+        ("r", "Radius", 1.0, 1e5, ("circle",)),
+        ("angle_deg", "Angle (°)", -360.0, 360.0, ("rect",)),
+    )
+    _NUM0 = _NUM_COL0
+
+    def _build_table(self, root: QVBoxLayout) -> None:
+        self._filling = False
+        t = _RoiTable(0, self._NUM0 + len(self._FIELDS))
+        t.setHorizontalHeaderLabels(
+            ["Name", "Shape"] + [f[1] for f in self._FIELDS])
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        t.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
+                          | QAbstractItemView.EditTrigger.SelectedClicked
+                          | QAbstractItemView.EditTrigger.EditKeyPressed)
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for c, tip in ((self._NUM0, "Centre, in sensor pixels."),
+                       (self._NUM0 + 1, "Centre, in sensor pixels.")):
+            t.horizontalHeaderItem(c).setToolTip(tip)
+        t.currentCellChanged.connect(lambda row, *_a: self._on_row(row))
+        t.itemChanged.connect(self._on_cell)
+        self._table = t
+        root.addWidget(t)
+        # Always five rows tall, filled or not (more scroll): adding an ROI
+        # must not resize the window.
+        t.setFixedHeight(t.horizontalHeader().sizeHint().height()
+                         + _TABLE_ROWS * t.verticalHeader().defaultSectionSize()
+                         + 2 * t.frameWidth() + 2)
+
+    def _fill_table(self) -> None:
+        t = self._table
+        self._filling = True
+        try:
+            t.setRowCount(0)
+            t.setRowCount(len(self._set))
+            for i in range(len(self._set)):
+                for c in range(t.columnCount()):
+                    t.setItem(i, c, QTableWidgetItem())
+                self._fill_row(i)
+        finally:
+            self._filling = False
+        self._refresh_hint()
+
+    def _fill_row(self, i: int) -> None:
+        """Write one ROI's numbers into its row; a column that doesn't apply
+        to its shape reads "—" and can't be edited."""
+        roi, t = self._set[i], self._table
+        keep, self._filling = self._filling, True
+        try:
+            t.item(i, 0).setText(roi.name)
+            t.item(i, 1).setText(_SHAPE_LABEL[roi.kind])
+            for c, (key, _h, _lo, _hi, kinds) in enumerate(
+                    self._FIELDS, start=self._NUM0):
+                it = t.item(i, c)
+                used = roi.kind in kinds
+                it.setText(f"{getattr(roi, key):.1f}" if used else "—")
+                it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                it.setFlags(flags | Qt.ItemFlag.ItemIsEditable if used else flags)
+                it.setForeground(QBrush() if used else QBrush(QColor(style.muted())))
+            for c in (0, 1):
+                t.item(i, c).setFlags(Qt.ItemFlag.ItemIsEnabled
+                                      | Qt.ItemFlag.ItemIsSelectable)
+        finally:
+            self._filling = keep
+
+    def _on_cell(self, item) -> None:
+        """A number typed into the table: into the model, then onto the image."""
+        i, c = item.row(), item.column()
+        if self._filling or c < self._NUM0 or not 0 <= i < len(self._set):
+            return
+        key, _h, lo, hi, kinds = self._FIELDS[c - self._NUM0]
+        roi = self._set[i]
+        if roi.kind in kinds:
+            try:
+                setattr(roi, key, min(hi, max(lo, float(item.text()))))
+            except ValueError:              # not a number: put the old one back
+                pass
+            else:
+                self._push_to_item(i)
+        self._fill_row(i)
+
+    def _item_state(self, roi) -> dict:
+        """The pyqtgraph pos/size/angle of a model ROI: the inverse of
+        `_sync_from_items`. RectROI's pos is its rotated origin corner."""
+        if isinstance(roi, RectRoi):
+            t = np.radians(roi.angle_deg)
+            c, s = np.cos(t), np.sin(t)
+            hx, hy = roi.w / 2.0, roi.h / 2.0
+            return {"pos": (roi.x - self._ox - (c * hx - s * hy),
+                            roi.y - self._oy - (s * hx + c * hy)),
+                    "size": (roi.w, roi.h), "angle": roi.angle_deg}
+        return {"pos": (roi.x - roi.r - self._ox, roi.y - roi.r - self._oy),
+                "size": (2 * roi.r, 2 * roi.r), "angle": 0.0}
+
+    def _push_to_item(self, i: int) -> None:
+        """Model -> item after a typed edit; the item's finish signal then
+        refreshes the table, status and listeners."""
+        roi, it = self._set[i], self._items[i]
+        if isinstance(roi, PolyRoi):
+            it.reset(self._poly_local(roi))
+            self._on_item_changed()             # a reset is silent
+        else:
+            it.setState(self._item_state(roi))
+
+    def _poly_local(self, roi) -> list:
+        return [[x - self._ox, y - self._oy] for x, y in roi.points]
 
     # ── pyqtgraph items ↔ model ──────────────────────────────────────────────
     def _rebuild_items(self) -> None:
         for it in self._items:
             self._vb.removeItem(it)
         self._items.clear()
-        self._list.clear()
 
         for roi in self._set:
-            if isinstance(roi, RectRoi):
-                it = pg.RectROI([roi.x - roi.w / 2 - self._ox,
-                                 roi.y - roi.h / 2 - self._oy],
-                                [roi.w, roi.h], pen=_ROI_PEN, rotatable=True)
+            if isinstance(roi, PolyRoi):
+                it = _PolyItem(self._poly_local(roi), pen=_ROI_PEN)
+            elif isinstance(roi, RectRoi):
+                st = self._item_state(roi)
+                it = _RectItem(st["pos"], st["size"], angle=st["angle"],
+                               pen=_ROI_PEN, rotatable=True)
                 it.addRotateHandle([1, 0], [0.5, 0.5])
             else:
-                it = pg.CircleROI([roi.x - roi.r - self._ox, roi.y - roi.r - self._oy],
-                                  [2 * roi.r, 2 * roi.r], pen=_ROI_PEN)
+                st = self._item_state(roi)
+                it = _CircleItem(st["pos"], st["size"], pen=_ROI_PEN)
             it.sigRegionChangeFinished.connect(self._on_item_changed)
+            it.sigRegionChangeStarted.connect(
+                lambda *_a, it=it: self._select_item(it))
+            it.sigClicked.connect(lambda *_a, it=it: self._select_item(it))
             self._vb.addItem(it)
             self._items.append(it)
-            self._list.addItem(QListWidgetItem(self._describe(roi)))
+        self._fill_table()
         self._refresh_status()
-
-    def _describe(self, roi) -> str:
-        if isinstance(roi, RectRoi):
-            return (f"{roi.name}  rect  ({roi.x:.0f}, {roi.y:.0f})  "
-                    f"{roi.w:.0f}x{roi.h:.0f}"
-                    + (f"  {roi.angle_deg:.0f}°" if roi.angle_deg else ""))
-        return f"{roi.name}  circle  ({roi.x:.0f}, {roi.y:.0f})  r={roi.r:.0f}"
 
     def _sync_from_items(self) -> None:
         """Read geometry back out of the pyqtgraph items into the model."""
         for roi, it in zip(self._set, self._items):
             pos, size = it.pos(), it.size()
-            if isinstance(roi, RectRoi):
+            if isinstance(roi, PolyRoi):
+                roi.points = [[float(x + pos[0] + self._ox),
+                               float(y + pos[1] + self._oy)]
+                              for x, y in it.local_points()]
+            elif isinstance(roi, RectRoi):
                 roi.w, roi.h = float(size[0]), float(size[1])
                 roi.angle_deg = float(it.angle())
                 # RectROI's pos() is its rotated origin corner, so the centre
@@ -393,8 +743,8 @@ class RoiEditor(QWidget):
 
     def _on_item_changed(self, *_a) -> None:
         self._sync_from_items()
-        for i, roi in enumerate(self._set):
-            self._list.item(i).setText(self._describe(roi))
+        for i in range(len(self._set)):
+            self._fill_row(i)
         self._refresh_status()
         self._emit()
 

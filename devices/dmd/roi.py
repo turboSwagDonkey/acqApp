@@ -124,7 +124,134 @@ class CircleRoi(_Roi):
                 "x": self.x, "y": self.y, "r": self.r}
 
 
-_KINDS = {"rect": RectRoi, "circle": CircleRoi}
+def simplify_polygon(points, tol: float, max_points: int = 60) -> np.ndarray:
+    """Douglas-Peucker thinning of a traced outline. `tol` (px) is the most a
+    kept edge may stray from the trace; it grows until at most `max_points`
+    vertices remain, because each one costs time on every re-projection."""
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if len(p) > 1 and np.allclose(p[0], p[-1]):
+        p = p[:-1]                              # a closed trace repeats its start
+    if len(p) <= 3:
+        return p
+    while True:
+        keep = np.zeros(len(p), bool)
+        keep[0] = keep[-1] = True
+        stack = [(0, len(p) - 1)]
+        while stack:
+            i, j = stack.pop()
+            if j <= i + 1:
+                continue
+            a, b = p[i], p[j]
+            seg = b - a
+            n = float(np.hypot(*seg))
+            d = p[i + 1:j] - a
+            dist = (np.hypot(d[:, 0], d[:, 1]) if n < 1e-12
+                    else np.abs(seg[0] * d[:, 1] - seg[1] * d[:, 0]) / n)
+            k = int(np.argmax(dist))
+            if dist[k] > tol:
+                keep[i + 1 + k] = True
+                stack += [(i, i + 1 + k), (i + 1 + k, j)]
+        if keep.sum() <= max_points:
+            return p[keep]
+        tol *= 1.5
+
+
+@dataclass
+class PolyRoi(_Roi):
+    """A free-form outline: `points` are the vertices in camera px, filled
+    even-odd. `x, y` (bounding-box centre) and `w, h` (bounding-box size) are
+    settable so the table can move and scale it like the other shapes."""
+    points: list = field(default_factory=lambda: [[0.0, 0.0], [10.0, 0.0],
+                                                  [10.0, 10.0]])
+    kind: str = "poly"
+
+    def _pts(self) -> np.ndarray:
+        return np.asarray(self.points, dtype=np.float64).reshape(-1, 2)
+
+    def _box(self) -> tuple[float, float, float, float]:
+        p = self._pts()
+        return (float(p[:, 0].min()), float(p[:, 1].min()),
+                float(p[:, 0].max()), float(p[:, 1].max()))
+
+    @property
+    def x(self) -> float:
+        x0, _, x1, _ = self._box()
+        return (x0 + x1) / 2.0
+
+    @x.setter
+    def x(self, v: float) -> None:
+        self.points = (self._pts() + [v - self.x, 0.0]).tolist()
+
+    @property
+    def y(self) -> float:
+        _, y0, _, y1 = self._box()
+        return (y0 + y1) / 2.0
+
+    @y.setter
+    def y(self, v: float) -> None:
+        self.points = (self._pts() + [0.0, v - self.y]).tolist()
+
+    @property
+    def w(self) -> float:
+        x0, _, x1, _ = self._box()
+        return x1 - x0
+
+    @w.setter
+    def w(self, v: float) -> None:
+        if self.w > 1e-9:
+            c = self.x
+            self.points = (self._pts() * [v / self.w, 1.0]
+                           + [c - c * v / self.w, 0.0]).tolist()
+
+    @property
+    def h(self) -> float:
+        _, y0, _, y1 = self._box()
+        return y1 - y0
+
+    @h.setter
+    def h(self, v: float) -> None:
+        if self.h > 1e-9:
+            c = self.y
+            self.points = (self._pts() * [1.0, v / self.h]
+                           + [0.0, c - c * v / self.h]).tolist()
+
+    def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        """Even-odd crossing count on the grid; the y tests are per row."""
+        gx = np.asarray(xs, dtype=np.float64)[None, :]
+        gy = np.asarray(ys, dtype=np.float64)[:, None]
+        p = self._pts()
+        out = np.zeros((gy.size, gx.size), bool)
+        if len(p) < 3:
+            return out
+        q = np.roll(p, -1, axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for (x1, y1), (x2, y2) in zip(p, q):
+                if y1 == y2:
+                    continue
+                cross = (y1 > gy) != (y2 > gy)
+                out ^= cross & (gx < x1 + (gy - y1) * (x2 - x1) / (y2 - y1))
+        return out
+
+    def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
+        px, py = np.broadcast_arrays(np.asarray(px, dtype=np.float64),
+                                     np.asarray(py, dtype=np.float64))
+        if len(self.points) < 3:
+            return np.zeros(px.shape, bool)
+        from matplotlib.path import Path        # lazy: it is slow to import
+        hit = Path(self._pts()).contains_points(
+            np.column_stack((px.ravel(), py.ravel())))
+        return hit.reshape(px.shape)
+
+    def boundary(self, n: int = 64) -> np.ndarray:
+        """The vertices: exact, since a projective map keeps lines straight."""
+        return self._pts().copy()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "poly", "name": self.name, "enabled": self.enabled,
+                "points": [[float(a), float(b)] for a, b in self._pts()]}
+
+
+_KINDS = {"rect": RectRoi, "circle": CircleRoi, "poly": PolyRoi}
 
 
 def roi_from_dict(d: dict[str, Any]) -> _Roi:

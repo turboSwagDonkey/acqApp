@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
+
+# On Windows a file another handle has open (a reader on another thread, a
+# virus scanner on the file just written) refuses to be read or replaced for a
+# moment: PermissionError. Wait a few ms and retry before giving up.
+_LOCK_RETRY_S = (0.01, 0.02, 0.05, 0.1, 0.2)
 
 # key -> label in the startup picker, in display (and build) order.
 MODULES: dict[str, str] = {
@@ -34,22 +40,32 @@ _MODES_PATH = Path(__file__).with_name("modes.json")
 
 def _load_json(path: Path) -> dict:
     """The JSON object at `path`, or {}. A damaged file is moved aside, or
-    the next save would overwrite the only copy."""
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except FileNotFoundError:
-        return {}
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-        keep = path.with_suffix(".corrupt.json")
+    the next save would overwrite the only copy. A file that merely can't be
+    opened right now is NOT damaged: it is left where it is."""
+    for delay in (*_LOCK_RETRY_S, None):
         try:
-            os.replace(path, keep)
-            print(f"[config] {path.name} is unreadable ({e}); kept as "
-                  f"{keep.name} and starting from defaults")
-        except OSError:
-            print(f"[config] {path.name} is unreadable ({e})")
-        return {}
-    return data if isinstance(data, dict) else {}
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            keep = path.with_suffix(".corrupt.json")
+            try:
+                os.replace(path, keep)
+                print(f"[config] {path.name} is unreadable ({e}); kept as "
+                      f"{keep.name} and starting from defaults")
+            except OSError:
+                print(f"[config] {path.name} is unreadable ({e})")
+            return {}
+        except OSError as e:
+            if isinstance(e, PermissionError) and delay is not None:
+                time.sleep(delay)
+                continue
+            print(f"[config] could not read {path.name} ({e}); using defaults "
+                  f"for now and leaving the file alone")
+            return {}
+    return {}
 
 
 def load_config() -> dict:
@@ -63,7 +79,14 @@ def _atomic_write_json(path: Path, data) -> None:
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
-        os.replace(tmp, path)
+        for delay in (*_LOCK_RETRY_S, None):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if delay is None:
+                    raise
+                time.sleep(delay)
     except OSError as e:
         print(f"[config] could not save {path}: {e}")
         try:

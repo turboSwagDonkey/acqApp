@@ -84,6 +84,79 @@ def check_corrupt(r: Report, tmp: Path) -> None:
             "...and is quarantined, not discarded (the load_config policy)")
 
 
+def check_transient_locks(r: Report, tmp: Path) -> None:
+    """On Windows a file held open for a moment (a reader, a virus scanner)
+    refuses a read or a replace with PermissionError. That used to drop the
+    save, and a read was taken for damage: the config was moved aside as
+    .corrupt.json and the app restarted from defaults."""
+    import builtins
+    import io
+    from contextlib import redirect_stdout
+
+    path = tmp / "locked.json"
+    real_replace, real_sleep, real_open = config.os.replace, config.time.sleep, builtins.open
+    config.time.sleep = lambda s: None          # the waits are not under test
+
+    def flaky_replace(failures: int):
+        left = [failures]
+
+        def replace(src, dst):
+            if left[0] > 0:
+                left[0] -= 1
+                raise PermissionError(13, "Access is denied")
+            return real_replace(src, dst)
+        return replace, left
+
+    try:
+        config._atomic_write_json(path, {"v": 1})
+        config.os.replace, left = flaky_replace(2)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config._atomic_write_json(path, {"v": 2})
+        r.check(config._load_json(path) == {"v": 2} and "could not save" not in buf.getvalue(),
+                "a save that finds the file briefly locked is retried and lands")
+
+        config.os.replace, left = flaky_replace(99)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config._atomic_write_json(path, {"v": 3})
+        config.os.replace = real_replace
+        r.check("could not save" in buf.getvalue() and config._load_json(path) == {"v": 2}
+                and not list(tmp.glob("locked.json.*.tmp")),
+                "a lock that never clears is reported, keeps the old file, leaves no temp")
+
+        def flaky_open(failures: int):
+            left = [failures]
+
+            def opener(file, *a, **k):
+                if str(file) == str(path) and left[0] > 0:
+                    left[0] -= 1
+                    raise PermissionError(13, "Access is denied")
+                return real_open(file, *a, **k)
+            return opener
+
+        config.open = flaky_open(2)
+        got = config._load_json(path)
+        r.check(got == {"v": 2} and not path.with_suffix(".corrupt.json").exists(),
+                "a read that finds the file briefly locked is retried")
+
+        config.open = flaky_open(99)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            got = config._load_json(path)
+        del config.open
+        r.check(got == {} and path.is_file()
+                and not path.with_suffix(".corrupt.json").exists()
+                and "leaving the file alone" in buf.getvalue(),
+                "a read that stays locked is NOT taken for damage: the file stays put")
+        r.check(config._load_json(path) == {"v": 2},
+                "…and is read normally once the lock clears")
+    finally:
+        config.os.replace, config.time.sleep = real_replace, real_sleep
+        if "open" in vars(config):
+            del config.open
+
+
 def check_resolution(r: Report, tmp: Path) -> None:
     _write(tmp, {"full": FULL}, active="full")
     r.check(config.rig_device() == "Dev3", "rig_device comes from the profile")
@@ -250,6 +323,7 @@ def _part_rigs() -> int:
     try:
         check_sanitize(r, tmp)
         check_corrupt(r, tmp)
+        check_transient_locks(r, tmp)
         check_resolution(r, tmp)
         check_dmd_calibration(r, tmp)
         check_profile_beats_saved(r, tmp)
