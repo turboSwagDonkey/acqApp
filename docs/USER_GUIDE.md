@@ -2,8 +2,7 @@
 
 A practical walkthrough of running a session: launch, pick instruments,
 configure one, go live, record, and where the file ends up. For what the app
-*is* and how it's built, see [README.md](../README.md); for what's planned or
-in progress, see [PLAN.md](../PLAN.md).
+*is* and how it's built, see [README.md](../README.md).
 
 Screenshots below are from a mock session (no rig hardware attached), so
 frame previews show synthetic noise instead of a real image — the layout and

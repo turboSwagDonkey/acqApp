@@ -301,6 +301,7 @@ docs/
   STAGE_TRANSFER.md
   STRUCTURE.md          this file
   USER_GUIDE.md         operator quick-start, screenshots in images/guide/
+  images/readme/        the README screenshots (re-shoot with tests/shots.py)
   WHEEL_TRANSFER.md
 tests/                  plain scripts, not pytest; each file (and each part of a
                         multi-part file, `--part NAME`) runs in its own process
@@ -309,6 +310,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   README.md             the two conventions: isolate user state, include a control
   run_all.py            the suite: run this
   snap.py               one panel rendered offscreen to a PNG (layout checks)
+  shots.py              re-shoots the README screenshots from a mock session
   test_camera.py              readout table, frame timestamps, .dcimg, recording losses
   test_config.py              rigs.json, modes.json, settings persistence, mirror default
   test_console_safety.py

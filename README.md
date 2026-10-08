@@ -1,17 +1,130 @@
 # acqApp
 
-Multi-instrument in-vivo acquisition suite for the ICN rig. One PyQt6 app that
-runs and records seven subsystems against a single shared session clock:
+**One program to run an in-vivo imaging experiment from start to finish.**
+acqApp replaces the LabVIEW pipeline on the ICN rig: it drives the cameras,
+the running wheel, the air puffer, the XY stage, the DMD (patterned
+photostimulation) and the visual stimulus from a single window, and writes
+everything that happens, on one common clock, into one folder per session.
 
-| Subsystem    | Package        | Device                                            |
-|--------------|----------------|---------------------------------------------------|
-| Voltage cam  | `voltage_cam/` | Hamamatsu ORCA-Fire C16240-20UP via `pylablib` DCAM (CoaXPress) |
-| Pupil cam    | `pupil_cam/`   | Basler acA1920-40umMED via `pypylon` (USB3)       |
-| Wheel        | `wheel/`       | Rotary encoder as analog voltage on NI `Dev3/ai2` |
-| Puffer       | `puffer/`      | Air-puff TTL on NI `Dev3/port0/line0`             |
-| XY stage     | `stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
-| DMD          | `dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
-| Visual stim  | `vis_stim/`    | Drifting sinusoidal grating on a display screen, gated by the shared session clock |
+## What it does
+
+- **Records many instruments against one timebase.** Every sample, frame and
+  event is stamped by the same session clock (t = 0 at Start), so a wheel
+  speed, a pupil radius, a camera frame, a puff and a DMD pattern can be lined
+  up exactly afterwards. [Why this matters](#the-shared-clock-why-one-timebase).
+- **Keeps each session self-contained.** One folder per recording: camera
+  frames (DCIMG/TIFF), pupil video (AVI), the numeric streams (CSV) and the
+  settings and metadata that produced them (JSON).
+  [Format](#recording-format).
+- **Runs experiments, not just recordings.** *Experiment routines* execute a
+  protocol of stage moves, DMD patterns and triggers step by step, with trials,
+  groups and repeats.
+- **Loads only what you need.** A module picker at launch (and the sidebar
+  while running) chooses which instruments are live; the rest are never opened.
+- **Works without hardware.** Every device has a simulated twin, so the whole
+  app, and its test suite, runs on a laptop with `--mock`.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    subgraph rig [Instruments]
+        cams["Voltage cam · Pupil cam"]
+        daq["Wheel · Puffer (NI DAQ)"]
+        stage["XY stage · PMT/camera mirror"]
+        dmd["DMD"]
+        vis["Visual stim"]
+    end
+    workers["Device workers<br/>one thread each, real or mock"]
+    clock(("Session clock<br/>t = 0 at Start"))
+    sync["Sync controller<br/>tick + trigger bus"]
+    rec["Recorder"]
+    folder[("Session folder<br/>DCIMG/TIFF · AVI · CSV · JSON")]
+    ui["Main window<br/>live views, plots, settings"]
+    routines["Experiment routines"]
+
+    rig --> workers
+    workers -- samples and frames --> rec
+    workers -- newest frame --> ui
+    clock --> sync
+    clock --> rec
+    sync -- ticks and triggers --> workers
+    rec --> folder
+    routines -- moves, patterns, triggers --> sync
+    ui --- routines
+```
+
+The code follows the same split. `devices/<name>/` is the instrument itself
+(driver, acquisition thread, settings model, panel) and knows nothing about the
+window. `adapters/<name>.py` plugs that instrument into the window. `acq/` is
+the shared machinery (clock, recorder, writer, trigger bus), and `main.py` is
+only the shell that wires them together. Details under
+[Architecture](#architecture); the annotated file tree is
+[docs/STRUCTURE.md](docs/STRUCTURE.md).
+
+## What it looks like
+
+Screenshots are from a mock session (no hardware attached), so the camera
+frames are synthetic noise; the layout is the real one.
+
+<p align="center">
+  <img src="docs/images/readme/main_live.png" width="900"
+       alt="Main window during live view: the sidebar lists the loaded instruments, the voltage camera fills the centre, and the signals plot and pupil camera are docked on the right">
+  <br>
+  <em>The main window in live view. The sidebar lists what is loaded and opens each
+  instrument's settings; panels dock, float and tab. Record, Stop and the session
+  time are bottom right.</em>
+</p>
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="30%">
+      <img src="docs/images/readme/picker.png" width="260"
+           alt="Module picker: a checkbox per instrument">
+      <br><em>The module picker at launch: load only the instruments this session uses.</em>
+    </td>
+    <td align="center" valign="top" width="70%">
+      <img src="docs/images/readme/routines.png" width="420"
+           alt="Experiment routines window with a five-step protocol of moves, displays and recordings">
+      <br><em>Experiment routines: a protocol of stage moves, DMD patterns and recordings, run step by step.</em>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/readme/pupil_settings.png" width="560"
+       alt="Pupil camera settings: camera rate and exposure, pupil tracking, smoothing and blinks, reflection removal, illumination">
+  <br>
+  <em>One instrument's settings page (pupil camera). Every instrument has one in the
+  same window, and the values persist between launches.</em>
+</p>
+
+## Quick start
+
+```
+git clone https://github.com/turboSwagDonkey/acqApp.git     # the folder must be named acqApp
+python acqApp\main.py --mock                                  # no hardware needed
+```
+
+The first run creates `acqApp/.venv` and installs `requirements.txt` into it by
+itself. Real hardware additionally needs the vendor drivers (NI-DAQmx,
+Hamamatsu DCAM-API). Windows is the supported platform. A step-by-step,
+screenshot-illustrated walkthrough is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md);
+run the tests with `acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py`
+(see [Tests](#tests)).
+
+## Subsystems
+
+| Subsystem    | Package                | Device                                            |
+|--------------|------------------------|---------------------------------------------------|
+| Voltage cam  | `devices/voltage_cam/` | Hamamatsu ORCA-Fire C16240-20UP via `pylablib` DCAM (CoaXPress) |
+| Pupil cam    | `devices/pupil_cam/`   | Basler acA1920-40umMED via `pypylon` (USB3)       |
+| Wheel        | `devices/wheel/`       | Rotary encoder as analog voltage on NI `Dev3/ai2` |
+| Puffer       | `devices/puffer/`      | Air-puff TTL on NI `Dev3/port0/line0`             |
+| XY stage     | `devices/stage/`       | Thorlabs MCM6101 (serial): position logging **and** motion |
+| DMD          | `devices/dmd/`         | Vialux **ALP-4.2**, 1024×768, via `ALP4lib`        |
+| Visual stim  | `devices/vis_stim/`    | Drifting sinusoidal grating on a display screen, gated by the shared session clock |
+| Mirror       | `devices/mirror/`      | PMT/camera light-path mirror on the stage controller (checked at launch) |
 
 …plus one that owns no device: **Experiment routines** (`routines/`), which
 executes a protocol of stage positions and DMD patterns step by step,
@@ -584,7 +697,10 @@ QApplication. `devices/voltage_cam/` has no `settings.py` — its model is `AcqC
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py
 ```
 
-Runs in Emulate mode against fakes — no rig hardware, no windows, ~30 s. Covers
+Runs in Emulate mode against fakes — no rig hardware, offscreen windows, ~17 s
+(test files run in parallel; `-j 1` for serial). While working, run one slice:
+`tests\test_X.py --part NAME [--check TEXT]`. The camera test's DCIMG part
+needs the DCAM driver and is skipped without it. Covers
 the session/recording path end to end (including the written session folder), every
 module-subset combination, camera frame timing, settings surviving a restart,
 save-path collisions, stage state, the ways a sample can be lost, the pupil fits
@@ -595,11 +711,11 @@ conventions to follow when adding one.
 
 ## Roadmap
 
-See [PLAN.md](PLAN.md) for the live version — stages, checklist and next
-actions. In short:
+The live plan (next actions, what still needs checking on the rig) is kept in
+the lab's private notes; in short:
 
 - ✅ Unified session Start/Stop, shared software clock, one folder per recording (DCIMG/TIFF, AVI, CSV, JSON)
-- ✅ Six-subsystem module architecture, settings persistence, recording-loss accounting
+- ✅ Module architecture (one adapter per instrument), settings persistence, recording-loss accounting
 - ✅ Pupil tracking moved off the GUI thread; encoder on the DAQ's sample clock
 - ✅ DMD projecting for real (ALP-4.2), verified on the hardware
 - Closed loop (DMD / puffer from live wheel speed): built and mock-verified, retired unused 2026-10-01

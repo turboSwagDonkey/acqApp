@@ -1,10 +1,10 @@
 # HANDOFF — context for continuing acqApp
 
-> **Superseded as a starting point.** Read [../PLAN.md](../PLAN.md) first — it
-> carries the current plan, checklist and next actions. This file is kept for
+> **Superseded as a starting point.** Read [../README.md](../README.md) first;
+> the live plan is kept in the lab's private notes. This file is kept for
 > the *decisions and their reasons*, which remain valid. The **Status** table
 > and **THE immediate next step** below are from 2026-07-27 and are now stale;
-> PLAN.md §4 and §6 replace them.
+> the live plan replaces them.
 
 It captures decisions and state that aren't obvious from the code alone.
 Last updated: 2026-08-12.
