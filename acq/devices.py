@@ -143,6 +143,10 @@ class PatternTarget(Protocol):
     def set_light(self, on: bool) -> None:
         """The one call that emits light."""
 
+    def draw_paired_rois(self, name: str) -> Any:
+        """Modal: draw (and optionally light) the ROI set for the FOV just
+        saved -> its saved path, or None. Light is always off on return."""
+
 
 @runtime_checkable
 class LedTarget(Protocol):

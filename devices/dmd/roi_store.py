@@ -75,15 +75,15 @@ def load_named(path: str | Path) -> tuple[str, RoiSet]:
 
 def list_session() -> list[SavedRoiSet]:
     _rotate_once()
-    return _list(SESSION_DIR)
+    return list_folder(SESSION_DIR)
 
 
 def list_archive() -> list[SavedRoiSet]:
     _rotate_once()
-    return _list(ARCHIVE_DIR)
+    return list_folder(ARCHIVE_DIR)
 
 
-def _list(folder: Path) -> list[SavedRoiSet]:
+def list_folder(folder: Path) -> list[SavedRoiSet]:
     out = []
     for p in sorted(folder.glob("*.roi.json")):
         try:

@@ -143,6 +143,8 @@ devices/                one package per instrument
                         camera when given a source); Apply refits an exact
                         homography through them (with_corners) — sweep.py's
                         post-fit knob and its sweep-free "Manual (live)"
+    pair_dialog.py      after Save FOV: draw its ROI set, Illuminate it on the
+                        live camera, save as <base>_roi; light off on close
     panel.py
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
     roi_panel.py        draw and edit ROIs over a snapshot
@@ -270,6 +272,8 @@ routines/               experiment routines: atomic steps (move/display/wait/
                         so the whole of it is testable before light is emitted
   estimate.py           how long a routine takes — the one place frames become
                         seconds, and it says so; no Qt
+  pairs.py              a saved FOV and its DMD ROI set, paired by name
+                        (<base>_fov / <base>_roi); picking one fills the other — no Qt
   settings.py           Step / Group / Recording / Routine / validate() — no Qt
   templates.py          the saved-protocol library, one JSON file each — no Qt
   timeline.py           one cycle drawn to scale: a Group bracket, step

@@ -19,8 +19,9 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
+from acqApp.devices.stage.fov_store import SavedFov
 from acqApp.widgets import ElidedLabel, compact, spin
-from acqApp.routines import templates
+from acqApp.routines import pairs, templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
 from acqApp.routines.settings import KINDS, SAVE_MODES, Group, Routine, Step
@@ -425,6 +426,9 @@ class SettingsPanel(QWidget):
         dlg = RoiSetPicker(self)
         if dlg.exec() and dlg.path is not None:
             self._r.steps[row].pattern = str(dlg.path)
+            fov = pairs.fov_for_roi(dlg.path)
+            if fov is not None:
+                self.status_message.emit(self._pair_fov_before(row, fov))
             self._reload_table()
             self._emit()
 
@@ -484,11 +488,60 @@ class SettingsPanel(QWidget):
         dlg.exec()
         fov = dlg.fov
         if fov is not None:
-            s = self._r.steps[row]
-            s.x_um, s.y_um, s.z_um = fov.x_um, fov.y_um, fov.z_um
-            s.fov = fov.name
+            self._fill_from_fov(self._r.steps[row], fov)
+            roi = pairs.roi_for_fov(fov)
+            if roi is not None:
+                self.status_message.emit(
+                    self._pair_roi_after(row, roi, pairs.roi_name(fov.name)))
             self._reload_table()
             self._emit()
+
+    @staticmethod
+    def _fill_from_fov(step: Step, fov: SavedFov) -> None:
+        step.x_um, step.y_um, step.z_um = fov.x_um, fov.y_um, fov.z_um
+        step.fov = fov.name
+
+    def _insert_step(self, at: int, step: Step, owner: int) -> None:
+        """Insert `step` at `at`, belonging with step `owner` (pre-insert
+        index): groups holding `owner` take it in, later groups shift."""
+        self._r.steps.insert(at, step)
+        for g in self._r.groups:
+            if g.start <= owner <= g.end:
+                g.end += 1
+            elif g.start >= at:
+                g.start += 1
+                g.end += 1
+
+    def _pair_roi_after(self, row: int, roi: Path, name: str) -> str:
+        """Show `roi` in move `row`'s segment -> a status line. Reuses the
+        segment's first showing display step; a "stop displaying" stays one."""
+        steps = self._r.steps
+        for i in range(row + 1, len(steps)):
+            s = steps[i]
+            if s.kind == "move":
+                break
+            if s.kind == "display" and s.pattern:
+                s.pattern = str(roi)
+                return f'Also set step {i + 1} to ROI "{name}"'
+        self._insert_step(row + 1, Step(kind="display", pattern=str(roi)),
+                          owner=row)
+        return f'Added step {row + 2}: show ROI "{name}"'
+
+    def _pair_fov_before(self, row: int, fov: SavedFov) -> str:
+        """Move to `fov` before display `row` -> a status line. Stops at an
+        earlier showing display step: that move belongs to another ROI."""
+        steps = self._r.steps
+        for i in range(row - 1, -1, -1):
+            s = steps[i]
+            if s.kind == "move":
+                self._fill_from_fov(s, fov)
+                return f'Also set step {i + 1} to FOV "{fov.name}"'
+            if s.kind == "display" and s.pattern:
+                break
+        move = Step(kind="move")
+        self._fill_from_fov(move, fov)
+        self._insert_step(row, move, owner=row)
+        return f'Added step {row + 1}: move to FOV "{fov.name}"'
 
     def _clear_pattern(self) -> None:
         """Back to "stop displaying" (cancelling the file dialog doesn't)."""

@@ -122,6 +122,7 @@ class StageModule(ModuleAdapter):
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
         from acqApp.devices.stage import fov_store
+        from acqApp.routines import pairs
 
         if not self.panel.connected:
             QMessageBox.information(
@@ -130,16 +131,27 @@ class StageModule(ModuleAdapter):
                 "tab and that the hardware is powered on.")
             return
         x_um, y_um, z_um = self.panel.current_position
-        name, ok = QInputDialog.getText(self.panel, "Save FOV", "Name:")
-        name = name.strip()
-        if not ok or not name:
+        dmd = self.win.pattern_target()
+        prompt = (f"Name (saved as <name>{pairs.FOV_SUFFIX}, its DMD ROI set "
+                  f"as <name>{pairs.ROI_SUFFIX}):" if dmd is not None
+                  else f"Name (saved as <name>{pairs.FOV_SUFFIX}):")
+        base, ok = QInputDialog.getText(self.panel, "Save FOV", prompt)
+        base = pairs.base_name(base)
+        if not ok or not base:
             return
+        name = pairs.fov_name(base)
         path = fov_store.save(
             name, x_um, y_um, z_um=z_um,
             camera_preset=self.win.camera_preset("voltage_cam"),
             png_bytes=self._snapshot_png())
         self.win.status(f'Saved FOV "{name}" at {x_um:.0f}, {y_um:.0f} µm '
                         f"({path.name})")
+        if dmd is None or self.win.latest_frame("voltage_cam") is None:
+            return
+        roi_path = dmd.draw_paired_rois(pairs.roi_name(base))
+        if roi_path is not None:
+            self.win.status(f'Saved FOV "{name}" with its DMD ROI set '
+                            f'"{pairs.roi_name(base)}"')
 
     def _snapshot_png(self) -> bytes | None:
         """The newest camera frame as the preview shows it (downsampled,

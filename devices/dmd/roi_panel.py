@@ -213,17 +213,26 @@ class RoiEditor(QWidget):
         self._draw_field()
 
     # ── inputs ───────────────────────────────────────────────────────────────
-    def set_image(self, frame: np.ndarray) -> None:
-        """Show the snapshot ROIs are drawn on (taken with the DMD all-on)."""
+    def set_image(self, frame: np.ndarray, keep_view: bool = False) -> None:
+        """Show the snapshot ROIs are drawn on (taken with the DMD all-on).
+        `keep_view`: a live refresh, so the zoom and contrast stay put."""
         self._image = np.asarray(frame)
-        lo, hi = snapshot_levels(self._image)
-        self._img.setImage(self._image, autoLevels=False, levels=(lo, hi))
+        if keep_view:
+            self._img.setImage(self._image, autoLevels=False)
+        else:
+            lo, hi = snapshot_levels(self._image)
+            self._img.setImage(self._image, autoLevels=False, levels=(lo, hi))
+            self._hist.setLevels(lo, hi)
         # At its SENSOR extent: a binned frame has fewer px than it covers.
         h, w = self._image.shape[:2]
         self._img.setRect(QRectF(0.0, 0.0, w * self._scale, h * self._scale))
-        self._hist.setLevels(lo, hi)
-        self._vb.autoRange()
-        self._refresh_status()
+        if not keep_view:
+            self._vb.autoRange()
+            self._refresh_status()
+
+    @property
+    def can_project(self) -> bool:
+        return self._calib is not None
 
     @property
     def roi_set(self) -> RoiSet:

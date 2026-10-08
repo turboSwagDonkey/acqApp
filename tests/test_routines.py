@@ -3272,9 +3272,212 @@ def _part_timeline() -> int:
     return r.finish()
 
 
+# ═══ pairing ════════════════════════════════════════════════════════════
+
+class _FakeFovPicker:
+    """Stands in for FovPicker: "chooses" `fov` without a dialog."""
+    fov = None
+
+    def __init__(self, parent=None):
+        pass
+
+    def exec(self) -> int:
+        return 1
+
+
+class _FakeRoiPicker:
+    path = None
+
+    def __init__(self, parent=None):
+        pass
+
+    def exec(self) -> int:
+        return 1
+
+
+def _pick(panel, row: int, *, fov=None, roi=None) -> tuple[list, list]:
+    """Pick `fov` (a SavedFov) or `roi` (a path) for `row` -> (status lines,
+    settings_changed emissions)."""
+    said: list = []
+    emitted: list = []
+    panel.status_message.connect(said.append)
+    panel.settings_changed.connect(emitted.append)
+    if fov is not None:
+        _FakeFovPicker.fov = fov
+        panel._pick_fov_for(row)
+    else:
+        _FakeRoiPicker.path = roi
+        panel._pick_roi_for(row)
+    panel.status_message.disconnect(said.append)
+    panel.settings_changed.disconnect(emitted.append)
+    return said, emitted
+
+
+def check_pair_fov_to_roi(r: Report, fov_a, roi_a: Path, lonely,
+                          orphan) -> None:
+    """A FOV picked for a move step brings its "_roi" partner along."""
+    from acqApp.routines.panel import SettingsPanel
+
+    # ── reuses the segment's first showing display step ──
+    panel = SettingsPanel(Routine(steps=[
+        Step(kind="move"), Step(kind="wait"),
+        Step(kind="display", pattern="old.roi.json"),
+        Step(kind="move"), Step(kind="display", pattern="later.roi.json")]))
+    steps = panel.settings.steps
+    said, emitted = _pick(panel, 0, fov=fov_a)
+    r.check((steps[0].x_um, steps[0].y_um, steps[0].z_um, steps[0].fov)
+            == (10.0, 20.0, 5.0, "cellA_fov"),
+            f"the picked move step is filled as before ({steps[0]})")
+    r.check(len(steps) == 5 and steps[2].pattern == str(roi_a),
+            f"…and the segment's display step now shows the paired ROI "
+            f"({steps[2].pattern})")
+    r.check(steps[4].pattern == "later.roi.json",
+            "a display step past the next move is another FOV's, left alone")
+    r.check(said == ['Also set step 3 to ROI "cellA_roi"'],
+            f"the status bar says what else changed ({said})")
+    r.check(len(emitted) == 1 and panel._tbl.rowCount() == 5,
+            f"one persist, one repaint ({len(emitted)})")
+
+    # ── no showing display step: insert one, groups follow ──
+    panel = SettingsPanel(Routine(
+        steps=[Step(kind="move"), Step(kind="display", pattern=""),
+               Step(kind="wait"), Step(kind="move"),
+               Step(kind="display", pattern="x.roi.json")],
+        groups=[Group(0, 1, 2), Group(3, 4, 2), Group(1, 2, 3)]))
+    routine = panel.settings
+    said, emitted = _pick(panel, 0, fov=fov_a)
+    kinds = [(s.kind, s.pattern) for s in routine.steps]
+    r.check(kinds == [("move", ""), ("display", str(roi_a)), ("display", ""),
+                      ("wait", ""), ("move", ""), ("display", "x.roi.json")],
+            f"a 'stop displaying' step is never turned into a show; a display "
+            f"step is inserted right after the move instead ({kinds})")
+    spans = [(g.start, g.end) for g in routine.groups]
+    r.check(spans == [(0, 2), (4, 5), (2, 3)],
+            f"the move's group takes the new step in, later groups shift "
+            f"({spans})")
+    r.check(said == ['Added step 2: show ROI "cellA_roi"'] and len(emitted) == 1
+            and panel._tbl.rowCount() == 6,
+            f"…said once, persisted once ({said}, {len(emitted)})")
+
+    # ── the next move step bounds the search ──
+    panel = SettingsPanel(Routine(steps=[
+        Step(kind="move"), Step(kind="move"),
+        Step(kind="display", pattern="b.roi.json")]))
+    routine = panel.settings
+    _pick(panel, 0, fov=fov_a)
+    r.check([s.pattern for s in routine.steps]
+            == ["", str(roi_a), "", "b.roi.json"],
+            "a display step after the next move isn't this FOV's")
+
+    # ── controls: no partner, nothing else moves ──
+    for fov, why in ((lonely, "a FOV without the _fov suffix"),
+                     (orphan, "a _fov FOV with no saved _roi")):
+        panel = SettingsPanel(Routine(steps=[
+            Step(kind="move"), Step(kind="display", pattern="keep.roi.json")]))
+        routine = panel.settings
+        said, emitted = _pick(panel, 0, fov=fov)
+        r.check(routine.steps[0].fov == fov.name and len(routine.steps) == 2
+                and routine.steps[1].pattern == "keep.roi.json" and not said
+                and len(emitted) == 1,
+                f"control: {why} fills its move step and nothing else ({said})")
+
+
+def check_pair_roi_to_fov(r: Report, fov_a, roi_a: Path, plain: Path) -> None:
+    """An ROI set picked for a display step brings its "_fov" partner along."""
+    from acqApp.routines.panel import SettingsPanel
+
+    # ── fills the nearest earlier move, past a "stop displaying" ──
+    panel = SettingsPanel(Routine(steps=[
+        Step(kind="move", x_um=1.0), Step(kind="display", pattern=""),
+        Step(kind="wait"), Step(kind="display", pattern="old.roi.json")]))
+    steps = panel.settings.steps
+    said, emitted = _pick(panel, 3, roi=roi_a)
+    r.check(steps[3].pattern == str(roi_a),
+            "the picked display step shows the picked set, as before")
+    r.check(len(steps) == 4 and (steps[0].x_um, steps[0].y_um, steps[0].z_um,
+                                 steps[0].fov) == (10.0, 20.0, 5.0, "cellA_fov"),
+            f"…and the segment's move step goes to the paired FOV ({steps[0]})")
+    r.check(said == ['Also set step 1 to FOV "cellA_fov"'] and len(emitted) == 1,
+            f"the status bar says so, persisted once ({said})")
+
+    # ── another ROI's segment in between: insert a move, groups follow ──
+    panel = SettingsPanel(Routine(
+        steps=[Step(kind="move", x_um=1.0, y_um=1.0, fov="other"),
+               Step(kind="display", pattern="b.roi.json"), Step(kind="wait"),
+               Step(kind="display", pattern="old.roi.json"),
+               Step(kind="wait")],
+        groups=[Group(0, 1, 2), Group(2, 3, 2), Group(3, 3, 2),
+                Group(4, 4, 2)]))
+    routine = panel.settings
+    said, emitted = _pick(panel, 3, roi=roi_a)
+    kinds = [s.kind for s in routine.steps]
+    r.check(kinds == ["move", "display", "wait", "move", "display", "wait"]
+            and routine.steps[3].fov == "cellA_fov"
+            and routine.steps[3].x_um == 10.0
+            and routine.steps[4].pattern == str(roi_a),
+            f"a showing display step in between stops the search: a move to "
+            f"the FOV is inserted just before the picked step ({kinds})")
+    r.check(routine.steps[0].fov == "other" and routine.steps[0].x_um == 1.0,
+            "control: the other ROI's move step is left alone")
+    spans = [(g.start, g.end) for g in routine.groups]
+    r.check(spans == [(0, 1), (2, 4), (3, 4), (5, 5)],
+            f"groups holding the display step grow, later ones shift, earlier "
+            f"ones stay ({spans})")
+    r.check(said == ['Added step 4: move to FOV "cellA_fov"']
+            and len(emitted) == 1 and panel._tbl.rowCount() == 6,
+            f"…said once, persisted once ({said})")
+
+    # ── nothing earlier at all: insert at the top ──
+    panel = SettingsPanel(Routine(steps=[Step(kind="display", pattern="")]))
+    routine = panel.settings
+    _pick(panel, 0, roi=roi_a)
+    r.check([s.kind for s in routine.steps] == ["move", "display"]
+            and routine.steps[0].fov == "cellA_fov",
+            "a display step with no move before it gets one inserted")
+
+    # ── control: a set without the _roi suffix pairs with nothing ──
+    panel = SettingsPanel(Routine(steps=[Step(kind="move"),
+                                         Step(kind="display")]))
+    routine = panel.settings
+    said, _ = _pick(panel, 1, roi=plain)
+    r.check(routine.steps[1].pattern == str(plain) and len(routine.steps) == 2
+            and routine.steps[0].fov == "" and not said,
+            f"control: an unpaired ROI set changes only its own step ({said})")
+
+
+def _part_pairing() -> int:
+    r = Report("pairing")
+    state = isolate_user_state()
+    try:
+        app = qt_app()                  # held: a collected one aborts widgets
+        import acqApp.devices.dmd.roi_picker as roi_picker
+        import acqApp.devices.stage.fov_picker as fov_picker
+        from acqApp.devices.dmd import roi_store
+        from acqApp.devices.dmd.roi import RectRoi, RoiSet
+        from acqApp.devices.stage import fov_store
+
+        fov_picker.FovPicker = _FakeFovPicker
+        roi_picker.RoiSetPicker = _FakeRoiPicker
+        rois = RoiSet([RectRoi(1.0, 2.0, 30.0, 40.0)])
+        fov_a = fov_store.load(fov_store.save("cellA_fov", 10.0, 20.0, 5.0))
+        roi_a = roi_store.save("cellA_roi", rois)
+        roi_store.save("cellB_roi", rois)
+        lonely = fov_store.load(fov_store.save("cellA", 1.0, 2.0))
+        orphan = fov_store.load(fov_store.save("ghost_fov", 3.0, 4.0))
+        plain = roi_store.save("cellA", rois)
+
+        check_pair_fov_to_roi(r, fov_a, roi_a, lonely, orphan)
+        check_pair_roi_to_fov(r, fov_a, roi_a, plain)
+        app.processEvents()
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
+    return r.finish()
+
+
 PARTS = {
     "routines": _part_routines,
     "timeline": _part_timeline,
+    "pairing": _part_pairing,
 }
 
 

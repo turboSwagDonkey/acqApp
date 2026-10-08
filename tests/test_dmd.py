@@ -2044,11 +2044,121 @@ def _part_roi() -> int:
     return r.finish()
 
 
+# ═══ pair ═══════════════════════════════════════════════════════════════
+
+def _part_pair() -> int:
+    """Save FOV -> draw its ROI set, light it, save it as <base>_roi."""
+    r = Report("dmd-pair")
+    isolate_user_state()
+    app = qt_app()
+    from acqApp.devices.dmd import roi_store
+    from acqApp.devices.dmd.pair_dialog import PairRoiDialog
+    from acqApp.devices.dmd.roi_panel import RoiEditor
+
+    snap = np.random.default_rng(0).integers(0, 255, (CH, CW), dtype=np.uint8)
+    live = [snap.copy()]
+    lit: list = []
+    live_calls: list = []
+
+    def make(calibration):
+        ed = RoiEditor(calibration)
+        ed.set_image(snap)
+        return ed, PairRoiDialog(
+            ed, snap, "cellA_roi", live_source=lambda: live[0],
+            illuminate=lambda rois: lit.append(None if rois is None
+                                               else len(rois)),
+            set_live=lambda on: live_calls.append(on) or False)
+
+    ed, dlg = make(calib())
+    r.check(not dlg._btn_save.isEnabled(), "Save waits for an ROI")
+    ed._add(RectRoi(x=100, y=80, w=40, h=20))
+    r.check(dlg._btn_save.isEnabled(), "…and is offered once one is drawn")
+    r.check(lit == [] and live_calls == [], "nothing lights up on its own")
+
+    dlg._btn_light.setChecked(True)
+    r.check(lit == [1], f"Illuminate projects the drawn set ({lit})")
+    r.check(dlg._chk_live.isChecked() and live_calls == [True],
+            f"…and switches to the live camera ({live_calls})")
+    live[0] = snap[::-1].copy()
+    pump(app, 0.15)
+    r.check(ed._image is live[0], "the editor follows the live frames")
+    ed._add(CircleRoi(x=50, y=50, r=6))
+    pump(app, 0.3)
+    r.check(lit[-1] == 2, f"an edit while lit re-projects ({lit})")
+    dlg.reject()                        # Skip, still lit
+    r.check(lit[-1] is None, f"closing turns the light off ({lit})")
+    r.check(live_calls[-1] is False,
+            f"…and puts Live view back how it was ({live_calls})")
+    r.check(dlg.path is None and roi_store.list_session() == [],
+            "Skip saves nothing")
+
+    lit.clear()
+    ed, dlg = make(calib())
+    ed._add(RectRoi(x=100, y=80, w=40, h=20))
+    dlg._save()
+    r.check(dlg.path is not None
+            and roi_store.load_named(dlg.path)[0] == "cellA_roi",
+            f"Save writes the set under the paired name ({dlg.path})")
+    r.check(lit == [], "control: never lit, so nothing to turn off")
+
+    ed, dlg = make(None)
+    r.check(not dlg._btn_light.isEnabled(),
+            "no calibration: Illuminate is offered disabled")
+    dlg.reject()
+
+    # ── the whole flow, from the Stage tab's button ─────────────────────────
+    from PyQt6.QtWidgets import QInputDialog
+
+    from acqApp.devices.stage import fov_store
+    from acqApp.routines import pairs
+
+    isolate_user_state()
+    sys.argv = ["main.py", "--mock"]
+    win = make_window({"voltage_cam", "dmd", "stage"})
+    dmd = next(m for m in win._modules if m.key == "dmd")
+    stage = next(m for m in win._modules if m.key == "stage")
+    win._btn_run.setChecked(True)
+    pump(app, 1.2)
+
+    seen: list = []
+
+    def fake_exec(self):
+        seen.append(self.windowTitle())
+        self._ed._add(RectRoi(x=100, y=80, w=40, h=20))
+        self._save()
+        return 1
+
+    real_exec, real_text = PairRoiDialog.exec, QInputDialog.getText
+    PairRoiDialog.exec = fake_exec
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("cellA", True))
+    try:
+        stage.save_fov()
+    finally:
+        PairRoiDialog.exec, QInputDialog.getText = real_exec, real_text
+    fovs = fov_store.list_session()
+    r.check([f.name for f in fovs] == ["cellA_fov"],
+            f"the FOV is saved as <name>_fov ({[f.name for f in fovs]})")
+    r.check(seen == ["DMD ROIs for cellA_roi"],
+            f"…and the ROI prompt follows at once ({seen})")
+    roi = pairs.roi_for_fov(fovs[0]) if fovs else None
+    r.check(roi is not None and roi_store.load_named(roi)[0] == "cellA_roi",
+            f"…saved as <name>_roi, found from the FOV ({roi})")
+    r.check(dmd.panel.mode == "roi" and len(dmd.panel.settings.rois) == 1,
+            "the DMD tab adopts the saved set")
+
+    win._btn_run.setChecked(False)
+    pump(app, 0.3)
+    win.close()
+    pump(app, 0.1)
+    return r.finish()
+
+
 PARTS = {
     "dmd": _part_dmd,
     "calib": _part_calib,
     "sweep": _part_sweep,
     "roi": _part_roi,
+    "pair": _part_pair,
 }
 
 

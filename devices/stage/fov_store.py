@@ -95,15 +95,15 @@ def load(path: str | Path) -> SavedFov:
 
 def list_session() -> list[SavedFov]:
     _rotate_once()
-    return _list(SESSION_DIR)
+    return list_folder(SESSION_DIR)
 
 
 def list_archive() -> list[SavedFov]:
     _rotate_once()
-    return _list(ARCHIVE_DIR)
+    return list_folder(ARCHIVE_DIR)
 
 
-def _list(folder: Path) -> list[SavedFov]:
+def list_folder(folder: Path) -> list[SavedFov]:
     out = []
     for p in sorted(folder.glob(f"*{SUFFIX}")):
         try:

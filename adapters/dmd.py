@@ -131,6 +131,25 @@ class DmdModule(ModuleAdapter):
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
     # ── photostimulation ROIs ──
+    def _editor(self, frame):
+        """A `RoiEditor` showing `frame`, mapped onto the calibration."""
+        from acqApp.devices.dmd.roi_panel import RoiEditor
+        from acqApp.devices.voltage_cam.presets import PRESETS, SENSOR_H, SENSOR_W
+
+        calib, why = self._calibration()
+        if why:
+            self.win.status(why)
+        # The calibration is in full-sensor px; map the frame's px onto it
+        # using the preset the frame was CAPTURED under (the combo may already
+        # name the next one): its (hpos, vpos) offset and its binning.
+        preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
+        offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
+        scale = preset.hsize / frame.shape[1] if preset is not None else 1.0
+        ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H),
+                       scale=scale)
+        ed.set_image(frame)
+        return ed
+
     def edit_rois(self) -> None:
         """`RoiEditor` on the camera's newest frame. Commands nothing: all-on
         first is the operator's (light-emitting) step."""
@@ -139,8 +158,6 @@ class DmdModule(ModuleAdapter):
 
         from acqApp import style
         from acqApp.devices.dmd.roi import RoiSet
-        from acqApp.devices.dmd.roi_panel import RoiEditor
-        from acqApp.devices.voltage_cam.presets import PRESETS, SENSOR_H, SENSOR_W
 
         frame = self.win.latest_frame("voltage_cam")
         if frame is None:
@@ -152,21 +169,12 @@ class DmdModule(ModuleAdapter):
                 "the snapshot, put the DMD in all-on and press Display first.")
             return
 
-        calib, why = self._calibration()
-        # The calibration is in full-sensor px; map the frame's px onto it
-        # using the preset the frame was CAPTURED under (the combo may already
-        # name the next one): its (hpos, vpos) offset and its binning.
-        preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
-        offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
-        scale = preset.hsize / frame.shape[1] if preset is not None else 1.0
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
         dlg.resize(1000, 760)
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
-        ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H),
-                       scale=scale)
-        ed.set_image(frame)
+        ed = self._editor(frame)
         if self.panel.rois:
             ed.load(RoiSet.from_list(list(self.panel.rois)))
         lay.addWidget(ed, 1)
@@ -175,12 +183,38 @@ class DmdModule(ModuleAdapter):
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
-        if why:
-            self.win.status(why)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             rois = ed.roi_set.to_list()
             self.panel.set_rois(tuple(rois))
             self.win.status(f"{len(rois)} photostimulation ROI(s) saved")
+
+    def draw_paired_rois(self, name: str):
+        """`PairRoiDialog` on the camera's newest frame (the FOV just saved)
+        -> the saved ROI set's path, or None. Light only from its Illuminate
+        button, and off again when it closes."""
+        from acqApp.devices.dmd import roi_store
+        from acqApp.devices.dmd.pair_dialog import PairRoiDialog
+
+        frame = self.win.latest_frame("voltage_cam")
+        if frame is None or self.panel is None:
+            return None
+
+        def illuminate(rois) -> None:
+            if rois is None:
+                self.stop_display()
+            else:
+                self.panel.set_roi_pattern(name, rois.to_list())
+                self.display()
+
+        dlg = PairRoiDialog(
+            self._editor(frame), frame, name,
+            live_source=lambda: self.win.latest_frame("voltage_cam"),
+            illuminate=illuminate, set_live=self.win.set_live,
+            parent=self.panel)
+        dlg.exec()
+        if dlg.path is not None:        # the panel shows what was saved
+            self.panel.set_roi_pattern(name, roi_store.load(dlg.path).to_list())
+        return dlg.path
 
     def _calibration(self):
         """-> (calib | None, complaint). Missing is allowed but never silent."""
