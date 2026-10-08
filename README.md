@@ -1,28 +1,24 @@
 # acqApp
 
 **One program to run an in-vivo imaging experiment from start to finish.**
-acqApp replaces the LabVIEW pipeline on the ICN rig: it drives the cameras,
-the running wheel, the air puffer, the XY stage, the DMD (patterned
-photostimulation) and the visual stimulus from a single window, and writes
-everything that happens, on one common clock, into one folder per session.
+acqApp replaces the LabVIEW pipeline on the ICN rig. It drives the cameras,
+wheel, puffer, XY stage, DMD and visual stimulus from one window and writes
+everything, on one clock, into one folder per session.
 
 ## What it does
 
-- **Records many instruments against one timebase.** Every sample, frame and
-  event is stamped by the same session clock (t = 0 at Start), so a wheel
-  speed, a pupil radius, a camera frame, a puff and a DMD pattern can be lined
-  up exactly afterwards. [Why this matters](#the-shared-clock-why-one-timebase).
-- **Keeps each session self-contained.** One folder per recording: camera
-  frames (DCIMG/TIFF), pupil video (AVI), the numeric streams (CSV) and the
-  settings and metadata that produced them (JSON).
-  [Format](#recording-format).
-- **Runs experiments, not just recordings.** *Experiment routines* execute a
-  protocol of stage moves, DMD patterns and triggers step by step, with trials,
-  groups and repeats.
-- **Loads only what you need.** A module picker at launch (and the sidebar
-  while running) chooses which instruments are live; the rest are never opened.
-- **Works without hardware.** Every device has a simulated twin, so the whole
-  app, and its test suite, runs on a laptop with `--mock`.
+- **One timebase.** Every sample, frame and event is stamped by the same
+  session clock (t = 0 at Start), so streams line up exactly afterwards.
+  [Why](#the-shared-clock-why-one-timebase).
+- **Self-contained sessions.** One folder per recording: camera frames
+  (DCIMG/TIFF), pupil video (AVI), numeric streams (CSV), settings and
+  metadata (JSON). [Format](#recording-format).
+- **Experiments, not just recordings.** *Experiment routines* run a protocol
+  of stage moves, DMD patterns and triggers, with groups and repeats.
+- **Load only what you need.** A module picker at launch (and the sidebar
+  while running) chooses the live instruments; the rest are never opened.
+- **Works without hardware.** Every device has a simulated twin, so the app
+  and its tests run on a laptop with `--mock`.
 
 ## How it fits together
 
@@ -54,26 +50,22 @@ flowchart LR
     ui --- routines
 ```
 
-The code follows the same split. `devices/<name>/` is the instrument itself
-(driver, acquisition thread, settings model, panel) and knows nothing about the
-window. `adapters/<name>.py` plugs that instrument into the window. `acq/` is
-the shared machinery (clock, recorder, writer, trigger bus), and `main.py` is
-only the shell that wires them together. Details under
-[Architecture](#architecture); the annotated file tree is
-[docs/STRUCTURE.md](docs/STRUCTURE.md).
+The code follows the same split: `devices/<name>/` is the instrument (driver,
+thread, settings, panel) and knows nothing about the window; `adapters/<name>.py`
+plugs it into the window; `acq/` is the shared clock, recorder and trigger bus;
+`main.py` only wires them together. See [Architecture](#architecture) and the
+annotated tree in [docs/STRUCTURE.md](docs/STRUCTURE.md).
 
 ## What it looks like
 
-Screenshots are from a mock session (no hardware attached), so the camera
-frames are synthetic noise; the layout is the real one.
+From a mock session, so camera frames are synthetic noise; the layout is real.
 
 <p align="center">
   <img src="docs/images/readme/main_live.png" width="900"
        alt="Main window during live view: the sidebar lists the loaded instruments, the voltage camera fills the centre, and the signals plot and pupil camera are docked on the right">
   <br>
-  <em>The main window in live view. The sidebar lists what is loaded and opens each
-  instrument's settings; panels dock, float and tab. Record, Stop and the session
-  time are bottom right.</em>
+  <em>Main window, live. The sidebar lists the loaded instruments and opens their
+  settings; panels dock, float and tab.</em>
 </p>
 
 <table>
@@ -81,12 +73,12 @@ frames are synthetic noise; the layout is the real one.
     <td align="center" valign="top" width="30%">
       <img src="docs/images/readme/picker.png" width="260"
            alt="Module picker: a checkbox per instrument">
-      <br><em>The module picker at launch: load only the instruments this session uses.</em>
+      <br><em>Module picker at launch.</em>
     </td>
     <td align="center" valign="top" width="70%">
       <img src="docs/images/readme/routines.png" width="420"
            alt="Experiment routines window with a five-step protocol of moves, displays and recordings">
-      <br><em>Experiment routines: a protocol of stage moves, DMD patterns and recordings, run step by step.</em>
+      <br><em>Experiment routines: moves, patterns and recordings, run step by step.</em>
     </td>
   </tr>
 </table>
@@ -95,8 +87,7 @@ frames are synthetic noise; the layout is the real one.
   <img src="docs/images/readme/pupil_settings.png" width="560"
        alt="Pupil camera settings: camera rate and exposure, pupil tracking, smoothing and blinks, reflection removal, illumination">
   <br>
-  <em>One instrument's settings page (pupil camera). Every instrument has one in the
-  same window, and the values persist between launches.</em>
+  <em>An instrument's settings page (pupil camera). Values persist between launches.</em>
 </p>
 
 ## Quick start
@@ -106,12 +97,10 @@ git clone https://github.com/turboSwagDonkey/acqApp.git     # the folder must be
 python acqApp\main.py --mock                                  # no hardware needed
 ```
 
-The first run creates `acqApp/.venv` and installs `requirements.txt` into it by
-itself. Real hardware additionally needs the vendor drivers (NI-DAQmx,
-Hamamatsu DCAM-API). Windows is the supported platform. A step-by-step,
-screenshot-illustrated walkthrough is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md);
-run the tests with `acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py`
-(see [Tests](#tests)).
+The first run creates `acqApp/.venv` and installs `requirements.txt` into it.
+Real hardware also needs the vendor drivers (NI-DAQmx, Hamamatsu DCAM-API);
+Windows is the supported platform. Walkthrough with screenshots:
+[docs/USER_GUIDE.md](docs/USER_GUIDE.md). Tests: see [Tests](#tests).
 
 ## Subsystems
 
@@ -140,108 +129,87 @@ described below. It is **always loaded and opens in a window of its own**.
 > **not** been run on the rig; treat their rates, timings and device quirks as
 > unconfirmed until they have.
 
-Panels are **dockable** — drag any plot or video panel to re-dock, float, or tab
-it with another; drag the tabs to reorder. The layout is remembered across runs.
-The voltage camera has the central image; the **pupil camera has its own dockable
-video box** (live frame, the fitted pupil ellipse, the eye region and any pinned
-reflections), alongside its radius trace in the Signals panel.
+Panels are **dockable**: drag any plot or video panel to re-dock, float or tab
+it; the layout is remembered. The voltage camera has the central image; the
+**pupil camera has its own dockable video box** (live frame, fitted pupil
+ellipse, eye region, pinned reflections), with its radius trace in Signals.
 
-The **settings** for every loaded subsystem live in one tabbed **pop-up
-window**, reachable two ways that stay in step. The left-edge sidebar has one
-item per page — **Save** first, then each loaded instrument with its accent
-colour beside it — so the sidebar doubles as the list of what is loaded; and the
-window keeps its **tab bar**, so every page is visible at once and the tabs drag
-into your own order. Clicking a sidebar item opens the window on that page and
-clicking the one you are already on tucks it away, keeping the main workspace
-entirely for the images and plots. Switching tab inside the window moves the
-sidebar highlight to match. Being a separate window, it can be left open beside
-the app or on a second screen while a session runs, and its size and position
-are remembered. The pupil camera's page exposes
-camera exposure/frame-rate, the tracking parameters (threshold, blur,
-ellipse-or-circle), corneal-reflection removal (threshold, pad, ring, reach) and
-the eye-tracking LED toggle. The **eye region** and the **pinned reflections**
-are placed on the preview rather than typed here — both are positions in the
-frame.
+**Settings** for every loaded subsystem live in one tabbed pop-up window,
+opened two ways that stay in step. The sidebar has one item per page (**Save**
+first, then each loaded instrument in its accent colour), so it doubles as the
+list of what is loaded. The window's tab bar shows every page at once and the
+tabs drag into your own order. Clicking a sidebar item opens that page; clicking
+the current one tucks the window away. It can stay open on a second screen
+during a session, and its size and position are remembered. The pupil page
+covers exposure and frame rate, tracking (threshold, blur, ellipse or circle),
+reflection removal, and the eye-tracking LED; the **eye region** and **pinned
+reflections** are placed on the preview, not typed.
 
-**Every panel's settings persist** to `acqapp_local.json` and come back on the
-next launch — camera preset and exposure, wheel V/rev and diameter, pupil
-tracking parameters, puffer line and duration, stage port, DMD pattern and
-timing, and the save destination. Runtime state deliberately does not persist:
-the eye-tracking LED always starts off. The stage's axis calibration is not
-kept here either — it belongs to the config shared with the standalone
+**Every panel's settings persist** to `acqapp_local.json`: camera preset and
+exposure, wheel V/rev and diameter, pupil tracking, puffer line and duration,
+stage port, DMD pattern and timing, save destination. Runtime state does not
+persist (the eye-tracking LED always starts off), and neither does the stage's
+axis calibration, which belongs to the config shared with the standalone
 `stage_control` app.
 
-The **Puffer** tab can **schedule puffs** to fire at fixed session times
-(`Puff at t = N s`). Scheduled puffs are armed on the shared trigger bus, so they
-fire (on the next 100 ms tick past their time) and are logged on the session
-clock alongside every other stream — the basis for timed-stimulus experiments.
+The **Puffer** tab can **schedule puffs** at fixed session times
+(`Puff at t = N s`). They are armed on the shared trigger bus, fire on the next
+100 ms tick past their time, and are logged on the session clock.
 
-The **XY stage** tab both logs and moves. It polls the stage controller for
-X/Y position (µm) and records it to `/stage_x_um`, `/stage_y_um` — plus
-`/stage_z_um` on a rig whose config names and enables a Z (focus) axis — and
-it drives the stage:
-jog, absolute go-to, stop, a session-scoped "home" bookmark, and a calibration
-that **drives both axes into their reverse hard limits** to re-measure the
-command→encoder map. Soft limits clamp every target, and absolute go-to is
-refused until the frame is known — enforced once, in `StageController` itself
-(`move_to_um`/`jog_um`/`go_home`/`go_to_center`), so every caller gets it for
-free rather than each having to check first (a saved-FOV recall and a
-routine's Move step both used to skip that check entirely).
+The **XY stage** tab both logs and moves. It polls X/Y (µm) into `/stage_x_um`,
+`/stage_y_um` (plus `/stage_z_um` when the rig's config enables a Z axis) and
+drives the stage: jog, absolute go-to, stop, a session-scoped "home" bookmark,
+and a calibration that **drives both axes into their reverse hard limits** to
+re-measure the command→encoder map. Soft limits clamp every target, and absolute
+go-to is refused until the frame is known. This is enforced once, in
+`StageController` (`move_to_um`/`jog_um`/`go_home`/`go_to_center`), so every
+caller gets it, including saved-FOV recall and a routine's Move step.
 
-**A hard limit hit mid-session is detected, not just a config that was never
-calibrated.** Touching a limit re-references the controller's own command
-origin, silently invalidating the slope/offset conversion every absolute
-move — and every jog — depends on; nothing used to notice, so the panel kept
-reading "Frame OK" and the next move computed its target through a now-wrong
-map, landing somewhere other than the correctly-displayed, correctly-confirmed
-distance the operator saw (2026-09-18: this is what drove the Z stage into a
-sample). `StageController` now watches every status read (the same one the
-4 Hz poll worker already makes) for the hardware's own limit-switch bits and
-latches `StageAxis.frame_stale` the instant one is seen — sticky, so backing
-off the switch again doesn't un-flag it. Every motion method then refuses
-until a fresh **Re-establish frame…** remeasures slope/offset directly in raw
-command units, which is immune to the staleness it exists to fix.
+**A hard limit hit mid-session is detected.** Touching a limit re-references the
+controller's command origin and silently invalidates the slope/offset every move
+depends on. This used to go unnoticed: the panel kept reading "Frame OK" and the
+next move landed somewhere other than the distance the operator confirmed
+(2026-09-18: this drove the Z stage into a sample). `StageController` now
+checks every status read (the 4 Hz poll already makes it) for the hardware's
+limit-switch bits and latches `StageAxis.frame_stale`, sticky even after backing
+off the switch. Every motion method then refuses until **Re-establish frame…**
+remeasures slope/offset in raw command units.
 
 Calibration, soft limits and the origin live in the config **shared with the
 standalone `stage_control` app** (`../stage_control/config.json`, falling back
-to `devices/stage/stage_config.json`), so both programs agree on where 0,0 is. Only one
-program can hold the serial port at a time. Every write to that file leaves the
-previous contents as `.bak`.
+to `devices/stage/stage_config.json`), so both agree on where 0,0 is. Only one
+program can hold the serial port at a time. Every write leaves the previous
+file as `.bak`.
 
-The **Visual stim** tab drives a drifting sinusoidal grating, shown full-screen
-through a circular aperture on a chosen display, gated on and off by
-"trigger" pulses. Ported from a standalone MATLAB/Psychtoolbox tool
-(`guiVisStimDAQ.m` and friends) that read those pulses off an external DAQ
-line — this rig has none, so the pulses are the shared session clock's own
-periodic tick instead (10 Hz by default), the same timing sequence every
-other module already shares rather than a second one invented for this
-module alone. Loop variables expand into a full-factorial trial list — name a
-parameter and a value list (or a `start:step:stop` range) and every
-combination runs in turn. **Priming** waits for a configurable number of
-ticks before the first trial starts; each trial then alternates blank/stim
-phases on further tick counts. Run puts live view on if it is not already
-running (the clock only ticks while live), the same way starting a routine
-opens the recording it needs. Unlike the .m tool's single blocking run loop,
-a stimulus run here advances one video frame at a time, so the rest of the
-app — cameras, recording, other modules — keeps running live while it plays.
+The **Visual stim** tab drives a drifting sinusoidal grating, full-screen
+through a circular aperture on a chosen display, gated by "trigger" pulses.
+It is ported from a MATLAB/Psychtoolbox tool (`guiVisStimDAQ.m` and friends)
+that read those pulses from an external DAQ line. This rig has none, so the
+pulses are the session clock's own tick (10 Hz by default), the same timing
+every other module shares. Loop variables expand into a full-factorial trial
+list: give a parameter a value list (or a `start:step:stop` range) and every
+combination runs. **Priming** waits a set number of ticks before the first
+trial; each trial then alternates blank and stimulus phases on further tick
+counts. Run starts live view if it isn't running (the clock only ticks while
+live), as starting a routine opens the recording it needs. A run advances one
+video frame at a time, so cameras, recording and other modules keep running
+while it plays.
 
-A **Trial type** selector chooses the paradigm for the whole run. Alongside
-the grating there is **Map**: the screen splits into 4 columns (one blacked
-out) each cut into 3 rows, and one of the resulting 9 regions at a time
-flips white/black while the rest stay a mid grey — a single continuous trial
-that cycles through all 9. There is also **Tuning**: a circle at one of
-those same 9 regions (diameter equal to the region's width) showing the
-plain grating swept through 8 orientations (0°-315° in 45° steps), preceded
-by 2 white "pretrial" flashes — again one continuous, tick-timed trial.
-**Contrast** is the same shape, sweeping the grating's contrast through six
-fixed levels (0, 0.1, 0.25, 0.5, 0.75, 1.0) instead of orientation, also
-preceded by the 2 white pretrials. **Size** is the same shape again,
-sweeping the circle's own diameter through five fractions of the region's
-width (0.2-1.0) instead of orientation/contrast. **Visuomotor** is a normal
-drifting grating like the plain one, except its drift is driven by the
-wheel's live speed each frame (scaled by a Gain parameter) instead of a
-fixed temporal frequency — the standard locomotion/optic-flow closed-loop
-coupling; with no wheel module loaded it just stays a static grating.
+**Trial type** sets the paradigm for the whole run, besides the plain grating:
+- **Map**: 4 columns (one blacked out) by 3 rows give 9 regions; one at a time
+  flips white/black on a mid-grey screen, cycling through all 9 in one trial.
+- **Tuning**: a circle (diameter = region width) at one of those 9 regions
+  shows the grating swept through 8 orientations (0°-315°, 45° steps), after 2
+  white "pretrial" flashes.
+- **Contrast**: as Tuning, but sweeping contrast through 0, 0.1, 0.25, 0.5,
+  0.75, 1.0.
+- **Size**: as Tuning, but sweeping the circle's diameter through five
+  fractions of the region width (0.2-1.0).
+- **Visuomotor**: a drifting grating whose drift follows the wheel's live
+  speed each frame (scaled by Gain), the standard locomotion/optic-flow
+  coupling. With no wheel module loaded it stays a static grating.
+
+All of them are one continuous, tick-timed trial.
 
 ## Running
 
