@@ -17,9 +17,8 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from acqApp import style
-from acqApp.widgets import (RangeBar, SegmentedSwitch, pairs_grid,
-                            sections_help, spin)
+from acqApp.widgets import (PillGroup, RangeBar, button_row, hrow, pairs_grid,
+                            pill, sections_help, spin)
 from acqApp.devices.pupil_cam.rim import LOW_CONTRAST
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking_panel import TrackingControls
@@ -61,12 +60,12 @@ class SettingsPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         # Live or Review: the same tab either way; Review swaps the camera
         # and LED sections for the clip's, and the host fills that page.
-        self.mode = SegmentedSwitch([("Live", "live"), ("Review", "review")],
-                                    style.HEX["pupil_cam"])
+        self.mode = PillGroup([("Live", "live"), ("Review", "review")],
+                              "pupil_cam")
         self.mode.setToolTip("Live: the camera. Review: go through a saved "
                              "recording.")
         self.mode.changed.connect(self.mode_changed)
-        outer.addWidget(self.mode)
+        outer.addLayout(button_row(self.mode))
         self._pages = QStackedWidget()
         outer.addWidget(self._pages, 1)
         live = QWidget()
@@ -150,8 +149,8 @@ class SettingsPanel(QWidget):
         # ── Illumination ────────────────────────────────────────────────────
         led = QGroupBox("Illumination")
         ll = QVBoxLayout(led)
-        self._chk_led = QCheckBox("Eye-tracking LED")
-        self._chk_led.setToolTip("Turn the eye-tracking LED on or off now.")
+        self._chk_led = pill("Eye-tracking LED", "pupil_cam",
+                             tip="Turn the eye-tracking LED on or off now.")
         self._chk_led.toggled.connect(self.led_toggled)
         self._chk_led_follow = QCheckBox("Follow Live view")
         self._chk_led_follow.setChecked(self._s.led_follow_live)
@@ -165,7 +164,7 @@ class SettingsPanel(QWidget):
             lambda pct: self.led_intensity_changed.emit(pct / 100.0))
         self._spn_intensity.valueChanged.connect(self._emit)
         ll.addLayout(pairs_grid(
-            (None, self._chk_led, None, self._chk_led_follow,
+            (None, hrow(self._chk_led), None, self._chk_led_follow,
              "Intensity:", self._spn_intensity)))
 
         root.addWidget(self.tracking)

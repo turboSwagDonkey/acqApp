@@ -567,11 +567,6 @@ EDITS = [
      lambda p: [(s.label, s.x_um, s.length, s.unit, s.settle_s)
                 for s in p.settings.steps],
      [("grid A", 250.0, 64.0, "frames", 0.4)]),
-    ("routines",    "cycles",    lambda p: p._spn_cycles.setValue(4),
-     lambda p: p.settings.cycles,               4),
-    ("routines",    "save mode",
-     lambda p: p._cmb_save.setCurrentIndex(p._cmb_save.findData("per_repeat")),
-     lambda p: p.settings.save_mode,            "per_repeat"),
 ]
 
 SAVE_EDITS = [
@@ -606,8 +601,10 @@ def _part_settings() -> int:
     r.check(dlg is not None and dlg.isWindow(), "settings are a top-level window")
     r.check(not isinstance(dlg, M.QDockWidget), "…and not a dock widget")
     r.check(not dlg.isVisible(), "settings window starts hidden")
-    # Modules with `own_window` are not pages, but get a sidebar item.
-    paged = len(config.MODULES) - sum(1 for m in win._modules if m.own_window)
+    # Modules with `own_window` are not pages, but get a sidebar item; a
+    # module with no panel at all (the mirror's status-bar switch) gets neither.
+    panelled = {m.key for m in win._modules if m.panel is not None}
+    paged = len(panelled) - sum(1 for m in win._modules if m.own_window)
     r.check(dlg.tabs.count() == paged + 1,
             f"a page per module plus Save (got {dlg.tabs.count()}, "
             f"want {paged + 1})")
@@ -616,7 +613,21 @@ def _part_settings() -> int:
                     for m in win._modules if m.own_window),
             "…and a module with its own window is not among them")
     # Two selectors, kept in step: the tab bar and the sidebar.
-    r.check(set(win._page_actions) == set(config.MODULES) | {"saving"},
+    r.check("mirror" not in panelled and "mirror" in {m.key for m in win._modules},
+            "control: the mirror is loaded, just without a page")
+    mirror = next(m for m in win._modules if m.key == "mirror")
+    sw = mirror.switch
+    r.check(sw is not None and win._status_widgets.get("mirror") is not None,
+            "the mirror's switch sits in the status bar")
+    start = mirror.settings.state
+    sw.click()
+    flipped = mirror.settings.state
+    sw.click()
+    r.check(flipped != start and mirror.settings.state == start
+            and mirror.metadata()["mirror_initial_state"] == start,
+            f"a click flips the logged state and a second flips it back "
+            f"({start} -> {flipped} -> {mirror.settings.state})")
+    r.check(set(win._page_actions) == panelled | {"saving"},
             f"a sidebar item per page (got {sorted(win._page_actions)})")
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)

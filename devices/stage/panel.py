@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import compact, pairs_grid, sections_help, spin
+from acqApp.widgets import (button_row, compact, pairs_grid, sections_help,
+                            spin)
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
@@ -544,24 +545,20 @@ class SettingsPanel(QWidget):
         self._nav = QGroupBox("Home (this session)")
         nl = QVBoxLayout(self._nav)
         nl.setSpacing(3)
-        nrow = QHBoxLayout()
         self._btn_set_home = QPushButton("Set home here")
         self._btn_set_home.setToolTip(
             "Bookmark the current position as this session's working home. "
             "Doesn't move the stage, and isn't saved — it's cleared when the "
             "session ends and never touches the calibrated 0,0.")
         self._btn_set_home.clicked.connect(self._set_home_here)
-        nrow.addWidget(self._btn_set_home)
 
         self._btn_go_home = QPushButton("Go home")
         self._btn_go_home.clicked.connect(self._go_home)
-        nrow.addWidget(self._btn_go_home)
 
         self._btn_clear_home = QPushButton("Clear")
-        self._btn_clear_home.setMaximumWidth(50)
         self._btn_clear_home.clicked.connect(self._clear_home)
-        nrow.addWidget(self._btn_clear_home)
-        nl.addLayout(nrow)
+        nl.addLayout(button_row(self._btn_set_home, self._btn_go_home,
+                                self._btn_clear_home))
 
         self._lbl_home = QLabel("home: not set")
         self._lbl_home.setStyleSheet("font-size: 10px;")
@@ -571,21 +568,20 @@ class SettingsPanel(QWidget):
         self._btn_go_zero.setToolTip("Absolute move of both axes to the "
                                      "calibrated origin.")
         self._btn_go_zero.clicked.connect(self._go_zero)
-        nl.addWidget(self._btn_go_zero)
+        nl.addLayout(button_row(self._btn_go_zero))
         root.addWidget(self._nav)
 
         # ── Saved FOVs (named position + snapshot, reused from routines) ────
         self._fovs = QGroupBox("Saved FOVs")
-        fovl = QHBoxLayout(self._fovs)
+        fovl = QVBoxLayout(self._fovs)
         self._btn_save_fov = QPushButton("Save current as FOV…")
         self._btn_save_fov.setToolTip(
             "Name the current position and save it, with a camera snapshot, "
             "so it can be reached again from here or from a routine step.")
         self._btn_save_fov.clicked.connect(self.save_fov_requested)
-        fovl.addWidget(self._btn_save_fov)
         self._btn_goto_fov = QPushButton("Go to FOV…")
         self._btn_goto_fov.clicked.connect(self._pick_and_goto_fov)
-        fovl.addWidget(self._btn_goto_fov)
+        fovl.addLayout(button_row(self._btn_save_fov, self._btn_goto_fov))
         root.addWidget(self._fovs)
 
         # Outside the motion group: that is disabled during a frame run, and
@@ -606,7 +602,7 @@ class SettingsPanel(QWidget):
             "Set the true zero and re-establish the coordinate frame. Rarely "
             "needed; one of these drives the stage into its hard limits.")
         self._btn_calibrate.clicked.connect(self._open_calibration)
-        root.addWidget(self._btn_calibrate)
+        root.addLayout(button_row(self._btn_calibrate))
 
         # Esc = STOP ALL, anywhere in the app.
         self._esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)

@@ -7,16 +7,16 @@ from typing import Callable
 
 import numpy as np
 from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen, QPixmap,
-                         QShortcut)
+from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen,
+                         QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
-from acqApp.widgets import compact, pairs_grid, sections_help, spin
+from acqApp.widgets import (PillGroup, button_row, compact, pairs_grid, pill,
+                            sections_help, spin)
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
@@ -129,7 +129,6 @@ class SettingsPanel(QWidget):
         self._lbl_pattern = QLabel("No pattern loaded")
         self._lbl_pattern.setWordWrap(True)
         self._btn_browse = QPushButton("Browse…")
-        self._btn_browse.setFixedWidth(90)
         self._btn_browse.setToolTip(
             "In Image mode: a pattern file (.png/.bmp/.tif).\n"
             "In ROIs mode: a saved ROI set (.roi.json) — the same ones "
@@ -141,28 +140,19 @@ class SettingsPanel(QWidget):
         lay.addRow("Pattern:", pat_w)
 
         # ── what to display ──────────────────────────────────────────────────
-        # Radios, not a combo: what Display emits should read at a glance.
-        mode_w = QWidget()
-        mode_lay = QHBoxLayout(mode_w)
-        mode_lay.setContentsMargins(0, 0, 0, 0)
-        self._modes = QButtonGroup(self)
-        self._rb = {}
-        for key, label, tip in (
-                (MODE_ALL_ON, "All ON", "Every mirror on — the full field."),
-                (MODE_PATTERN, "Image", "The pattern file, placed by the "
-                                        "alignment below."),
-                (MODE_ROI, "ROIs", "Only the drawn ROIs, mapped through the "
-                                   "measured calibration.")):
-            rb = QRadioButton(label)
-            rb.setToolTip(tip)
-            self._modes.addButton(rb)
-            mode_lay.addWidget(rb)
-            self._rb[key] = rb
-        mode_lay.addStretch(1)
+        # Pills, not a combo: what Display emits should read at a glance.
+        self._modes = PillGroup((
+            ("All ON", MODE_ALL_ON, "Every mirror on — the full field."),
+            ("Image", MODE_PATTERN, "The pattern file, placed by the "
+                                    "alignment below."),
+            ("ROIs", MODE_ROI, "Only the drawn ROIs, mapped through the "
+                               "measured calibration.")), "dmd")
+        self._rb = {k: self._modes.button(k)
+                    for k in (MODE_ALL_ON, MODE_PATTERN, MODE_ROI)}
         self._rb.get(self._s.display_mode, self._rb[MODE_PATTERN]).setChecked(True)
         for rb in self._rb.values():
             rb.toggled.connect(self._on_mode_changed)
-        lay.addRow("Display:", mode_w)
+        lay.addRow("Display:", button_row(self._modes))
 
         # ── preview ──────────────────────────────────────────────────────────
         self._preview = _DraggablePreview("No preview")
@@ -182,8 +172,10 @@ class SettingsPanel(QWidget):
         geom_grp = QGroupBox("Pattern Alignment")
         geom_lay = QVBoxLayout(geom_grp)
 
-        self._chk_fit = QCheckBox("Fit to panel (ignore scale/rotation/offset)")
-        self._chk_fit.setChecked(self._s.fit)
+        self._chk_fit = pill(
+            "Fit to panel", "dmd", checked=self._s.fit,
+            tip="Stretch the pattern to the panel, ignoring scale, rotation "
+                "and offset.")
         self._chk_fit.toggled.connect(self._on_fit_toggled)
 
         self._spn_scale = spin(1.0, 1000.0, self._s.scale_pct,
@@ -202,9 +194,8 @@ class SettingsPanel(QWidget):
                             decimals=0, step=1.0, suffix=" px",
                             tooltip="Offset from center in device pixels.")
 
-        self._chk_invert = QCheckBox("Invert mirrors")
-        self._chk_invert.setChecked(self._s.invert)
-        self._chk_invert.setToolTip("Swap which mirrors are on and off.")
+        self._chk_invert = pill("Invert mirrors", "dmd", checked=self._s.invert,
+                                tip="Swap which mirrors are on and off.")
 
         btn_reset_geom = QPushButton("Reset Alignment")
         btn_reset_geom.setToolTip("Reset scale to 100%, rotation to 0°, and offsets to (0, 0)")
@@ -218,21 +209,21 @@ class SettingsPanel(QWidget):
                     "light stays on); 2 = half off, up to 10 = 1 in 10 off.")
         self._spn_subsample.setSpecialValueText("off")
 
-        self._chk_nudge = QCheckBox("Enable keyboard nudging")
-        self._chk_nudge.setToolTip(
-            "Nudge alignment with keys:\n"
-            " • Arrows : Offset X/Y (1 px)\n"
-            " • + / -  : Scale (1 %)\n"
-            " • [ / ]  : Rotation (0.5 °)\n"
-            "Hold Shift for 10x larger steps."
-        )
+        self._chk_nudge = pill(
+            "Keyboard nudging", "dmd",
+            tip="Nudge alignment with keys:\n"
+                " • Arrows : Offset X/Y (1 px)\n"
+                " • + / -  : Scale (1 %)\n"
+                " • [ / ]  : Rotation (0.5 °)\n"
+                "Hold Shift for 10x larger steps.")
         self._chk_nudge.toggled.connect(self._on_nudge_toggled)
+        geom_lay.addLayout(button_row(self._chk_fit, self._chk_invert,
+                                      self._chk_nudge))
         geom_lay.addLayout(pairs_grid(
-            (None, self._chk_fit),
             ("Scale:", self._spn_scale, "Rotation:", self._spn_rot),
             ("Offset X:", self._spn_dx, "Offset Y:", self._spn_dy),
-            ("Sub-sampling:", self._spn_subsample, None, self._chk_invert),
-            (None, self._chk_nudge, None, btn_reset_geom)))
+            ("Sub-sampling:", self._spn_subsample,
+             None, button_row(right=(btn_reset_geom,)))))
 
         lay.addRow(geom_grp)
 
@@ -242,15 +233,15 @@ class SettingsPanel(QWidget):
         lay.addRow("Trigger:", self._cmb_trig)
 
         # Emits light unprompted, so never persisted: off every session.
-        self._chk_live = QCheckBox("Live update (project every change)")
-        self._chk_live.setToolTip(
-            "While on, every change here re-projects onto the DMD a moment "
-            "after you pause (debounced, not on every keystroke/drag tick) "
-            "— no need to press Display. This actually emits light; leave "
-            "it off unless you're actively aligning. Turning it off "
-            "cancels a pending re-project immediately.")
+        self._chk_live = pill(
+            "Live update (project every change)", "dmd",
+            tip="While on, every change here re-projects onto the DMD a moment "
+                "after you pause (debounced, not on every keystroke/drag tick) "
+                "— no need to press Display. This actually emits light; leave "
+                "it off unless you're actively aligning. Turning it off "
+                "cancels a pending re-project immediately.")
         self._chk_live.toggled.connect(self.live_toggled.emit)
-        lay.addRow(self._chk_live)
+        lay.addRow(button_row(self._chk_live))
 
         btn_row_w = QWidget()
         btn_row = QHBoxLayout(btn_row_w)
@@ -305,24 +296,22 @@ class SettingsPanel(QWidget):
             "the camera or the projector itself.")
         btn.clicked.connect(self.rois_edit_requested)
 
-        self._chk_roi_flip_x = QCheckBox("Flip X")
-        self._chk_roi_flip_x.setChecked(self._s.roi_flip_x)
-        self._chk_roi_flip_x.setToolTip(
-            "Mirror the ROI mask across X on its way to the panel — a manual "
-            "correction for a rig that projects backwards in X.\nThe ROIs you "
-            "drew don't move, and neither do the editor's field outline or "
-            "its \"outside the field\" checks: only which mirrors light up "
-            "changes. Pattern images aren't affected.")
-        self._chk_roi_flip_y = QCheckBox("Flip Y")
-        self._chk_roi_flip_y.setChecked(self._s.roi_flip_y)
-        self._chk_roi_flip_y.setToolTip(
-            "Mirror the ROI mask across Y on its way to the panel — a manual "
-            "correction for a rig that projects backwards in Y.\nThe ROIs you "
-            "drew don't move, and neither do the editor's field outline or "
-            "its \"outside the field\" checks: only which mirrors light up "
-            "changes. Pattern images aren't affected.")
-        v.addLayout(pairs_grid((None, btn, None, self._chk_roi_flip_x,
-                                None, self._chk_roi_flip_y)))
+        self._chk_roi_flip_x = pill(
+            "Flip X", "dmd", checked=self._s.roi_flip_x,
+            tip="Mirror the ROI mask across X on its way to the panel — a "
+                "manual correction for a rig that projects backwards in X.\n"
+                "The ROIs you drew don't move, and neither do the editor's "
+                "field outline or its \"outside the field\" checks: only which "
+                "mirrors light up changes. Pattern images aren't affected.")
+        self._chk_roi_flip_y = pill(
+            "Flip Y", "dmd", checked=self._s.roi_flip_y,
+            tip="Mirror the ROI mask across Y on its way to the panel — a "
+                "manual correction for a rig that projects backwards in Y.\n"
+                "The ROIs you drew don't move, and neither do the editor's "
+                "field outline or its \"outside the field\" checks: only which "
+                "mirrors light up changes. Pattern images aren't affected.")
+        v.addLayout(button_row(btn, None, self._chk_roi_flip_x,
+                               self._chk_roi_flip_y))
 
         self._lbl_calib = QLabel()
         self._lbl_calib.setWordWrap(True)
@@ -342,8 +331,7 @@ class SettingsPanel(QWidget):
         self._btn_calib_clear = QPushButton("Clear")
         self._btn_calib_clear.clicked.connect(lambda: self._set_calib(""))
         self._btn_calib_clear.setToolTip("Forget the loaded calibration.")
-        v.addLayout(pairs_grid((None, b_run, None, b_load,
-                                None, self._btn_calib_clear)))
+        v.addLayout(button_row(b_run, right=(b_load, self._btn_calib_clear)))
         self._show_rois()
         return box
 

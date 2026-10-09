@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel,
+    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel,
     QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from acqApp import style
-from acqApp.widgets import compact, pairs_grid, sections_help, show_item, spin
+from acqApp.widgets import (button_row, check, compact, pairs_grid,
+                            sections_help, show_item, spin)
 from acqApp.acq.sync import DEFAULT_TICK_MS
 from .settings import (IMPLEMENTED_TRIAL_TYPES, REGION_TRIAL_TYPES,
                        TRIAL_CONTRAST, TRIAL_GRATING, TRIAL_MAP, TRIAL_SIZE,
@@ -237,7 +238,7 @@ class SettingsPanel(QWidget):
         btn_add.setToolTip("Add this loop variable, or update it if the "
                            "name is already listed.")
         btn_del.setToolTip("Remove the selected loop variable.")
-        lay.addLayout(pairs_grid((None, btn_add, None, btn_del)))
+        lay.addLayout(button_row(btn_add, btn_del))
         self._refresh_loops()
         return grp
 
@@ -297,14 +298,13 @@ class SettingsPanel(QWidget):
             "you can match it to a \"Show on:\" entry above.")
         self._btn_identify.clicked.connect(self._identify_displays)
 
-        self._chk_stretch = QCheckBox("Stretch to screen")
-        self._chk_stretch.setChecked(self._s.stretch_to_screen)
-        self._chk_stretch.setToolTip("Fill the whole screen with the stimulus "
-                                     "field.")
+        self._chk_stretch = check(
+            "Stretch to screen",
+            checked=self._s.stretch_to_screen,
+            tip="Fill the whole screen with the stimulus field.")
         self._chk_stretch.toggled.connect(self._emit)
-        lay.addLayout(pairs_grid(
-            ("Show on:", self._cmb_screen, None, self._btn_identify),
-            (None, self._chk_stretch)))
+        lay.addLayout(button_row(QLabel("Show on:"), self._cmb_screen,
+                                 self._btn_identify, None, self._chk_stretch))
         return grp
 
     def _refresh_screens(self) -> None:

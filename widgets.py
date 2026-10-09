@@ -5,8 +5,10 @@ import html
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QEvent, QObject, QSettings, QSize, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QComboBox,
+from PyQt6.QtCore import (QEvent, QObject, QSettings, QSize, Qt, pyqtProperty,
+                          pyqtSignal)
+from PyQt6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QCheckBox,
+                             QComboBox,
                              QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel,
@@ -230,7 +232,31 @@ def pairs_grid(*rows, per_row: int | None = None,
         g.setColumnMinimumWidth(3 * k + 2, gap)
     if not grows:
         g.setColumnStretch(3 * items, 1)
+    # For align_grids; a wide combo or a one-column grid must not push every
+    # section's next column right, so only spin boxes in multi-column grids.
+    g._pair_widths = [(g.columnMinimumWidth(3 * k),
+                       max((x.width() for x in c["inp"]
+                            if items > 1 and isinstance(x, QAbstractSpinBox)),
+                           default=0))
+                      for k, c in enumerate(cols)]
     return g
+
+
+def align_grids(panel: QWidget) -> None:
+    """Line up every `pairs_grid` in `panel`: column k of each section gets the
+    widest label and input of any section's column k, so the boxes start at
+    one x down the whole panel instead of per section."""
+    grids = [g for g in panel.findChildren(QGridLayout)
+             if getattr(g, "_pair_widths", None)]
+    n = max((len(g._pair_widths) for g in grids), default=0)
+    for k in range(n):
+        cols = [g._pair_widths[k] for g in grids if k < len(g._pair_widths)]
+        lw = max(c[0] for c in cols)
+        iw = max(c[1] for c in cols)
+        for g in grids:
+            if k < len(g._pair_widths):
+                g.setColumnMinimumWidth(3 * k, lw)
+                g.setColumnMinimumWidth(3 * k + 1, iw)
 
 
 class SessionPicker(QDialog):
@@ -535,6 +561,175 @@ class SegmentedSwitch(QWidget):
 
     def button(self, key: str) -> QPushButton:
         return self._buttons[key]
+
+
+# ── pills: the ROI editor's tool-strip look, shared by every panel ────────────
+PILL_GAP = 6        # between pills in one group
+ROW_GAP = 8         # between buttons, and between groups (twice this)
+
+
+def check(label: str, *, checked: bool = False, tip: str = "") -> QCheckBox:
+    """A plain on/off option: the default. Keep `pill` for the few that
+    matter (a light, a mode, the panel's main switch)."""
+    b = QCheckBox(label)
+    b.setChecked(checked)
+    if tip:
+        b.setToolTip(tip)
+    return b
+
+
+def pill(label: str, key: str, *, checked: bool = False,
+         tip: str = "") -> QPushButton:
+    """An on/off option as a rounded accent toggle (`style.toggle_btn`): pale
+    off, full accent on. Same isChecked/setChecked/toggled as a QCheckBox.
+    Sparingly: only for the controls that matter (see `check`)."""
+    from acqApp import style
+    b = QPushButton(label)
+    b.setCheckable(True)
+    b.setChecked(checked)
+    b.setStyleSheet(style.toggle_btn(key))
+    if tip:
+        b.setToolTip(tip)
+    # Room for the bold "on" label, so lighting a pill never clips its text.
+    from PyQt6.QtGui import QFont, QFontMetrics
+    b.ensurePolished()
+    bold = QFont(b.font())
+    bold.setBold(True)
+    b.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 2 * 8 + 2 + 8)
+    return b
+
+
+class PillGroup(QWidget):
+    """Separate rounded pills, exactly one lit: a mode or tool choice, the
+    ROI editor's Rectangle/Circle/… strip. API as `SegmentedSwitch`;
+    `options` are (label, key) or (label, key, tooltip)."""
+
+    changed = pyqtSignal(str)
+
+    def __init__(self, options, key: str, parent=None) -> None:
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(PILL_GAP)
+        self._buttons: dict[str, QPushButton] = {}
+        for label, k, *tip in options:
+            b = pill(label, key, tip=tip[0] if tip else "")
+            b.setAutoExclusive(True)
+            b.clicked.connect(lambda _c, k=k: self.changed.emit(k))
+            lay.addWidget(b)
+            self._buttons[k] = b
+        self.set_value(options[0][1])
+
+    def value(self) -> str:
+        return next(k for k, b in self._buttons.items() if b.isChecked())
+
+    def set_value(self, key: str) -> None:
+        self._buttons[key].setChecked(True)
+
+    def button(self, key: str) -> QPushButton:
+        return self._buttons[key]
+
+
+class SlideSwitch(QAbstractButton):
+    """A physical two-position switch: a knob in the accent colour slides
+    between `off_text` (left, unchecked) and `on_text` (right, checked).
+    Checkable button API: isChecked/setChecked/toggled/click."""
+
+    SLIDE_MS = 140
+
+    def __init__(self, off_text: str, on_text: str, key: str,
+                 parent=None) -> None:
+        from PyQt6.QtCore import QPropertyAnimation
+        super().__init__(parent)
+        self._texts = (off_text, on_text)
+        self._color = key
+        self._pos = 0.0                    # knob: 0 = left, 1 = right
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._anim = QPropertyAnimation(self, b"knob", self)
+        self._anim.setDuration(self.SLIDE_MS)
+        self.toggled.connect(self._slide)
+
+    def _get_knob(self) -> float:
+        return self._pos
+
+    def _set_knob(self, v: float) -> None:
+        self._pos = v
+        self.update()
+
+    knob = pyqtProperty(float, _get_knob, _set_knob)   # what the animation drives
+
+    def _slide(self, on: bool) -> None:
+        self._anim.stop()
+        if not self.isVisible():           # nothing to watch: jump there
+            self._set_knob(1.0 if on else 0.0)
+            return
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def _bold(self):
+        from PyQt6.QtGui import QFont
+        f = QFont(self.font())
+        f.setBold(True)
+        return f
+
+    def sizeHint(self) -> QSize:
+        from PyQt6.QtGui import QFontMetrics
+        fm = QFontMetrics(self._bold())
+        half = max(fm.horizontalAdvance(t) for t in self._texts) + 24
+        return QSize(2 * half + 4, fm.height() + 14)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def paintEvent(self, _ev) -> None:
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QColor, QPainter, QPen
+        from acqApp import style
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        accent = QColor(style.HEX[self._color])
+        if not self.isEnabled():
+            accent = QColor("#555")
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        rad = r.height() / 2
+        p.setPen(QPen(accent, 1.5))
+        p.setBrush(QColor(style.line()).darker(160))
+        p.drawRoundedRect(r, rad, rad)
+        half = r.width() / 2
+        knob = QRectF(r.left() + 2 + self._pos * (half - 2), r.top() + 2,
+                      half - 2, r.height() - 4)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(accent)
+        p.drawRoundedRect(knob, knob.height() / 2, knob.height() / 2)
+        p.setFont(self._bold())
+        for i, text in enumerate(self._texts):
+            cell = QRectF(r.left() + i * half, r.top(), half, r.height())
+            lit = abs(self._pos - i) < 0.5
+            p.setPen(QColor("white") if lit else QColor(style.muted()))
+            p.drawText(cell, Qt.AlignmentFlag.AlignCenter, text)
+        p.end()
+
+
+def button_row(*left, right=()) -> QHBoxLayout:
+    """Buttons at their natural width, ROW_GAP apart, kept left; `right` ones
+    pushed to the far edge. A None in `left` is a group break (2×ROW_GAP); a
+    QLayout is nested. Use instead of buttons stretched across the panel."""
+    lay = QHBoxLayout()
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(ROW_GAP)
+    for it in left:
+        if it is None:
+            lay.addSpacing(ROW_GAP)
+        elif isinstance(it, QLayout):
+            lay.addLayout(it)
+        else:
+            lay.addWidget(it)
+    lay.addStretch()
+    for it in right:
+        lay.addWidget(it)
+    return lay
 
 
 # ── a bar between two limits ──────────────────────────────────────────────────

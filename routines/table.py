@@ -42,9 +42,6 @@ KIND_LABELS: dict[str, str] = {
 
 # (title, field, tooltip). "details" depends on kind; see `_paint_details`.
 COLS = (
-    ("Comment", "comment", "A short note for this step, shown as a title "
-                          "here. Double-click to read or write the full "
-                          "text."),
     ("Kind",    "kind",  "What this step does: Move the stage, start "
                          "Displaying a pattern, Wait, Record, Puff, or wait "
                          "for an external Trigger on the camera's line."),
@@ -160,9 +157,8 @@ class StepTable(QTableWidget):
         self.verticalHeader().setSectionsMovable(False)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        for f in ("comment", "details"):
-            header.setSectionResizeMode(FIELDS.index(f),
-                                        QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(FIELDS.index("details"),
+                                    QHeaderView.ResizeMode.Stretch)
         self.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
@@ -265,12 +261,7 @@ class StepTable(QTableWidget):
             if item is None:
                 item = QTableWidgetItem()
                 self.setItem(row, col, item)
-            if field == "comment":
-                item.setData(VALUE, s.comment)
-                item.setText(_comment_preview(s.comment))
-                item.setToolTip(s.comment)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            elif field == "kind":
+            if field == "kind":
                 item.setData(VALUE, s.kind)
                 item.setText(KIND_LABELS.get(s.kind, s.kind))
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -374,11 +365,7 @@ class StepTable(QTableWidget):
         self.changed.emit()
 
     def _on_double_click(self, row: int, col: int) -> None:
-        field = FIELDS[col]
-        if field == "comment":
-            self._edit_comment(row)
-            return
-        if field != "details":
+        if FIELDS[col] != "details":
             return
         kind = self._steps[row].kind
         if kind not in ("move", "display"):
@@ -496,16 +483,6 @@ class StepTable(QTableWidget):
             self._paint_numbers()
             self.changed.emit()
 
-    def _edit_comment(self, row: int) -> None:
-        if not (0 <= row < len(self._steps)):
-            return
-        text, ok = QInputDialog.getMultiLineText(
-            self, "Comment for this step", "Note:", self._steps[row].comment)
-        if ok:
-            self._steps[row].comment = text.strip()
-            self._repaint_row(row)
-            self.changed.emit()
-
     # ── context menu ─────────────────────────────────────────────────────────
     def contextMenuEvent(self, event) -> None:
         """Actions gated by the row's kind. Right-clicking inside a multi-row
@@ -610,13 +587,6 @@ def _roi_icon(path: str) -> QIcon:
     # .copy() detaches QImage from the buffer, which dies on return.
     img = QImage(bits.tobytes(), n, n, n, QImage.Format.Format_Grayscale8)
     return QIcon(QPixmap.fromImage(img.copy()))
-
-
-def _comment_preview(text: str, limit: int = 40) -> str:
-    if not text:
-        return "—"
-    first = text.splitlines()[0]
-    return first if len(first) <= limit else first[:limit - 1] + "…"
 
 
 def _render(field: str, value) -> str:

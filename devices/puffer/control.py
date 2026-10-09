@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from acqApp import config, style
 from acqApp.console import short_error
-from acqApp.widgets import compact, spin
+from acqApp.widgets import ROW_GAP, button_row, compact, spin
 
 
 @dataclass
@@ -208,7 +208,7 @@ class SettingsPanel(QWidget):
         btn_test = QPushButton("Test puff")
         btn_test.setStyleSheet(style.solid_btn("puffer"))
         btn_test.clicked.connect(self._on_test_clicked)
-        lay.addRow(btn_test)
+        lay.addRow(button_row(btn_test))
         root.addWidget(grp)
 
         # ── Scheduled puffs (fire at t = N s after session Start) ──────────
@@ -217,6 +217,7 @@ class SettingsPanel(QWidget):
         sl.setSpacing(4)
 
         row = QHBoxLayout()
+        row.setSpacing(ROW_GAP)
         row.addWidget(QLabel("Puff at t ="))
         self._spn_at = spin(0.0, 86_400.0, 5.0, decimals=1, suffix=" s")
         row.addWidget(self._spn_at)
@@ -232,7 +233,7 @@ class SettingsPanel(QWidget):
 
         btn_clear = QPushButton("Clear all")
         btn_clear.clicked.connect(self._clear_schedule)
-        sl.addWidget(btn_clear)
+        sl.addLayout(button_row(right=(btn_clear,)))
         root.addWidget(sgrp)
         root.addStretch()
 

@@ -2080,29 +2080,10 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             f"the Settle delegate opens a spin box in seconds regardless of "
             f"the row's kind — editability is a separate gate "
             f"({type(ed).__name__})")
-    # The step's name lives on the row header; Comment is dialog-set.
-    r.check(not (tbl.item(0, col["comment"]).flags()
-                & Qt.ItemFlag.ItemIsEditable),
-            "control: Comment is dialog-set, not typed into directly")
-    r.check(tbl.item(0, col["comment"]).text() == "—",
-            "…and reads as a dash with nothing set yet")
+    # The step's name lives on the row header.
+    r.check("comment" not in col, "no Comment column")
 
     from PyQt6.QtWidgets import QInputDialog
-
-    real_get_multiline = QInputDialog.getMultiLineText
-    QInputDialog.getMultiLineText = staticmethod(
-        lambda *a, **k: ("first line\nsecond line", True))
-    try:
-        tbl._on_double_click(0, col["comment"])
-    finally:
-        QInputDialog.getMultiLineText = real_get_multiline
-    r.check(routine.steps[0].comment == "first line\nsecond line",
-            "double-click on Comment writes the full text back")
-    r.check(tbl.item(0, col["comment"]).text() == "first line",
-            f"…and the cell shows only its first line as a title "
-            f"({tbl.item(0, col['comment']).text()!r})")
-    r.check(tbl.item(0, col["comment"]).toolTip() == "first line\nsecond line",
-            "…with the full text in the tooltip")
 
     real_get_text = QInputDialog.getText
     QInputDialog.getText = staticmethod(lambda *a, **k: ("renamed", True))
@@ -2525,10 +2506,10 @@ def check_per_edge_routine_is_buildable(r: Report, app) -> None:
     r.check(routine.recordings == [Recording(start=2, end=2)],
             f"the Record step is the only recording ({routine.recordings})")
 
-    panel._cmb_save.setCurrentIndex(panel._cmb_save.findData("per_repeat"))
     built = panel.settings
-    r.check(built.save_mode == "per_repeat",
-            f"one file per edge is selectable ({built.save_mode})")
+    r.check(built.save_mode == "per_repeat" and built.cycles == 1,
+            f"the panel always runs one pass, a file per edge "
+            f"({built.cycles}, {built.save_mode})")
     problems = validate(built, FULL_RIG)
     r.check(problems == [],
             f"the assembled per-edge routine validates clean ({problems})")
@@ -2846,6 +2827,7 @@ def check_app(r: Report, app, tmp) -> None:
         Step(kind="display", label="show", pattern=str(app_pattern)),
         Step(kind="record", label="seconds-record", length=0.30, unit="seconds"),
     ]
+    panel._r.save_mode = "single"   # both runs in one file to read back; rolling: check_file_rolling
     panel._reload_table()
 
     r.check(not win._btn_rec.isChecked(), "fixture: not recording yet")
@@ -3022,8 +3004,7 @@ def check_file_rolling(r: Report, app, tmp) -> None:
         panel._r.steps = steps
         panel._r.groups = groups
         panel._r.cycles = 1
-        # Not `panel._r.save_mode`: `settings` overwrites it from the combo.
-        panel._cmb_save.setCurrentIndex(panel._cmb_save.findData(save_mode))
+        panel._r.save_mode = save_mode      # the panel pins per_repeat
         panel._reload_table()
         adapter._start()
         if not r.check(adapter._engine is not None,

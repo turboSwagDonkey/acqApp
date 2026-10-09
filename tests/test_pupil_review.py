@@ -841,7 +841,7 @@ def _part_mode() -> int:
     isolate_user_state()
     from acqApp.adapters.pupil_cam import PupilCamModule
     from acqApp.devices.pupil_cam.review_dialog import ReviewWidget
-    from acqApp.widgets import SegmentedSwitch
+    from acqApp.widgets import PillGroup
 
     class FakeWin:
         def __init__(self) -> None:
@@ -867,7 +867,7 @@ def _part_mode() -> int:
     m = PupilCamModule(win)
     m.build_panel()
     m.build_views()
-    r.check(isinstance(m.panel.mode, SegmentedSwitch)
+    r.check(isinstance(m.panel.mode, PillGroup)
             and m.panel.mode.value() == "live" and m.mode() == "live",
             "the tab opens in Live, with a Live | Review switch")
     m.panel.mode.button("review").click()

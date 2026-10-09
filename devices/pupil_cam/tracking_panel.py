@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from acqApp.widgets import compact, gate, hrow, pairs_grid, spin
+from acqApp.widgets import compact, gate, hrow, pairs_grid, pill, spin
 from acqApp.devices.pupil_cam.settings import PupilSettings
 
 HINT_STYLE = "color:#9aa0a6;"
@@ -65,9 +65,8 @@ class TrackingControls(QWidget):
         box = QGroupBox("Pupil tracking")
         box.setToolTip("Start with Auto, then nudge Threshold until the green "
                        "outline hugs the pupil.")
-        self._chk_track = QCheckBox("Track the pupil")
-        self._chk_track.setChecked(s.track)
-        self._chk_track.setToolTip("Needs the EyeLoop clone (docs/EYELOOP.md).")
+        self._chk_track = pill("Track the pupil", "pupil_cam", checked=s.track,
+                               tip="Needs the EyeLoop clone (docs/EYELOOP.md).")
 
         self._spn_thr = spin(1, 254, s.track_threshold, track=False)
         self._spn_thr.setToolTip(
@@ -93,7 +92,7 @@ class TrackingControls(QWidget):
 
         # Review always tracks. Left out of the layout rather than hidden: a
         # folding group box re-shows every child it holds.
-        lead = [(None, self._chk_track)] if self._live else []
+        lead = [(None, hrow(self._chk_track))] if self._live else []
         QVBoxLayout(box).addLayout(self._grid(
             *lead,
             ("Threshold:", hrow(self._spn_thr, self._btn_auto),

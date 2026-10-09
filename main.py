@@ -724,9 +724,12 @@ class MainWindow(QMainWindow):
             hint = rec.sizeHint()
             w, h = max(w, hint.width()), max(h, hint.height())
         rec.setText(keep)
-        for b in self._status_widgets.values():
+        # Buttons only: a switch (the mirror's) keeps its own shape.
+        buttons = [b for b in self._status_widgets.values()
+                   if isinstance(b, QPushButton)]
+        for b in buttons:
             w, h = max(w, b.minimumWidth(), b.sizeHint().width()), max(h, b.sizeHint().height())
-        for b in (rec, *self._status_widgets.values()):
+        for b in (rec, *buttons):
             b.setFixedSize(w, h)
 
     def _remove_status_widget(self, key: str) -> None:

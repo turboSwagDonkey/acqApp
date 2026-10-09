@@ -8,14 +8,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
+    QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
                                   SaveConfig, _gb, benchmark_drive,
                                   default_folder, free_bytes, list_drives)
-from acqApp.widgets import compact
+from acqApp.widgets import ROW_GAP, button_row, check, compact
 
 # Match to Bpod… hidden at the operator's request (2026-10-01); the edge log
 # is still written, so a session can be matched later.
@@ -63,14 +63,7 @@ class SavePanel(QWidget):
             "speed, and flag any that would drop frames at current "
             "acquisition rate. Not while recording.")
         self._btn_scan.clicked.connect(self._on_scan_drives)
-        drive_row = QHBoxLayout()
-        drive_row.setContentsMargins(0, 0, 0, 0)
-        drive_row.addWidget(self._cmb_drive)
-        drive_row.addWidget(self._btn_scan)
-        drive_row.addStretch()
-        drive_row_w = QWidget()
-        drive_row_w.setLayout(drive_row)
-        lay.addRow("Drive:", drive_row_w)
+        lay.addRow("Drive:", button_row(self._cmb_drive, self._btn_scan))
 
         self._lbl_scan = QLabel()
         self._lbl_scan.setWordWrap(True)
@@ -88,6 +81,7 @@ class SavePanel(QWidget):
         btn_open.clicked.connect(self._on_open)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(ROW_GAP)
         row.addWidget(self._ed_folder, 1)
         row.addWidget(btn_browse)
         row.addWidget(btn_open)
@@ -112,11 +106,11 @@ class SavePanel(QWidget):
         self._ed_template.editingFinished.connect(self._on_edited)
         lay.addRow("Filename:", self._ed_template)
 
-        self._chk_fov = QCheckBox("Append active FOV name")
-        self._chk_fov.setChecked(self._cfg.append_fov)
-        self._chk_fov.setToolTip("Add the name of the FOV the stage is at to the filename.")
+        self._chk_fov = check(
+            "Append active FOV name", checked=self._cfg.append_fov,
+            tip="Add the name of the FOV the stage is at to the filename.")
         self._chk_fov.toggled.connect(self._on_edited)
-        lay.addRow("", self._chk_fov)
+        lay.addRow("", button_row(self._chk_fov))
         self._update_fov_checkbox()
 
         self._cmb_orca_format = compact(QComboBox())
@@ -153,7 +147,7 @@ class SavePanel(QWidget):
             "renumber trial folders to Bpod's trial numbers and mark missed "
             "trials VOID. Checks first; changes nothing until you Apply.")
         btn_bpod.clicked.connect(self._on_match_bpod)
-        al.addWidget(btn_bpod)
+        al.addLayout(button_row(btn_bpod))
 
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

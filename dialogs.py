@@ -119,6 +119,7 @@ class PanelWindow(QDialog):
 
         panel.setStyleSheet(style.accent_panel(key))
         widgets.collapsible_groups(panel, key)
+        widgets.align_grids(panel)
 
         self._panel = panel
         self._saved_geom = _qsettings().value(self._geom_key)
@@ -207,6 +208,7 @@ class SettingsDialog(QDialog):
         self.tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
         panel.setStyleSheet(style.accent_panel(key))
         widgets.collapsible_groups(panel, key)
+        widgets.align_grids(panel)
 
     def remove_panel(self, panel: QWidget) -> None:
         """Not deleted: the adapter disposes of it."""

@@ -13,18 +13,18 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
 from acqApp.devices.stage.fov_store import SavedFov
-from acqApp.widgets import ElidedLabel, compact, spin
+from acqApp.widgets import ElidedLabel, button_row, compact, spin
 from acqApp.routines import pairs, templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
-from acqApp.routines.settings import KINDS, SAVE_MODES, Group, Routine, Step
+from acqApp.routines.settings import KINDS, Group, Routine, Step
 from acqApp.routines.table import KIND_LABELS, NO_CHANGE, StepTable
 
 
@@ -43,6 +43,11 @@ class SettingsPanel(QWidget):
     def __init__(self, routine: Routine | None = None, parent=None) -> None:
         super().__init__(parent)
         self._r = routine or Routine()
+        # One pass, a file per recording run, held at each .dcimg roll: the
+        # only shapes the rig uses, so none is offered and a template's own
+        # values are not adopted.
+        self._r.cycles, self._r.save_mode = 1, "per_repeat"
+        self._r.wait_for_camera = True
         self._loading = False
         self._painted: str | None = None      # last phase actually painted
         self._painted_text: str | None = None
@@ -57,13 +62,15 @@ class SettingsPanel(QWidget):
 
     # ── construction ─────────────────────────────────────────────────────────
     @staticmethod
-    def _add_buttons(layout, specs) -> None:
-        """Add one QPushButton per (text, slot, tip) spec, in order."""
+    def _make_buttons(specs) -> list[QPushButton]:
+        """One QPushButton per (text, slot, tip) spec, in order."""
+        out = []
         for text, slot, tip in specs:
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
-            layout.addWidget(b)
+            out.append(b)
+        return out
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -73,53 +80,26 @@ class SettingsPanel(QWidget):
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        trow = QHBoxLayout()
-        trow.addWidget(QLabel("Template:"))
         self._cmb_tpl = compact(QComboBox())
         self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces step list below.")
-        trow.addWidget(self._cmb_tpl)
-        self._add_buttons(trow, (
-            ("Load", self._on_load_template,
-             "Replace protocol below with selected template."),
-            ("Save as…", self._on_save_template,
-             "Save protocol below as template, under chosen name."),
-            ("Delete", self._on_delete_template,
-             "Delete selected template. Protocol below is untouched.")))
-        trow.addStretch()
-        lay.addLayout(trow)
+        lay.addLayout(button_row(
+            QLabel("Template:"), self._cmb_tpl,
+            right=self._make_buttons((
+                ("Load", self._on_load_template,
+                 "Replace protocol below with selected template."),
+                ("Save as…", self._on_save_template,
+                 "Save protocol below as template, under chosen name."),
+                ("Delete", self._on_delete_template,
+                 "Delete selected template. Protocol below is untouched.")))))
 
         form = QFormLayout()
         form.setSpacing(4)
         self._txt_name = compact(QLineEdit(self._r.name), chars=24)
         form.addRow("Name:", self._txt_name)
-
-        self._spn_cycles = spin(
-            1, 9999, max(1, self._r.cycles),
-            tooltip="How many times the whole step list runs.")
-        form.addRow("Repeat the list:", self._spn_cycles)
-
-        self._cmb_save = compact(QComboBox())
-        for key, label in SAVE_MODES.items():
-            self._cmb_save.addItem(label, key)
-        idx = self._cmb_save.findData(self._r.save_mode)
-        self._cmb_save.setCurrentIndex(max(0, idx))
-        form.addRow("Save as:", self._cmb_save)
-
-        self._chk_wait_cam = QCheckBox("Hold at a file roll until frames resume")
-        self._chk_wait_cam.setChecked(self._r.wait_for_camera)
-        self._chk_wait_cam.setToolTip(
-            "Only bites when ORCA format is DCIMG and the save mode rolls "
-            "files.\nDCAM rebinds its recorder to a STOPPED camera, so a roll "
-            "costs about\n0.9 s with no frames. On: the routine waits it out "
-            "and restarts the\nstep's clock, so a 5 s step records 5 s of "
-            "frames and the trial just\ntakes longer. Off: the step counts "
-            "down through the gap and the\ntrial comes up short.")
-        form.addRow("", self._chk_wait_cam)
-        # Long item text must not set the panel's width.
-        for cmb in (self._cmb_save, self._cmb_tpl):
-            cmb.setSizeAdjustPolicy(
-                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            cmb.setMinimumContentsLength(16)
+        # Long template names must not set the panel's width.
+        self._cmb_tpl.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._cmb_tpl.setMinimumContentsLength(16)
         lay.addLayout(form)
 
         self._tbl = StepTable(self._r.steps)
@@ -137,8 +117,6 @@ class SettingsPanel(QWidget):
         lay.addWidget(self._tbl, 1)
 
         # Per-step actions live on the table's right-click menu.
-        btns = QHBoxLayout()
-        btns.addWidget(QLabel("+ Step:"))
         self._cmb_new_kind = compact(QComboBox())
         for kind in KINDS:
             self._cmb_new_kind.addItem(KIND_LABELS[kind], kind)
@@ -147,8 +125,7 @@ class SettingsPanel(QWidget):
             "What kind of step + Step appends. Follows the selected row, so "
             "adding several of the same kind in a row doesn't need "
             "reselecting it each time — still yours to override.")
-        btns.addWidget(self._cmb_new_kind)
-        self._add_buttons(btns, (
+        add, add_pair, up, down, timeline = self._make_buttons((
             ("+ Step", self._add_step, "Append a step of the chosen kind."),
             ("+ Trigger→Record", self._add_trigger_record_pair,
              "Append a Trigger step followed by a Record step — the "
@@ -163,7 +140,8 @@ class SettingsPanel(QWidget):
             ("Timeline…", self._show_timeline,
              "See one cycle drawn to scale — repeat groups as a bracket, "
              "Record steps as separate bars (one per repeat, never merged).")))
-        btns.addStretch(1)
+        btns = button_row(QLabel("+ Step:"), self._cmb_new_kind, add, add_pair,
+                          None, up, down, right=(timeline,))
         hint = QLabel("Right-click a step for Duplicate, Remove, Pattern, "
                       "ROI set, Position, and Group selected. Add a Record "
                       "step to record.")
@@ -205,7 +183,7 @@ class SettingsPanel(QWidget):
 
         btn_g_del = QPushButton("Remove selected")
         btn_g_del.clicked.connect(self._del_group)
-        gl.addWidget(btn_g_del)
+        gl.addLayout(button_row(btn_g_del))
         lay.addWidget(ggrp)
 
         self._lbl_summary = QLabel()
@@ -231,7 +209,6 @@ class SettingsPanel(QWidget):
         self._btn_start.clicked.connect(self.start_requested)
         rlay.addWidget(self._btn_start)
 
-        row = QHBoxLayout()
         self._btn_pause = QPushButton("Pause")
         self._btn_resume = QPushButton("Resume (repeats the step)")
         self._btn_skip = QPushButton("Skip step")
@@ -249,8 +226,8 @@ class SettingsPanel(QWidget):
                  "recording this panel started is stopped with it.")):
             b.setToolTip(tip)
             b.clicked.connect(sig)
-            row.addWidget(b)
-        rlay.addLayout(row)
+        rlay.addLayout(button_row(self._btn_pause, self._btn_resume,
+                                  self._btn_skip, right=(self._btn_abort,)))
 
         self._lbl_state = QLabel("—")
         f = self._lbl_state.font()
@@ -288,9 +265,6 @@ class SettingsPanel(QWidget):
         root.addWidget(rgrp)
 
         self._txt_name.editingFinished.connect(self._emit)
-        self._spn_cycles.valueChanged.connect(self._emit)
-        self._cmb_save.currentIndexChanged.connect(self._emit)
-        self._chk_wait_cam.toggled.connect(self._emit)
 
     # ── step list (the table edits cells; these edit the list) ───────────
     def _reload_table(self) -> None:
@@ -702,16 +676,10 @@ class SettingsPanel(QWidget):
         rebinding the list would orphan it."""
         self._loading = True
         try:
-            self._r.name, self._r.cycles = r.name, max(1, r.cycles)
-            self._r.save_mode = r.save_mode
-            self._r.wait_for_camera = r.wait_for_camera
+            self._r.name = r.name
             self._r.steps[:] = r.steps
             self._r.groups[:] = r.groups
             self._txt_name.setText(self._r.name)
-            self._spn_cycles.setValue(self._r.cycles)
-            self._cmb_save.setCurrentIndex(
-                max(0, self._cmb_save.findData(self._r.save_mode)))
-            self._chk_wait_cam.setChecked(self._r.wait_for_camera)
         finally:
             self._loading = False
         self._reload_table()
@@ -728,8 +696,5 @@ class SettingsPanel(QWidget):
     @property
     def settings(self) -> Routine:
         self._r.name = self._txt_name.text().strip() or "routine"
-        self._r.cycles = self._spn_cycles.value()
-        self._r.save_mode = self._cmb_save.currentData() or "single"
-        self._r.wait_for_camera = self._chk_wait_cam.isChecked()
         return self._r
 

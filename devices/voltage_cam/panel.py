@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
+    QComboBox, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import compact, pairs_grid, sections_help, spin
+from acqApp.widgets import (button_row, check, compact, hrow, pairs_grid,
+                            pill, sections_help, spin)
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
     PRESET_KEYS, DEFAULT_PRESET,
@@ -111,18 +112,16 @@ class SettingsPanel(QWidget):
                                  "rate at this frame size. Live view is "
                                  "unaffected.")
 
-        self._chk_lut = QCheckBox("Show LUT")
-        self._chk_lut.setChecked(self._cfg.show_lut)
-        self._chk_lut.setToolTip(
-            "Show or hide the histogram/contrast bar beside the preview.")
+        self._chk_lut = check(
+            "Show LUT", checked=self._cfg.show_lut,
+            tip="Show or hide the histogram/contrast bar beside the preview.")
         self._chk_lut.toggled.connect(self.lut_visible_changed)
 
-        self._chk_auto = QCheckBox("Auto contrast")
-        self._chk_auto.setChecked(self._cfg.auto_levels)
-        self._chk_auto.setToolTip(
-            "On (default): levels are recomputed from each frame's own "
-            "brightness range.\nOff: drag the LUT's handles yourself — the "
-            "app leaves them exactly where you put them.")
+        self._chk_auto = check(
+            "Auto contrast", checked=self._cfg.auto_levels,
+            tip="On (default): levels are recomputed from each frame's own "
+                "brightness range.\nOff: drag the LUT's handles yourself — "
+                "the app leaves them exactly where you put them.")
         self._chk_auto.toggled.connect(self.auto_levels_changed)
 
         self._spn_preview_avg = spin(
@@ -139,23 +138,20 @@ class SettingsPanel(QWidget):
             ("Trigger:", self._cmb_trigger, "Frames per edge:", self._spn_burst)))
         lay.addRow(self._lbl_rate)
         lay.addRow(self._lbl_rec)
-        lay.addRow(pairs_grid(
-            (None, self._chk_lut, None, self._chk_auto,
-             "Preview average:", self._spn_preview_avg)))
+        lay.addRow(button_row(self._chk_lut, self._chk_auto, None,
+                              hrow("Preview average:", self._spn_preview_avg)))
 
         led = QGroupBox("Illumination")
         ll = QVBoxLayout(led)
-        self._chk_led = QCheckBox("Primary LED")
+        self._chk_led = pill("Primary LED", "voltage_cam",
+                             tip="Turn the primary LED on or off now.")
         self._chk_led.toggled.connect(self.led_toggled)
-        self._chk_led_follow = QCheckBox("Follow Live view")
-        self._chk_led_follow.setChecked(self._cfg.led_follow_live)
-        self._chk_led_follow.setToolTip(
-            "Turn the LED on when Live view/Record starts and off when it "
-            "stops. The checkbox above still overrides it at any time.")
+        self._chk_led_follow = check(
+            "Follow Live view", checked=self._cfg.led_follow_live,
+            tip="Turn the LED on when Live view/Record starts and off when it "
+                "stops. The Primary LED switch still overrides it at any time.")
         self._chk_led_follow.toggled.connect(self.led_follow_changed)
-        self._chk_led.setToolTip("Turn the primary LED on or off now.")
-        ll.addLayout(pairs_grid((None, self._chk_led, None,
-                                 self._chk_led_follow)))
+        ll.addLayout(button_row(self._chk_led, self._chk_led_follow))
 
         root = QFormLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

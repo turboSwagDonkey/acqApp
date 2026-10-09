@@ -57,6 +57,7 @@ flowchart TD
     dialogs --> probe
     dialogs --> style
     dialogs --> widgets
+    widgets --> style
     probe --> devices
     probe --> config
     run_pupil_review --> console
@@ -65,6 +66,7 @@ flowchart TD
 
 Edges that look wrong but are deliberate:
 - `* → widgets`: the shared input helpers (`spin`, `compact`, `RangeBar`).
+- `widgets → style`: `pill`/`PillGroup` take an accent key, not a colour.
 - `probe → devices`, `probe → config`: the ALP path; the active rig's NI device
   (imported inside the function, so `probe.py` runs as a plain script).
 - `devices → config`: the DMD Calibration dialog seeds from the rig's profile.
@@ -120,7 +122,8 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
   __init__.py           the registry (ADAPTERS) and the lifecycle table
   base.py               ModuleAdapter itself + the two shared widget builders
   dmd.py
-  mirror.py
+  mirror.py             no tab: the operator's Camera/PMT slide switch in the
+                        status bar (acqApp can't read what ThorImage set)
   puffer.py
   pupil_cam.py
   routines.py           the ONLY routine code that touches a real device
@@ -165,8 +168,6 @@ devices/                one package per instrument
                         confirms SET_MIRROR_STATE physically moves the
                         hardware (audible), always ends on the CAMERA/epi
                         default
-    panel.py            manual Camera/PMT toggle — the operator asserts what
-                        they set in ThorImage, since acqApp can't read it
     settings.py         MirrorSettings — no Qt
     startup.py          launch-time check: confirm chip 7's GR/CAMERA
                         channels are the CAMERA/epi default, silently
