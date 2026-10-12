@@ -20,6 +20,7 @@ FULL_TRAVEL_UM = 25400.0        # 1 inch per axis
 
 # Legend colours, shared with map_widget.py.
 _C_CUR, _C_ORIGIN, _C_HOME, _C_SOFT = "#1f77b4", "#2ca02c", "#ff7f0e", "#b58900"
+_C_FOV = "#9467bd"
 _BAD = "#c0392b"
 
 
@@ -139,6 +140,11 @@ class StageSettings:
     invert_y: bool = True              # +Y screen-up on the map
     # Rotates only the jog buttons' direction; local to acqApp, not calibration.
     frame_rotation_deg: float = 0.0
+    # Measured stage -> camera axes (`cam_axes.CamAxes`); overrides the
+    # rotation above when set. Local to acqApp, like it.
+    cam_axes: tuple[float, float, float, float] | None = None
+    # Speed cap for dragging the position on the travel map; local to acqApp.
+    drag_speed_um_s: float = 200.0
     x: StageAxis = None      # type: ignore[assignment]
     y: StageAxis = None      # type: ignore[assignment]
     z: StageAxis | None = None         # None on a rig without focus

@@ -204,14 +204,20 @@ devices/                one package per instrument
     whiskers.py         long straight bright ridges found and painted over; no Qt
   stage/
     acquisition.py      read-only position poller; never issues motion
+    axes_measure.py     MOTION: nudge +X/+Y, correlate frames -> camera axes
+    axes_overlay.py     +X/+Y arrows on a camera view (pyqtgraph)
     backend.py          which driver is plugged in; probes the port and picks
+    cam_axes.py         stage <-> camera axes: image shift, camera-aligned
+                        jogs (no Qt)
     control.py          StageController + mock; microns, soft-limit clamped
     driver.py           MCM6101 APT/serial driver; copy of stage_control's
     fov_picker.py       dialog to choose a saved FOV bookmark: session list +
                         Browse, thumbnails — devices/dmd/roi_picker.py's shape
     fov_store.py        save/load named FOV bookmarks (position + snapshot);
                         session/archive rotation (no Qt)
-    map_widget.py
+    map_widget.py       XY travel map (saved FOVs labelled; turned to the camera
+                        once measured; dot drag emits a target, the panel
+                        moves speed-capped) + Z gauge
     mcm301_driver.py    MCM301 driver (the current rig); wraps the vendor DLL
     mcm301_sdk/
       README.md         the vendored MCM301Lib_x64.dll (+ Thorlabs EULA): why

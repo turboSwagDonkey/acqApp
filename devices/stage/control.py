@@ -32,16 +32,16 @@ def _active_axes(s: StageSettings) -> tuple[StageAxis, ...]:
     return (s.x, s.y, s.z) if s.z is not None else (s.x, s.y)
 
 
-def _rotate_jog(which: str, delta_um: float, deg: float) -> tuple[float, float]:
-    """A jog along the camera-aligned `which` axis -> the stage's own (dx, dy)
-    (`StageSettings.frame_rotation_deg`). deg == 0 is exact: no trig, no
-    float drift."""
-    dx, dy = (delta_um, 0.0) if which == "x" else (0.0, delta_um)
-    if deg == 0.0:
-        return dx, dy
-    rad = math.radians(deg)
-    c, s = math.cos(rad), math.sin(rad)
-    return dx * c - dy * s, dx * s + dy * c
+def step_toward(cur: tuple[float, float], target: tuple[float, float],
+                max_step_um: float) -> tuple[float, float]:
+    """`cur` moved straight toward `target` by at most `max_step_um` (the
+    map-drag speed cap: the drivers have no velocity setting)."""
+    dx, dy = target[0] - cur[0], target[1] - cur[1]
+    dist = math.hypot(dx, dy)
+    if dist <= max_step_um:
+        return target
+    k = max_step_um / dist
+    return (cur[0] + dx * k, cur[1] + dy * k)
 
 
 def _center_here_updates(s: StageSettings, cx: int, cy: int) -> dict[int, dict]:
@@ -160,13 +160,14 @@ class StageController:
         dev.move_to_readout(ax.index, ax.clamp_counts(
             int(round(st.position + ax.sign * delta_um * ax.counts_per_um))))
 
+    # Jogs are in the stage's own axes; camera alignment is the caller's
+    # (`cam_axes.camera_jog`).
     def jog_um(self, which: str, delta_um: float) -> None:
+        self._jog_axis(self._connected(), self._axis(which), delta_um)
+
+    def jog_xy_um(self, dx_um: float, dy_um: float) -> None:
         dev = self._connected()
-        if which == "z":        # focus: frame_rotation_deg is X/Y only
-            self._jog_axis(dev, self._axis("z"), delta_um)
-            return
-        dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
-        for ax, d in ((self._s.x, dx), (self._s.y, dy)):
+        for ax, d in ((self._s.x, dx_um), (self._s.y, dy_um)):
             if d:
                 self._jog_axis(dev, ax, d)
 
@@ -373,20 +374,19 @@ class MockStageController:
         self._target[which] = self._clamp_um(which, target_um)
 
     def jog_um(self, which: str, delta_um: float) -> None:
-        if which == "z":     # not part of the XY plane — see StageController
-            if self._axis("z").frame_stale:
-                raise StageControllerError(
-                    "Z: a hard limit was hit since the last calibration — "
-                    "see StageController.jog_um.")
-            self._target["z"] = self._clamp_um("z", self._pos["z"] + delta_um)
-            return
+        if self._axis(which).frame_stale:
+            raise StageControllerError(
+                f"{which.upper()}: a hard limit was hit since the last "
+                f"calibration — see StageController.jog_um.")
+        self._target[which] = self._clamp_um(which, self._pos[which] + delta_um)
+
+    def jog_xy_um(self, dx_um: float, dy_um: float) -> None:
         for k in ("x", "y"):
             if self._axis(k).frame_stale:
                 raise StageControllerError(
                     f"{k.upper()}: a hard limit was hit since the last "
                     f"calibration — see StageController.jog_um.")
-        dx, dy = _rotate_jog(which, delta_um, self._s.frame_rotation_deg)
-        for k, d in (("x", dx), ("y", dy)):
+        for k, d in (("x", dx_um), ("y", dy_um)):
             if d:
                 self._target[k] = self._clamp_um(k, self._pos[k] + d)
 

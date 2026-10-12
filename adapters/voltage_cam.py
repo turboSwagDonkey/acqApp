@@ -13,6 +13,7 @@ from acqApp import config
 from acqApp.acq.devices import CameraWorker
 from acqApp.adapters.base import (DISP_DS, PLOT_HISTORY, ModuleAdapter,
                                  _image_view, _plot, led_controller)
+from acqApp.devices.stage.axes_overlay import AxesOverlay
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
 from acqApp.devices.voltage_cam.led import LedController, MockLedController
 from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
@@ -136,7 +137,8 @@ class VoltageCamModule(ModuleAdapter):
         return pw
 
     def central_widget(self) -> QWidget:
-        self._img, hist, chk_auto, gv, _vb, row, self._rec_dot = _image_view()
+        self._img, hist, chk_auto, gv, vb, row, self._rec_dot = _image_view()
+        self._axes_overlay = AxesOverlay(vb)
         self._hist = hist
         self._chk_auto_lut = chk_auto
         self._chk_auto_lut.toggled.connect(self._sync_auto_from_lut)
@@ -291,6 +293,9 @@ class VoltageCamModule(ModuleAdapter):
             disp = small
 
         self._paint(disp, self._auto_levels)
+        stage = self.win.stage_target()
+        self._axes_overlay.update(
+            stage.camera_axes() if stage is not None else None, disp.shape)
 
         mean = float(small.mean())
         if self._f0 is None and mean != 0:

@@ -2,17 +2,21 @@
 Stage travel pictures: `StageMap` for X/Y, `ZGauge` for Z (focus).
 
 Both show the hard travel, the soft limits inside it, the origin, the session
-home and the current position. Display only; nothing here commands motion.
+home and the current position; the map also shows this session's saved FOVs.
+Nothing here commands motion: dragging the position dot only emits the
+target, and the panel decides whether and how fast to move.
 Z gets a gauge, not a third map axis, so it reads as depth rather than
 another position on a table.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+import math
+
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
-from .settings import _BAD, _C_CUR, _C_HOME, _C_ORIGIN, _C_SOFT
+from .settings import _BAD, _C_CUR, _C_FOV, _C_HOME, _C_ORIGIN, _C_SOFT
 
 _TRAVEL_EDGE = QColor("#8a8a8a")
 _TRAVEL_FILL = QColor("#f4f4f4")
@@ -22,6 +26,7 @@ _CURRENT     = QColor(_C_CUR)
 _ORIGIN      = QColor(_C_ORIGIN)
 _HOME        = QColor(_C_HOME)
 _STALE       = QColor(_BAD)
+_FOV         = QColor(_C_FOV)
 
 _LEFT_VCENTER = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
@@ -43,13 +48,71 @@ class _TravelWidget(QWidget):
         p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), text)
 
 
+class _MapXf:
+    """Stage µm <-> widget px: a linear orientation (see
+    `StageMap._orientation`), scaled so the travel, padded 4 %, fits `box`."""
+
+    def __init__(self, m: tuple[float, float, float, float], xt, yt, box: QRectF):
+        self._m, self._xt, self._yt = m, xt, yt
+        a, b, c, d = m
+        det = a * d - b * c
+        self._inv = (d / det, -b / det, -c / det, a / det)
+        pts = [self._screen(x, y) for x in xt for y in yt]
+        sx = [q[0] for q in pts]
+        sy = [q[1] for q in pts]
+        w, h = (max(sx) - min(sx)) * 1.08, (max(sy) - min(sy)) * 1.08
+        self._k = min(box.width() / w, box.height() / h)
+        self._s0 = ((max(sx) + min(sx)) / 2.0, (max(sy) + min(sy)) / 2.0)
+        self._c = box.center()
+
+    def _screen(self, x: float, y: float) -> tuple[float, float]:
+        a, b, c, d = self._m
+        return a * x + b * y, c * x + d * y
+
+    def to_px(self, x_um: float, y_um: float) -> QPointF:
+        """Clamped into the travel, so a marker past it sits on its edge."""
+        x = min(max(x_um, self._xt[0]), self._xt[1])
+        y = min(max(y_um, self._yt[0]), self._yt[1])
+        sx, sy = self._screen(x, y)
+        return QPointF(self._c.x() + (sx - self._s0[0]) * self._k,
+                       self._c.y() + (sy - self._s0[1]) * self._k)
+
+    def to_um(self, pt: QPointF) -> tuple[float, float]:
+        """Inverse of `to_px` (unclamped)."""
+        sx = (pt.x() - self._c.x()) / self._k + self._s0[0]
+        sy = (pt.y() - self._c.y()) / self._k + self._s0[1]
+        a, b, c, d = self._inv
+        return a * sx + b * sy, c * sx + d * sy
+
+    def poly(self, xlim, ylim) -> QPolygonF:
+        (x0, x1), (y0, y1) = xlim, ylim
+        return QPolygonF([self.to_px(x0, y0), self.to_px(x1, y0),
+                          self.to_px(x1, y1), self.to_px(x0, y1)])
+
+
 class StageMap(_TravelWidget):
-    """Travel map. Feed it `set_axes()` once and `set_position()` per poll."""
+    """Travel map. Feed it `set_axes()` once and `set_position()` per poll;
+    `set_fovs()` when the saved FOVs change. While `set_draggable(True)`,
+    dragging the position dot emits `drag_moved(x_um, y_um)` (inside the soft
+    limits); the owner shows its chase via `set_target()` and ends a drag
+    early with `cancel_drag()`."""
+
+    drag_moved = pyqtSignal(float, float)
 
     _MARGIN_LEFT   = 10
     _MARGIN_RIGHT  = 85     # room for the vertical legend
     _MARGIN_TOP    = 10
     _MARGIN_BOTTOM = 10
+    _GRAB_PX       = 12     # how close to the dot a press must land
+
+    _TIP = ("Stage position within its travel, with this session's saved "
+            "FOVs. Drag the blue dot to move the stage (speed-capped; Esc "
+            "stops). Clicking elsewhere does nothing. With measured camera "
+            "axes the map is turned to match the camera: drag right and the "
+            "picture slides right.")
+    _TIP_NO_DRAG = ("Stage position within its travel, with this session's "
+                    "saved FOVs. Dragging needs a connected stage with a "
+                    "valid frame.")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,11 +120,17 @@ class StageMap(_TravelWidget):
         self._y = None
         self._pos: tuple[float, float] | None = None
         self._invert_y = True
+        self._cam_axes = None
+        self._fovs: list[tuple[str, float, float]] = []
+        self._active_fov = ""
+        self._target: tuple[float, float] | None = None
+        self._draggable = False
+        self._dragging = False
 
         self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setToolTip("Stage position within its travel. Display only — "
-                        "clicking here doesn't move the stage.")
+        self.setMouseTracking(True)     # the open-hand cursor over the dot
+        self.setToolTip(self._TIP_NO_DRAG)
 
     # ── inputs ──────────────────────────────────────────────────────────────
     def set_axes(self, x_axis, y_axis, invert_y: bool = True) -> None:
@@ -72,7 +141,104 @@ class StageMap(_TravelWidget):
         self._pos = (x_um, y_um)
         self.update()
 
+    def set_cam_axes(self, axes) -> None:
+        """Measured `cam_axes.CamAxes` (or None): the map turns to match the
+        camera, so a drag to the right slides the picture right."""
+        self._cam_axes = axes
+        self.update()
+
+    def set_fovs(self, fovs: list[tuple[str, float, float]],
+                 active: str = "") -> None:
+        """(name, x_um, y_um) per FOV; `active` is drawn filled."""
+        self._fovs, self._active_fov = list(fovs), active
+        self.update()
+
+    def set_target(self, xy: tuple[float, float] | None) -> None:
+        self._target = xy
+        self.update()
+
+    def set_draggable(self, on: bool) -> None:
+        self._draggable = on
+        if not on:
+            self.cancel_drag()
+        self.setToolTip(self._TIP if on else self._TIP_NO_DRAG)
+
+    def cancel_drag(self) -> None:
+        """Ignore the rest of the current drag (until the next press)."""
+        self._dragging = False
+        self.unsetCursor()
+
+    @property
+    def dragging(self) -> bool:
+        return self._dragging
+
+    # ── mouse (drag the position) ───────────────────────────────────────────
+    def _near_dot(self, pt: QPointF) -> bool:
+        xf = self._frame()
+        if xf is None or self._pos is None:
+            return False
+        grabbable = [self._pos] + ([self._target] if self._target else [])
+        for xy in grabbable:
+            c = xf.to_px(*xy)
+            if (c.x() - pt.x()) ** 2 + (c.y() - pt.y()) ** 2 <= self._GRAB_PX ** 2:
+                return True
+        return False
+
+    def _emit_drag(self, pt: QPointF) -> None:
+        xf = self._frame()
+        if xf is None:
+            return
+        x_um, y_um = xf.to_um(pt)
+        (x0, x1), (y0, y1) = self._x.soft_limits_um(), self._y.soft_limits_um()
+        self.drag_moved.emit(min(max(x_um, x0), x1), min(max(y_um, y0), y1))
+
+    def mousePressEvent(self, event) -> None:
+        if (self._draggable and event.button() == Qt.MouseButton.LeftButton
+                and self._near_dot(event.position())):
+            self._dragging = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging:
+            self._emit_drag(event.position())
+        elif self._draggable:
+            if self._near_dot(event.position()):
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            else:
+                self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     # ── geometry ────────────────────────────────────────────────────────────
+    def _orientation(self) -> tuple[float, float, float, float]:
+        """Stage (dx, dy) -> screen (right, down), as (a, b, c, d):
+        right = a·dx + b·dy, down = c·dx + d·dy. Measured camera axes, at
+        unit scale, so the map turns like the picture; else +Y up (or down)."""
+        if self._cam_axes is not None:
+            ax, ay, bx, by = self._cam_axes
+            s = (math.hypot(ax, ay) + math.hypot(bx, by)) / 2.0 or 1.0
+            return ax / s, bx / s, ay / s, by / s
+        return (1.0, 0.0, 0.0, -1.0) if self._invert_y else (1.0, 0.0, 0.0, 1.0)
+
+    def _frame(self) -> _MapXf | None:
+        """The µm <-> px map for this size, or None with nothing to draw."""
+        if self._x is None or self._y is None:
+            return None
+        xt, yt = self._x.travel_limits_um(), self._y.travel_limits_um()
+        if xt[1] <= xt[0] or yt[1] <= yt[0]:
+            return None
+        return _MapXf(self._orientation(), xt, yt, self._box())
+
     def _box(self) -> QRectF:
         """The largest square that fits inside the margins, centred."""
         avail_w = max(1.0, self.width() - self._MARGIN_LEFT - self._MARGIN_RIGHT)
@@ -81,22 +247,6 @@ class StageMap(_TravelWidget):
         return QRectF(self._MARGIN_LEFT + (avail_w - side) / 2.0,
                       self._MARGIN_TOP + (avail_h - side) / 2.0, side, side)
 
-    def _to_px(self, box: QRectF, x_um: float, y_um: float, xr, yr) -> QPointF:
-        (x0, x1), (y0, y1) = xr, yr
-        fx = (x_um - x0) / (x1 - x0) if x1 > x0 else 0.5
-        fy = (y_um - y0) / (y1 - y0) if y1 > y0 else 0.5
-        fx = min(max(fx, 0.0), 1.0)
-        fy = min(max(fy, 0.0), 1.0)
-        if self._invert_y:
-            fy = 1.0 - fy
-        return QPointF(box.left() + fx * box.width(),
-                       box.top() + fy * box.height())
-
-    def _rect_for(self, box: QRectF, xr, yr, xlim, ylim) -> QRectF:
-        a = self._to_px(box, xlim[0], ylim[0], xr, yr)
-        b = self._to_px(box, xlim[1], ylim[1], xr, yr)
-        return QRectF(a, b).normalized()
-
     # ── painting ────────────────────────────────────────────────────────────
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
@@ -104,45 +254,47 @@ class StageMap(_TravelWidget):
         if self._x is None or self._y is None:
             self._center_text(p, "No stage configured")
             return
-
-        xt, yt = self._x.travel_limits_um(), self._y.travel_limits_um()
-        if xt[1] <= xt[0] or yt[1] <= yt[0]:
+        xf = self._frame()
+        if xf is None:
             self._center_text(p, "No travel limits — calibrate")
             return
+        xt, yt = self._x.travel_limits_um(), self._y.travel_limits_um()
 
-        def pad(lim):
-            span = lim[1] - lim[0]
-            return (lim[0] - span * 0.04, lim[1] + span * 0.04)
-        xr, yr = pad(xt), pad(yt)
-        box = self._box()
-
-        travel = self._rect_for(box, xr, yr, xt, yt)
+        travel_poly = xf.poly(xt, yt)
+        travel = travel_poly.boundingRect()
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
         p.setBrush(QBrush(_TRAVEL_FILL))
-        p.drawRect(travel)
+        p.drawPolygon(travel_poly)
 
-        soft = self._rect_for(box, xr, yr, self._x.soft_limits_um(),
-                              self._y.soft_limits_um())
         p.setPen(QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(soft)
+        p.drawPolygon(xf.poly(self._x.soft_limits_um(), self._y.soft_limits_um()))
+
+        small = self._small()
+        self._draw_fovs(p, xf, travel, small)
 
         if self._pos is not None:
-            c = self._to_px(box, self._pos[0], self._pos[1], xr, yr)
+            px, py = self._pos
+            c = xf.to_px(px, py)
             p.setPen(QPen(_CURRENT.lighter(130), 0.8, Qt.PenStyle.DotLine))
-            p.drawLine(QPointF(travel.left(), c.y()), QPointF(travel.right(), c.y()))
-            p.drawLine(QPointF(c.x(), travel.top()), QPointF(c.x(), travel.bottom()))
+            p.drawLine(xf.to_px(xt[0], py), xf.to_px(xt[1], py))
+            p.drawLine(xf.to_px(px, yt[0]), xf.to_px(px, yt[1]))
+            if self._target is not None:
+                t = xf.to_px(*self._target)
+                p.setPen(QPen(_CURRENT, 1.2, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawLine(c, t)
+                p.drawEllipse(t, 6, 6)
             p.setPen(QPen(_CURRENT.darker(130), 1.2))
             p.setBrush(QBrush(_CURRENT))
             p.drawEllipse(c, 5, 5)
 
         hx, hy = self._x.home_um(), self._y.home_um()
         if hx is not None and hy is not None:
-            self._diamond(p, self._to_px(box, hx, hy, xr, yr), _HOME, 7)
+            self._diamond(p, xf.to_px(hx, hy), _HOME, 7)
 
-        small = self._small()
         if self._x.origin_set and self._y.origin_set:
-            self._cross(p, self._to_px(box, 0.0, 0.0, xr, yr), _ORIGIN, 9)
+            self._cross(p, xf.to_px(0.0, 0.0), _ORIGIN, 9)
         else:
             p.setPen(QPen(_STALE))
             p.setFont(small)
@@ -153,6 +305,31 @@ class StageMap(_TravelWidget):
         self._legend(p, travel, small)
 
     # ── drawing helpers ─────────────────────────────────────────────────────
+    def _draw_fovs(self, p: QPainter, xf: _MapXf, travel: QRectF,
+                   font: QFont) -> None:
+        """A square per saved FOV, its name beside it (flipped left near the
+        right edge); the active one filled."""
+        p.setFont(font)
+        fm = p.fontMetrics()
+        for name, x_um, y_um in self._fovs:
+            c = xf.to_px(x_um, y_um)
+            active = name == self._active_fov
+            self._square(p, c, _FOV, 5, filled=active)
+            w = fm.horizontalAdvance(name)
+            left = c.x() + 8 if c.x() + 8 + w <= travel.right() else c.x() - 8 - w
+            f = QFont(font)
+            f.setBold(active)
+            p.setFont(f)
+            p.setPen(QPen(_FOV.darker(120)))
+            p.drawText(QRectF(left, c.y() - 8, w + 4, 16), _LEFT_VCENTER, name)
+        p.setFont(font)
+
+    def _square(self, p: QPainter, c: QPointF, color: QColor, r: int,
+                filled: bool = False) -> None:
+        p.setPen(QPen(color, 1.5))
+        p.setBrush(QBrush(color) if filled else Qt.BrushStyle.NoBrush)
+        p.drawRect(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
+
     def _cross(self, p: QPainter, c: QPointF, color: QColor, r: int) -> None:
         p.setPen(QPen(color, 1.8))
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -169,7 +346,7 @@ class StageMap(_TravelWidget):
         p.setFont(font)
         lx = travel.right() + 10
         spacing = 20
-        ly = travel.top() + max(0.0, (travel.height() - 4 * spacing) / 2.0) + 6
+        ly = travel.top() + max(0.0, (travel.height() - 5 * spacing) / 2.0) + 6
 
         def label(text: str) -> None:
             p.setPen(QPen(_TEXT))
@@ -193,6 +370,10 @@ class StageMap(_TravelWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(QRectF(lx + 1, ly - 4, 6, 6))
         label("Soft limits")
+
+        ly += spacing
+        self._square(p, QPointF(lx + 4, ly), _FOV, 3)
+        label("Saved FOV")
 
 
 class ZGauge(_TravelWidget):

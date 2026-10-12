@@ -7,6 +7,7 @@ session clock. Opening the port is safe; motion still needs a button press
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -23,6 +24,19 @@ from acqApp.devices.stage.settings import load_settings as load_stage_settings
 
 
 MOVE_GRACE_S = 0.1
+# The camera whose picture the stage axes are measured against.
+CAMERA_KEY = "voltage_cam"
+
+
+def _cam_axes_or_none(raw) -> tuple[float, float, float, float] | None:
+    """Saved `cam_axes`, or None if absent or not 4 finite numbers."""
+    try:
+        axes = tuple(float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None
+    ok = len(axes) == 4 and all(math.isfinite(v) for v in axes) \
+        and axes[0] * axes[3] - axes[1] * axes[2] != 0
+    return axes if ok else None
 
 
 class StageModule(ModuleAdapter):
@@ -32,7 +46,8 @@ class StageModule(ModuleAdapter):
 
     # Only what the panel owns; calibration stays in the shared config
     # (nested StageAxis objects don't fit this flat JSON).
-    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg")
+    _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg", "drag_speed_um_s",
+                   "cam_axes")
 
     def __init__(self, win: ModuleHost) -> None:
         super().__init__(win)
@@ -57,9 +72,20 @@ class StageModule(ModuleAdapter):
             s.frame_rotation_deg = float(saved.get("frame_rotation_deg"))
         except (TypeError, ValueError):
             pass
+        try:
+            speed = float(saved.get("drag_speed_um_s"))
+        except (TypeError, ValueError):
+            pass
+        else:
+            if speed > 0:
+                s.drag_speed_um_s = speed
+        s.cam_axes = _cam_axes_or_none(saved.get("cam_axes"))
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)
+        self.panel.set_camera_source(
+            lambda: self.win.latest_frame(CAMERA_KEY),
+            lambda: self.win.camera_binning(CAMERA_KEY) or 1)
         return self.panel
 
     def _save(self, s) -> None:
@@ -144,6 +170,7 @@ class StageModule(ModuleAdapter):
             name, x_um, y_um, z_um=z_um,
             camera_preset=self.win.camera_preset("voltage_cam"),
             png_bytes=self._snapshot_png())
+        self.panel.refresh_fovs()
         self.win.status(f'Saved FOV "{name}" at {x_um:.0f}, {y_um:.0f} µm '
                         f"({path.name})")
         if dmd is None or self.win.latest_frame("voltage_cam") is None:
@@ -243,3 +270,6 @@ class StageModule(ModuleAdapter):
 
     def active_fov_name(self) -> str:
         return self.panel.active_fov_name if self.panel is not None else ""
+
+    def camera_axes(self):
+        return self.panel.cam_axes if self.panel is not None else None

@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 from _harness import Report, run_parts
 from acqApp.devices.stage import settings as S
 from acqApp.devices.stage.control import (StageController,
@@ -489,9 +491,227 @@ def _part_z() -> int:
     return r.finish()
 
 
+# ═══ cam-axes: stage <-> camera alignment ═══════════════════════════════
+
+def _texture(n: int, seed: int = 1) -> np.ndarray:
+    """Smooth random blobs: a stand-in for a textured sample."""
+    rng = np.random.default_rng(seed)
+    f = np.fft.fft2(rng.random((n, n)))
+    k = np.fft.fftfreq(n)
+    f *= np.exp(-(k[:, None] ** 2 + k[None, :] ** 2) / (2 * 0.03 ** 2))
+    t = np.fft.ifft2(f).real
+    return ((t - t.min()) / np.ptp(t) * 3000 + 200).astype(np.float32)
+
+
+def _view(tex: np.ndarray, h: int, w: int, dx: float, dy: float) -> np.ndarray:
+    """An h×w frame whose content has moved by (dx, dy) px."""
+    y0, x0 = (tex.shape[0] - h) // 2, (tex.shape[1] - w) // 2
+    oy, ox = y0 - int(round(dy)), x0 - int(round(dx))
+    return tex[oy:oy + h, ox:ox + w].copy()
+
+
+def check_image_shift(r: Report) -> None:
+    from acqApp.devices.stage.cam_axes import MIN_PEAK, image_shift
+    tex = _texture(1400)
+    rng = np.random.default_rng(2)
+    fixed = rng.normal(0, 40, (512, 512)).astype(np.float32)   # sensor pattern
+    a = _view(tex, 512, 512, 0, 0) + fixed
+    b = _view(tex, 512, 512, 37, -21) + fixed
+    dx, dy, peak = image_shift(a, b)
+    r.check(abs(dx - 37) < 0.6 and abs(dy + 21) < 0.6 and peak > MIN_PEAK,
+            f"the content shift is found despite a fixed sensor pattern "
+            f"(got {dx:.2f}, {dy:.2f}, peak {peak:.2f})")
+
+    a = _view(tex, 1024, 1200, 0, 0)
+    b = _view(tex, 1024, 1200, -90, 64)
+    dx, dy, peak = image_shift(a, b)
+    r.check(abs(dx + 90) < 2.5 and abs(dy - 64) < 2.5 and peak > MIN_PEAK,
+            f"a big frame (block-averaged) still lands within a couple px "
+            f"(got {dx:.1f}, {dy:.1f}, peak {peak:.1f})")
+
+    noise = rng.normal(0, 1, (2, 512, 512)).astype(np.float32)
+    _, _, peak = image_shift(noise[0], noise[1])
+    r.check(peak < MIN_PEAK,
+            f"two unrelated frames score under MIN_PEAK ({peak:.1f})")
+    still = _view(tex, 512, 512, 0, 0)
+    _, _, peak = image_shift(still + noise[0] * 30, still + noise[1] * 30)
+    r.check(peak < MIN_PEAK,
+            f"a picture that did not move scores under MIN_PEAK, not a "
+            f"shift beside the masked zero lag ({peak:.1f})")
+
+
+def _rot_axes(deg: float, px_per_um: float, mirror: bool):
+    """CamAxes for a stage turned `deg` on screen (+Y 90° CCW of +X, or CW
+    when mirrored), image y down."""
+    a = np.radians(deg)
+    x = (np.cos(a), -np.sin(a))
+    b = a + (np.pi / 2 if not mirror else -np.pi / 2)
+    y = (np.cos(b), -np.sin(b))
+    return tuple(float(v) * px_per_um for v in (*x, *y))
+
+
+def check_camera_jog(r: Report) -> None:
+    from acqApp.devices.stage.cam_axes import camera_jog, describe, implausible
+    for mirror in (False, True):
+        axes = _rot_axes(30.0, 1.6, mirror)
+        ax, ay, bx, by = axes
+        for which, want in (("x", (1, 0)), ("y", (0, -1))):
+            sx, sy = camera_jog(which, 10.0, 0.0, axes)
+            ix, iy = ax * sx + bx * sy, ay * sx + by * sy
+            n = np.hypot(ix, iy)
+            r.check(abs(np.hypot(sx, sy) - 10.0) < 1e-9
+                    and abs(ix / n - want[0]) < 1e-9
+                    and abs(iy / n - want[1]) < 1e-9,
+                    f"jog {which}+ ({'mirrored' if mirror else 'plain'}) "
+                    f"slides the picture {'right' if which == 'x' else 'up'} "
+                    f"by 10 µm of travel (image {ix:.2f}, {iy:.2f})")
+    r.check(camera_jog("x", 5.0, 0.0, None) == (5.0, 0.0)
+            and camera_jog("y", -5.0, 0.0, None) == (0.0, -5.0),
+            "unmeasured, rotation 0: the stage's own axes, exactly")
+    dx, dy = camera_jog("x", 10.0, 90.0, None)
+    r.check(abs(dx) < 1e-9 and abs(dy - 10.0) < 1e-9,
+            f"unmeasured: the manual rotation still applies ({dx:.3f}, {dy:.3f})")
+    r.check(implausible(_rot_axes(30.0, 1.6, True)) == "",
+            "a turned, mirrored stage is plausible")
+    r.check(implausible((1.6, 0.0, 1.0, 0.2)) != "",
+            "near-parallel X and Y are refused")
+    r.check(implausible((1.6, 0.0, 0.0, 0.8)) != "",
+            "X and Y at different scales are refused")
+    r.check("+X 30°" in describe(_rot_axes(30.0, 2.0, False))
+            and "0.5 µm/px" in describe(_rot_axes(30.0, 2.0, False)),
+            f"describe names the angle and scale "
+            f"({describe(_rot_axes(30.0, 2.0, False))})")
+
+
+class _FakeRig:
+    """A stage that arrives at once, seen by a camera through `axes`."""
+
+    def __init__(self, axes, binning: int = 1):
+        self.axes, self.binning = axes, binning
+        self.pos = [120.0, -40.0]
+        self.calls: list[tuple] = []
+        self.tex = _texture(1400, seed=3)
+
+    def jog_um(self, which, d):
+        self.calls.append(("jog_um", which, d))
+        self.pos["xy".index(which)] += d
+
+    def is_moving(self):
+        return False
+
+    def read_xy_um(self):
+        return tuple(self.pos)
+
+    def stop_all(self):
+        self.calls.append(("stop_all",))
+
+    def grab(self):
+        ax, ay, bx, by = self.axes
+        x, y = self.pos
+        return _view(self.tex, 600, 700, (ax * x + bx * y) / self.binning,
+                     (ay * x + by * y) / self.binning)
+
+
+def _run(rig: _FakeRig, step: float = 40.0):
+    from acqApp.devices.stage.axes_measure import AxesMeasurement
+    out: dict = {}
+    m = AxesMeasurement(rig, rig.grab, step, rig.binning)
+    m._GRACE_S = 0.0
+    m.finished.connect(lambda a: out.setdefault("axes", a))
+    m.failed.connect(lambda s: out.setdefault("failed", s))
+    m.start()
+    return m, out
+
+
+def check_measurement(r: Report) -> None:
+    true = _rot_axes(-20.0, 1.3, mirror=True)
+    rig = _FakeRig(true, binning=2)
+    start = tuple(rig.pos)
+    m, out = _run(rig)
+    for _ in range(60):
+        if not m.running:
+            break
+        m._tick()
+    got = out.get("axes")
+    err = (max(abs(g - t) for g, t in zip(got, true)) / 1.3) if got else None
+    r.check(got is not None and err < 0.03,
+            f"measures a turned, mirrored, binned camera to <3 % "
+            f"({out.get('failed') or err})")
+    r.check(tuple(rig.pos) == start, "the stage ends where it started")
+    r.check([c[1:] for c in rig.calls if c[0] == "jog_um"]
+            == [("x", 40.0), ("x", -40.0), ("y", 40.0), ("y", -40.0)],
+            f"one step each way, X then Y ({rig.calls})")
+
+    class Blank(_FakeRig):          # only shot noise, fresh every frame
+        rng = np.random.default_rng(4)
+
+        def grab(self):
+            return (500 + self.rng.normal(0, 5, (600, 700))).astype(np.float32)
+    flat = Blank(true)
+    m, out = _run(flat)
+    for _ in range(60):
+        if not m.running:
+            break
+        m._tick()
+    r.check("axes" not in out and "No clear image shift" in out.get("failed", ""),
+            f"an untextured field fails, not a made-up answer ({out})")
+
+
+def check_measurement_cancel(r: Report) -> None:
+    rig = _FakeRig(_rot_axes(0.0, 1.0, False))
+    m, out = _run(rig)
+    for _ in range(4):
+        m._tick()
+    n_jogs = sum(c[0] == "jog_um" for c in rig.calls)
+    m.cancel()
+    r.check(not m.running and "Cancelled" in out.get("failed", "")
+            and ("stop_all",) in rig.calls,
+            f"cancel (Esc) stops the stage and reports ({out})")
+    r.check(sum(c[0] == "jog_um" for c in rig.calls) == n_jogs
+            and "from where it started" in out.get("failed", ""),
+            "…and moves nothing more: it only says where the stage is")
+
+    class Dead(_FakeRig):
+        def is_moving(self):
+            raise RuntimeError("serial link gone")
+    dead = Dead(rig.axes)
+    m, out = _run(dead)
+    try:
+        m._tick()
+        r.check(True, "a dead link does not escape the timer slot")
+    except Exception as e:                           # noqa: BLE001
+        r.check(False, f"{type(e).__name__} escaped: {e}")
+    r.check("serial link gone" in out.get("failed", "") and not m.running,
+            f"…it fails the run with the cause ({out})")
+
+
+def check_mock_jog_xy(r: Report) -> None:
+    c = MockStageController(S.StageSettings())
+    c.connect()
+    c.jog_xy_um(30.0, -20.0)
+    c.read_xy_um()          # arrive: a jog is relative to where it is now
+    c.jog_um("y", 5.0)
+    pos = c.read_xy_um()
+    r.check(pos == (30.0, -15.0),
+            f"jog_xy_um and a raw jog_um land in the stage's own axes ({pos})")
+
+
+def _part_cam_axes() -> int:
+    from _harness import qt_app
+    r = Report("stage-cam-axes")
+    app = qt_app()  # noqa: F841 — QTimer needs it
+    check_image_shift(r)
+    check_camera_jog(r)
+    check_measurement(r)
+    check_measurement_cancel(r)
+    check_mock_jog_xy(r)
+    return r.finish()
+
+
 PARTS = {
     "state": _part_state,
     "z": _part_z,
+    "cam-axes": _part_cam_axes,
 }
 
 

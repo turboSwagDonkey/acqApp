@@ -804,8 +804,10 @@ def _part_settings() -> int:
         r.check(key in saved, f"'{key}' section present in the config")
 
     # Axis calibration belongs to the shared stage_control config.
-    r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg"},
-            f"stage section is port/poll_hz/frame_rotation_deg only — Z's "
+    r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg",
+                                            "drag_speed_um_s", "cam_axes"},
+            f"stage section is port/poll_hz/frame_rotation_deg/drag_speed_um_s/"
+            f"cam_axes only — Z's "
             f"calibration lives in the shared stage_control config, not here "
             f"(got {sorted(saved.get('stage', {}))})")
     # Scoped to the two sections that own an LED.

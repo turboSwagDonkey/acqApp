@@ -135,6 +135,10 @@ class StageTarget(Protocol):
 
     def z_limits_um(self) -> tuple[float, float] | None: ...
 
+    def camera_axes(self) -> tuple[float, float, float, float] | None:
+        """Measured image shift (camera px) per µm of stage +X and +Y, as
+        (ax, ay, bx, by); None until measured. See devices/stage/cam_axes.py."""
+
 
 @runtime_checkable
 class PatternTarget(Protocol):

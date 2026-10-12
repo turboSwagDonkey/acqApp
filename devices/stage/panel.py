@@ -2,11 +2,13 @@
 0,0 comes from) is in `settings.py`."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
+import time
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout,
+    QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout,
     QWidget,
 )
 
@@ -14,10 +16,14 @@ from acqApp import style
 from acqApp.widgets import (button_row, compact, pairs_grid, sections_help,
                             spin)
 from acqApp.acq.worker import PullWorker
+from acqApp.devices.stage import fov_store
+from acqApp.devices.stage.axes_measure import AxesMeasurement
+from acqApp.devices.stage.cam_axes import camera_jog, describe
+from acqApp.devices.stage.control import step_toward
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
-from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_HOME, _C_ORIGIN,
-                                   _C_SOFT, StageSettings, config_path,
-                                   load_settings)
+from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_FOV, _C_HOME,
+                                   _C_ORIGIN, _C_SOFT, StageSettings,
+                                   config_path, load_settings)
 
 
 def _available_ports(current: str) -> list[str]:
@@ -401,7 +407,21 @@ class SettingsPanel(QWidget):
         self._active_fov = None
         self._axis_widgets: dict[str, dict] = {}
         self._cal_dialog: CalibrationDialog | None = None
+        # Map drag: the commanded point chases the dragged target, capped.
+        self._drag_cmd: tuple[float, float] | None = None
+        self._drag_target: tuple[float, float] | None = None
+        self._drag_t = 0.0
+        self._drag_timer = QTimer(self)
+        self._drag_timer.setInterval(self._DRAG_TICK_MS)
+        self._drag_timer.timeout.connect(self._drag_tick)
+        self._cam_axes = self._s.cam_axes
+        self._axes_run: AxesMeasurement | None = None
+        # Set by the adapter: () -> newest camera frame, () -> its binning.
+        self._grab_frame = lambda: None
+        self._frame_binning = lambda: 1
         self._build()
+        self.refresh_fovs()
+        self._set_cam_axes(self._cam_axes, save=False)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -425,10 +445,7 @@ class SettingsPanel(QWidget):
 
         self._spn_rotation = spin(
             -180.0, 180.0, self._s.frame_rotation_deg, decimals=1, suffix=" °",
-            tooltip="Rotates only the JOG buttons' direction, so 'up' here "
-                    "matches 'up' on the camera regardless of how the stage is "
-                    "physically mounted. Absolute go-to, soft limits and "
-                    "calibration are unaffected. 0 = off.")
+            tooltip=self._ROTATION_TIP)
         lay.addRow(pairs_grid(
             ("Port:", self._cmb_port, "Poll rate:", self._spn_rate),
             ("Frame rotation:", self._spn_rotation)))
@@ -436,6 +453,28 @@ class SettingsPanel(QWidget):
         self._cmb_port.currentTextChanged.connect(self._emit_settings)
         self._spn_rate.valueChanged.connect(self._emit_settings)
         self._spn_rotation.valueChanged.connect(self._emit_settings)
+
+        # Measured stage -> camera axes: jogs, the map and the camera's arrows.
+        axes_row = QHBoxLayout()
+        axes_row.setContentsMargins(0, 0, 0, 0)
+        self._lbl_axes = QLabel()
+        self._lbl_axes.setStyleSheet("font-size: 10px;")
+        self._btn_measure_axes = QPushButton("Measure…")
+        self._btn_measure_axes.setToolTip(
+            "MOTION: nudges the stage +X, back, +Y, back (one step each) and "
+            "finds how the camera picture shifts. Needs Live view on a "
+            "textured sample in focus. Afterwards Jog X+ slides the picture "
+            "right and Y+ up, the map turns to match the camera, and the "
+            "camera view shows +X/+Y arrows (the way the picture slides).")
+        self._btn_measure_axes.clicked.connect(self._measure_axes)
+        self._btn_clear_axes = QPushButton("Clear")
+        self._btn_clear_axes.setToolTip(
+            "Forget the measured axes: back to Frame rotation.")
+        self._btn_clear_axes.clicked.connect(lambda: self._set_cam_axes(None))
+        axes_row.addWidget(self._lbl_axes, 1)
+        axes_row.addWidget(self._btn_measure_axes)
+        axes_row.addWidget(self._btn_clear_axes)
+        lay.addRow("Camera axes:", axes_row)
 
         # X, Y (and Z) readouts share one row, each wide enough for its
         # longest value so the row doesn't jitter as they change.
@@ -466,14 +505,26 @@ class SettingsPanel(QWidget):
         ml = QVBoxLayout()
         self._map = StageMap()
         self._map.set_axes(self._s.x, self._s.y, self._s.invert_y)
+        self._map.drag_moved.connect(self._on_drag_moved)
         ml.addWidget(self._map)
         legend = QLabel(
             f'<span style="color:{_C_CUR}">●</span> position &nbsp; '
             f'<span style="color:{_C_ORIGIN}">✚</span> 0,0 &nbsp; '
             f'<span style="color:{_C_HOME}">◆</span> home &nbsp; '
-            f'<span style="color:{_C_SOFT}">▭</span> soft limits')
+            f'<span style="color:{_C_SOFT}">▭</span> soft limits &nbsp; '
+            f'<span style="color:{_C_FOV}">□</span> FOV')
         legend.setStyleSheet("font-size: 10px;")
         ml.addWidget(legend)
+        self._spn_drag = spin(
+            10.0, 1000.0, self._s.drag_speed_um_s, decimals=0, suffix=" µm/s",
+            tooltip="Top speed when dragging the blue dot on the map. The "
+                    "stage follows the drag no faster than this.")
+        self._spn_drag.valueChanged.connect(self._emit_settings)
+        drag_row = QHBoxLayout()
+        drag_row.addWidget(QLabel("Drag speed ≤"))
+        drag_row.addWidget(self._spn_drag)
+        drag_row.addStretch()
+        ml.addLayout(drag_row)
         outer.addLayout(ml, 1)
 
         # Z gets its own gauge beside the map, sharing the map's legend colours.
@@ -620,6 +671,7 @@ class SettingsPanel(QWidget):
         self._s.x.home_counts = self._s.y.home_counts = None
         self._set_controls_enabled(controller is not None)
         if controller is None:
+            self._cancel_axes_run()
             self._map.clear_position()
             if self._z_gauge is not None:
                 self._z_gauge.clear_position()
@@ -648,14 +700,8 @@ class SettingsPanel(QWidget):
 
     def _on_calibration_changed(self) -> None:
         """Calibration was rewritten (or a frame run started/ended) — re-sync."""
-        busy = self._cal_dialog is not None and self._cal_dialog.running
-        # No competing motion while the stage is driving into a hard limit.
-        connected = self._ctrl is not None and not busy
-        self._motion.setEnabled(connected)
-        self._nav.setEnabled(connected)
-        self._fovs.setEnabled(connected)
+        self._apply_gating()
         self._refresh_goto_ranges()
-        self._update_frame_status()
         self._map.update()
         if self._z_gauge is not None:
             self._z_gauge.update()          # origin/soft-limits may have moved
@@ -681,6 +727,33 @@ class SettingsPanel(QWidget):
             w["goto"].setEnabled(ax_ok)
             w["buttons"][2].setEnabled(ax_ok)   # the "Go" button
         self._update_home_label()
+        self._sync_drag(ok)
+
+    def _motion_busy(self) -> bool:
+        """A frame run or an axes measurement is driving the stage."""
+        return ((self._cal_dialog is not None and self._cal_dialog.running)
+                or (self._axes_run is not None and self._axes_run.running))
+
+    def _apply_gating(self) -> None:
+        # No competing motion while something else is driving the stage.
+        free = self._ctrl is not None and not self._motion_busy()
+        self._motion.setEnabled(free)
+        self._nav.setEnabled(free)
+        self._fovs.setEnabled(free)
+        self._update_frame_status()
+
+    def _sync_drag(self, frame_ok: bool) -> None:
+        """Map dragging is an absolute move: connected, framed, not busy.
+        The axes buttons share the gate (less the frame: they jog)."""
+        free = self._ctrl is not None and not self._motion_busy()
+        on = free and frame_ok
+        if not on:
+            self._end_drag()
+        self._map.set_draggable(on)
+        self._btn_measure_axes.setEnabled(free)
+        measuring = self._axes_run is not None and self._axes_run.running
+        self._btn_clear_axes.setEnabled(self._cam_axes is not None
+                                        and not measuring)
 
     def _axis(self, key: str):
         if key == "x":
@@ -730,20 +803,29 @@ class SettingsPanel(QWidget):
         self._update_home_label()
         self._map.update()
 
+    # Every other motion command ends a map drag, or its next tick would undo it.
     def _go_home(self) -> None:
+        self._end_drag()
         self._call("Move failed", lambda c: c.go_home())
 
     def _go_zero(self) -> None:
+        self._end_drag()
         self._call("Move failed", lambda c: c.go_to_center())
 
     # ── motion handlers ─────────────────────────────────────────────────────
     def _jog(self, key: str, direction: int) -> None:
-        step = self._axis_widgets[key]["step"].value()
-        self._call("Jog failed", lambda c: c.jog_um(key, direction * step))
+        self._end_drag()
+        d = direction * self._axis_widgets[key]["step"].value()
+        if key == "z":      # focus: the camera alignment is X/Y only
+            self._call("Jog failed", lambda c: c.jog_um("z", d))
+            return
+        dx, dy = camera_jog(key, d, self._spn_rotation.value(), self._cam_axes)
+        self._call("Jog failed", lambda c: c.jog_xy_um(dx, dy))
 
     def _goto(self, key: str) -> None:
         if self._ctrl is None:
             return
+        self._end_drag()
         target = self._axis_widgets[key]["goto"].value()
         if key == "x":
             cur = self._last_xy[0]
@@ -801,17 +883,162 @@ class SettingsPanel(QWidget):
             if move_z:
                 c.move_to_um("z", fov.z_um)
 
+        self._end_drag()
         if self._call("Move failed", _go):
             # "Active" until the stage drifts off it again — see set_readout.
             self._active_fov = fov
+            self.refresh_fovs()
+
+    # ── drag on the map (MOTION, speed-capped) ──────────────────────────────
+    _DRAG_TICK_MS = 100
+    _DRAG_MAX_DT_S = 0.25   # a stalled GUI must not turn into one long jump
+
+    def _on_drag_moved(self, x_um: float, y_um: float) -> None:
+        if self._ctrl is None:
+            return
+        self._drag_target = (x_um, y_um)
+        self._map.set_target(self._drag_target)
+        if self._drag_cmd is None:
+            self._drag_cmd = self._last_xy
+            self._drag_t = time.monotonic()
+            self._drag_timer.start()
+
+    def _drag_tick(self) -> None:
+        """One capped step toward the drag target; done once there and the
+        mouse is up."""
+        if self._drag_cmd is None or self._drag_target is None:
+            self._end_drag()
+            return
+        now = time.monotonic()
+        dt = min(now - self._drag_t, self._DRAG_MAX_DT_S)
+        self._drag_t = now
+        cmd = self._drag_cmd
+        nxt = step_toward(cmd, self._drag_target, self._spn_drag.value() * dt)
+        if nxt == cmd:
+            if not self._map.dragging:
+                self._end_drag()
+            return
+
+        def _go(c) -> None:
+            for key, new, old in (("x", nxt[0], cmd[0]), ("y", nxt[1], cmd[1])):
+                if new != old:
+                    c.move_to_um(key, new)
+
+        # Stopped first: the failure warning is modal and the timer would re-enter.
+        self._drag_timer.stop()
+        if not self._call("Drag move failed", _go):
+            self._end_drag()
+            return
+        self._drag_cmd = nxt
+        self._drag_timer.start()
+
+    def _end_drag(self) -> None:
+        self._drag_timer.stop()
+        self._drag_cmd = self._drag_target = None
+        self._map.cancel_drag()
+        self._map.set_target(None)
 
     # The panic path (Esc, app-wide), so guarded hardest: a dead link is exactly
     # when it's pressed, and an escaping slot exception aborts the process.
     def _stop(self, key: str) -> None:
+        self._end_drag()
+        self._cancel_axes_run()
         self._call("Stop failed", lambda c: c.stop(key))
 
     def _stop_all(self) -> None:
+        self._end_drag()
+        self._cancel_axes_run()
         self._call("STOP ALL failed", lambda c: c.stop_all())
+
+    # ── camera axes (MOTION while measuring) ────────────────────────────────
+    def set_camera_source(self, grab, binning) -> None:
+        """`grab()` -> the newest camera frame or None; `binning()` -> its
+        binning. The adapter's: only it can reach the camera."""
+        self._grab_frame, self._frame_binning = grab, binning
+
+    @property
+    def cam_axes(self):
+        return self._cam_axes
+
+    def _set_cam_axes(self, axes, save: bool = True) -> None:
+        self._cam_axes = axes
+        measured = axes is not None
+        self._lbl_axes.setText(describe(axes) if measured else "not measured")
+        self._lbl_axes.setToolTip(
+            "Angles are counter-clockwise from screen-right: the way the "
+            "picture slides for stage +X/+Y." if measured else
+            "Jogs use Frame rotation until the axes are measured.")
+        self._spn_rotation.setEnabled(not measured)
+        self._spn_rotation.setToolTip(
+            "Not used: the measured camera axes replace it (Clear them to use "
+            "this)." if measured else self._ROTATION_TIP)
+        self._map.set_cam_axes(axes)
+        self._update_frame_status()
+        if save:
+            self._emit_settings()
+
+    _ROTATION_TIP = (
+        "Rotates only the JOG buttons' direction, so 'up' here matches 'up' "
+        "on the camera regardless of how the stage is physically mounted. "
+        "Absolute go-to, soft limits and calibration are unaffected. 0 = off. "
+        "Camera axes → Measure… finds it for you.")
+
+    def _measure_axes(self) -> None:
+        if self._ctrl is None or self._motion_busy():
+            return
+        if self._grab_frame() is None:
+            QMessageBox.information(
+                self, "Measure camera axes",
+                "No camera frame: start Live view on the voltage camera, on "
+                "a textured sample in focus.")
+            return
+        step, ok = QInputDialog.getDouble(
+            self, "Measure camera axes",
+            "MOTION: moves the stage +X, back, +Y, back by this step.\n"
+            "The picture must shift visibly but by well under half the "
+            "field.\n\nStep (µm):", 50.0, 2.0, 1000.0, 1)
+        if not ok:
+            return
+        self._end_drag()
+        run = AxesMeasurement(self._ctrl, self._grab_frame, step,
+                              int(self._frame_binning() or 1), self)
+        run.progress.connect(self._lbl_axes.setText)
+        run.finished.connect(self._on_axes_measured)
+        run.failed.connect(self._on_axes_failed)
+        self._axes_run = run
+        if not self._call("Could not start the measurement", lambda c: run.start()):
+            self._axes_run = None
+            return
+        self._apply_gating()
+
+    def _on_axes_measured(self, axes) -> None:
+        self._axes_run = None
+        self._set_cam_axes(axes)
+        self._apply_gating()
+
+    def _on_axes_failed(self, msg: str) -> None:
+        self._axes_run = None
+        self._set_cam_axes(self._cam_axes, save=False)    # restores the label
+        self._apply_gating()
+        QMessageBox.warning(self, "Measure camera axes", msg)
+
+    def _cancel_axes_run(self) -> None:
+        if self._axes_run is not None:
+            self._axes_run.cancel()
+
+    # ── saved FOVs on the map ───────────────────────────────────────────────
+    def refresh_fovs(self) -> None:
+        """Re-read this session's FOVs onto the map (plus the active one,
+        even if it came from the archive)."""
+        try:
+            fovs = fov_store.list_session()
+        except OSError:
+            fovs = []
+        act = self._active_fov
+        if act is not None and all(f.path != act.path for f in fovs):
+            fovs.append(act)
+        self._map.set_fovs([(f.name, f.x_um, f.y_um) for f in fovs],
+                           act.name if act is not None else "")
 
     # ── live readout from the poll worker ───────────────────────────────────
     # Below this a move is invisible on the map; skip the repaint.
@@ -830,6 +1057,7 @@ class SettingsPanel(QWidget):
     def set_readout(self, x_um: float, y_um: float, z_um: float | None = None) -> None:
         if self._active_fov is not None and self._off_active_fov(x_um, y_um, z_um):
             self._active_fov = None
+            self.refresh_fovs()
         self._last_xy = (x_um, y_um)
         self._lbl_x.setText(f"{x_um:8.1f}")
         self._lbl_y.setText(f"{y_um:8.1f}")
@@ -876,5 +1104,7 @@ class SettingsPanel(QWidget):
             margin_um=s.margin_um,
             invert_y=s.invert_y,
             frame_rotation_deg=self._spn_rotation.value(),
+            drag_speed_um_s=self._spn_drag.value(),
+            cam_axes=self._cam_axes,
             x=s.x, y=s.y, z=s.z,
         )
