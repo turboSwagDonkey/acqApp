@@ -2423,7 +2423,7 @@ def _part_pair() -> int:
         ed = RoiEditor(calibration)
         ed.set_image(snap)
         return ed, PairRoiDialog(
-            ed, snap, "cellA_roi", live_source=lambda: live[0],
+            ed, "cellA_roi", live_source=lambda: (live[0], (0.0, 0.0), 1.0),
             illuminate=lambda rois: lit.append(None if rois is None
                                                else len(rois)),
             set_live=lambda on: live_calls.append(on) or False)
@@ -2433,23 +2433,50 @@ def _part_pair() -> int:
     ed._add(RectRoi(x=100, y=80, w=40, h=20))
     r.check(dlg._btn_save.isEnabled(), "…and is offered once one is drawn")
     r.check(lit == [] and live_calls == [], "nothing lights up on its own")
+    dlg.show()
+    pump(app, 0.1)
+    r.check(live_calls == [True] and lit == [],
+            f"opening starts Live view for the view under the drawing, and "
+            f"lights nothing ({live_calls}, {lit})")
 
     dlg._btn_light.setChecked(True)
     r.check(lit == [1], f"Illuminate projects the drawn set ({lit})")
-    r.check(dlg._chk_live.isChecked() and live_calls == [True],
-            f"…and switches to the live camera ({live_calls})")
     live[0] = snap[::-1].copy()
     pump(app, 0.15)
-    r.check(ed._image is live[0], "the editor follows the live frames")
+    r.check(dlg._live._frame is live[0] and ed._image is snap,
+            "the live view follows the camera; the drawing keeps the snapshot")
     ed._add(CircleRoi(x=50, y=50, r=6))
     pump(app, 0.3)
     r.check(lit[-1] == 2, f"an edit while lit re-projects ({lit})")
+    xs, _ys = dlg._live._inside.getData()
+    r.check(xs is not None and int(np.isnan(xs).sum()) == 2
+            and dlg._live._outside.getData()[0].size == 0,
+            "…and the live view outlines both, inside the capture area")
     dlg.reject()                        # Skip, still lit
     r.check(lit[-1] is None, f"closing turns the light off ({lit})")
     r.check(live_calls[-1] is False,
             f"…and puts Live view back how it was ({live_calls})")
     r.check(dlg.path is None and roi_store.list_session() == [],
             "Skip saves nothing")
+
+    # ── the live view on a cropped, binned band ─────────────────────────────
+    from acqApp.devices.dmd.roi_live import RoiLiveView
+
+    band = snap[:40]                       # 2x binned: sensor rows 100..180
+    view = RoiLiveView(lambda: (band, (0.0, 100.0), 2.0))
+    view.set_rois(RoiSet([RectRoi(name="in", x=100, y=140, w=40, h=20),
+                          CircleRoi(name="out", x=60, y=90, r=15)]))
+    view.refresh()
+    r.check(view.area() == (0.0, 100.0, 2.0 * CW, 80.0),
+            f"the capture area is the band, in sensor px ({view.area()})")
+    xs_in, ys_in = view._inside.getData()
+    xs_out, ys_out = view._outside.getData()
+    r.check(abs(np.nanmin(ys_in) - 30.0) < 1e-6
+            and abs(np.nanmin(ys_out) - (-25.0)) < 1e-6,
+            "an ROI inside it is outlined normally, one past its edge in "
+            "amber, both at band-local rows")
+    r.check("out" in view._lbl.text() and "in," not in view._lbl.text(),
+            f"…and the status names only the one beyond ({view._lbl.text()!r})")
 
     lit.clear()
     ed, dlg = make(calib())
@@ -2476,7 +2503,7 @@ def _part_pair() -> int:
     cal = calib()
     ed = RoiEditor(cal, offset=(ox, oy), scale=2.0)
     ed.set_image(snap)
-    dlg = PairRoiDialog(ed, snap, "cellB_roi", live_source=lambda: live[0],
+    dlg = PairRoiDialog(ed, "cellB_roi", live_source=lambda: None,
                         illuminate=lambda rois: None, set_live=lambda on: False)
     ed.set_tool("rectangle")
     ed._on_drawn((10.0, 10.0), (60.0, 50.0))

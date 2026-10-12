@@ -40,6 +40,12 @@ class _Roi:
         """Points on the outline, for containment tests without rasterising."""
         raise NotImplementedError
 
+    def within(self, x0: float, y0: float, w: float, h: float) -> bool:
+        """Wholly inside the axis-aligned rect (x0, y0, w, h)."""
+        b = self.boundary()
+        return bool(b[:, 0].min() >= x0 and b[:, 1].min() >= y0
+                    and b[:, 0].max() <= x0 + w and b[:, 1].max() <= y0 + h)
+
     def to_dict(self) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -363,6 +369,12 @@ class RoiSet:
         (reachable but dim). Advisory; empty if no vignette is marked."""
         return [r.name for r in self.rois
                 if r.enabled and not calib.well_lit(r.boundary()).all()]
+
+    def beyond(self, x0: float, y0: float, w: float, h: float) -> list[str]:
+        """Names of ROIs not wholly inside the camera-px rect (x0, y0, w, h):
+        the capture area, which a cropped preset shrinks to a band."""
+        return [r.name for r in self.rois
+                if r.enabled and not r.within(x0, y0, w, h)]
 
     def contains(self, px: np.ndarray, py: np.ndarray, *,
                  enabled_only: bool = True) -> np.ndarray:

@@ -33,13 +33,15 @@ from acqApp.adapters.base import ModuleAdapter
 from acqApp.routines.banner import RoutineBanner
 from acqApp.routines.engine import (BURST_STALL_S, Phase, RoutineEngine,
                                     RoutineHooks)
-from acqApp.devices.voltage_cam.presets import BURST_TIMES_MAX
+from acqApp.devices.dmd import roi_store
+from acqApp.devices.voltage_cam.presets import (BURST_TIMES_MAX, PRESETS,
+                                                resolve_preset_key)
 from acqApp.routines.estimate import burst_frames, clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
 from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS,
                                       group_region_at, group_repeat_at,
-                                      play_order, recording_region_at,
-                                      validate)
+                                      pattern_label, play_order,
+                                      recording_region_at, validate)
 from acqApp.saving.config import BAD_SUFFIX, rename_trial
 
 # Under three frames at 106 Hz; boundaries are stamped from the clock anyway.
@@ -75,15 +77,40 @@ def _csv_text(rows: list[list]) -> str:
     return buf.getvalue()
 
 
+def rois_beyond_capture(routine: Routine, preset_key: str | None) -> list[str]:
+    """"<set>: <rois>" per ROI set a display step shows that reaches past the
+    preset's capture area: light there lands where no frame records it."""
+    preset = PRESETS.get(resolve_preset_key(preset_key)) if preset_key else None
+    if preset is None:
+        return []
+    area = (preset.hpos, preset.vpos, preset.hsize, preset.vsize)
+    out: list[str] = []
+    for path in dict.fromkeys(s.pattern for s in routine.steps
+                              if s.kind == "display"
+                              and roi_store.is_roi_file(s.pattern)):
+        try:
+            beyond = roi_store.load(path).beyond(*area)
+        except (OSError, ValueError, KeyError):
+            continue                    # `validate` names a missing file
+        if beyond:
+            out.append(f"{pattern_label(path)}: {', '.join(beyond)}")
+    return out
+
+
 def start_summary(mouse: str, folder: Path, preset: str | None,
                   binning: int | None, rate_hz: float | None,
-                  fmt: str) -> str:
-    """The pre-flight text Start shows: where it saves, how the camera is set."""
+                  fmt: str, beyond: list[str] | tuple = ()) -> str:
+    """The pre-flight text Start shows: where it saves, how the camera is set,
+    and any ROI set reaching past the capture area (`rois_beyond_capture`)."""
     rate = f"{rate_hz:g} Hz" if rate_hz else "max"
     camera = ("no camera loaded" if preset is None else
               f"{preset}, binning {binning}, {rate}, {fmt}")
-    return (f"Mouse: {mouse}\nSaving to: {folder}\nCamera: {camera}\n\n"
-            f"Turn the LED power up before you continue.")
+    text = f"Mouse: {mouse}\nSaving to: {folder}\nCamera: {camera}\n\n"
+    if beyond:
+        text += ("WARNING: these ROIs reach beyond the camera's capture "
+                 "area, so it won't record where they light:\n"
+                 + "".join(f"  • {b}\n" for b in beyond) + "\n")
+    return text + "Turn the LED power up before you continue."
 
 
 def burst_stall_s(hz: float | None) -> float:
@@ -264,13 +291,15 @@ class RoutinesModule(ModuleAdapter):
     def _confirm_start(self) -> bool:
         """Pre-flight check for the operator: OK starts, Cancel does nothing."""
         folder = self.win.routine_folder()
+        preset = self.win.camera_preset(FRAME_STREAM)
         text = start_summary(
             folder.parent.name,         # routine_base = <...>/<mouse_id>/<date>
             folder,
-            self.win.camera_preset(FRAME_STREAM),
+            preset,
             self.win.camera_binning(FRAME_STREAM),
             self.win.frame_rate_hz(),
-            "DCIMG" if self.win.dcimg_enabled() else "TIFF")
+            "DCIMG" if self.win.dcimg_enabled() else "TIFF",
+            rois_beyond_capture(self.panel.settings, preset))
         box = QMessageBox(self.panel)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("Start routine")

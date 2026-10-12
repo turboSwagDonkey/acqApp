@@ -15,7 +15,8 @@ from PyQt6.QtGui import (QBrush, QColor, QCursor, QKeySequence, QPainter,
 from PyQt6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QGraphicsEllipseItem, QGraphicsPathItem,
     QGraphicsRectItem, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from acqApp import style
@@ -341,11 +342,15 @@ class RoiEditor(QWidget):
         self._hist = pg.HistogramLUTWidget()
         self._hist.setImageItem(self._img)
         self._hist.setFixedWidth(86)
-        view_row = QHBoxLayout()
+        top = QWidget()
+        view_row = QHBoxLayout(top)
         view_row.setContentsMargins(0, 0, 0, 0)
         view_row.addWidget(self._hist)
         view_row.addWidget(self._gv, 1)
-        root.addLayout(view_row, 1)
+        self._views = QSplitter(Qt.Orientation.Vertical)
+        self._views.setChildrenCollapsible(False)
+        self._views.addWidget(top)
+        root.addWidget(self._views, 1)
 
         bar = QHBoxLayout()
         self._tool_btns: dict[str, QPushButton] = {}
@@ -420,6 +425,12 @@ class RoiEditor(QWidget):
         if not keep_view:
             self._vb.autoRange()
             self._refresh_status()
+
+    def add_view(self, widget: QWidget) -> None:
+        """Stack `widget` (a `RoiLiveView`) under the drawing view."""
+        self._views.addWidget(widget)
+        self._views.setStretchFactor(0, 3)
+        self._views.setStretchFactor(self._views.count() - 1, 2)
 
     @property
     def can_project(self) -> bool:

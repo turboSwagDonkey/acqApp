@@ -150,6 +150,8 @@ devices/                one package per instrument
                         live camera, save as <base>_roi; light off on close
     panel.py
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
+    roi_live.py         live camera under the ROI editor, ROIs past the capture
+                        area outlined amber
     roi_panel.py        draw and edit ROIs over a snapshot
     roi_picker.py        dialog to choose a saved ROI set: session list + Browse
     roi_store.py         save/load named ROI sets; session/archive rotation (no Qt)

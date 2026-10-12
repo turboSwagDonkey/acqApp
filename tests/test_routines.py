@@ -2847,6 +2847,29 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(all(s in text for s in ("m1", "D:", "full", "binning 2",
                                     "100 Hz", "DCIMG", "LED")),
             "the start summary names mouse, path, camera settings and the LED")
+
+    # ROI sets reaching past the capture area (512-row band: rows 928..1440).
+    from acqApp.adapters.routines import rois_beyond_capture
+    from acqApp.devices.dmd import roi_store
+    from acqApp.devices.dmd.roi import RectRoi, RoiSet
+    roi_in = roi_store.save("in_roi", RoiSet([RectRoi(name="a", x=500, y=1000,
+                                                      w=50, h=50)]))
+    roi_past = roi_store.save("past_roi", RoiSet([
+        RectRoi(name="a", x=500, y=1000, w=50, h=50),
+        RectRoi(name="b", x=500, y=200, w=50, h=50)]))
+    shows = Routine(steps=[Step(kind="display", pattern=str(roi_in)),
+                           Step(kind="display", pattern=str(roi_past)),
+                           Step(kind="display", pattern=str(roi_past))])
+    beyond = rois_beyond_capture(shows, "4432x512")
+    r.check(beyond == ["ROI: past_roi: b"],
+            f"Start names the ROI past a band's edge, once per set ({beyond})")
+    r.check(rois_beyond_capture(shows, "full") == []
+            and rois_beyond_capture(shows, None) == [],
+            "…and nothing at full frame or with no camera")
+    warned = start_summary("m1", Path("D:/rec"), "4432x512", 1, None, "DCIMG",
+                           beyond)
+    r.check("WARNING" in warned and "past_roi: b" in warned,
+            "…in the start popup's text")
     adapter._confirm_start = lambda: False
     adapter._on_start_clicked()
     r.check(adapter._engine is None, "Cancel on the start popup starts nothing")

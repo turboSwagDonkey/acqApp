@@ -290,10 +290,10 @@ class SettingsPanel(QWidget):
         v.addWidget(self._lbl_rois)
         btn = QPushButton("Edit ROIs…")
         btn.setToolTip(
-            "Open the editor on the voltage camera's newest frame.\n"
-            "Put the DMD in all-on and press Display first if you want to see "
-            "the projected field in the snapshot — this button never commands "
-            "the camera or the projector itself.")
+            "Open the editor on the voltage camera's newest frame, with the "
+            "live camera under it.\nTake that frame full field with the DMD "
+            "all-on (Display) to see the projected field — this button starts "
+            "Live view but never commands the projector itself.")
         btn.clicked.connect(self.rois_edit_requested)
 
         self._chk_roi_flip_x = pill(

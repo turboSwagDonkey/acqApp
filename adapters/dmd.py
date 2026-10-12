@@ -208,33 +208,47 @@ class DmdModule(ModuleAdapter):
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
     # ── photostimulation ROIs ──
+    def _frame_geometry(self, frame) -> tuple[tuple[float, float], float]:
+        """-> (offset, scale) mapping `frame`'s px onto full-sensor px, from
+        the preset it was CAPTURED under (the combo may already name the next
+        one): its (hpos, vpos) and its binning."""
+        from acqApp.devices.voltage_cam.presets import PRESETS
+
+        preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
+        if preset is None:
+            return (0.0, 0.0), 1.0
+        return (preset.hpos, preset.vpos), preset.hsize / frame.shape[1]
+
+    def _live_frame(self):
+        """The camera's newest frame as a `roi_live.LiveFrame`, or None."""
+        f = self.win.latest_frame("voltage_cam")
+        return None if f is None else (f, *self._frame_geometry(f))
+
     def _editor(self, frame):
-        """A `RoiEditor` showing `frame`, mapped onto the calibration."""
+        """A `RoiEditor` showing `frame`, mapped onto the calibration (which
+        is in full-sensor px)."""
         from acqApp.devices.dmd.roi_panel import RoiEditor
-        from acqApp.devices.voltage_cam.presets import PRESETS, SENSOR_H, SENSOR_W
+        from acqApp.devices.voltage_cam.presets import SENSOR_H, SENSOR_W
 
         calib, why = self._calibration()
         if why:
             self.win.status(why)
-        # The calibration is in full-sensor px; map the frame's px onto it
-        # using the preset the frame was CAPTURED under (the combo may already
-        # name the next one): its (hpos, vpos) offset and its binning.
-        preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
-        offset = (preset.hpos, preset.vpos) if preset is not None else (0.0, 0.0)
-        scale = preset.hsize / frame.shape[1] if preset is not None else 1.0
+        offset, scale = self._frame_geometry(frame)
         ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H),
                        scale=scale)
         ed.set_image(frame)
         return ed
 
     def edit_rois(self) -> None:
-        """`RoiEditor` on the camera's newest frame. Commands nothing: all-on
-        first is the operator's (light-emitting) step."""
+        """`RoiEditor` on the camera's newest frame (taken full-field), live
+        view under it. Starts Live view, never light: all-on first is the
+        operator's step."""
         from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
                                      QVBoxLayout)
 
         from acqApp import style
         from acqApp.devices.dmd.roi import RoiSet
+        from acqApp.devices.dmd.roi_live import attach_live_view
 
         frame = self.win.latest_frame("voltage_cam")
         if frame is None:
@@ -248,19 +262,27 @@ class DmdModule(ModuleAdapter):
 
         dlg = QDialog(self.panel)
         dlg.setWindowTitle("Photostimulation ROIs")
-        dlg.resize(1000, 760)
+        dlg.resize(1000, 940)
         dlg.setStyleSheet(style.accent_panel("dmd"))
         lay = QVBoxLayout(dlg)
         ed = self._editor(frame)
         if self.panel.rois:
             ed.load(RoiSet.from_list(list(self.panel.rois)))
+        live = attach_live_view(ed, self._live_frame)
         lay.addWidget(ed, 1)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
                               | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        was_live = self.win.set_live(True)
+        live.start()
+        try:
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        finally:
+            live.stop()
+            self.win.set_live(was_live)
+        if accepted:
             rois = ed.roi_set.to_list()
             self.panel.set_rois(tuple(rois))
             self.win.status(f"{len(rois)} photostimulation ROI(s) saved")
@@ -284,8 +306,7 @@ class DmdModule(ModuleAdapter):
                 self.display()
 
         dlg = PairRoiDialog(
-            self._editor(frame), frame, name,
-            live_source=lambda: self.win.latest_frame("voltage_cam"),
+            self._editor(frame), name, live_source=self._live_frame,
             illuminate=illuminate, set_live=self.win.set_live,
             parent=self.panel)
         dlg.exec()
