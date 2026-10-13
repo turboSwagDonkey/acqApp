@@ -21,6 +21,7 @@ from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
                                                 WRITER_MBPS, burst_stale,
                                                 burst_stale_indices)
 from acqApp.devices.voltage_cam.panel import SettingsPanel as CamSettingsPanel
+from acqApp.sidebar import MiniText
 
 _INT_TRIGGER, _EXT_TRIGGER = TRIGGER_MODES[0], TRIGGER_MODES[1]
 
@@ -75,6 +76,8 @@ class VoltageCamModule(ModuleAdapter):
     # ── construction ──
     def build_panel(self) -> QWidget:
         self.panel = CamSettingsPanel(self._load_config())
+        if "file_format" not in config.load_settings(self.key):
+            self._save()        # before the Save tab drops its old copy
         self.panel.target_hz_changed.connect(self._on_rate)
         for sig in (self.panel.resolution_changed,
                     self.panel.binning_changed, self.panel.trigger_changed,
@@ -82,7 +85,8 @@ class VoltageCamModule(ModuleAdapter):
                     self.panel.lut_visible_changed,
                     self.panel.auto_levels_changed,
                     self.panel.preview_avg_changed,
-                    self.panel.led_follow_changed):
+                    self.panel.led_follow_changed,
+                    self.panel.format_changed):
             sig.connect(self._save)
         self.panel.lut_visible_changed.connect(self._on_lut_visible)
         self.panel.auto_levels_changed.connect(self._on_auto_levels)
@@ -153,13 +157,21 @@ class VoltageCamModule(ModuleAdapter):
     @staticmethod
     def _load_config() -> AcqConfig:
         cfg = config.load_dataclass(AcqConfig, "voltage_cam")
+        saved = config.load_settings("voltage_cam")
         if cfg.preset_key not in PRESET_KEYS:      # a preset may have been removed
             cfg.preset_key = DEFAULT_PRESET
         # Saved before capture rate existed: keep its exposure's rate.
-        if "target_hz" not in config.load_settings("voltage_cam") \
-                and cfg.exposure_us > 0:
+        if "target_hz" not in saved and cfg.exposure_us > 0:
             cfg.target_hz = round(1e6 / cfg.exposure_us, 1)
+        # The format used to be chosen on the Save tab.
+        if "file_format" not in saved:
+            old = config.load_settings("saving").get("orca_format")
+            if old in ("dcimg", "tiff"):
+                cfg.file_format = old
         return cfg.fit_exposure()
+
+    def records_dcimg(self) -> bool:
+        return self.panel.get_config().file_format == "dcimg"
 
     def _save(self, *_a) -> None:
         config.save_settings("voltage_cam", asdict(self.panel.get_config()))
@@ -171,6 +183,14 @@ class VoltageCamModule(ModuleAdapter):
 
     def frame_rate_hz(self) -> float | None:
         return self.panel.get_config().rate_hz
+
+    def mini_view(self) -> QWidget:
+        return MiniText(self._mini_text)
+
+    def _mini_text(self) -> tuple[str, str]:
+        cfg = self.panel.get_config()
+        return ("● live" if self.worker is not None else "idle",
+                f"{cfg.preset_key} · {cfg.rate_hz:g} Hz")
 
     def _on_rate(self, hz: float) -> None:
         if self.worker is not None:

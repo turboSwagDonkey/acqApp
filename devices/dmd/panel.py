@@ -617,6 +617,17 @@ class SettingsPanel(QWidget):
         return MODE_PATTERN
 
     @property
+    def display_name(self) -> str:
+        """What is selected, in a few words: file, ROI set or All on; '' = nothing."""
+        mode = self.mode
+        if mode == MODE_ALL_ON:
+            return "All on"
+        if mode == MODE_ROI:
+            n = len(self._rois)
+            return self._roi_pattern_name or (f"{n} ROI(s)" if n else "")
+        return self._pattern_path.name if self._pattern_path else ""
+
+    @property
     def settings(self) -> DmdSettings:
         return DmdSettings(
             pattern_path=self._pattern_path,

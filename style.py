@@ -93,6 +93,9 @@ def accent_panel(key: str) -> str:
         "QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;"
         f"color:{c}}}"
         "QGroupBox::indicator{width:0px;height:0px;margin:0px}"
+        # A folded "advanced" box is a heading over a line, not an empty frame.
+        f"QGroupBox#advanced:unchecked{{border:none;"
+        f"border-bottom:1px solid {c};border-radius:0px;padding-top:0px;margin-top:4px}}"
     )
 
 

@@ -108,6 +108,8 @@ def main() -> int:
         def set_sink(self, s): ...
         device_name = "fake"
         resolution = (1, 1)
+        frame = None
+        projecting = False
         # on_pixels deliberately absent
 
     missing = has_all(AlmostAProjector, ProjectorController)

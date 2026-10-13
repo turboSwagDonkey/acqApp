@@ -157,9 +157,10 @@ def check_empty_set(r: Report, win) -> None:
             f"every module the operator chose unloaded ({_keys(win)})")
     r.check(win._central_owner is None, "the centre pane fell back")
     r.check(win._plots_tabs.count() == 0, "no Signals tabs left")
-    r.check(win._settings_dialog.tabs.count() == 1,
-            f"only the Save tab remains "
-            f"({win._settings_dialog.tabs.count()})")
+    left = set(win._panel_windows)
+    r.check(left == {"saving"} | {m.key for m in win._modules
+                                  if m.panel is not None},
+            f"only Save's window and the always-on modules' remain ({left})")
     try:
         win._display_tick()
         win._on_theme_toggled(True)
@@ -193,7 +194,8 @@ def check_order(r: Report, win) -> None:
 def check_ui_released(r: Report, win) -> None:
     """A module takes its whole UI with it."""
     win.set_modules(["voltage_cam", "wheel", "pupil_cam"])
-    tabs_with = win._settings_dialog.tabs.count()
+    r.check("pupil_cam" in win._panel_windows,
+            "control: the pupil camera has a settings window while loaded")
     plots_with = win._plots_tabs.count()
     views_with = len(win._pg_views)
     docks_with = len(win.findChildren(type(win._plots_dock)))
@@ -201,9 +203,8 @@ def check_ui_released(r: Report, win) -> None:
             "the pupil camera's dock was attributed to it")
 
     win.set_modules(["voltage_cam", "wheel"])
-    r.check(win._settings_dialog.tabs.count() == tabs_with - 1,
-            f"its settings tab went ({win._settings_dialog.tabs.count()} vs "
-            f"{tabs_with})")
+    r.check("pupil_cam" not in win._panel_windows,
+            f"its settings window went ({sorted(win._panel_windows)})")
     r.check(len(win.findChildren(type(win._plots_dock))) == docks_with - 1,
             "its dock went")
     r.check(len(win._pg_views) < views_with,
@@ -247,6 +248,30 @@ def check_sidebar_follows(r: Report, win) -> None:
     order = list(config.MODULES)
     r.check(keys == sorted(keys, key=order.index),
             f"modules in config.MODULES order ({keys})")
+
+
+def check_sidebar_cards(r: Report, win) -> None:
+    """Each item is a card whose mini view reads its module without raising,
+    and a right-click on the card opens the page, as the button's click did."""
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QContextMenuEvent
+    from acqApp.sidebar import MiniView
+
+    win.set_modules(["voltage_cam", "pupil_cam", "wheel", "puffer", "stage",
+                     "dmd"])
+    for key, act in win._page_actions.items():
+        for view in act.card.findChildren(MiniView):
+            view.refresh()          # unguarded: a raise fails the check
+        r.check(bool(act.card.findChildren(MiniView)),
+                f"{key}: its card has a live view")
+
+    act = win._page_actions["wheel"]
+    ev = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5))
+    act.card.contextMenuEvent(ev)
+    r.check(act.isChecked() and ev.isAccepted(),
+            "right-click opens the page, and the toolbar's own menu stays shut")
+    act.card.contextMenuEvent(ev)
+    r.check(not act.isChecked(), "a second right-click shuts it")
 
 
 def check_theme_toggle_survives(r: Report, win) -> None:
@@ -434,41 +459,47 @@ def check_always_on(r: Report, win) -> None:
             f"({config.load_enabled_modules()})")
 
 
-def check_own_window(r: Report, win) -> None:
-    """A module with `own_window` gets a window, not a settings page, from
-    the same sidebar gesture."""
+def check_panel_windows(r: Report, win) -> None:
+    """Every panel, Save's included, has a window of its own, fitted to the
+    panel, opened and shut from its sidebar card."""
     key = next(iter(config.ALWAYS_ON))
     win.set_modules(["voltage_cam", "wheel"])
 
-    m = next(x for x in win._modules if x.key == key)
-    r.check(m.own_window, f"{key} asks for its own window")
-    own = win._panel_windows.get(key)
-    r.check(own is not None and own.isWindow(),
-            f"…and the window exists ({own})")
-    r.check(win._settings_dialog.panel_index(m.panel) < 0,
-            "…while its panel is NOT a page of the settings window")
-    # CONTROL: a module that did not ask for one is still a page.
-    other = next(x for x in win._modules if x.key == "wheel")
-    r.check(not other.own_window
-            and win._settings_dialog.panel_index(other.panel) >= 0,
-            "control: the wheel's panel is still a settings page")
+    panelled = {m.key for m in win._modules if m.panel is not None}
+    r.check(set(win._panel_windows) == panelled | {"saving"},
+            f"a window per panel, plus Save's ({sorted(win._panel_windows)})")
+    own, wheel = win._panel_windows[key], win._panel_windows["wheel"]
+    r.check(own.isWindow() and wheel.isWindow(), "…each a real window")
 
-    r.check(not own.isVisible(), "the window starts hidden, as the settings do")
+    # Fitted: the Save tab is small, and no longer floored at a shared size.
+    save = win._panel_windows["saving"]
+    hint = win._save_panel.sizeHint()
+    got = save.default_size()
+    r.check(got.height() <= max(save._MIN_DEFAULT[1],
+                                hint.height() + 2 * save._PAD),
+            f"Save's window opens at its panel's height ({got.height()} px "
+            f"for a {hint.height()} px panel)")
+
+    r.check(not own.isVisible() and not wheel.isVisible(),
+            "the windows start hidden")
     win._page_actions[key].trigger()
-    r.check(own.isVisible(), "its sidebar item opens it")
+    r.check(own.isVisible(), "its sidebar card opens it")
     r.check(win._page_actions[key].isChecked(),
-            "…and lights the item while it is open")
+            "…and lights the card while it is open")
     win._page_actions["wheel"].trigger()
-    r.check(own.isVisible() and win._settings_dialog.isVisible(),
-            "opening a settings page leaves the own window open")
+    r.check(own.isVisible() and wheel.isVisible(),
+            "opening another leaves the first open")
     r.check(win._page_actions[key].isChecked()
             and win._page_actions["wheel"].isChecked(),
-            "…and both items stay lit — they are different windows")
+            "…and both cards stay lit — they are different windows")
 
+    win._page_actions["wheel"].trigger()
+    r.check(not wheel.isVisible()
+            and not win._page_actions["wheel"].isChecked(),
+            "the card again shuts its window and un-lights")
     own.close()
     r.check(not win._page_actions[key].isChecked(),
-            "closing it with its own X un-lights the item")
-    win._settings_dialog.hide()
+            "closing a window with its own X un-lights the card")
 
 
 def check_matplotlib_stays_lazy(r: Report, win) -> None:
@@ -493,12 +524,13 @@ def _part_hotload() -> int:
     try:
         check_matplotlib_stays_lazy(r, win)
         check_always_on(r, win)
-        check_own_window(r, win)
+        check_panel_windows(r, win)
         check_add_remove(r, win)
         check_empty_set(r, win)
         check_order(r, win)
         check_ui_released(r, win)
         check_sidebar_follows(r, win)
+        check_sidebar_cards(r, win)
         check_theme_toggle_survives(r, win)
         check_central_pane(r, win)
         check_recording_refused(r, win)

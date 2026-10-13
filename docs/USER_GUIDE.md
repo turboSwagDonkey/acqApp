@@ -109,8 +109,11 @@ on.
 
 <img src="images/guide/03_settings_save.png" width="700" alt="Save tab: drive, folder, subject, filename template, capacity warning">
 
-Pick the destination drive and folder, a subject ID, and a filename template
-(`{subject}`, `{session}`, `{date}`, `{time}`). The **Next file** line always
+Enter the mouse ID and pick the folder; each recording is named
+`<mouse ID>_<date>_<time>` by default, plus the FOV's name while the stage is
+at a saved FOV. The drive pick, **Scan drives** and the filename template
+(`{mouse_id}`, `{date}`, `{time}`) are under **Advanced**. (The screenshot
+predates this layout.) The **Next file** line always
 shows the exact path the next recording will get — a name that already
 exists is auto-numbered, never overwritten.
 

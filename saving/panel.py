@@ -1,4 +1,4 @@
-"""The Save tab — destination, template and the capacity estimate."""
+"""The Save tab — who, where, the next file's name and the capacity estimate."""
 from __future__ import annotations
 
 import os
@@ -8,14 +8,15 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
                                   SaveConfig, _gb, benchmark_drive,
                                   default_folder, free_bytes, list_drives)
-from acqApp.widgets import ROW_GAP, button_row, check, compact
+from acqApp.widgets import (ROW_GAP, button_row, collapsible, compact, hrow,
+                            show_item)
 
 # Match to Bpod… hidden at the operator's request (2026-10-01); the edge log
 # is still written, so a session can be matched later.
@@ -23,7 +24,8 @@ SHOW_BPOD_MATCH = False
 
 
 class SavePanel(QWidget):
-    """Settings tab: destination drive/folder, naming, and capacity readout."""
+    """Settings tab: mouse ID, folder, the next file and its capacity; drive
+    pick, drive scan and filename template folded under Advanced."""
 
     settings_changed = pyqtSignal()
 
@@ -49,26 +51,12 @@ class SavePanel(QWidget):
     # ── UI ───────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        grp = QGroupBox("Save configuration")
-        lay = QFormLayout(grp)
-        lay.setSpacing(4)
-
-        self._cmb_drive = compact(QComboBox())
-        self._reload_drives()
-        self._cmb_drive.activated.connect(self._on_drive_picked)
-        self._cmb_drive.setToolTip("The drive recordings go to, with its free space.")
-        self._btn_scan = QPushButton("Scan drives")
-        self._btn_scan.setToolTip(
-            "Write ~1 GiB to each drive to measure its real sustained write "
-            "speed, and flag any that would drop frames at current "
-            "acquisition rate. Not while recording.")
-        self._btn_scan.clicked.connect(self._on_scan_drives)
-        lay.addRow("Drive:", button_row(self._cmb_drive, self._btn_scan))
-
-        self._lbl_scan = QLabel()
-        self._lbl_scan.setWordWrap(True)
-        self._lbl_scan.setStyleSheet("color:#8a8a8a;")
-        lay.addRow("Drive scan:", self._lbl_scan)
+        self._ed_mouse_id = compact(QLineEdit(self._cfg.mouse_id), chars=16)
+        self._ed_mouse_id.setPlaceholderText("animal / mouse ID")
+        self._ed_mouse_id.setToolTip(
+            "Goes in the filename as {mouse_id}. Routines save under "
+            "<folder>\\<mouse ID>\\<date>.")
+        self._ed_mouse_id.editingFinished.connect(self._on_edited)
 
         self._ed_folder = QLineEdit(self._cfg.folder)
         self._ed_folder.editingFinished.connect(self._on_edited)
@@ -79,81 +67,94 @@ class SavePanel(QWidget):
         btn_open = QPushButton("Open")
         btn_open.setToolTip("Open this folder in Explorer")
         btn_open.clicked.connect(self._on_open)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(ROW_GAP)
-        row.addWidget(self._ed_folder, 1)
-        row.addWidget(btn_browse)
-        row.addWidget(btn_open)
-        row_w = QWidget()
-        row_w.setLayout(row)
-        lay.addRow("Folder:", row_w)
-
-        self._ed_mouse_id = compact(QLineEdit(self._cfg.mouse_id), chars=16)
-        self._ed_mouse_id.setPlaceholderText("animal / mouse ID")
-        self._ed_mouse_id.setToolTip("Goes in the filename as {mouse_id}.")
-        self._ed_mouse_id.editingFinished.connect(self._on_edited)
-        lay.addRow("Mouse ID:", self._ed_mouse_id)
-
-        self._ed_project = compact(QLineEdit(self._cfg.project), chars=16)
-        self._ed_project.setPlaceholderText("optional project label")
-        self._ed_project.setToolTip("Goes in the filename as {project}.")
-        self._ed_project.editingFinished.connect(self._on_edited)
-        lay.addRow("Project:", self._ed_project)
-
-        self._ed_template = compact(QLineEdit(self._cfg.template), chars=28)
-        self._ed_template.setToolTip("Tokens: " + "  ".join(TOKENS))
-        self._ed_template.editingFinished.connect(self._on_edited)
-        lay.addRow("Filename:", self._ed_template)
-
-        self._chk_fov = check(
-            "Append active FOV name", checked=self._cfg.append_fov,
-            tip="Add the name of the FOV the stage is at to the filename.")
-        self._chk_fov.toggled.connect(self._on_edited)
-        lay.addRow("", button_row(self._chk_fov))
-        self._update_fov_checkbox()
-
-        self._cmb_orca_format = compact(QComboBox())
-        self._cmb_orca_format.addItem("DCIMG — native, faster", "dcimg")
-        self._cmb_orca_format.addItem("TIFF — per-frame timestamps", "tiff")
-        # Preview survives a .dcimg recording (2026-09-23); per-frame reads
-        # don't, so there are no per-frame timestamps.
-        self._cmb_orca_format.setToolTip(
-            "Each recording is a folder: this camera's frames, the pupil "
-            "camera as .avi, everything else as CSV, settings as JSON.\n"
-            "DCIMG: the camera driver writes the file itself — faster, and "
-            "routines still run, but the only times recorded are when the "
-            "file opened and closed (cam_dcimg_t0_s/t1_s), not per frame.\n"
-            "TIFF: frames go through acqApp, each stamped on the shared clock.")
-        idx = self._cmb_orca_format.findData(self._cfg.orca_format)
-        self._cmb_orca_format.setCurrentIndex(max(0, idx))
-        self._cmb_orca_format.currentIndexChanged.connect(self._on_edited)
-        lay.addRow("Voltage cam:", self._cmb_orca_format)
+        folder_row = QHBoxLayout()
+        folder_row.setContentsMargins(0, 0, 0, 0)
+        folder_row.setSpacing(ROW_GAP)
+        folder_row.addWidget(self._ed_folder, 1)
+        folder_row.addWidget(btn_browse)
+        folder_row.addWidget(btn_open)
 
         self._lbl_preview = QLabel()
         self._lbl_preview.setWordWrap(True)
         self._lbl_preview.setStyleSheet("color:#8a8a8a;")
-        lay.addRow("Next file:", self._lbl_preview)
 
         self._lbl_space = QLabel()
         self._lbl_space.setWordWrap(True)
-        lay.addRow("Capacity:", self._lbl_space)
+
+        main = QFormLayout()
+        main.setSpacing(4)
+        main.addRow("Mouse ID:", hrow(self._ed_mouse_id))
+        main.addRow("Folder:", folder_row)
+        main.addRow("Next file:", self._lbl_preview)
+        main.addRow("Capacity:", self._lbl_space)
+
+        # ── Advanced (folded): drive, drive scan, filename template ──
+        self._cmb_drive = compact(QComboBox())
+        self._reload_drives()
+        self._cmb_drive.activated.connect(self._on_drive_picked)
+        self._cmb_drive.setToolTip(
+            "The drive recordings go to, with its free space. Picking one "
+            f"sets the folder to <drive>\\{_DEFAULT_SUBDIR}.")
+        self._btn_scan = QPushButton("Scan drives")
+        self._btn_scan.setToolTip(
+            "Write ~1 GiB to each drive to measure its real sustained write "
+            "speed, and flag any that would drop frames at current "
+            "acquisition rate. Not while recording.")
+        self._btn_scan.clicked.connect(self._on_scan_drives)
+
+        self._lbl_scan = QLabel()
+        self._lbl_scan.setWordWrap(True)
+
+        self._ed_template = compact(QLineEdit(self._cfg.template), chars=28)
+        self._ed_template.setToolTip("Tokens: " + "  ".join(TOKENS))
+        self._ed_template.editingFinished.connect(self._on_edited)
+
+        adv = QGroupBox("Advanced")
+        adv.setObjectName("advanced")       # style.accent_panel: underline when folded
+        al = QFormLayout(adv)
+        al.setSpacing(4)
+        # Small margins: they are all a folded box has, under its line.
+        al.setContentsMargins(8, 4, 8, 4)
+        al.addRow("Drive:", button_row(self._cmb_drive, self._btn_scan))
+        al.addRow(self._lbl_scan)
+        al.addRow("Filename:", self._ed_template)
+        collapsible(adv, expanded=False)
+        show_item(self._lbl_scan, False)            # until a scan has run
 
         align = QGroupBox("Stim rig alignment")
-        al = QVBoxLayout(align)
+        bl = QVBoxLayout(align)
         btn_bpod = QPushButton("Match to Bpod…")
         btn_bpod.setToolTip(
             "After a routine: match its trigger edges to Bpod's trials, "
             "renumber trial folders to Bpod's trial numbers and mark missed "
             "trials VOID. Checks first; changes nothing until you Apply.")
         btn_bpod.clicked.connect(self._on_match_bpod)
-        al.addLayout(button_row(btn_bpod))
-
-        root = QFormLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addRow(grp)
-        root.addRow(align)
+        bl.addLayout(button_row(btn_bpod))
         align.setVisible(SHOW_BPOD_MATCH)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addLayout(main)
+        root.addWidget(adv)
+        root.addWidget(align)
+        root.addStretch(1)
+
+    # ── Handlers ─────────────────────────────────────────────────────────────
+
+    def _on_browse(self) -> None:
+        start = self._cfg.folder or str(default_folder())
+        chosen = QFileDialog.getExistingDirectory(self, "Session folder", start)
+        if chosen:
+            self._ed_folder.setText(chosen)
+            self._on_edited()
+
+    def _on_open(self) -> None:
+        folder = self._cfg.resolved_folder()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(folder))                    # noqa: S606 (Windows)
+        except (OSError, AttributeError) as e:
+            self._lbl_space.setText(f"Could not open {folder}: {e}")
 
     def _reload_drives(self) -> None:
         self._cmb_drive.blockSignals(True)
@@ -178,33 +179,17 @@ class SavePanel(QWidget):
                 self._cmb_drive.blockSignals(False)
                 return
 
-    # ── Handlers ─────────────────────────────────────────────────────────────
-
     def _on_drive_picked(self, idx: int) -> None:
         root = self._cmb_drive.itemData(idx)
         if root:
             self._ed_folder.setText(str(Path(root) / _DEFAULT_SUBDIR))
             self._on_edited()
 
-    def _on_browse(self) -> None:
-        start = self._cfg.folder or str(default_folder())
-        chosen = QFileDialog.getExistingDirectory(self, "Session folder", start)
-        if chosen:
-            self._ed_folder.setText(chosen)
-            self._on_edited()
-
-    def _on_open(self) -> None:
-        folder = self._cfg.resolved_folder()
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            os.startfile(str(folder))                    # noqa: S606 (Windows)
-        except (OSError, AttributeError) as e:
-            self._lbl_space.setText(f"Could not open {folder}: {e}")
-
     def _on_scan_drives(self) -> None:
         """Benchmark every drive and flag any too slow for the current rate.
         Synchronous: a couple of seconds per drive, with processEvents()."""
         self._btn_scan.setEnabled(False)
+        show_item(self._lbl_scan, True)
         html = []
         try:
             for root, free, total in list_drives():
@@ -247,24 +232,11 @@ class SavePanel(QWidget):
     def _on_edited(self, *_a) -> None:
         self._cfg.folder    = self._ed_folder.text().strip()
         self._cfg.mouse_id  = self._ed_mouse_id.text().strip()
-        self._cfg.project   = self._ed_project.text().strip()
         self._cfg.template  = (self._ed_template.text().strip()
                               or DEFAULT_TEMPLATE)
-        self._cfg.orca_format = self._cmb_orca_format.currentData()
-        self._cfg.append_fov  = self._chk_fov.isChecked()
         self._sync_drive_combo()
         self._refresh()
         self.settings_changed.emit()
-
-    def _current_fov(self) -> str:
-        """The FOV name to append, or "" (box off or no FOV active)."""
-        return self._active_fov if self._chk_fov.isChecked() else ""
-
-    def _update_fov_checkbox(self) -> None:
-        self._chk_fov.setEnabled(bool(self._active_fov))
-        self._chk_fov.setToolTip(
-            f'Appends "{self._active_fov}" to the filename.' if self._active_fov
-            else "No FOV is active — go to one on the Stage tab first.")
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -277,7 +249,8 @@ class SavePanel(QWidget):
 
     def resolve_dir(self, when: datetime | None = None, *,
                     unique: bool = False) -> Path:
-        return self._cfg.resolve_dir(when, unique=unique, fov=self._current_fov())
+        """Named after the FOV the stage is at, if any."""
+        return self._cfg.resolve_dir(when, unique=unique, fov=self._active_fov)
 
     def resolve_routine_dir(self, fov: str, trial: int,
                             when: datetime | None = None, *,
@@ -291,7 +264,6 @@ class SavePanel(QWidget):
         if name == self._active_fov:
             return
         self._active_fov = name
-        self._update_fov_checkbox()
         self._refresh()
 
     def set_recording_active(self, on: bool) -> None:
@@ -325,9 +297,12 @@ class SavePanel(QWidget):
         plain = self.resolve_dir()
         unique = self.resolve_dir(unique=True)
         self._lbl_preview.setText(str(unique))
-        self._lbl_preview.setToolTip(
-            f"{plain.name} exists — next recording is auto-numbered."
-            if unique != plain else "")
+        tips = []
+        if self._active_fov:
+            tips.append(f'Ends in "{self._active_fov}": the FOV the stage is at.')
+        if unique != plain:
+            tips.append(f"{plain.name} exists — next recording is auto-numbered.")
+        self._lbl_preview.setToolTip("\n".join(tips))
 
         free = free_bytes(self._cfg.folder or str(default_folder()))
         if free is None:

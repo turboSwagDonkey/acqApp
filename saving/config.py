@@ -16,7 +16,7 @@ from typing import Callable
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')   # Windows-invalid + control chars
 _DEFAULT_SUBDIR = "acq_sessions"
 
-TOKENS = ("{mouse_id}", "{project}", "{date}", "{time}")
+TOKENS = ("{mouse_id}", "{date}", "{time}")
 
 
 def sanitize(name: str, fallback: str = "session") -> str:
@@ -98,12 +98,7 @@ DEFAULT_TEMPLATE = "{mouse_id}_{date}_{time}"
 class SaveConfig:
     folder:    str  = ""       # blank -> default_folder()
     mouse_id:  str  = ""
-    project:   str  = ""
     template:  str  = DEFAULT_TEMPLATE
-    append_fov: bool = False   # suffix the active FOV's name
-    # Every recording is a folder (acq/writer.py SessionWriter). The voltage
-    # camera's own format: "dcimg" (written by the driver) or "tiff".
-    orca_format: str  = "dcimg"
     bpod_folder: str  = ""       # where "Match to Bpod…" last found a file
 
     def resolved_folder(self) -> Path:
@@ -116,7 +111,6 @@ class SaveConfig:
         out = self.template or DEFAULT_TEMPLATE
         for tok, val in (
             ("{mouse_id}", sanitize(self.mouse_id, "mouse_id")),
-            ("{project}",  sanitize(self.project, "")),
             ("{date}",     when.strftime("%Y%m%d")),
             ("{time}",     when.strftime("%H%M%S")),
         ):
@@ -147,12 +141,10 @@ class SaveConfig:
         return self._resolve(self._dir_for, when, unique=unique, fov=fov)
 
     def routine_base(self, when: datetime | None = None) -> Path:
-        """<folder>/[<project>/]<mouse_id>/<date>: a routine's fixed hierarchy."""
+        """<folder>/<mouse_id>/<date>: a routine's fixed hierarchy."""
         when = when or datetime.now()
-        base = self.resolved_folder()
-        if self.project.strip():
-            base /= sanitize(self.project)
-        return base / sanitize(self.mouse_id, "mouse_id") / when.strftime("%Y%m%d")
+        return (self.resolved_folder() / sanitize(self.mouse_id, "mouse_id")
+                / when.strftime("%Y%m%d"))
 
     def resolve_routine_dir(self, fov: str, trial: int,
                             when: datetime | None = None, *,

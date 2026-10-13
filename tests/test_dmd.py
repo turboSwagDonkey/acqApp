@@ -432,7 +432,7 @@ def check_mode_switch_and_cache(r) -> None:
 
 
 def check_light_switch(r) -> None:
-    """The status-bar DMD toggle projects the tab's selected display, all-on if
+    """The DMD card's light toggle projects the tab's selected display, all-on if
     none is selected, and never swaps a broken selection for all-on."""
     from PIL import Image
 
@@ -444,34 +444,23 @@ def check_light_switch(r) -> None:
     win = make_window({"voltage_cam", "dmd"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     panel = dmd.panel
-    btn = win._status_widgets.get("dmd")
+    btn = dmd._light_btn
     lit = lambda: bool(dmd.controller._running)             # noqa: E731
     msg = lambda: win.statusBar().currentMessage()          # noqa: E731
 
-    r.check(btn is not None and btn is dmd.status_widget()
-            and win.statusBar().isAncestorOf(btn),
-            "the DMD module puts a switch in the window's status bar")
-    rec = win._btn_rec
-    box = rec.minimumSize()
-    r.check(rec.maximumSize() == box and btn.minimumSize() == box
-            and btn.maximumSize() == box,
-            f"Record and the DMD switch share one fixed box "
-            f"({box.width()}x{box.height()}): neither resizes with its state")
+    card = win._page_actions["dmd"].card
+    r.check(btn is not None and card.isAncestorOf(btn)
+            and "dmd" not in win._status_widgets,
+            "the DMD's switch sits on its sidebar card, not the status bar")
     clipped = []
-    for who, labels in ((rec, ("● Record", "■ Stop rec")),
-                        (btn, ("DMD OFF", "● DMD ON"))):
-        keep = who.text()
-        for text in labels:
-            who.setText(text)
-            hint = who.sizeHint()
-            if hint.width() > box.width() or hint.height() > box.height():
-                clipped.append((text, hint.width(), hint.height()))
-        who.setText(keep)
+    keep = btn.text()
+    for text in ("DMD OFF", "● DMD ON"):
+        btn.setText(text)
+        if btn.sizeHint().width() > card.minimumWidth():
+            clipped.append((text, btn.sizeHint().width()))
+    btn.setText(keep)
     r.check(not clipped,
-            f"…and every label either shows fits it, none clipped ({clipped})")
-    r.check("font-size:11pt" in btn.styleSheet().replace(" ", "")
-            and "padding:6px22px" in btn.styleSheet().replace(" ", ""),
-            "…in the same type and padding")
+            f"…and both its labels fit the card, none clipped ({clipped})")
     r.check(btn.isEnabled() and not btn.isChecked() and btn.text() == "DMD OFF"
             and not lit(), "it starts off, with the projector dark")
 
@@ -553,8 +542,8 @@ def check_light_switch(r) -> None:
         r.check(False, f"fixture: module unload refused ({e})")
     else:
         pump(app, 0.05)
-        r.check("dmd" not in win._status_widgets,
-                "unloading the DMD module removes its switch")
+        r.check("dmd" not in win._cards,
+                "unloading the DMD module removes its card and switch")
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()
     pump(app, 0.1)

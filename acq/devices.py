@@ -110,6 +110,12 @@ class ProjectorController(RecordingOutput, Protocol):
     @property
     def on_pixels(self) -> int: ...
 
+    @property
+    def frame(self) -> Any: ...         # the uploaded frame, or None
+
+    @property
+    def projecting(self) -> bool: ...
+
 
 # ── what a routine may drive ──────────────────────────────────────────────────
 # Declared by the adapter, so a routine drives the module as loaded (soft

@@ -571,6 +571,8 @@ EDITS = [
 
 SAVE_EDITS = [
     ("mouse_id", lambda p: p._ed_mouse_id.setText("m17"),        "m17"),
+    ("folder",   lambda p: p._ed_folder.setText(r"C:\acq_roundtrip"),
+     r"C:\acq_roundtrip"),
     ("template", lambda p: p._ed_template.setText("{mouse_id}_{time}"),
      "{mouse_id}_{time}"),
 ]
@@ -597,28 +599,24 @@ def _part_settings() -> int:
 
     # Edited below while never shown: a lazily-built window would leave the
     # controllers unconfigured.
-    dlg = win._settings_dialog
-    r.check(dlg is not None and dlg.isWindow(), "settings are a top-level window")
-    r.check(not isinstance(dlg, M.QDockWidget), "…and not a dock widget")
-    r.check(not dlg.isVisible(), "settings window starts hidden")
-    # Modules with `own_window` are not pages, but get a sidebar item; a
-    # module with no panel at all (the mirror's status-bar switch) gets neither.
+    wins = win._panel_windows
+    # A module with no panel at all (the mirror's switch) gets only a card.
     panelled = {m.key for m in win._modules if m.panel is not None}
-    paged = len(panelled) - sum(1 for m in win._modules if m.own_window)
-    r.check(dlg.tabs.count() == paged + 1,
-            f"a page per module plus Save (got {dlg.tabs.count()}, "
-            f"want {paged + 1})")
-    r.check(any(m.own_window for m in win._modules)
-            and all(dlg.panel_index(m.panel) < 0
-                    for m in win._modules if m.own_window),
-            "…and a module with its own window is not among them")
-    # Two selectors, kept in step: the tab bar and the sidebar.
+    r.check(set(wins) == panelled | {"saving"},
+            f"a settings window per panel, plus Save's ({sorted(wins)})")
+    r.check(all(w.isWindow() and not isinstance(w, M.QDockWidget)
+                for w in wins.values()),
+            "…each a top-level window, not a dock widget")
+    r.check(not any(w.isVisible() for w in wins.values()),
+            "…and all start hidden")
     r.check("mirror" not in panelled and "mirror" in {m.key for m in win._modules},
-            "control: the mirror is loaded, just without a page")
+            "control: the mirror is loaded, just without a window")
     mirror = next(m for m in win._modules if m.key == "mirror")
     sw = mirror.switch
-    r.check(sw is not None and win._status_widgets.get("mirror") is not None,
-            "the mirror's switch sits in the status bar")
+    card = win._cards.get("mirror")
+    r.check(sw is not None and card is not None and card.card.isAncestorOf(sw)
+            and "mirror" not in win._page_actions,
+            "the mirror's switch sits on a sidebar card that opens no page")
     start = mirror.settings.state
     sw.click()
     flipped = mirror.settings.state
@@ -628,23 +626,21 @@ def _part_settings() -> int:
             f"a click flips the logged state and a second flips it back "
             f"({start} -> {flipped} -> {mirror.settings.state})")
     r.check(set(win._page_actions) == panelled | {"saving"},
-            f"a sidebar item per page (got {sorted(win._page_actions)})")
+            f"a sidebar card per window (got {sorted(win._page_actions)})")
+    wheel = wins["wheel"]
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)
-    r.check(dlg.isVisible(), "a sidebar page item opens the window")
-    r.check(dlg.current_panel() is
-            next(m.panel for m in win._modules if m.key == "wheel"),
-            "…on that module's page")
-    r.check(win._page_actions["wheel"].isChecked(),
-            "…and checks only that item")
-    r.check(dlg.tabs.tabBar().isVisible(),
-            "the tab bar is still there — both ways to reach a page")
-    dlg.tabs.setCurrentIndex(dlg.panel_index(
-        next(m.panel for m in win._modules if m.key == "puffer")))
+    r.check(wheel.isVisible(), "a sidebar card opens its module's window")
+    r.check(win._page_actions["wheel"].isChecked()
+            and not any(a.isChecked() for k, a in win._page_actions.items()
+                        if k != "wheel"),
+            "…and lights only that card")
+    win._page_actions["puffer"].trigger()
     pump(app, 0.2)
-    r.check(win._page_actions["puffer"].isChecked()
-            and not win._page_actions["wheel"].isChecked(),
-            "choosing a TAB moves the sidebar highlight to match")
+    r.check(wins["puffer"].isVisible() and wheel.isVisible(),
+            "a second card opens a second window beside the first")
+    wins["puffer"].close()
+    pump(app, 0.1)
 
     # The Devices monitor is lit while open too.
     r.check(not win._devices_action.isChecked(),
@@ -660,42 +656,46 @@ def _part_settings() -> int:
             "the same way a panel window's own X does (_on_panel_window)")
 
     # On default_size(): the window manager has the last word on the shown one.
-    want  = dlg.default_size()
+    want  = wheel.default_size()
     from PyQt6.QtGui import QGuiApplication
     avail = QGuiApplication.primaryScreen().availableGeometry()
-    r.info(f"opens at {want.width()}x{want.height()} "
+    r.info(f"wheel opens at {want.width()}x{want.height()} "
            f"(screen {avail.width()}x{avail.height()})")
-    r.check(want.width() >= min(dlg.tabs.sizeHint().width(),
+    r.check(want.width() >= min(wheel._panel.sizeHint().width(),
                                 int(avail.width() * 0.9)),
-            "default size covers the widest panel without scrolling")
+            "default size covers its panel without scrolling")
     r.check(want.width() <= avail.width() and want.height() <= avail.height(),
             "…and still fits on the screen it opens on")
 
     # An insane SAVED size (interrupted write, unplugged monitor) must not win
-    # forever; restoreGeometry() can succeed on one. Fresh panel-less dialogs.
+    # forever; restoreGeometry() can succeed on one. Throwaway windows.
     from PyQt6.QtCore import QByteArray, QSize
+    from PyQt6.QtWidgets import QWidget as _Blank
 
-    from acqApp.dialogs import SettingsDialog, _looks_sane
+    from acqApp.dialogs import PanelWindow, _looks_sane
+    floor = PanelWindow._MIN_DEFAULT
 
-    r.check(not _looks_sane(QSize(50, 40), SettingsDialog._MIN_DEFAULT),
+    def throwaway() -> PanelWindow:
+        # "sync" has an accent but no panel, so no real window's key is used.
+        return PanelWindow(_Blank(), "test", "sync")
+
+    r.check(not _looks_sane(QSize(50, 40), floor),
             "control: _looks_sane flags a tiny size")
-    r.check(_looks_sane(QSize(*SettingsDialog._MIN_DEFAULT),
-                        SettingsDialog._MIN_DEFAULT),
+    r.check(_looks_sane(QSize(*floor), floor),
             "control: _looks_sane accepts a floor-sized window")
 
-    bad = SettingsDialog()
+    bad = throwaway()
     bad._saved_geom = QByteArray(b"not a real geometry blob")
     bad.show()
     pump(app, 0.1)
-    r.check(bad.width() >= SettingsDialog._MIN_DEFAULT[0] // 2
-            and bad.height() >= SettingsDialog._MIN_DEFAULT[1] // 2,
+    r.check(bad.width() >= floor[0] // 2 and bad.height() >= floor[1] // 2,
             f"a corrupt saved geometry falls back to the computed default, "
             f"not whatever a failed restore leaves behind "
             f"({bad.width()}x{bad.height()})")
     bad.close()
 
     # A validly-encoded tiny geometry: restoreGeometry() succeeds on it.
-    seed = SettingsDialog()
+    seed = throwaway()
     seed.show()
     pump(app, 0.05)
     seed.resize(60, 50)
@@ -703,43 +703,40 @@ def _part_settings() -> int:
     tiny_geom = seed.saveGeometry()
     seed.close()
 
-    tiny = SettingsDialog()
+    tiny = throwaway()
     tiny._saved_geom = tiny_geom
     tiny.show()
     pump(app, 0.1)
-    r.check(tiny.width() >= SettingsDialog._MIN_DEFAULT[0] // 2
-            and tiny.height() >= SettingsDialog._MIN_DEFAULT[1] // 2,
+    r.check(tiny.width() >= floor[0] // 2 and tiny.height() >= floor[1] // 2,
             f"a validly-restored but implausibly tiny geometry is overridden "
             f"too, not trusted just because restoreGeometry() succeeded "
             f"({tiny.width()}x{tiny.height()})")
     tiny.close()
 
-    # The tab switch above left `puffer` current.
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)
-    r.check(dlg.isVisible(), "clicking a different page switches, not hides")
-    win._page_actions["wheel"].trigger()
-    pump(app, 0.2)
-    r.check(not dlg.isVisible(), "clicking the open page again hides it")
+    r.check(not wheel.isVisible()
+            and not win._page_actions["wheel"].isChecked(),
+            "clicking the open card again shuts its window")
 
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)
-    dlg.close()                       # the title-bar ✕ / Esc path
+    wheel.close()                     # the title-bar ✕ / Esc path
     pump(app, 0.2)
-    r.check(not dlg.isVisible(), "closing the window hides it")
+    r.check(not wheel.isVisible(), "closing the window hides it")
     r.check(not any(a.isChecked() for a in win._page_actions.values()),
-            "…and un-checks every page item, so the next click re-opens it")
+            "…and un-lights its card, so the next click re-opens it")
 
     panels = {m.key: m.panel for m in win._modules}
 
     # ── every settings box folds away, and stays folded ──────────────────────
-    # Applied in add_panel(), so checked across every tab.
+    # Applied by PanelWindow, so checked across every window.
     from PyQt6.QtWidgets import QGroupBox, QWidget as _QW
     from acqApp import widgets as W
-    tabs = {dlg.tabs.tabText(i): dlg.tabs.widget(i).findChildren(QGroupBox)
-            for i in range(dlg.tabs.count())}
+    tabs = {k: w._panel.findChildren(QGroupBox) for k, w in wins.items()}
     flat = [b for v in tabs.values() for b in v]
-    r.check(len(flat) >= 10, f"{len(flat)} group boxes across {len(tabs)} tabs")
+    r.check(len(flat) >= 10,
+            f"{len(flat)} group boxes across {len(tabs)} windows")
     r.check(all(b.isCheckable() for b in flat),
             "every settings box has a fold toggle in its title")
     # An arrow, not a tick box: a tick reads as "enable this section".
@@ -861,9 +858,8 @@ def _part_settings() -> int:
     r.check(not panels2["pupil_cam"]._chk_led.isChecked(),
             "the LED came back OFF, not restored on")
 
-    dlg2 = win2._settings_dialog
-    flat2 = [b for i in range(dlg2.tabs.count())
-             for b in dlg2.tabs.widget(i).findChildren(QGroupBox)]
+    flat2 = [b for w in win2._panel_windows.values()
+             for b in w._panel.findChildren(QGroupBox)]
     r.check(all(b.title().startswith((W.OPEN, W.SHUT)) for b in flat2),
             "…and the arrows are there on the rebuilt window too")
     def find2(title):

@@ -6,11 +6,10 @@ substitutes here too — or the suite overwrites the operator's layout.
 from __future__ import annotations
 
 from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QGuiApplication
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QGridLayout,
-    QHBoxLayout, QLabel, QPushButton, QScrollArea, QTabWidget, QVBoxLayout,
-    QWidget,
+    QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from acqApp import config, probe, style, widgets
@@ -90,13 +89,15 @@ def _restore_or_fit(win: QDialog, saved, floor: tuple[int, int]) -> None:
 
 
 class PanelWindow(QDialog):
-    """One module's panel in its own window (`ModuleAdapter.own_window`).
-    Hidden, never destroyed: the panel is wired to a live controller.
-    Geometry is saved per module key."""
+    """One module's settings panel (or the Save tab) in a window of its own,
+    first sized to the panel. Hidden, never destroyed: the panel is wired to a
+    live controller. Geometry is saved per module key."""
 
     visibility_changed = pyqtSignal(bool)
 
-    _MIN_DEFAULT = (900, 700)
+    # Only a floor for a first size and for a sane restore; the panel's own
+    # size hint normally decides.
+    _MIN_DEFAULT = (360, 200)
     _PAD = 16
 
     def __init__(self, panel: QWidget, label: str, key: str, parent=None,
@@ -158,83 +159,6 @@ class PanelWindow(QDialog):
         panel = self._scroll.takeWidget()
         self._panel = None
         return panel
-
-
-class SettingsDialog(QDialog):
-    """Modeless settings window, a page per module. Hidden on close, never
-    destroyed: the panels are wired to live controllers."""
-
-    _GEOM_KEY = "settingsGeometry"
-    _MIN_DEFAULT = (900, 820)
-    _PAD = 16
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setWindowFlag(Qt.WindowType.Window, True)
-
-        self.tabs = QTabWidget()
-        self.tabs.setMovable(True)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.tabs)
-        scroll.setMinimumWidth(80)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(scroll)
-
-        # Sized on first show, once the panels exist.
-        self._saved_geom = _qsettings().value(self._GEOM_KEY)
-        self._sized = False
-
-    def default_size(self) -> QSize:
-        """Fits the largest panel (asks the tabs; a scroll area's hint is small)."""
-        return _fits_on_screen(self.tabs.sizeHint(), self._MIN_DEFAULT,
-                               self._PAD, self.screen())
-
-    def showEvent(self, event) -> None:
-        if not self._sized:
-            self._sized = True
-            _restore_or_fit(self, self._saved_geom, self._MIN_DEFAULT)
-        super().showEvent(event)
-
-    def add_panel(self, panel: QWidget, label: str, key: str,
-                  index: int | None = None) -> None:
-        """A tab in the module's accent, its group boxes made collapsible."""
-        idx = (self.tabs.addTab(panel, label) if index is None
-               else self.tabs.insertTab(index, panel, label))
-        self.tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[key]))
-        panel.setStyleSheet(style.accent_panel(key))
-        widgets.collapsible_groups(panel, key)
-        widgets.align_grids(panel)
-
-    def remove_panel(self, panel: QWidget) -> None:
-        """Not deleted: the adapter disposes of it."""
-        idx = self.tabs.indexOf(panel)
-        if idx >= 0:
-            self.tabs.removeTab(idx)
-
-    def panel_index(self, panel: QWidget) -> int:
-        return self.tabs.indexOf(panel)
-
-    def show_panel(self, panel: QWidget) -> bool:
-        idx = self.tabs.indexOf(panel)
-        if idx < 0:
-            return False
-        self.tabs.setCurrentIndex(idx)
-        return True
-
-    def current_panel(self) -> QWidget | None:
-        return self.tabs.currentWidget()
-
-    def save_geometry(self) -> None:
-        _qsettings().setValue(self._GEOM_KEY, self.saveGeometry())
-
-    def closeEvent(self, event) -> None:
-        self.save_geometry()
-        super().closeEvent(event)
 
 
 class ConnectionMonitor(QDialog):

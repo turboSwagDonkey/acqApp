@@ -2,14 +2,14 @@
 The PMT/camera mirror's adapter. Manual only (operator): ThorImage drives
 both switches over a port acqApp can't share, so no worker or controller,
 just the operator's assertion logged to `/mirror`. No settings tab: a
-Camera | PMT slide switch in the status bar.
+Camera | PMT slide switch on its sidebar card.
 """
 from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any
 
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QWidget
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
@@ -35,25 +35,22 @@ class MirrorModule(ModuleAdapter):
         self._rec = None
         self._toggle_count = 0
         self._state = config.load_dataclass(MirrorSettings, self.key).state
-        self._box: QWidget | None = None
         self.switch: SlideSwitch | None = None
 
-    def status_widget(self) -> QWidget:
-        if self._box is None:
-            self.switch = SlideSwitch("Camera", "PMT", self.key)
-            self.switch.setToolTip(_TIP)
-            self.switch.setChecked(self._state == PMT)
-            self.switch.toggled.connect(
-                lambda on: self._on_toggle(PMT if on else CAMERA))
-            self._box = QWidget()
-            lay = QHBoxLayout(self._box)
-            lay.setContentsMargins(6, 0, 6, 0)
-            lay.setSpacing(6)
-            lbl = QLabel("Mirror")
-            lbl.setToolTip(_TIP)
-            lay.addWidget(lbl)
-            lay.addWidget(self.switch)
-        return self._box
+    def mini_view(self) -> QWidget:
+        """Built fresh per card; `self.switch` is the newest."""
+        self.switch = SlideSwitch("Camera", "PMT", self.key)
+        self.switch.setToolTip(_TIP)
+        self.switch.setChecked(self._state == PMT)
+        self.switch.toggled.connect(
+            lambda on: self._on_toggle(PMT if on else CAMERA))
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addStretch(1)
+        lay.addWidget(self.switch)
+        lay.addStretch(1)
+        return box
 
     @property
     def settings(self) -> MirrorSettings:

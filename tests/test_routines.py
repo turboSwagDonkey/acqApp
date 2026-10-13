@@ -2774,7 +2774,6 @@ def check_app(r: Report, app, tmp) -> None:
 
     win._save_panel._ed_folder.setText(str(out))
     win._save_panel._ed_mouse_id.setText("routine")
-    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     win._save_panel._on_edited()
 
     r.check(win.stage_target() is mod["stage"],
@@ -3017,7 +3016,6 @@ def check_file_rolling(r: Report, app, tmp) -> None:
 
     win._save_panel._ed_folder.setText(str(out))
     win._save_panel._ed_mouse_id.setText("roll")
-    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     win._save_panel._on_edited()
 
     def run_to_done(steps, groups, save_mode) -> int:

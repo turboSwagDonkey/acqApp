@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QPushButton, QWidget
+from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 from acqApp import config, style
 from acqApp.acq.devices import ProjectorController
@@ -16,10 +16,11 @@ from acqApp.devices.dmd.control import (MODE_PATTERN, MODE_ROI, DmdController,
                                         DmdSettings, MockDmdController)
 from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
+from acqApp.sidebar import MiniPattern
 
 # The standalone dmdGUI_project app's alignment keys -> DmdSettings attribute.
 _SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
-_LIGHT_OFF, _LIGHT_ON = "DMD OFF", "● DMD ON"       # the status-bar switch's labels
+_LIGHT_OFF, _LIGHT_ON = "DMD OFF", "● DMD ON"       # the card's light switch
 
 class DmdModule(ModuleAdapter):
     key = "dmd"
@@ -44,33 +45,34 @@ class DmdModule(ModuleAdapter):
         self._stop_timer.timeout.connect(self.stop_display)
         self._light_btn: QPushButton | None = None
 
-    # ── the status-bar light switch ──
-    def status_widget(self) -> QWidget:
-        """A large DMD on/off toggle beside Record: it projects what the DMD
-        tab has selected, or all-on when nothing is."""
-        if self._light_btn is None:
-            b = QPushButton()
-            b.setCheckable(True)
-            # Record's box (the window sizes it to match), in the DMD accent.
-            c = style.HEX["dmd"]
-            b.setStyleSheet(
-                style.record_btn("dmd")
-                + f"QPushButton:checked{{background:{c};color:white;"
-                  f"border:2px solid {c}}}")
-            b.setToolTip(
-                "THIS PROJECTS LIGHT.\nTurns the DMD on or off using the "
-                "display selected on the DMD tab (Image, ROIs or All on). "
-                "With nothing selected it projects all-on.")
-            b.toggled.connect(self._on_light_button)
-            # The window gives it a fixed box: tell it the widest label.
-            widest = 0
-            for text in (_LIGHT_OFF, _LIGHT_ON):
-                b.setText(text)
-                widest = max(widest, b.sizeHint().width())
-            b.setMinimumWidth(widest)
-            self._light_btn = b
-            self._show_light(False)
-        return self._light_btn
+    # ── the sidebar card: the uploaded frame and the light switch ──
+    def mini_view(self) -> QWidget:
+        """Built fresh per card, so the switch is too; the newest is the one
+        `_show_light` keeps in step."""
+        b = QPushButton()
+        b.setCheckable(True)
+        c = style.HEX["dmd"]
+        b.setStyleSheet(
+            style.toggle_btn("dmd")
+            + f"QPushButton{{font-weight:bold;padding:4px 8px}}"
+              f"QPushButton:checked{{background:{c};color:white;"
+              f"border:1px solid {c}}}")
+        b.setToolTip(
+            "THIS PROJECTS LIGHT.\nTurns the DMD on or off using the "
+            "display selected on the DMD tab (Image, ROIs or All on). "
+            "With nothing selected it projects all-on.")
+        b.toggled.connect(self._on_light_button)
+        self._light_btn = b
+        self._show_light(self.controller is not None
+                         and self.controller.projecting)
+
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(MiniPattern(self.key, self._mini_state))
+        lay.addWidget(b)
+        return box
 
     def _show_light(self, lit: bool) -> None:
         """Make the button say what the projector is doing; never re-triggers it."""
@@ -118,6 +120,14 @@ class DmdModule(ModuleAdapter):
                 "all_on": "all-on"}[self.panel.mode]
         self.win.status(f"DMD on: {name}"
                         + (" (nothing was selected)" if fallback else ""))
+
+    def _mini_state(self):
+        """The uploaded frame, the selection's name, and whether it is lit."""
+        c = self.controller
+        name = self.panel.display_name if self.panel is not None else ""
+        # The mock uploads a placeholder for "nothing selected".
+        frame = c.frame if (c is not None and name) else None
+        return frame, name, bool(c is not None and c.projecting)
 
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())

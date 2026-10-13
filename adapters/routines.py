@@ -43,6 +43,7 @@ from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS,
                                       pattern_label, play_order,
                                       recording_region_at, validate)
 from acqApp.saving.config import BAD_SUFFIX, rename_trial
+from acqApp.sidebar import MiniText
 
 # Under three frames at 106 Hz; boundaries are stamped from the clock anyway.
 TICK_MS = 25
@@ -144,8 +145,7 @@ class RoutinesModule(ModuleAdapter):
     """Wires `routines/` into this window. Owns no device."""
     key = "routines"
     tab_label = "Routines"
-    own_window = True
-    own_window_size = (728, 936)
+    window_size = (728, 936)
 
     def __init__(self, win) -> None:
         super().__init__(win)
@@ -842,6 +842,21 @@ class RoutinesModule(ModuleAdapter):
                 where += " — puffing"
         self.panel.set_state(eng.phase, where, i)
         self.panel.set_progress(eng.overall_progress(), self._left(eng))
+
+    def mini_view(self) -> QWidget:
+        return MiniText(self._mini_text)
+
+    def _mini_text(self) -> tuple[str, str]:
+        eng = self._engine
+        if eng is None or eng.phase == Phase.IDLE:
+            return "idle", ""
+        name = self._routine.name if self._routine is not None else ""
+        if eng.phase in (Phase.ARMED, Phase.DONE):
+            return eng.phase, name
+        i = eng.position[0]
+        return (f"step {i + 1}/{self._n_steps}  ·  "
+                f"{eng.overall_progress() * 100:.0f} %",
+                f"{eng.phase}  ·  {name}" if name else eng.phase)
 
     def _repeat_suffix(self, eng) -> str:
         pos = eng.order_position

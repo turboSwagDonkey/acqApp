@@ -28,6 +28,7 @@ from acqApp.devices.pupil_cam.rim import contrast_summary
 from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker, PupilTrackWorker
 from acqApp.devices.pupil_cam.tracking_panel import pin_click
 from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
+from acqApp.sidebar import MiniText
 from acqApp.widgets import compact
 
 
@@ -587,6 +588,17 @@ class PupilCamModule(ModuleAdapter):
             self._fit_curve.setData([], [])
         if self._mask_img is not None:
             self._mask_img.clear()
+
+    def mini_view(self) -> QWidget:
+        return MiniText(self._mini_text)
+
+    def _mini_text(self) -> tuple[str, str]:
+        if self.worker is None:
+            return "idle", ""
+        if not self._trace:
+            return "● live", ""
+        radius, blink = self._trace[-1]
+        return ("blink" if blink else f"r {radius:.1f} px"), "● live · pupil"
 
     # ── display ──
     def update_display(self) -> None:

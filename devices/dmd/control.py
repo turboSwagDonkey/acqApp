@@ -181,6 +181,14 @@ class DmdController(QObject):
     def on_pixels(self) -> int:
         return 0 if self._pattern is None else int((self._pattern > 0).sum())
 
+    @property
+    def frame(self) -> np.ndarray | None:
+        return self._pattern
+
+    @property
+    def projecting(self) -> bool:
+        return self._running
+
     def set_sink(self, sink: Callable[[int], None] | None) -> None:
         self._sink = sink
 
@@ -304,6 +312,14 @@ class MockDmdController(QObject):
     @property
     def on_pixels(self) -> int:
         return 0 if self._pattern is None else int((self._pattern > 0).sum())
+
+    @property
+    def frame(self) -> np.ndarray | None:
+        return self._pattern
+
+    @property
+    def projecting(self) -> bool:
+        return self._running
 
     def set_sink(self, sink: Callable[[int], None] | None) -> None:
         self._sink = sink

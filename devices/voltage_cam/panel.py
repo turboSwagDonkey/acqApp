@@ -29,6 +29,7 @@ class SettingsPanel(QWidget):
     trigger_changed   = pyqtSignal(str)
     burst_changed     = pyqtSignal(int)     # frames per edge; 0 = until re-armed
     target_hz_changed = pyqtSignal(float)   # capture rate, hot; 0 = Max
+    format_changed    = pyqtSignal(str)     # "dcimg" | "tiff"; next Record
     lut_visible_changed = pyqtSignal(bool)  # show/hide the histogram bar
     auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
     preview_avg_changed = pyqtSignal(int)   # frames to average in the preview only
@@ -99,6 +100,23 @@ class SettingsPanel(QWidget):
         self._spn_target_hz.setSpecialValueText("Max")
         self._spn_target_hz.valueChanged.connect(self.target_hz_changed)
 
+        self._cmb_format = compact(QComboBox())
+        self._cmb_format.addItem("DCIMG — native, faster", "dcimg")
+        self._cmb_format.addItem("TIFF — per-frame timestamps", "tiff")
+        self._cmb_format.setCurrentIndex(
+            max(0, self._cmb_format.findData(self._cfg.file_format)))
+        self._cmb_format.currentIndexChanged.connect(
+            lambda i: self.format_changed.emit(self._cmb_format.itemData(i)))
+        # Preview survives a .dcimg recording (2026-09-23); per-frame reads
+        # don't, so there are no per-frame timestamps.
+        self._cmb_format.setToolTip(
+            "Each recording is a folder: this camera's frames, the pupil "
+            "camera as .avi, everything else as CSV, settings as JSON.\n"
+            "DCIMG: the camera driver writes the file itself — faster, and "
+            "routines still run, but the only times recorded are when the "
+            "file opened and closed (cam_dcimg_t0_s/t1_s), not per frame.\n"
+            "TIFF: frames go through acqApp, each stamped on the shared clock.")
+
         self._lbl_rate = QLabel()
         self._lbl_rate.setWordWrap(True)
         self._lbl_rate.setToolTip("The frame rate you get: measured once the "
@@ -131,7 +149,8 @@ class SettingsPanel(QWidget):
         self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
 
         # Same shape as the pupil panel: a line per theme, aligned columns.
-        lay.addRow(pairs_grid(("Resolution:", self._cmb_preset)))
+        lay.addRow(pairs_grid(("Resolution:", self._cmb_preset),
+                              ("Save as:", self._cmb_format)))
         lay.addRow(pairs_grid(
             ("Binning:", self._cmb_binning,
              "Capture rate:", self._spn_target_hz),
@@ -227,6 +246,7 @@ class SettingsPanel(QWidget):
             link         = self._cfg.link,
             target_hz    = self._spn_target_hz.value(),
             burst_frames = self._spn_burst.value(),
+            file_format  = self._cmb_format.currentData(),
             show_lut     = self._chk_lut.isChecked(),
             auto_levels  = self._chk_auto.isChecked(),
             preview_avg  = self._spn_preview_avg.value(),

@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from _harness import (Report, qt_app, isolate_user_state, make_window, pump,
                       run_parts)
+from acqApp import config
 from acqApp.devices.voltage_cam import presets as P
 from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
 from acqApp.devices.voltage_cam.presets import AcqConfig
@@ -422,12 +423,13 @@ def check_cap_guards(r: Report, tmp: Path) -> None:
 def check_host_wiring(r: Report, app, tmp: Path) -> None:
     """When the .dcimg path is chosen, and what the file is called."""
     win = make_window({"voltage_cam", "routines"})
-    sp = win._save_panel
+    cam = next(m for m in win._modules if m.key == "voltage_cam")
+    fmt = cam.panel._cmb_format
 
-    sp._cmb_orca_format.setCurrentIndex(
-        sp._cmb_orca_format.findData("dcimg"))
-    sp._on_edited()
+    fmt.setCurrentIndex(fmt.findData("dcimg"))
     r.check(win.dcimg_enabled(), "DCIMG on: every session is a folder of files")
+    r.check(config.load_settings("voltage_cam").get("file_format") == "dcimg",
+            "…chosen on the Voltage cam tab, and saved with its settings")
 
     r.check(win.dcimg_target("voltage_cam") is None,
             "no target before a recording opens, even when enabled")
@@ -437,10 +439,27 @@ def check_host_wiring(r: Report, app, tmp: Path) -> None:
     r.check(got == win._rec_path / "M1_20260923_120000_voltage_cam.dcimg",
             f"named like SplitWriter's other per-stream files (got {got})")
 
-    sp._cmb_orca_format.setCurrentIndex(sp._cmb_orca_format.findData("tiff"))
-    sp._on_edited()
+    fmt.setCurrentIndex(fmt.findData("tiff"))
     r.check(win.dcimg_target("voltage_cam") is None,
             "TIFF asks for no target, so the sink path runs unchanged")
+    r.check(config.load_settings("voltage_cam").get("file_format") == "tiff",
+            "…and the change is saved")
+
+    # It used to be the Save tab's `orca_format`: an old TIFF carries over,
+    # and is saved at once, before the Save tab rewrites its section.
+    vc = config.load_settings("voltage_cam")
+    vc.pop("file_format", None)
+    config.save_settings("voltage_cam", vc)
+    config.save_settings("saving", {"orca_format": "tiff"})
+    old = make_window({"voltage_cam"})
+    try:
+        cam = next(m for m in old._modules if m.key == "voltage_cam")
+        r.check(not old.dcimg_enabled()
+                and config.load_settings("voltage_cam").get("file_format")
+                == "tiff",
+                "a TIFF chosen on the old Save tab carries over to the camera")
+    finally:
+        old.close()
 
 
 def check_routine_counts_recorder(r: Report, app) -> None:
@@ -485,9 +504,8 @@ def check_routine_counts_recorder(r: Report, app) -> None:
 
     # It used to be refused.
     cam.worker = None
-    sp = win._save_panel
-    sp._cmb_orca_format.setCurrentIndex(sp._cmb_orca_format.findData("dcimg"))
-    sp._on_edited()
+    fmt = cam.panel._cmb_format
+    fmt.setCurrentIndex(fmt.findData("dcimg"))
     adapter._start()
     r.check(adapter._engine is not None,
             "a routine starts with ORCA format set to DCIMG")
@@ -698,10 +716,22 @@ def _part_dcimg() -> int:
         check_naming(r, tmp)
         check_cap_guards(r, tmp)
         check_cap_vs_gated(r)
-        check_host_wiring(r, app, tmp)
         check_routine_counts_recorder(r, app)
         check_wait_for_camera(r, app)
         check_swap_rearms_in_order(r, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+def _part_format() -> int:
+    """The DCIMG/TIFF choice and the host's file path: no driver needed."""
+    r = Report("format")
+    isolate_user_state()
+    app = qt_app()
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_format_"))
+    try:
+        check_host_wiring(r, app, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
@@ -1416,6 +1446,7 @@ PARTS = {
     "readout": _part_readout,
     "timestamps": _part_timestamps,
     "dcimg": _part_dcimg,
+    "format": _part_format,
     "losses": _part_losses,
     "burst": _part_burst,
 }

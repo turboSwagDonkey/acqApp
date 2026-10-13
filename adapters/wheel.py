@@ -12,6 +12,7 @@ from acqApp.adapters.base import ModuleAdapter
 from acqApp.devices.wheel.acquisition import EncoderWorker, MockEncoderWorker
 from acqApp.devices.wheel.panel import SettingsPanel as WheelSettingsPanel
 from acqApp.devices.wheel.settings import EncoderSettings
+from acqApp.sidebar import MiniText
 
 
 class WheelModule(ModuleAdapter):
@@ -67,6 +68,19 @@ class WheelModule(ModuleAdapter):
         else:
             self._readout(
                 f"speed {snap[2]:+.2f} rev/s      net {dist:+.1f} rev")
+
+    def mini_view(self) -> QWidget:
+        return MiniText(self._mini_text)
+
+    def _mini_text(self) -> tuple[str, str]:
+        snap = self._snapshot()
+        if snap is None:
+            return "idle", "speed shows during a session"
+        if not self._cfg.volts_per_rev:
+            return "", "set V/rev to get speed"
+        u = self._speed_units()
+        return (f"{snap[2]:+.1f} {u}" if u == "mm/s"
+                else f"{snap[2]:+.2f} {u}"), "speed (live)"
 
     def _readout(self, text: str) -> None:
         if text != self._readout_text:

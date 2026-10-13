@@ -59,10 +59,9 @@ def main() -> int:
 
     win._save_panel._ed_folder.setText(str(out))
     win._save_panel._ed_mouse_id.setText("smoke")
-    win._save_panel._ed_template.setText("{mouse_id}_{date}_{time}")
     # TIFF: frames through acqApp, each stamped; DCIMG has only file times.
-    sp = win._save_panel
-    sp._cmb_orca_format.setCurrentIndex(sp._cmb_orca_format.findData("tiff"))
+    fmt = mod["voltage_cam"].panel._cmb_format
+    fmt.setCurrentIndex(fmt.findData("tiff"))
     win._save_panel._on_edited()
     r.check(win._save_panel.writable_error() is None, "save target is writable")
 
@@ -174,7 +173,7 @@ def main() -> int:
     for mod in (acqApp.main, acqApp.dialogs, acqApp.widgets):
         r.check(getattr(mod, "QSettings", MemorySettings) is MemorySettings,
                 f"{mod.__name__} uses the substituted QSettings")
-    r.check(acqApp.dialogs.SettingsDialog._GEOM_KEY in MemorySettings.store,
+    r.check("panelGeometry/saving" in MemorySettings.store,
             "settings-window geometry written to the substitute too")
 
     # ── Verify the file ──────────────────────────────────────────────────────

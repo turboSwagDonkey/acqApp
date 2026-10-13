@@ -27,31 +27,35 @@ WHEN = datetime(2026, 8, 12, 14, 30, 5)
 
 def check_stem(r: Report) -> None:
     """Token substitution and sanitisation of operator free text."""
-    cfg = SaveConfig(mouse_id="m17", project="run2",
-                     template="{mouse_id}_{project}_{date}_{time}")
-    r.check(cfg.stem(WHEN) == "m17_run2_20260812_143005",
-            f"all four tokens substituted (got {cfg.stem(WHEN)!r})")
+    cfg = SaveConfig(mouse_id="m17")
+    r.check(cfg.stem(WHEN) == "m17_20260812_143005",
+            f"the default template: mouse ID, date, time "
+            f"(got {cfg.stem(WHEN)!r})")
+    custom = SaveConfig(mouse_id="m17", template="{date}_{mouse_id}")
+    r.check(custom.stem(WHEN) == "20260812_m17",
+            f"a custom template is followed (got {custom.stem(WHEN)!r})")
+    tidy = SaveConfig(mouse_id="m17", template="{mouse_id}__{project}")
+    r.check(tidy.stem(WHEN) == "m17_{project}",
+            f"an unknown token is left as typed, doubled _ tidied "
+            f"(got {tidy.stem(WHEN)!r})")
+    r.check(SaveConfig().stem(WHEN) == "mouse_id_20260812_143005",
+            f"no mouse ID still names the file (got {SaveConfig().stem(WHEN)!r})")
 
     # A separator would create a directory, or escape the save folder.
-    cfg = SaveConfig(mouse_id=r"m17/../x", template="{mouse_id}")
-    r.check("/" not in cfg.stem(WHEN) and "\\" not in cfg.stem(WHEN),
+    bad = SaveConfig(mouse_id=r"m17/../x")
+    r.check("/" not in bad.stem(WHEN) and "\\" not in bad.stem(WHEN),
             f"path separators sanitised out of the mouse ID "
-            f"(got {cfg.stem(WHEN)!r})")
+            f"(got {bad.stem(WHEN)!r})")
     r.check(sanitize("") == "session" and sanitize("  ..  ") == "session",
             "empty/degenerate names fall back rather than producing ''")
 
-    cfg = SaveConfig(mouse_id="m17", project="", template="{mouse_id}_{project}")
-    r.check(cfg.stem(WHEN) == "m17", f"empty token tidied (got {cfg.stem(WHEN)!r})")
-
-    # The active FOV name is an opt-in suffix, not a template token.
-    cfg = SaveConfig(mouse_id="m17", template="{mouse_id}")
     r.check(cfg.stem(WHEN) == cfg.stem(WHEN, fov=""),
             "no FOV is a no-op — today's plain stem, unchanged")
-    r.check(cfg.stem(WHEN, fov="window1") == "m17_window1",
-            f"a FOV name is appended after the resolved stem "
+    r.check(cfg.stem(WHEN, fov="window1") == "m17_20260812_143005_window1",
+            f"a FOV name is appended after the stem "
             f"(got {cfg.stem(WHEN, fov='window1')!r})")
-    r.check("/" not in cfg.stem(WHEN, fov="a/b") and cfg.stem(WHEN, fov="a/b")
-            == "m17_a_b",
+    r.check("/" not in cfg.stem(WHEN, fov="a/b")
+            and cfg.stem(WHEN, fov="a/b").endswith("_a_b"),
             f"the FOV name is sanitised too (got {cfg.stem(WHEN, fov='a/b')!r})")
 
     # FOV<name>_T<n>, but a FOV named "fov…" must not read "FOVfov1".
@@ -60,34 +64,33 @@ def check_stem(r: Report) -> None:
         got = cfg.resolve_routine_dir(fov, 2, WHEN).name
         r.check(got == want, f"routine stem for FOV {fov!r} (got {got!r})")
 
-    p = SaveConfig(mouse_id="m17", project="").routine_base(WHEN)
-    r.check(p.parent.name == "m17"
+    p = SaveConfig(mouse_id="m17").routine_base(WHEN)
+    r.check(p.name == "20260812" and p.parent.name == "m17"
             and p.parent.parent == SaveConfig(mouse_id="m17").resolved_folder(),
-            f"empty project adds no level (got {p})")
-    p = SaveConfig(mouse_id="m17", project="pX").routine_base(WHEN)
-    r.check(p.parent.name == "m17" and p.parent.parent.name == "pX",
-            f"a set project is still a level (got {p})")
+            f"a routine saves under <folder>/<mouse>/<date> (got {p})")
 
 
 def check_unique(r: Report, tmp: Path) -> None:
     """resolve_dir(unique=True) must never name a folder that already exists."""
-    cfg = SaveConfig(folder=str(tmp / "u"), mouse_id="m17", template="{mouse_id}")
+    cfg = SaveConfig(folder=str(tmp / "u"), mouse_id="m17")
+    stem = cfg.stem(WHEN)
     first = cfg.resolve_dir(WHEN, unique=True)
-    r.check(first.name == "m17", "first recording keeps the stem")
+    r.check(first.name == stem, "first recording keeps the stem")
     first.mkdir(parents=True)
     (first / "m17_data.csv").write_text("first recording")
     second = cfg.resolve_dir(WHEN, unique=True)
-    r.check(second.name == "m17_001" and not second.exists(),
+    r.check(second.name == f"{stem}_001" and not second.exists(),
             f"second resolves to a free folder ({second.name})")
     second.mkdir()
     third = cfg.resolve_dir(WHEN, unique=True)
-    r.check(third.name == "m17_002", f"numbering continues ({third.name})")
+    r.check(third.name == f"{stem}_002", f"numbering continues ({third.name})")
     r.check((first / "m17_data.csv").read_text() == "first recording",
             "the original was never touched")
     # The preview and the metadata rely on this staying deterministic.
     r.check(cfg.resolve_dir(WHEN) == first, "unique=False is unchanged")
-    r.check(not hasattr(cfg, "resolve") and cfg.orca_format == "dcimg",
-            "no .h5 path any more; the voltage camera defaults to DCIMG")
+    r.check(not any(hasattr(cfg, a) for a in
+                    ("resolve", "orca_format", "project")),
+            "no .h5 path, format or project: the camera owns its format")
 
 
 def check_benchmark_drive(r: Report, tmp: Path) -> None:
@@ -459,15 +462,33 @@ def check_bpod_rollback(r: Report, tmp: Path) -> None:
 
 def check_scan_idle_while_recording(r: Report, tmp: Path) -> None:
     """Scan drives writes 1 GiB per drive on the GUI thread, the recording's
-    own included: not while a recording runs."""
+    own included: not while a recording runs. Also: the FOV the stage is at
+    names the file, with no box to tick; Advanced starts folded."""
     from acqApp.saving import SavePanel
 
     panel = SavePanel(SaveConfig(folder=str(tmp / "scan"), mouse_id="m1"))
+    adv = panel._cmb_drive.parentWidget()
+    r.check(adv.isCheckable() and not adv.isChecked()
+            and adv.isAncestorOf(panel._ed_template)
+            and adv.isAncestorOf(panel._btn_scan),
+            "drive, scan and template live in Advanced, folded at start")
+    adv.setChecked(True)
+    r.check(not panel._lbl_scan.isVisibleTo(adv),
+            "…and unfolding it doesn't show an empty scan line")
     r.check(panel._btn_scan.isEnabled(), "Scan drives is available when idle")
     panel.set_recording_active(True)
     r.check(not panel._btn_scan.isEnabled(), "...and off while recording")
     panel.set_recording_active(False)
     r.check(panel._btn_scan.isEnabled(), "...and back when it stops")
+
+    panel.set_active_fov("FOV3")
+    r.check(panel.resolve_dir().name.endswith("_FOV3")
+            and panel._lbl_preview.text().endswith("_FOV3"),
+            f"at a saved FOV the next file ends in its name "
+            f"({panel._lbl_preview.text()})")
+    panel.set_active_fov("")
+    r.check(not panel.resolve_dir().name.endswith("_FOV3"),
+            "…and off it, it doesn't")
 
 
 def check_bpod_dialog(r: Report, tmp: Path) -> None:

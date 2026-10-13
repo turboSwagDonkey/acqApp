@@ -21,6 +21,7 @@ from acqApp.devices.stage.acquisition import StagePollWorker
 from acqApp.devices.stage.control import MockStageController, StageController
 from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
 from acqApp.devices.stage.settings import load_settings as load_stage_settings
+from acqApp.sidebar import MiniText
 
 
 MOVE_GRACE_S = 0.1
@@ -55,6 +56,22 @@ class StageModule(ModuleAdapter):
         self._disp_timer = QTimer()
         self._disp_timer.setInterval(33)
         self._disp_timer.timeout.connect(self.update_display)
+        # Kept for the sidebar card: `get_latest()` consumes.
+        self._pos: tuple[float, ...] | None = None
+
+    def mini_view(self) -> QWidget:
+        return MiniText(self._mini_text)
+
+    def _mini_text(self) -> tuple[str, str]:
+        if self.controller is None:
+            return "not connected", ""
+        pos = self._pos
+        if pos is None:
+            return "…", ""
+        z = f"Z {pos[2]:.1f} µm" if len(pos) > 2 else "µm"
+        fov = self.active_fov_name()
+        return (f"X {pos[0]:.1f}   Y {pos[1]:.1f}",
+                z + (f"  ·  FOV {fov}" if fov else ""))
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -117,6 +134,7 @@ class StageModule(ModuleAdapter):
     def close_controller(self) -> None:
         # Each step independent, so a dead port can't strand a half teardown.
         self._disp_timer.stop()
+        self._pos = None
         if self.panel is not None:
             self.panel.bind_controller(None)
         if self.worker is not None:
@@ -138,6 +156,7 @@ class StageModule(ModuleAdapter):
     def update_display(self) -> None:
         pos = self.worker.get_latest() if self.worker is not None else None
         if pos is not None:
+            self._pos = pos
             self.panel.set_readout(pos[0], pos[1],
                                    pos[2] if len(pos) > 2 else None)
 

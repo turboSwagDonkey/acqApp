@@ -3,6 +3,7 @@ The air puffer's adapter: an output, so it has a controller and no worker.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -12,11 +13,18 @@ from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.devices.puffer.control import (MockPufferController, PufferController,
                                    PufferSettings, SettingsPanel as PufferPanel)
+from acqApp.sidebar import MiniText
 
 
 class PufferModule(ModuleAdapter):
     key = "puffer"
     tab_label = "Puffer"
+
+    def __init__(self, win) -> None:
+        super().__init__(win)
+        # Since launch, for the sidebar card.
+        self._n_puffs = 0
+        self._last_puff: float | None = None
 
     def build_panel(self) -> QWidget:
         self.panel = PufferPanel(config.load_dataclass(PufferSettings, self.key))
@@ -45,6 +53,19 @@ class PufferModule(ModuleAdapter):
         which is what "Test puff" is for: verifying the puff you scheduled."""
         if self.controller is not None:
             self.controller.fire(duration)
+            self._n_puffs += 1
+            self._last_puff = time.monotonic()
+
+    def mini_view(self) -> QWidget:
+        return MiniText(self._mini_text)
+
+    def _mini_text(self) -> tuple[str, str]:
+        dur = f"{self.panel.settings.duration_s * 1000:.0f} ms puff"
+        if self._last_puff is None:
+            return "ready", dur
+        ago = time.monotonic() - self._last_puff
+        return (f"{self._n_puffs} puff{'s' * (self._n_puffs != 1)}",
+                f"last {ago:.0f} s ago · {dur}")
 
     # ── what an experiment routine may drive (acq.devices.PufferTarget) ──
     def puffer_target(self):

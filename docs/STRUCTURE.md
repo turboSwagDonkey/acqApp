@@ -24,6 +24,7 @@ flowchart TD
     style["style.py"]
     console["console.py"]
     widgets["widgets.py<br/><i>shared panel widgets</i>"]
+    sidebar["sidebar.py<br/><i>module cards</i>"]
     run_pupil_review["run_pupil_review.py<br/><i>pupil review tool, alone</i>"]
 
     main --> adapters
@@ -58,6 +59,9 @@ flowchart TD
     dialogs --> style
     dialogs --> widgets
     widgets --> style
+    main --> sidebar
+    adapters --> sidebar
+    sidebar --> style
     probe --> devices
     probe --> config
     run_pupil_review --> console
@@ -227,10 +231,9 @@ devices/                one package per instrument
     stage_config.json   fallback copy only — the live calibration is the shared one
   vis_stim/
     circle.py           the circle-in-a-region aperture geometry (regions.py
-                        grid + region width -> diameter) tuning/contrast/size
-                        all share, no Qt
-    contrast.py         contrast-tuning trial: the 6 contrast levels swept +
-                        pretrial count, no Qt
+                        grid + region width -> diameter) the tuning types
+                        share, no Qt
+    contrast.py         OBSOLETE, unused (replaced by sweep.py): delete
     control.py          VisStimController: priming -> per-trial trigger
                         gating, counted off the shared session clock's own
                         tick (no DAQ line, unlike the .m code) and replacing
@@ -238,14 +241,15 @@ devices/                one package per instrument
     grating.py          gamma-corrected drifting sinusoid + aperture geometry,
                         no Qt — ported from visStimCode's genGratingTex
     panel.py
-    regions.py          the 3x3 region grid the map/tuning/contrast/size
-                        trial types share, no Qt
+    regions.py          the 3x3 region grid the map and tuning trial types
+                        share, no Qt
     settings.py         StimParams/LoopVar/VisStimSettings — no Qt
-    size.py             size-tuning trial: fractions of the region's own
-                        width swept + pretrial count, no Qt
-    trials.py           loop variables -> full-factorial trial list, no Qt
-    tuning.py           orientation-tuning trial: the 8 orientations swept +
-                        pretrial count, no Qt
+    size.py             OBSOLETE, unused (replaced by sweep.py): delete
+    sweep.py            the tuning types (orientation/contrast/spatial freq/
+                        size): conditions, degrees -> px, no Qt
+    trials.py           loop variables -> full-factorial trial list; the
+                        shuffled per-repeat order, no Qt
+    tuning.py           OBSOLETE, unused (replaced by sweep.py): delete
     window.py           the full-screen QWidget the grating paints into
   voltage_cam/
     _check_link.py      script: CoaXPress or USB3? run after any cabling change
@@ -345,7 +349,7 @@ main.py                 the shell: window chrome, docks, theme, session start/st
 config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
 dialogs.py              module picker (startup + sidebar), device monitor,
-                        settings dialog
+                        a settings window per panel (PanelWindow)
 run_pupil_review.py     launcher for the pupil review tool alone: makes its own venv,
                         fetches EyeLoop, runs from this checkout (stdlib only)
 requirements-pupil.txt  the pupil tool's few dependencies (no DAQ/camera/DMD)
@@ -355,6 +359,8 @@ rigs.json               per-rig hardware profiles (NI device, DAQ channels,
                         what is fitted) — tracked; acqapp_local.json's "rig"
                         key names which one THIS machine is
 probe.py                presence checks; enumeration only, never opens a device
+sidebar.py              the sidebar's module cards: accent header + live mini
+                        view (`ModuleAdapter.mini_view`); right-click opens
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here — gitignored, private repo
@@ -380,6 +386,6 @@ showed up as a `KeyError` at build time. Then a new file in `adapters/`, a
 package in `devices/`, and an entry in the tree above.
 
 Two optional declarations on the adapter, both read by the shell and neither
-naming a module in `main.py`: **`own_window`** puts its panel in a window of
-its own instead of a settings page, and **`config.ALWAYS_ON`** keeps it out of
-the module picker. `routines` sets both.
+naming a module in `main.py`: **`window_size`** opens its panel's window at a
+set size instead of fitted to the panel, and **`config.ALWAYS_ON`** keeps it
+out of the module picker. `routines` sets both.

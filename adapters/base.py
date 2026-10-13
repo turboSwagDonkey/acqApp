@@ -152,10 +152,8 @@ class ModuleAdapter:
         self._rec_dot: QLabel | None = None
 
     # ── construction (once, at startup) ───────────────────────────────────────
-    # A panel used while another module's page is open (the routine) gets its
-    # own window instead of a settings page.
-    own_window: bool = False
-    own_window_size: tuple[int, int] | None = None
+    # Its panel's window opens at this size; None = fitted to the panel.
+    window_size: tuple[int, int] | None = None
 
     def build_panel(self) -> QWidget | None:
         return None
@@ -167,6 +165,12 @@ class ModuleAdapter:
         """A control for the window's status bar, beside Record. The same
         widget on every call; the window places it on load and removes it on
         unload."""
+        return None
+
+    def mini_view(self) -> QWidget | None:
+        """The body of its sidebar card (a `sidebar.MiniView` polls; plain
+        controls work too): built fresh per call, the card owns it. None =
+        a title-only card, or no card for a module without a page."""
         return None
 
     def build_views(self) -> None:
@@ -295,6 +299,10 @@ class ModuleAdapter:
 
     def frame_rate_hz(self) -> float | None:
         """For estimates only."""
+        return None
+
+    def records_dcimg(self) -> bool | None:
+        """Whether its camera writes a .dcimg when recording; None = no camera."""
         return None
 
     def busy_reason(self) -> str:

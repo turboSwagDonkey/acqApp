@@ -162,14 +162,14 @@ from PyQt6.QtWidgets import (
 import pyqtgraph as pg
 
 from acqApp import adapters, style
-from acqApp.dialogs import (ConnectionMonitor, ModuleSelectDialog, PanelWindow,
-                            SettingsDialog)
+from acqApp.dialogs import ConnectionMonitor, ModuleSelectDialog, PanelWindow
 from acqApp.saving import SaveConfig, SavePanel, write_routine_fov_sidecar
 from acqApp.acq.sync import DEFAULT_TICK_MS, SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
 from acqApp.acq.writer import SessionWriter
+from acqApp.sidebar import MiniText, ModuleCard
 from acqApp.widgets import compact
 
 pg.setConfigOptions(imageAxisOrder="row-major")
@@ -230,12 +230,11 @@ class MainWindow(QMainWindow):
         self._rec_size_t0: float = 0.0
         self._rec_size_txt: str = ""
         self._rec_warn: bool | None = None     # repaint only on change
-        # Set by the routine before it opens/rolls a file; None = Save tab template.
+        # Set by the routine before it opens/rolls a file; None = Save tab naming.
         self._routine_save_ctx: tuple[str, int, tuple | None] | None = None
         self._routine_arming_trigger = False
         self._save_panel: SavePanel | None = None
-        self._settings_dialog: SettingsDialog | None = None
-        self._panel_windows: dict[str, PanelWindow] = {}
+        self._panel_windows: dict[str, PanelWindow] = {}   # one per panel
         self._devices_dialog: ConnectionMonitor | None = None
         self._pg_views: list = []      # recoloured on theme change
         # What each module added to the window, to take back on unload.
@@ -297,8 +296,7 @@ class MainWindow(QMainWindow):
         return stage.active_fov_name() if stage is not None else ""
 
     def dcimg_enabled(self) -> bool:
-        sc = self._save_panel.settings
-        return sc.orca_format == "dcimg"
+        return bool(self._first("records_dcimg"))
 
     def dcimg_target(self, stream: str) -> Path | None:
         if not self.dcimg_enabled() or self._rec_path is None:
@@ -557,7 +555,7 @@ class MainWindow(QMainWindow):
         self.setDockNestingEnabled(True)
 
         self._build_central()
-        self._build_settings_dialog()
+        self._build_panels()
         self._build_plots_dock()
         for m in self._modules:
             self._build_views_for(m)
@@ -613,10 +611,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(view)
         self.setCentralWidget(wrap)
 
-    def _build_settings_dialog(self) -> None:
-        """Every panel, hidden — built now because controllers read them."""
-        self._settings_dialog = SettingsDialog(self)
-
+    def _build_panels(self) -> None:
+        """Every panel in its own hidden window — built now because
+        controllers read them."""
         save_cfg = config.load_dataclass(SaveConfig, "saving")
         if not save_cfg.mouse_id:
             # Legacy key: `subject` became mouse_id on 2026-09-14.
@@ -625,24 +622,22 @@ class MainWindow(QMainWindow):
                 save_cfg.mouse_id = old_subject.strip()
         self._save_panel = SavePanel(save_cfg)
         self._save_panel.settings_changed.connect(self._save_save_settings)
-        self._settings_dialog.add_panel(self._save_panel, "Save", "saving")
+        self._place_window(self._save_panel, "Save", "saving")
 
         for m in self._modules:
             m.build_panel()
             self._place_panel(m)
 
-    def _place_panel(self, m, index: int | None = None) -> None:
-        if m.panel is None:
-            return
-        if not m.own_window:
-            self._settings_dialog.add_panel(m.panel, m.tab_label, m.key,
-                                            index=index)
-            return
-        win = PanelWindow(m.panel, m.tab_label, m.key, parent=self,
-                          size=m.own_window_size)
+    def _place_panel(self, m) -> None:
+        if m.panel is not None:
+            self._place_window(m.panel, m.tab_label, m.key, m.window_size)
+
+    def _place_window(self, panel: QWidget, label: str, key: str,
+                      size: tuple[int, int] | None = None) -> None:
+        win = PanelWindow(panel, label, key, parent=self, size=size)
         win.visibility_changed.connect(
-            lambda vis, k=m.key: self._on_panel_window(k, vis))
-        self._panel_windows[m.key] = win
+            lambda vis, k=key: self._on_panel_window(k, vis))
+        self._panel_windows[key] = win
 
     def _on_panel_window(self, key: str, visible: bool) -> None:
         act = self._page_actions.get(key)
@@ -750,15 +745,12 @@ class MainWindow(QMainWindow):
             "QToolButton { text-align:left; padding:4px 10px; }")
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
 
-        # One item per settings page, above the separator.
-        self._page_actions: dict[str, QAction] = {}
+        # One card per module above the separator; those with a page also
+        # in `_page_actions`.
+        self._cards: dict[str, ModuleCard] = {}
+        self._page_actions: dict[str, ModuleCard] = {}
         self._sidebar_sep = self._sidebar.addSeparator()
         self._rebuild_page_actions()
-        # ✕ and Esc both reach `finished`; un-check, or the next click does nothing.
-        self._settings_dialog.finished.connect(
-            lambda _result: self._check_page(None))
-        self._settings_dialog.tabs.currentChanged.connect(
-            self._on_settings_tab_changed)
 
         self._modes = config.load_modes()
         self._sidebar.addWidget(QLabel("  Mode:"))
@@ -811,7 +803,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(area, dock)
         return dock
 
-    # ── Settings window ─────────────────────────────────────────────────────────
+    # ── Sidebar cards and panel windows ─────────────────────────────────────────
 
     @staticmethod
     def _swatch(key: str | None) -> "QIcon":
@@ -823,33 +815,44 @@ class MainWindow(QMainWindow):
 
     def _rebuild_page_actions(self) -> None:
         """Rebuilt wholesale: a stale item would point at a deleted panel."""
-        for act in self._page_actions.values():
+        for act in self._cards.values():
             self._sidebar.removeAction(act)
+            act.deleteLater()           # and its card, whose view polls a module
+        self._cards.clear()
         self._page_actions.clear()
-        self._page_panels: dict[str, QWidget] = {}
 
-        pages: list[tuple[str, str, QWidget]] = []
+        # (key, label, page or None, its card's view factory)
+        items: list[tuple[str, str, QWidget | None, Any]] = []
         if self._save_panel is not None:
-            pages.append(("saving", "Save", self._save_panel))
-        pages += [(m.key, m.tab_label, m.panel)
-                  for m in self._modules if m.panel is not None]
+            items.append(("saving", "Save", self._save_panel,
+                          lambda: MiniText(self._save_mini_text)))
+        items += [(m.key, m.tab_label, m.panel, m.mini_view)
+                  for m in self._modules]
 
-        for key, label, panel in pages:
-            act = QAction(self._swatch(key), label, self)
-            act.setCheckable(True)
-            act.setToolTip(f"{label} — its own window" if key in self._panel_windows
-                           else f"{label} settings")
-            act.triggered.connect(
-                lambda _checked=False, p=panel, k=key: self._show_page(k, p))
+        for key, label, panel, make_mini in items:
+            mini = make_mini()
+            if panel is None:
+                if mini is None:
+                    continue
+                act = ModuleCard(key, label, mini, label, self, page=False)
+            else:
+                act = ModuleCard(key, label, mini, f"{label} settings", self)
+                act.triggered.connect(
+                    lambda _checked=False, k=key: self._toggle_window(k))
+                self._page_actions[key] = act
             self._sidebar.insertAction(self._sidebar_sep, act)
-            self._page_actions[key] = act
-            self._page_panels[key] = panel
+            self._cards[key] = act
         self._stretch_sidebar()
         # New actions start unchecked; re-light whatever is showing.
-        if self._settings_dialog.isVisible():
-            self._on_settings_tab_changed(0)
         for key, win in self._panel_windows.items():
             self._on_panel_window(key, win.isVisible())
+
+    def _save_mini_text(self) -> tuple[str, str]:
+        path = self.recording_path()
+        if path is not None:
+            return "● REC", path.name
+        s = self._save_panel.settings
+        return "", f"{s.mouse_id or 'no mouse ID'} → {s.resolved_folder().name}"
 
     def _stretch_sidebar(self) -> None:
         """One minimum width for all buttons: QToolBarLayout centres each at
@@ -862,46 +865,18 @@ class MainWindow(QMainWindow):
         for b in btns:
             b.setMinimumWidth(widest)
 
-    def _on_settings_tab_changed(self, _index: int) -> None:
-        if not self._settings_dialog.isVisible():
-            return                       # a page removed, not chosen
-        panel = self._settings_dialog.current_panel()
-        self._check_page(next((k for k, p in self._page_panels.items()
-                               if p is panel), None))
-
-    def _check_page(self, key: str | None) -> None:
-        # Own-window modules are lit by their own window instead.
-        for k, act in self._page_actions.items():
-            if k not in self._panel_windows:
-                act.setChecked(k == key)
-
-    def _show_page(self, key: str, panel) -> None:
-        """Open the settings window on this page, or shut it if already there."""
-        own = self._panel_windows.get(key)
-        if own is not None:
-            self._toggle_own_window(own)
-            return
-        showing = (self._settings_dialog.isVisible()
-                   and self._settings_dialog.current_panel() is panel)
-        if showing:
-            self._settings_dialog.save_geometry()
-            self._settings_dialog.hide()
-            self._check_page(None)
-            return
-        self._settings_dialog.show_panel(panel)
-        self._settings_dialog.show()
-        self._settings_dialog.raise_()
-        self._settings_dialog.activateWindow()
-        self._check_page(key)
-
-    @staticmethod
-    def _toggle_own_window(win: PanelWindow) -> None:
-        if win.isVisible() and win.isActiveWindow():
+    def _toggle_window(self, key: str) -> None:
+        """Open the module's window, or shut it if open. Owned by the main
+        window, so it can't hide behind it: open means seen."""
+        win = self._panel_windows[key]
+        if win.isVisible():
             win.close()
-            return
-        win.show()
-        win.raise_()
-        win.activateWindow()
+        else:
+            win.show()
+            win.raise_()
+            win.activateWindow()
+        # The card toggled itself on the click; the window has the last word.
+        self._on_panel_window(key, win.isVisible())
 
     # ── Dock layout persistence ─────────────────────────────────────────────────
 
@@ -926,6 +901,7 @@ class MainWindow(QMainWindow):
                 v.setBackground(bg)
             except Exception:
                 pass
+        self._rebuild_page_actions()    # the cards' muted text is per theme
 
     # ── Device connection monitor ────────────────────────────────────────────────
 
@@ -1049,7 +1025,7 @@ class MainWindow(QMainWindow):
         self._modules.append(m)             # the caller sorts
 
         m.build_panel()
-        self._place_panel(m, index=self._settings_tab_index(key))
+        self._place_panel(m)
         self._add_plot_tab(m, index=self._plot_tab_index(key))
         self._build_views_for(m)
         m.build_controller(self._emulate)
@@ -1076,8 +1052,6 @@ class MainWindow(QMainWindow):
             win.release()
             win.setParent(None)
             win.deleteLater()
-        elif m.panel is not None:
-            self._settings_dialog.remove_panel(m.panel)
         if m.panel is not None:
             m.panel.setParent(None)
             m.panel.deleteLater()
@@ -1098,17 +1072,6 @@ class MainWindow(QMainWindow):
         self._remove_status_widget(key)
 
         self._modules.remove(m)
-
-    def _settings_tab_index(self, key: str) -> int:
-        """After the last page preceding `key` in MODULES, read off the live
-        (draggable) tab positions."""
-        dlg = self._settings_dialog
-        last = dlg.panel_index(self._save_panel) if self._save_panel else -1
-        for m in self._modules:
-            if (m.key != key and m.panel is not None
-                    and _rank(m.key) < _rank(key)):
-                last = max(last, dlg.panel_index(m.panel))
-        return last + 1
 
     def _plot_tab_index(self, key: str) -> int:
         return sum(1 for k in self._module_plots
@@ -1190,7 +1153,7 @@ class MainWindow(QMainWindow):
         sc = sp.settings
         ctx = self._routine_save_ctx
         # unique=True: take the next free name rather than refuse. A routine's
-        # (FOV, trial) uses the fixed folder scheme, not the template.
+        # (FOV, trial) uses its folder scheme, not mouse_date_time.
         if ctx is not None:
             path = sp.resolve_routine_dir(ctx[0], ctx[1], now, unique=True)
         else:
@@ -1200,7 +1163,6 @@ class MainWindow(QMainWindow):
             "emulated": self._emulate,
             "modules":  ",".join(sorted(self._enabled)),
             "mouse_id": sc.mouse_id,
-            "project":  sc.project,
         }
         for m in self._modules:
             metadata.update(m.metadata())
@@ -1348,8 +1310,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._save_layout()
         # Top-level windows left open would keep the app alive.
-        self._settings_dialog.save_geometry()
-        self._settings_dialog.close()
         for win in self._panel_windows.values():
             win.save_geometry()
             win.close()

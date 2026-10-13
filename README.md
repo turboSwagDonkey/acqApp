@@ -270,14 +270,16 @@ code.
 ## Recording format
 
 **Start** begins live acquisition + preview. **Record** streams every sample to
-one folder per session. The **Save** tab picks the destination drive and
-folder, names the file from a token template (`{mouse_id}`, `{project}`,
-`{date}`, `{time}`, plus the active FOV's name appended when "Append active
-FOV name" is checked and a saved FOV is currently active on the Stage tab),
-and shows how many minutes the free space is worth at the current data rate.
-It also shows the exact path the next recording will get:
+one folder per session. The **Save** tab takes the mouse ID and the folder,
+names each recording from a template (default `{mouse_id}_{date}_{time}`, plus
+the FOV's name while the stage is at a saved FOV), and shows how many minutes
+the free space is worth at the current data rate. **Advanced** (folded) holds
+the drive pick, **Scan drives** (real write speed per drive) and the template.
+Routines save under `<folder>/<mouse_id>/<date>/`. The voltage camera's
+DCIMG/TIFF choice is on its own tab. The Save tab also shows the exact path
+the next recording will get:
 
-- A template that resolves to an existing file is **auto-numbered** (`_001`,
+- A name that already exists is **auto-numbered** (`_001`,
   `_002`) rather than overwriting it, and the numbered name is what the preview
   and the status line show.
 - The writer refuses an existing folder, so even a path that reached it by some
@@ -371,12 +373,11 @@ the DMD tab says `nothing will be projected` rather than silently doing nothing.
 
 ### Experiment routines
 
-A window that owns no device and drives two that do. It is **always loaded**,
-and its panel is **its own window** rather than a page of the settings window —
-a routine is *run* from that panel while the settings window is showing the
-camera it is driving, and a tab cannot be in two places. Any adapter can ask
-for the same by setting `own_window` (`adapters/base.py`); the shell never
-learns which module did.
+A window that owns no device and drives two that do. It is **always loaded**.
+Like every module's settings, its panel is a window of its own, opened from
+its sidebar card, so a routine runs beside the camera window it is driving.
+It opens at a set size (`window_size`, `adapters/base.py`); the others are
+fitted to their panels.
 
 A **routine** is a list of **atomic steps** executed in order — Move the
 stage, start Displaying a pattern, Wait, Puff, wait for an external

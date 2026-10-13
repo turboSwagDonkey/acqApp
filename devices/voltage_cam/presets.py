@@ -234,6 +234,8 @@ class AcqConfig:
     target_hz:    float = 0.0
     # External edge only: frames per edge (BURST); 0 = until re-armed (START).
     burst_frames: int   = 0
+    # How a recording stores frames: "dcimg" (the driver writes) or "tiff".
+    file_format:  str   = "dcimg"
 
     # ── preview (display only; persisted as preferences) ──
     show_lut:     bool = True
