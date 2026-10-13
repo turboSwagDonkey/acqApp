@@ -149,11 +149,17 @@ def gate(switches, *dependents: QWidget) -> None:
 
 
 def show_item(w: QWidget, on: bool) -> None:
-    """Show or hide one `pairs_grid` input together with its caption."""
-    w.setVisible(on)
-    lbl = getattr(w, "_grid_label", None)
-    if lbl is not None:
-        lbl.setVisible(on)
+    """Show or hide one `pairs_grid` input together with its caption. Marked,
+    so folding its `collapsible` box open again leaves it hidden; and it
+    stays out of sight while that box is folded."""
+    for x in (w, getattr(w, "_grid_label", None)):
+        if x is None:
+            continue
+        x._item_hidden = not on             # type: ignore[attr-defined]
+        box = x.parentWidget()
+        folded = (isinstance(box, QGroupBox) and box.isCheckable()
+                  and not box.isChecked())
+        x.setVisible(on and not folded)
 
 
 def pairs_grid(*rows, per_row: int | None = None,
@@ -352,7 +358,7 @@ def collapsible(box: QGroupBox, expanded: bool = True) -> QGroupBox:
 
     def _show(on: bool) -> None:
         for w in kids:
-            w.setVisible(on)
+            w.setVisible(on and not getattr(w, "_item_hidden", False))
         # A nested grid caches its size; without this the box keeps it.
         for lay in box.findChildren(QLayout):
             lay.invalidate()

@@ -23,7 +23,6 @@ from acqApp.devices.vis_stim.settings import VisStimSettings
 class VisStimModule(ModuleAdapter):
     key = "vis_stim"
     tab_label = "Visual stim"
-    own_window = True       # progress stays visible from other pages
 
     controller: VisStimController | None   # narrows ModuleAdapter.controller
 
@@ -57,6 +56,8 @@ class VisStimModule(ModuleAdapter):
         # One shared-clock tick = one trigger pulse.
         self.win.sync.tick.connect(self.controller.on_tick)
         self.controller.progress_changed.connect(self.panel.set_progress)
+        self.controller.progress_fraction.connect(
+            self.panel.set_progress_fraction)
         self.controller.run_state_changed.connect(self._on_run_state)
         self.controller.trial_boundary.connect(self._on_trial_boundary)
 

@@ -1,16 +1,19 @@
 """Render one settings panel offscreen to a PNG, for layout checks.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\snap.py <module_key|save|review|roi>
-      [--width 380] [--out file.png]
+      [--width 380] [--out file.png] [--settings JSON]
 
 module_key is a config.MODULES key (voltage_cam, pupil_cam, wheel, ...); `save`
 is the Save tab, `review` the standalone pupil review, `roi` the DMD ROI
-dialog (demo frame, live band; try --width 1000). Mock window, isolated
-user state: nothing on the rig is touched or rewritten. Not part of run_all.
+dialog (demo frame, live band; try --width 1000). `--settings` seeds the
+module's stored settings first, e.g. vis_stim --settings
+"{\\"trial_type\\": \\"contrast\\"}". Mock window, isolated user state:
+nothing on the rig is touched or rewritten. Not part of run_all.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -66,9 +69,14 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=380)
     ap.add_argument("--out", default="",
                     help="default: snap_<key>.png in the temp dir")
+    ap.add_argument("--settings", default="",
+                    help="JSON stored as the module's settings before it builds")
     a = ap.parse_args()
 
     isolate_user_state()
+    if a.settings:
+        from acqApp import config
+        config.save_settings(a.key, json.loads(a.settings))
     app = qt_app()      # held: a collected QApplication takes the process down
     w, win = _panel(a.key)
     w.setParent(None)   # out of its scroll area, so the width is ours to set

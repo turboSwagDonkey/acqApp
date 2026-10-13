@@ -20,6 +20,19 @@ _WHITE = QColor(255, 255, 255)
 _BLACK = QColor(0, 0, 0)
 
 
+def reported_width_cm(screen) -> float:
+    """The monitor's own physical width (EDID), 0.0 if it reports none."""
+    if screen is None:
+        return 0.0
+    return max(0.0, screen.physicalSize().width() / 10.0)
+
+
+def _grey(luminance: float) -> QColor:
+    """Mean-luminance-matched grey: `luminance` is linear, like the gratings."""
+    g = grating_mod.luminance_to_level(luminance)
+    return QColor.fromRgbF(g, g, g)
+
+
 class StimDisplay(QWidget):
     painted = pyqtSignal()
     escape_pressed = pyqtSignal()   # abort the whole run
@@ -37,14 +50,13 @@ class StimDisplay(QWidget):
         self._offset = 0.0
         self._orientation = 0.0
         self._visible = False
-        self._bg = QColor(128, 128, 128)
+        self._bg = _grey(0.5)
         self._center = (0.0, 0.0)
         self._radius = 0.0
-        self._solid = False             # sweep pretrials: white aperture
         # map mode
         self._map_ignored: tuple[float, float, float, float] = (0, 0, 0, 0)
         self._map_regions: list[tuple[float, float, float, float]] = []
-        self._map_grey = QColor(128, 128, 128)
+        self._map_grey = _grey(0.5)
         self._map_active = -1
         self._map_white = True
         self._timer = QTimer(self)
@@ -64,7 +76,6 @@ class StimDisplay(QWidget):
     def set_trial(self, p: StimParams, screen_w: int, screen_h: int) -> None:
         """Texture and aperture, built once per trial (not per frame)."""
         self._mode = "grating"
-        self._solid = False
         row = grating_mod.build_grating(p)
         w = int(row.shape[0])
         img = QImage(row.tobytes(), w, 1, w, QImage.Format.Format_Grayscale8)
@@ -74,22 +85,13 @@ class StimDisplay(QWidget):
         self._orientation = float(p.Orientation)
         cx, cy, r = grating_mod.aperture_geometry(p, screen_w, screen_h)
         self._center, self._radius = (cx, cy), r
-        bkg = max(0.0, min(1.0, float(p.BKGColor)))
-        self._bg = QColor.fromRgbF(bkg, bkg, bkg)
+        self._bg = _grey(p.BKGColor)
 
     def set_offset(self, offset: float) -> None:
         self._offset = offset % self._period
 
     def set_visible(self, on: bool) -> None:
         self._visible = on
-
-    def set_orientation(self, deg: float) -> None:
-        """No rebuild: orientation is only the paint-time rotation."""
-        self._orientation = deg
-
-    def set_solid(self, on: bool) -> None:
-        """White aperture instead of the grating (sweep pretrials)."""
-        self._solid = on
 
     # ── map trial ────────────────────────────────────────────────────────
     def set_map_trial(self, ignored: tuple[float, float, float, float],
@@ -100,8 +102,7 @@ class StimDisplay(QWidget):
         self._mode = "map"
         self._map_ignored = ignored
         self._map_regions = regions
-        g = max(0.0, min(1.0, grey_level))
-        self._map_grey = QColor.fromRgbF(g, g, g)
+        self._map_grey = _grey(grey_level)
         self._map_active = -1
         self._map_white = True
 
@@ -121,25 +122,20 @@ class StimDisplay(QWidget):
 
     def _paint_grating(self, painter: QPainter) -> None:
         painter.fillRect(self.rect(), self._bg)
-        if not self._visible or self._radius <= 0:
-            return
-        if not self._solid and self._img is None:
+        if not self._visible or self._radius <= 0 or self._img is None:
             return
         painter.save()
         cx, cy = self._center
         path = QPainterPath()
         path.addEllipse(QPointF(cx, cy), self._radius, self._radius)
         painter.setClipPath(path)
-        if self._solid:
-            painter.fillRect(self.rect(), _WHITE)
-        else:
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            side = self._radius * 2.0
-            painter.translate(cx, cy)
-            painter.rotate(self._orientation)
-            painter.translate(-side / 2.0, -side / 2.0)
-            painter.drawImage(QRectF(0.0, 0.0, side, side), self._img,
-                              QRectF(self._offset, 0.0, side, 1.0))
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        side = self._radius * 2.0
+        painter.translate(cx, cy)
+        painter.rotate(self._orientation)
+        painter.translate(-side / 2.0, -side / 2.0)
+        painter.drawImage(QRectF(0.0, 0.0, side, side), self._img,
+                          QRectF(self._offset, 0.0, side, 1.0))
         painter.restore()
 
     def _paint_map(self, painter: QPainter) -> None:

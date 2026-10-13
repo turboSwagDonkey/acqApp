@@ -5,6 +5,8 @@ priming/gating state machine, and hot-load/unload.
 from __future__ import annotations
 
 import sys
+import tempfile
+from pathlib import Path
 
 from _harness import Report, isolate_user_state, make_window, pump, qt_app
 
@@ -65,19 +67,24 @@ def check_settings_roundtrip(r: Report) -> None:
 
     s = VisStimSettings(
         trial_type=TRIAL_MAP, screen_index=1, stretch_to_screen=True,
-        params=StimParams(Orientation=45.0, MapTicksPerRegion=7.0,
-                          TuningRegion=4.0, ContrastRegion=2.0),
-        loops={"Orientation": LoopVar("Orientation", (0.0, 45.0, 90.0))})
+        params=StimParams(Orientation=45.0, MapWhiteSeconds=0.7,
+                          TuneRegion=4.0, ContrastRepeats=3.0),
+        loops={"Orientation": LoopVar("Orientation", (0.0, 45.0, 90.0))},
+        levels={"contrast": (50.0, 100.0)})
     back = VisStimSettings.from_dict(s.to_dict())
     r.check(back.trial_type == TRIAL_MAP, "trial type round-trips")
     r.check(back.screen_index == 1, "screen index round-trips")
     r.check(back.stretch_to_screen, "the stretch flag round-trips")
     r.check(back.params.Orientation == 45.0, "nested StimParams round-trips")
-    r.check(back.params.MapTicksPerRegion == 7.0
-            and back.params.TuningRegion == 4.0
-            and back.params.ContrastRegion == 2.0,
-            "the Map*/Tuning*/Contrast* fields round-trip like any other "
+    r.check(back.params.MapWhiteSeconds == 0.7
+            and back.params.TuneRegion == 4.0
+            and back.params.ContrastRepeats == 3.0,
+            "the Map*/Tune*/repeats fields round-trip like any other "
             "StimParams field")
+    r.check(back.levels["contrast"] == (50.0, 100.0)
+            and back.levels["size"] == (5.0, 10.0, 35.0, 60.0, 80.0),
+            f"saved levels round-trip; missing ones take the paper's "
+            f"defaults ({back.levels})")
     r.check(back.loops["Orientation"].values == (0.0, 45.0, 90.0),
             "loop values round-trip as a tuple")
     r.check(VisStimSettings.from_dict({}) == VisStimSettings(),
@@ -120,50 +127,148 @@ def check_tick_driven_map_run(r: Report) -> None:
     from acqApp.devices.vis_stim.settings import (TRIAL_MAP, StimParams,
                                                    VisStimSettings)
 
-    params = StimParams(WaitTrigger=1, MapTicksPerRegion=2, MapTicksPerFlip=1,
-                        MapRepeats=1)
+    # The operator's spec: 1 s grey, per region 0.5 s white + 0.5 s black,
+    # 2 repeats, 1 s grey = 20 s = 200 ticks at 10 Hz.
+    params = StimParams(WaitTrigger=50, MapGreySeconds=1.0,
+                        MapWhiteSeconds=0.5, MapBlackSeconds=0.5,
+                        MapRepeats=2)
     s = VisStimSettings(trial_type=TRIAL_MAP, params=params)
     c = VisStimController(s)
 
     r.check(c.run() is True, "run() starts priming for a map trial too")
-    c.on_tick(0.1)                        # WaitTrigger=1 -> primed
-    r.check(c.phase == RUNNING, f"primed straight into the trial ({c.phase})")
-    r.check(c._map_region_idx == 0 and c._map_white,
-            "region 1 starts active and white")
+    c.on_tick(0.1)
+    r.check(c.phase == RUNNING,
+            f"map ignores Prime wait (50 here): its own grey leads in, so "
+            f"the trial starts on the first tick ({c.phase})")
+    orders = c._map_order
+    r.check(len(orders) == 2
+            and all(sorted(o) == list(range(N_REGIONS)) for o in orders),
+            f"each repeat visits every region once ({orders})")
 
-    c.on_tick(0.2)                        # 1st running tick: a flip
-    r.check(not c._map_white, "one tick flips white -> black")
-    c.on_tick(0.3)                        # 2nd: another flip AND region advance
-    r.check(c._map_region_idx == 1 and c._map_white,
-            f"after MapTicksPerRegion=2 ticks, region 2 is active, reset to "
-            f"white ({c._map_region_idx}, {c._map_white})")
-
-    total_ticks = (int(params.MapTicksPerRegion) * N_REGIONS
-                  * int(params.MapRepeats))
-    for _ in range(total_ticks - 2):      # 2 already delivered above
+    shown = []                            # what is on screen for each tick
+    while c.phase == RUNNING and len(shown) < 1000:
+        shown.append(c.map_state)
         c.on_tick(0.0)
-    r.check(c.phase == IDLE,
-            f"the trial completes once every region has had its ticks "
-            f"({c.phase})")
+    r.check(len(shown) == 200, f"the trial lasts 20 s = 200 ticks ({len(shown)})")
+    grey = (-1, False)
+    r.check(shown[:10] == [grey] * 10 and shown[-10:] == [grey] * 10,
+            "1 s of all-grey at the start and at the end")
+    expect = [st for region in orders[0] + orders[1]
+              for st in [(region, True)] * 5 + [(region, False)] * 5]
+    r.check(shown[10:-10] == expect,
+            "each region: 0.5 s white then straight into 0.5 s black, in "
+            "the shuffled order")
     r.check(c.last_run_stats == {"trials_total": 1, "trials_completed": 1,
                                  "aborted": False},
             f"the one trial completed cleanly ({c.last_run_stats})")
-    r.check(len(c.trial_log) == 1 and c.trial_log[0]["map_passes"] == 1,
-            f"one full pass through all 9 regions logged ({c.trial_log})")
+    log = c.trial_log[0] if len(c.trial_log) == 1 else {}
+    r.check(log.get("map_passes") == 2 and log.get("map_ticks") == 200,
+            f"two full passes and 200 ticks logged ({c.trial_log})")
+    r.check(log.get("map_order") == [[i + 1 for i in o] for o in orders],
+            "the shown order is logged, 1-based like the panel")
     c.close()
+
+
+def check_map_shuffle(r: Report) -> None:
+    import random
+
+    from acqApp.devices.vis_stim.regions import N_REGIONS
+    from acqApp.devices.vis_stim.trials import shuffled_blocks
+
+    def shuffled_passes(n, rng=None):
+        return shuffled_blocks(N_REGIONS, n, rng)
+
+    passes = shuffled_passes(200, random.Random(1))
+    r.check(len(passes) == 200
+            and all(sorted(p) == list(range(N_REGIONS)) for p in passes),
+            "each repeat is a permutation of the 9 regions")
+    r.check(len({tuple(p) for p in passes}) > 150,
+            "repeats get different orders")
+    r.check(all(a[-1] != b[0] for a, b in zip(passes, passes[1:])),
+            "no region flashes twice in a row across a repeat boundary")
+    r.check(len(shuffled_passes(0)) == 1, "Repeats < 1 still runs one pass")
+
+
+def check_panel_settings_file(r: Report, tmp: Path) -> None:
+    from unittest import mock
+
+    from acqApp.devices.vis_stim import panel as panel_mod
+    from acqApp.devices.vis_stim.settings import (TRIAL_MAP, LoopVar,
+                                                   StimParams, VisStimSettings)
+
+    s = VisStimSettings(
+        trial_type=TRIAL_MAP, stretch_to_screen=True,
+        params=StimParams(MapWhiteSeconds=0.3, MapRepeats=4, Contrast=0.25),
+        loops={"Orientation": LoopVar("Orientation", (0.0, 90.0))})
+    src = panel_mod.SettingsPanel(s)
+    path = tmp / "stim.json"
+    dlg = panel_mod.QFileDialog
+    with mock.patch.object(dlg, "getSaveFileName", return_value=(str(path), "")):
+        src._save_file()
+    r.check(path.is_file(), "Save… writes the chosen .json")
+
+    dst = panel_mod.SettingsPanel(VisStimSettings())
+    seen = []
+    dst.settings_changed.connect(seen.append)
+    with mock.patch.object(dlg, "getOpenFileName", return_value=(str(path), "")):
+        dst._load_file()
+    got = dst.settings
+    r.check(got == src.settings,
+            f"Load… restores every setting ({got} != {src.settings})")
+    r.check(len(seen) == 1, f"a load emits settings_changed once ({len(seen)})")
+    r.check(dst._grp_map.isVisibleTo(dst),
+            "the loaded trial type's group is shown")
+    r.check(not dst._grp_trigger.isVisibleTo(dst),
+            "map hides the Trial timing (Prime wait) box")
+
+    path.write_text("not json", encoding="utf-8")
+    with mock.patch.object(dlg, "getOpenFileName", return_value=(str(path), "")), \
+            mock.patch.object(panel_mod.QMessageBox, "warning") as warn:
+        dst._load_file()
+    r.check(warn.called and dst.settings == got,
+            "a bad file warns and leaves the settings alone")
+
+    dst.set_settings(VisStimSettings(params=StimParams(MapRepeats=2)))
+    r.check(dst._lbl_map_total.text() == "Total: 20 s",
+            f"defaults x 2 repeats read 20 s ({dst._lbl_map_total.text()})")
+    r.check(all(dst._spins[name].toolTip() for name, *_ in panel_mod._MAP_FIELDS),
+            "every map field explains itself in a tooltip")
+
+    from acqApp.widgets import collapsible
+    dst.set_settings(VisStimSettings(trial_type="contrast"))
+    dst.show()
+    box = collapsible(dst._grp_sweep)
+    box.setChecked(False)
+    box.setChecked(True)
+    r.check(not dst._rows["TuneContrastPct"].isVisible()
+            and dst._rows["TuneCyclesPerDeg"].isVisible(),
+            "folding a box open again keeps the type-hidden field hidden")
+    dst._spn_repeats.setValue(7)
+    dst._region.changed.emit(6)
+    got = dst.settings.params
+    r.check(got.ContrastRepeats == 7 and got.TuningRepeats == 5
+            and got.TuneRegion == 6,
+            "Repeats and Region edit the current tuning type's own values")
+    dst.hide()
+    src.deleteLater()
+    dst.deleteLater()
 
 
 def check_circle_geometry(r: Report) -> None:
     """circle.py, shared by the region trial types."""
     from acqApp.devices.vis_stim.circle import circle_geometry
-    from acqApp.devices.vis_stim.tuning import N_ORIENTATIONS, N_PRETRIALS, \
-        orientations
+    from acqApp.devices.vis_stim.sweep import (conditions, deg_to_px,
+                                               orientations, period_px)
 
     r.check(orientations() == (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0,
                                315.0),
             f"8 orientations, 0..315 step 45 ({orientations()})")
-    r.check(N_ORIENTATIONS == 8 and N_PRETRIALS == 2,
-            "8 orientations, 2 pretrials")
+    r.check(len(conditions(())) == 8 and len(conditions((1.0, 2.0))) == 16,
+            "orientation alone is 8 conditions; x 2 levels is 16")
+    r.check(abs(deg_to_px(90.0, 10.0, 1.0) - 20.0) < 1e-9,
+            "90° at 10 cm spans 2 x 10 x tan(45°) = 20 cm")
+    r.check(abs(period_px(0.04, 10.0, 1.0) - deg_to_px(25.0, 10.0, 1.0))
+            < 1e-9, "0.04 cyc/° is one cycle per 25°")
 
     cx, cy, d = circle_geometry(1, screen_w=400, screen_h=300)
     r.check((cx, cy, d) == (50.0, 50.0, 100.0),
@@ -180,150 +285,111 @@ def check_circle_geometry(r: Report) -> None:
             "region 99 clamps to region 9, the last")
 
 
-def check_tick_driven_tuning_run(r: Report) -> None:
-    """2 pretrials, then the 8-step orientation sweep; ticks alone."""
+def check_tuning_type_runs(r: Report) -> None:
+    """The paper's protocols on the defaults: pretrial (8 orientations,
+    unrecorded), 1 s grey, conditions x repeats each 0.2 s on + 0.3 s grey,
+    1 s grey. Orientation 8 x 5 = 22 s; contrast/SF/size 8 x 5 x 2 = 42 s."""
+    from acqApp.devices.vis_stim import sweep
     from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
-    from acqApp.devices.vis_stim.settings import (TRIAL_TUNING, StimParams,
+    from acqApp.devices.vis_stim.settings import (TRIAL_CONTRAST, TRIAL_SIZE,
+                                                   TRIAL_SPATIAL_FREQ,
+                                                   TRIAL_TUNING, StimParams,
                                                    VisStimSettings)
-    from acqApp.devices.vis_stim.tuning import N_ORIENTATIONS, N_PRETRIALS
 
-    params = StimParams(WaitTrigger=1, TuningTicksPerPretrial=1,
-                        TuningTicksPerOrientation=1, TuningRepeats=1,
-                        TuningRegion=1)
-    s = VisStimSettings(trial_type=TRIAL_TUNING, params=params)
+    expected_s = {TRIAL_TUNING: 22, TRIAL_CONTRAST: 42,
+                  TRIAL_SPATIAL_FREQ: 42, TRIAL_SIZE: 42}
+    for kind, seconds in expected_s.items():
+        s = VisStimSettings(trial_type=kind)
+        p = s.params
+        c = VisStimController(s)
+        marks = []                       # (tick, opening)
+        ticks = [0]
+        c.trial_boundary.connect(lambda _i, opening, _x: marks.append(
+            (ticks[0], opening)))
+        r.check(c.run() is True, f"{kind}: run() starts")
+        c.on_tick(0.0)                   # no Prime wait: straight in
+        r.check(c.phase == RUNNING, f"{kind}: runs on the first tick")
+
+        shown = []                       # per tick: orientation, or None
+        while c.phase == RUNNING and ticks[0] < 2000:
+            win = c._window
+            shown.append(win._orientation if win._visible else None)
+            if ticks[0] == 0:            # pretrial's first grating: drifts
+                before = c._xoffset
+                c._on_frame()
+                r.check(win._visible and c._xoffset > before,
+                        f"{kind}: the grating drifts while on")
+            ticks[0] += 1
+            c.on_tick(0.0)
+
+        pre = [x for o in sweep.orientations() for x in [o] * 2 + [None] * 3]
+        order = c._sweep_order
+        conds = [cond for block in order for cond in block]
+        rec = ([None] * 10
+               + [x for o, _lv in conds for x in [o] * 2 + [None] * 3]
+               + [None] * 10)
+        r.check(shown == pre + rec,
+                f"{kind}: pretrial, then 1 s grey, each condition 0.2 s on "
+                f"+ 0.3 s grey in the shuffled order, 1 s grey")
+        r.check(len(rec) == seconds * 10,
+                f"{kind}: the recorded trial is {seconds} s ({len(rec) / 10} s)")
+        r.check(marks == [(40, True), (len(shown), False)],
+                f"{kind}: the trial marks bracket the recorded part only, "
+                f"not the 4 s pretrial ({marks})")
+        levels = s.levels.get(kind, ()) if kind != TRIAL_TUNING else ()
+        want = sorted(sweep.conditions(levels), key=str)
+        r.check(all(sorted(b, key=str) == want for b in order),
+                f"{kind}: each repeat shows every condition once")
+        r.check(c.last_run_stats["trials_completed"] == 1 and c.phase == IDLE,
+                f"{kind}: completes cleanly")
+        log = c.trial_log[0]
+        prefix = {TRIAL_TUNING: "tuning", TRIAL_CONTRAST: "contrast",
+                  TRIAL_SPATIAL_FREQ: "spatial_freq", TRIAL_SIZE: "size"}[kind]
+        r.check(log[f"{prefix}_shown"] == len(conds)
+                and len(log[f"{prefix}_order"]) == len(order),
+                f"{kind}: shown count and order logged")
+        c.close()
+
+    # The swept level reaches the screen, in degrees via the screen geometry.
+    from acqApp.devices.vis_stim.window import reported_width_cm
+    from PyQt6.QtGui import QGuiApplication
+
+    s = VisStimSettings(trial_type=TRIAL_SIZE)
     c = VisStimController(s)
-
-    r.check(c.run() is True, "run() starts priming for a tuning trial too")
-    c.on_tick(0.1)                     # WaitTrigger=1 -> primed
-    r.check(c.phase == RUNNING, f"primed straight into the trial ({c.phase})")
-    r.check(c._window._solid is True,
-            "the trial opens on pretrial 1 (solid white)")
-
-    c.on_tick(0.2)                     # pretrial 1's tick elapses -> pretrial 2
-    r.check(c._sweep_step == 1 and c._window._solid,
-            f"pretrial 2 is still solid white ({c._sweep_step})")
-    c.on_tick(0.3)                     # pretrial 2 elapses -> orientation 0
-    r.check(c._sweep_step == 2 and not c._window._solid
-            and c._window._orientation == 0.0,
-            f"the sweep starts at orientation 0 ({c._sweep_step}, "
-            f"{c._window._orientation})")
-    c.on_tick(0.4)                     # orientation 0 elapses -> orientation 45
-    r.check(c._window._orientation == 45.0,
-            f"the next tick advances to 45 degrees ({c._window._orientation})")
-
-    delivered = 3                       # RUNNING ticks so far (0.2, 0.3, 0.4)
-    total_ticks = (int(params.TuningTicksPerPretrial) * N_PRETRIALS
-                  + int(params.TuningTicksPerOrientation) * N_ORIENTATIONS
-                  * int(params.TuningRepeats))
-    for _ in range(total_ticks - delivered):
-        c.on_tick(0.0)
-    r.check(c.phase == IDLE,
-            f"the trial completes once the whole sweep has run ({c.phase})")
-    r.check(c.last_run_stats == {"trials_total": 1, "trials_completed": 1,
-                                 "aborted": False},
-            f"the one trial completed cleanly ({c.last_run_stats})")
-    r.check(c.trial_log[0]["tuning_steps_completed"] == N_PRETRIALS + N_ORIENTATIONS,
-            f"all pretrial + orientation steps were reached ({c.trial_log[0]})")
+    c.run()
+    c.on_tick(0.0)
+    w = c._window.width()
+    reported = reported_width_cm(QGuiApplication.screens()[0])
+    r.check(c._screen_cm == (reported or 52.0),
+            f"Screen width 0 uses the display's reported width "
+            f"({c._screen_cm} vs {reported})")
+    ppc = w / c._screen_cm
+    q = c._sweep_stim((0.0, 35.0))
+    r.check(abs(q.StimDiameter - sweep.deg_to_px(35.0, s.params.ViewDistanceCm,
+                                                 ppc)) < 1e-6,
+            "size: a 35° level is 35° of visual angle at the eye distance")
     c.close()
-
-
-def check_tick_driven_contrast_run(r: Report) -> None:
-    """2 pretrials, then the contrast-level sweep; ticks alone."""
-    from acqApp.devices.vis_stim.contrast import (CONTRAST_LEVELS, N_LEVELS,
-                                                   N_PRETRIALS)
-    from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
-    from acqApp.devices.vis_stim.settings import (TRIAL_CONTRAST, StimParams,
-                                                   VisStimSettings)
-
-    params = StimParams(WaitTrigger=1, ContrastTicksPerPretrial=1,
-                        ContrastTicksPerLevel=1, ContrastRepeats=1,
-                        ContrastRegion=1)
-    s = VisStimSettings(trial_type=TRIAL_CONTRAST, params=params)
+    s = VisStimSettings(trial_type=TRIAL_SPATIAL_FREQ,
+                        params=StimParams(ScreenWidthCm=40.0))
     c = VisStimController(s)
-
-    r.check(c.run() is True, "run() starts priming for a contrast trial too")
-    c.on_tick(0.1)                     # WaitTrigger=1 -> primed
-    r.check(c.phase == RUNNING, f"primed straight into the trial ({c.phase})")
-    r.check(c._window._solid is True,
-            "the trial opens on pretrial 1 (solid white)")
-
-    c.on_tick(0.2)                     # pretrial 1 elapses -> pretrial 2
-    r.check(c._sweep_step == 1 and c._window._solid,
-            f"pretrial 2 is still solid white ({c._sweep_step})")
-    c.on_tick(0.3)                     # pretrial 2 elapses -> level 0
-    r.check(c._sweep_step == 2 and not c._window._solid,
-            f"the sweep starts at the first contrast level "
-            f"({c._sweep_step})")
-    img_at_level0 = c._window._img
-    c.on_tick(0.4)                     # level 0 elapses -> level 1
-    r.check(c._window._img is not img_at_level0,
-            "advancing a level rebuilds the texture (Contrast bakes into it, "
-            "unlike Orientation)")
-
-    delivered = 3                       # RUNNING ticks so far (0.2, 0.3, 0.4)
-    total_ticks = (int(params.ContrastTicksPerPretrial) * N_PRETRIALS
-                  + int(params.ContrastTicksPerLevel) * N_LEVELS
-                  * int(params.ContrastRepeats))
-    r.check(N_LEVELS == 6 and CONTRAST_LEVELS[0] == 0.0
-            and CONTRAST_LEVELS[-1] == 1.0,
-            f"the recommended 6-level 0..1 spread ({CONTRAST_LEVELS})")
-    for _ in range(total_ticks - delivered):
-        c.on_tick(0.0)
-    r.check(c.phase == IDLE,
-            f"the trial completes once the whole sweep has run ({c.phase})")
-    r.check(c.last_run_stats == {"trials_total": 1, "trials_completed": 1,
-                                 "aborted": False},
-            f"the one trial completed cleanly ({c.last_run_stats})")
-    r.check(c.trial_log[0]["contrast_steps_completed"] == N_PRETRIALS + N_LEVELS,
-            f"all pretrial + level steps were reached ({c.trial_log[0]})")
+    c.run()
+    c.on_tick(0.0)
+    r.check(c._screen_cm == 40.0, "a typed Screen width overrides the display")
+    q = c._sweep_stim((90.0, 0.1))
+    r.check(abs(q.WaveSpPeriod - sweep.period_px(
+                0.1, s.params.ViewDistanceCm, w / 40.0))
+            < 1e-6 and q.Orientation == 90.0,
+            "spatial freq: 0.1 cyc/° sets the grating period")
     c.close()
-
-
-def check_tick_driven_size_run(r: Report) -> None:
-    """2 pretrials, then the size-fraction sweep; ticks alone. The swept
-    quantity is the aperture's own diameter, so check it shrinks."""
-    from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
-    from acqApp.devices.vis_stim.settings import (TRIAL_SIZE, StimParams,
-                                                   VisStimSettings)
-    from acqApp.devices.vis_stim.size import N_PRETRIALS, N_SIZES, \
-        SIZE_FRACTIONS
-
-    params = StimParams(WaitTrigger=1, SizeTicksPerPretrial=1,
-                        SizeTicksPerLevel=1, SizeRepeats=1, SizeRegion=1)
-    s = VisStimSettings(trial_type=TRIAL_SIZE, params=params)
+    s = VisStimSettings(trial_type=TRIAL_CONTRAST)
     c = VisStimController(s)
-
-    r.check(c.run() is True, "run() starts priming for a size trial too")
-    c.on_tick(0.1)                     # WaitTrigger=1 -> primed
-    r.check(c.phase == RUNNING, f"primed straight into the trial ({c.phase})")
-    r.check(c._window._solid is True,
-            "the trial opens on pretrial 1 (solid white)")
-    pretrial_radius = c._window._radius
-
-    c.on_tick(0.2)                     # pretrial 1 elapses -> pretrial 2
-    r.check(c._sweep_step == 1 and c._window._solid,
-            f"pretrial 2 is still solid white ({c._sweep_step})")
-    c.on_tick(0.3)                     # pretrial 2 elapses -> size step 0
-    r.check(c._sweep_step == 2 and not c._window._solid,
-            f"the sweep starts at the first size fraction ({c._sweep_step})")
-    ratio = c._window._radius / pretrial_radius
-    r.check(abs(ratio - SIZE_FRACTIONS[0]) < 1e-9,
-            f"the aperture actually shrinks to the first fraction of the "
-            f"pretrial's full-region size ({ratio} vs {SIZE_FRACTIONS[0]})")
-
-    delivered = 2                       # RUNNING ticks so far (0.2, 0.3)
-    total_ticks = (int(params.SizeTicksPerPretrial) * N_PRETRIALS
-                  + int(params.SizeTicksPerLevel) * N_SIZES
-                  * int(params.SizeRepeats))
-    for _ in range(total_ticks - delivered):
-        c.on_tick(0.0)
-    r.check(c.phase == IDLE,
-            f"the trial completes once the whole sweep has run ({c.phase})")
-    r.check(c.last_run_stats == {"trials_total": 1, "trials_completed": 1,
-                                 "aborted": False},
-            f"the one trial completed cleanly ({c.last_run_stats})")
-    r.check(c.trial_log[0]["size_steps_completed"] == N_PRETRIALS + N_SIZES,
-            f"all pretrial + size steps were reached ({c.trial_log[0]})")
+    c.run()
+    c.on_tick(0.0)
+    r.check(c._sweep_stim((0.0, 25.0)).Contrast == 0.25,
+            "contrast: levels are percent")
+    c._on_escape()                       # stopped inside the pretrial
+    r.check(c.phase == IDLE and c.last_run_stats["aborted"],
+            "Esc during the pretrial stops cleanly")
     c.close()
 
 
@@ -428,9 +494,7 @@ def check_loops_dont_multiply_region_trials(r: Report) -> None:
                                                    TRIAL_TUNING,
                                                    VisStimSettings)
 
-    params = StimParams(WaitTrigger=1, TuningTicksPerPretrial=1,
-                        TuningTicksPerOrientation=1, TuningRepeats=1,
-                        TuningRegion=1)
+    params = StimParams(TuningRepeats=1)
     s = VisStimSettings(
         trial_type=TRIAL_TUNING, params=params,
         loops={"Orientation": LoopVar("Orientation", (0.0, 45.0, 90.0))})
@@ -456,7 +520,8 @@ def check_hotload(r: Report, win) -> None:
             "…and is in the live module list")
 
     m = next(x for x in win._modules if x.key == "vis_stim")
-    r.check(m.own_window, "asks for its own window, like routines")
+    r.check("vis_stim" in win._panel_windows,
+            "its panel gets a window of its own, like every module's")
     r.check(m.controller is not None and m.controller.phase == "IDLE",
             "its controller is built and idle immediately (always-on, "
             "not per-session)")
@@ -473,14 +538,15 @@ def main() -> int:
     check_regions(r)
     check_circle_geometry(r)
     check_settings_roundtrip(r)
+    check_map_shuffle(r)
 
     isolate_user_state()
     app = qt_app()          # held: a collected QApplication aborts
     check_tick_driven_run(r, app)
     check_tick_driven_map_run(r)
-    check_tick_driven_tuning_run(r)
-    check_tick_driven_contrast_run(r)
-    check_tick_driven_size_run(r)
+    with tempfile.TemporaryDirectory() as tmp:
+        check_panel_settings_file(r, Path(tmp))
+    check_tuning_type_runs(r)
     check_loops_dont_multiply_region_trials(r)
     check_visuomotor_run(r, app)
 

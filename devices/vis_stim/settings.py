@@ -12,15 +12,27 @@ TRIAL_GRATING    = "grating"
 TRIAL_MAP        = "map"
 TRIAL_TUNING     = "tuning"
 TRIAL_CONTRAST   = "contrast"
+TRIAL_SPATIAL_FREQ = "spatial_freq"
 TRIAL_SIZE       = "size"
 TRIAL_VISUOMOTOR = "visuomotor"
 TRIAL_TYPES = (TRIAL_GRATING, TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST,
-              TRIAL_SIZE, TRIAL_VISUOMOTOR)
+              TRIAL_SPATIAL_FREQ, TRIAL_SIZE, TRIAL_VISUOMOTOR)
 # Lets a reserved-but-unbuilt type show in the panel, disabled.
 IMPLEMENTED_TRIAL_TYPES = TRIAL_TYPES
 
+# Orientation x level gratings in a region (`sweep.py`); tuning has no level.
+SWEEP_TRIAL_TYPES = (TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SPATIAL_FREQ,
+                     TRIAL_SIZE)
 # Types that sweep a region internally (no Loop variables, no stretch).
-REGION_TRIAL_TYPES = (TRIAL_MAP, TRIAL_TUNING, TRIAL_CONTRAST, TRIAL_SIZE)
+REGION_TRIAL_TYPES = (TRIAL_MAP,) + SWEEP_TRIAL_TYPES
+
+# The swept levels, editable on the panel: contrast in %, spatial frequency
+# in cycles/deg, size in deg.
+DEFAULT_LEVELS: dict[str, tuple[float, ...]] = {
+    TRIAL_CONTRAST:     (10.0, 25.0, 40.0, 65.0, 100.0),
+    TRIAL_SPATIAL_FREQ: (0.01, 0.04, 0.10, 0.15, 0.30),
+    TRIAL_SIZE:         (5.0, 10.0, 35.0, 60.0, 80.0),
+}
 
 
 @dataclass
@@ -39,23 +51,28 @@ class StimParams:
     TriggersBlank: float = 10.0       # counted in shared-clock ticks
     TriggersStim: float = 5.0
     WaitTrigger: float = 5.0
-    # map
-    MapTicksPerRegion: float = 10.0
-    MapTicksPerFlip: float = 2.0
+    # map, in seconds (rounded to clock ticks): grey, then per region white
+    # then black, each repeat in a new order, then grey as long again
+    MapGreySeconds: float = 1.0
+    MapWhiteSeconds: float = 0.5
+    MapBlackSeconds: float = 0.5
     MapRepeats: float = 1.0
-    # tuning / contrast / size: region 1-9, pretrial and step ticks, repeats
-    TuningRegion: float = 1.0
-    TuningTicksPerPretrial: float = 10.0
-    TuningTicksPerOrientation: float = 10.0
-    TuningRepeats: float = 1.0
-    ContrastRegion: float = 1.0
-    ContrastTicksPerPretrial: float = 10.0
-    ContrastTicksPerLevel: float = 10.0
-    ContrastRepeats: float = 1.0
-    SizeRegion: float = 1.0
-    SizeTicksPerPretrial: float = 10.0
-    SizeTicksPerLevel: float = 10.0
-    SizeRepeats: float = 1.0
+    # tuning / contrast / spatial freq / size, shared: region 1-9, seconds
+    # (rounded to clock ticks), the grating the swept level is applied to
+    TuneRegion: float = 1.0
+    TuneOnSeconds: float = 0.2
+    TuneGapSeconds: float = 0.3
+    TuneGreySeconds: float = 1.0
+    TuneCyclesPerDeg: float = 0.04
+    TuneDriftHz: float = 2.0
+    TuneContrastPct: float = 100.0
+    TuningRepeats: float = 5.0
+    ContrastRepeats: float = 2.0
+    SpatialFreqRepeats: float = 2.0
+    SizeRepeats: float = 2.0
+    # degrees -> px; width 0 = as the display reports it (EDID)
+    ScreenWidthCm: float = 0.0
+    ViewDistanceCm: float = 20.0
     # visuomotor: px of drift per wheel unit (mm, or rev without a diameter);
     # 0 = static, an open-loop control. Length in ticks.
     VisuomotorGain: float = 1.0
@@ -75,6 +92,8 @@ class VisStimSettings:
     stretch_to_screen: bool = False
     params: StimParams = field(default_factory=StimParams)
     loops: dict[str, LoopVar] = field(default_factory=dict)
+    levels: dict[str, tuple[float, ...]] = field(
+        default_factory=lambda: dict(DEFAULT_LEVELS))
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +102,7 @@ class VisStimSettings:
             "stretch_to_screen": self.stretch_to_screen,
             "params": asdict(self.params),
             "loops": {name: list(lv.values) for name, lv in self.loops.items()},
+            "levels": {t: list(v) for t, v in self.levels.items()},
         }
 
     @classmethod
@@ -101,6 +121,14 @@ class VisStimSettings:
                                            tuple(float(v) for v in vals))
             except (TypeError, ValueError):
                 continue
+        levels = dict(DEFAULT_LEVELS)
+        for t, vals in (d.get("levels") or {}).items():
+            try:
+                parsed = tuple(float(v) for v in vals)
+            except (TypeError, ValueError):
+                continue
+            if t in levels and parsed:
+                levels[t] = parsed
         trial_type = d.get("trial_type", TRIAL_GRATING)
         if trial_type not in TRIAL_TYPES:
             trial_type = TRIAL_GRATING
@@ -110,6 +138,7 @@ class VisStimSettings:
             stretch_to_screen=bool(d.get("stretch_to_screen", False)),
             params=params,
             loops=loops,
+            levels=levels,
         )
 
 

@@ -12,6 +12,12 @@ from .settings import StimParams
 GAMMA = 2.2
 
 
+def luminance_to_level(luminance: float) -> float:
+    """Pixel level 0-1 for a linear luminance 0-1, gamma-corrected like the
+    gratings: 0.5 is their mean, halfway between black and white."""
+    return max(0.0, min(1.0, float(luminance))) ** (1.0 / GAMMA)
+
+
 def build_grating(p: StimParams, white: float = 255.0) -> np.ndarray:
     """One row of a gamma-corrected sinusoidal grating, uint8,
     `ceil(StimDiameter / WaveSpPeriod) + 2` cycles wide. Rotated at paint
