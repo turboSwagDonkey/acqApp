@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout,
@@ -13,15 +13,15 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import (button_row, compact, pairs_grid, sections_help,
-                            spin)
+from acqApp.widgets import (button_row, collapsible, compact, pairs_grid,
+                            sections_help, spin)
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage import fov_store
 from acqApp.devices.stage.axes_measure import AxesMeasurement
 from acqApp.devices.stage.cam_axes import camera_jog, describe
 from acqApp.devices.stage.control import step_toward
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
-from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_FOV, _C_HOME,
+from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_FOV,
                                    _C_ORIGIN, _C_SOFT, StageSettings,
                                    config_path, load_settings)
 
@@ -427,11 +427,48 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ── Connection + live readout ───────────────────────────────────────
-        grp = QGroupBox("XY stage")
-        lay = QFormLayout(grp)
-        lay.setSpacing(4)
+        # ── Live readout + frame status, the panel's headline ───────────────
+        # X, Y (and Z) share one row, each wide enough for its longest value
+        # so the row doesn't jitter as they change.
+        pos_row = QHBoxLayout()
+        # Left margin = a group box's, so the readout lines up with the rows below.
+        pos_row.setContentsMargins(10, 6, 10, 0)
+        pos_row.setSpacing(6)
+        # A stylesheet, not setFont: the app's stylesheet would override it.
+        big = QFont(self.font())
+        big.setPixelSize(17)
+        big.setBold(True)
+        big_w = QFontMetrics(big).horizontalAdvance("-00000.0") + 4
 
+        def _readout(name: str) -> QLabel:
+            lbl = QLabel("—")
+            lbl.setStyleSheet("font-size: 17px; font-weight: bold;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lbl.setMinimumWidth(big_w)
+            cap = QLabel(name)
+            cap.setStyleSheet("color:#9aa0a6;")
+            pos_row.addWidget(cap)
+            pos_row.addWidget(lbl)
+            pos_row.addSpacing(10)
+            return lbl
+
+        self._lbl_x = _readout(self._s.x.name)
+        self._lbl_y = _readout(self._s.y.name)
+        self._lbl_z: QLabel | None = None
+        if self._s.has_z:
+            self._lbl_z = _readout(self._s.z.name)
+        unit = QLabel("µm")
+        unit.setStyleSheet("color:#9aa0a6;")
+        pos_row.addWidget(unit)
+        pos_row.addStretch()
+        root.addLayout(pos_row)
+
+        self._lbl_frame = QLabel("—")
+        self._lbl_frame.setWordWrap(True)
+        self._lbl_frame.setContentsMargins(10, 0, 10, 2)
+        root.addWidget(self._lbl_frame)
+
+        # ── Setup (port, poll, camera axes, calibration), folded below ──────
         self._cmb_port = compact(QComboBox())
         self._cmb_port.setEditable(True)
         # Only ports that exist now: Windows renumbers them freely.
@@ -446,13 +483,15 @@ class SettingsPanel(QWidget):
         self._spn_rotation = spin(
             -180.0, 180.0, self._s.frame_rotation_deg, decimals=1, suffix=" °",
             tooltip=self._ROTATION_TIP)
-        lay.addRow(pairs_grid(
-            ("Port:", self._cmb_port, "Poll rate:", self._spn_rate),
-            ("Frame rotation:", self._spn_rotation)))
+        self._spn_drag = spin(
+            10.0, 1000.0, self._s.drag_speed_um_s, decimals=0, suffix=" µm/s",
+            tooltip="Top speed when dragging the blue dot on the map. The "
+                    "stage follows the drag no faster than this.")
 
         self._cmb_port.currentTextChanged.connect(self._emit_settings)
         self._spn_rate.valueChanged.connect(self._emit_settings)
         self._spn_rotation.valueChanged.connect(self._emit_settings)
+        self._spn_drag.valueChanged.connect(self._emit_settings)
 
         # Measured stage -> camera axes: jogs, the map and the camera's arrows.
         axes_row = QHBoxLayout()
@@ -474,34 +513,11 @@ class SettingsPanel(QWidget):
         axes_row.addWidget(self._lbl_axes, 1)
         axes_row.addWidget(self._btn_measure_axes)
         axes_row.addWidget(self._btn_clear_axes)
-        lay.addRow("Camera axes:", axes_row)
-
-        # X, Y (and Z) readouts share one row, each wide enough for its
-        # longest value so the row doesn't jitter as they change.
-        pos_row = QHBoxLayout()
-        pos_row.setContentsMargins(0, 0, 0, 0)
-
-        def _readout(name: str) -> QLabel:
-            lbl = QLabel("—")
-            lbl.setMinimumWidth(lbl.fontMetrics().horizontalAdvance("-00000.0") + 4)
-            pos_row.addWidget(QLabel(name))
-            pos_row.addWidget(lbl)
-            return lbl
-
-        self._lbl_x = _readout(self._s.x.name)
-        self._lbl_y = _readout(self._s.y.name)
-        self._lbl_z: QLabel | None = None
-        if self._s.has_z:
-            self._lbl_z = _readout(self._s.z.name)
-        pos_row.addStretch()
-        lay.addRow("Position (µm):", pos_row)
-        root.addWidget(grp)
-        sections_help(grp, keep=True)
 
         # ── Travel map (+ Z gauge, beside it) ────────────────────────────────
         map_grp = QGroupBox("Position in travel")
         outer = QHBoxLayout(map_grp)
-        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(12)
         ml = QVBoxLayout()
         self._map = StageMap()
         self._map.set_axes(self._s.x, self._s.y, self._s.invert_y)
@@ -510,22 +526,11 @@ class SettingsPanel(QWidget):
         legend = QLabel(
             f'<span style="color:{_C_CUR}">●</span> position &nbsp; '
             f'<span style="color:{_C_ORIGIN}">✚</span> 0,0 &nbsp; '
-            f'<span style="color:{_C_HOME}">◆</span> home &nbsp; '
             f'<span style="color:{_C_SOFT}">▭</span> soft limits &nbsp; '
-            f'<span style="color:{_C_FOV}">□</span> FOV')
+            f'<span style="color:{_C_FOV}">□</span> saved FOV')
         legend.setStyleSheet("font-size: 10px;")
         ml.addWidget(legend)
-        self._spn_drag = spin(
-            10.0, 1000.0, self._s.drag_speed_um_s, decimals=0, suffix=" µm/s",
-            tooltip="Top speed when dragging the blue dot on the map. The "
-                    "stage follows the drag no faster than this.")
-        self._spn_drag.valueChanged.connect(self._emit_settings)
-        drag_row = QHBoxLayout()
-        drag_row.addWidget(QLabel("Drag speed ≤"))
-        drag_row.addWidget(self._spn_drag)
-        drag_row.addStretch()
-        ml.addLayout(drag_row)
-        outer.addLayout(ml, 1)
+        outer.addLayout(ml)
 
         # Z gets its own gauge beside the map, sharing the map's legend colours.
         self._z_gauge: ZGauge | None = None
@@ -537,18 +542,22 @@ class SettingsPanel(QWidget):
             zcap = QLabel(self._s.z.name)
             zcap.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             zcap.setStyleSheet("font-size: 10px; color:#9aa0a6;")
+            zcap.setFixedWidth(int(2 * self._z_gauge.BAR_CENTER_X))  # centred under the bar
             zcol.addWidget(zcap)
             outer.addLayout(zcol)
+        outer.addStretch(1)         # map and gauge stay together, at the left
         root.addWidget(map_grp, 1)
 
         # ── Motion controls (enabled only while connected) ──────────────────
-        self._motion = QGroupBox("Motion")
-        grid = QGridLayout(self._motion)
+        self._motion = QGroupBox("Move")
+        mv = QVBoxLayout(self._motion)
+        mv.setSpacing(6)
+        grid = QGridLayout()
         grid.setSpacing(3)
-        grid.addWidget(QLabel("Jog −"), 0, 1)
-        grid.addWidget(QLabel("Step µm"), 0, 2)
-        grid.addWidget(QLabel("Jog +"), 0, 3)
-        grid.addWidget(QLabel("Go to µm"), 0, 4)
+        mv.addLayout(grid)
+        center = Qt.AlignmentFlag.AlignHCenter
+        grid.addWidget(QLabel("Step µm"), 0, 2, alignment=center)
+        grid.addWidget(QLabel("Go to"), 0, 4, alignment=center)
         def _btn(text: str, width: int, row: int, col: int, slot) -> QPushButton:
             b = QPushButton(text)
             b.setMaximumWidth(width)
@@ -589,71 +598,57 @@ class SettingsPanel(QWidget):
             }
         # Spare width goes to an empty last column, keeping the rows left.
         grid.setColumnStretch(7, 1)
-        root.addWidget(self._motion)
-        sections_help(self._motion, keep=True)
 
-        # ── Session home + go-to-origin (navigation, not calibration) ───────
-        self._nav = QGroupBox("Home (this session)")
-        nl = QVBoxLayout(self._nav)
-        nl.setSpacing(3)
-        self._btn_set_home = QPushButton("Set home here")
-        self._btn_set_home.setToolTip(
-            "Bookmark the current position as this session's working home. "
-            "Doesn't move the stage, and isn't saved — it's cleared when the "
-            "session ends and never touches the calibrated 0,0.")
-        self._btn_set_home.clicked.connect(self._set_home_here)
-
-        self._btn_go_home = QPushButton("Go home")
-        self._btn_go_home.clicked.connect(self._go_home)
-
-        self._btn_clear_home = QPushButton("Clear")
-        self._btn_clear_home.clicked.connect(self._clear_home)
-        nl.addLayout(button_row(self._btn_set_home, self._btn_go_home,
-                                self._btn_clear_home))
-
-        self._lbl_home = QLabel("home: not set")
-        self._lbl_home.setStyleSheet("font-size: 10px;")
-        nl.addWidget(self._lbl_home)
-
-        self._btn_go_zero = QPushButton("Go to 0,0 (true zero)")
-        self._btn_go_zero.setToolTip("Absolute move of both axes to the "
-                                     "calibrated origin.")
-        self._btn_go_zero.clicked.connect(self._go_zero)
-        nl.addLayout(button_row(self._btn_go_zero))
-        root.addWidget(self._nav)
-
-        # ── Saved FOVs (named position + snapshot, reused from routines) ────
-        self._fovs = QGroupBox("Saved FOVs")
-        fovl = QVBoxLayout(self._fovs)
+        # Saved FOVs (named position + snapshot, reused from routines) + 0,0.
         self._btn_save_fov = QPushButton("Save current as FOV…")
         self._btn_save_fov.setToolTip(
             "Name the current position and save it, with a camera snapshot, "
             "so it can be reached again from here or from a routine step.")
         self._btn_save_fov.clicked.connect(self.save_fov_requested)
         self._btn_goto_fov = QPushButton("Go to FOV…")
+        self._btn_goto_fov.setToolTip("Pick a saved FOV and move there.")
         self._btn_goto_fov.clicked.connect(self._pick_and_goto_fov)
-        fovl.addLayout(button_row(self._btn_save_fov, self._btn_goto_fov))
-        root.addWidget(self._fovs)
+        self._btn_go_zero = QPushButton("Go to 0,0")
+        self._btn_go_zero.setToolTip("Absolute move of both axes to the "
+                                     "calibrated origin (the true zero).")
+        self._btn_go_zero.clicked.connect(self._go_zero)
+        # In the grid, spanning its columns, so the row's edges match the axes'.
+        fr = len(axis_rows) + 2
+        grid.setRowMinimumHeight(fr - 1, 4)
+        grid.addWidget(self._btn_save_fov, fr, 0, 1, 3)
+        grid.addWidget(self._btn_goto_fov, fr, 3, 1, 2)
+        grid.addWidget(self._btn_go_zero, fr, 5, 1, 2)
+        root.addWidget(self._motion)
+        sections_help(self._motion, keep=True)
 
         # Outside the motion group: that is disabled during a frame run, and
         # a disabled parent's children can't be clicked.
-        self._btn_stop_all = QPushButton("STOP ALL")
+        self._btn_stop_all = QPushButton("STOP ALL  (Esc)")
         self._btn_stop_all.setStyleSheet(style.solid_btn("puffer"))
         self._btn_stop_all.clicked.connect(self._stop_all)
         root.addWidget(self._btn_stop_all)
 
-        # ── Calibration, behind a door ──────────────────────────────────────
-        self._lbl_frame = QLabel("—")
-        self._lbl_frame.setWordWrap(True)
-        self._lbl_frame.setStyleSheet("font-size: 10px;")
-        root.addWidget(self._lbl_frame)
-
+        # ── Advanced (folded): setup and calibration ────────────────────────
         self._btn_calibrate = QPushButton("Calibrate…")
         self._btn_calibrate.setToolTip(
             "Set the true zero and re-establish the coordinate frame. Rarely "
             "needed; one of these drives the stage into its hard limits.")
         self._btn_calibrate.clicked.connect(self._open_calibration)
-        root.addLayout(button_row(self._btn_calibrate))
+
+        adv = QGroupBox("Advanced")
+        adv.setObjectName("advanced")       # style.accent_panel: underline when folded
+        al = QFormLayout(adv)
+        al.setSpacing(4)
+        al.setContentsMargins(8, 4, 8, 4)
+        al.addRow(pairs_grid(
+            ("Port:", self._cmb_port, "Poll rate:", self._spn_rate),
+            ("Frame rotation:", self._spn_rotation,
+             "Drag speed ≤", self._spn_drag)))
+        al.addRow("Camera axes:", axes_row)
+        al.addRow(button_row(self._btn_calibrate))
+        root.addWidget(adv)
+        sections_help(adv, keep=True)
+        collapsible(adv, expanded=False)
 
         # Esc = STOP ALL, anywhere in the app.
         self._esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
@@ -667,8 +662,6 @@ class SettingsPanel(QWidget):
     def bind_controller(self, controller) -> None:
         """Attach the connected controller (session start) or None (stop)."""
         self._ctrl = controller
-        # Home is session-scoped: starting or ending a session clears it.
-        self._s.x.home_counts = self._s.y.home_counts = None
         self._set_controls_enabled(controller is not None)
         if controller is None:
             self._cancel_axes_run()
@@ -681,9 +674,7 @@ class SettingsPanel(QWidget):
         self._update_frame_status()
 
     def _set_controls_enabled(self, on: bool) -> None:
-        self._motion.setEnabled(on)      # Z rides along — it's a row in here now
-        self._nav.setEnabled(on)
-        self._fovs.setEnabled(on)
+        self._motion.setEnabled(on)      # Z and the FOV buttons ride along
         self._btn_stop_all.setEnabled(on)
         self._btn_calibrate.setEnabled(on)
 
@@ -709,8 +700,7 @@ class SettingsPanel(QWidget):
 
     # ── frame status ────────────────────────────────────────────────────────
     def _update_frame_status(self) -> None:
-        """Show whether absolute go-to can be trusted, and gate the buttons
-        (and the home label)."""
+        """Show whether absolute go-to can be trusted, and gate the buttons."""
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
         ok = not missing
         if ok:
@@ -719,14 +709,13 @@ class SettingsPanel(QWidget):
         else:
             self._lbl_frame.setText(
                 f"No valid frame for {', '.join(missing)} — absolute go-to "
-                "disabled. Jog still works. Use Calibrate…")
+                "disabled. Jog still works. Use Advanced ▸ Calibrate…")
             self._lbl_frame.setStyleSheet(f"color: {_BAD}; font-size: 10px;")
         self._btn_go_zero.setEnabled(ok)
         for key, w in self._axis_widgets.items():
             ax_ok = ok if key in ("x", "y") else self._axis(key).has_frame
             w["goto"].setEnabled(ax_ok)
             w["buttons"][2].setEnabled(ax_ok)   # the "Go" button
-        self._update_home_label()
         self._sync_drag(ok)
 
     def _motion_busy(self) -> bool:
@@ -738,8 +727,6 @@ class SettingsPanel(QWidget):
         # No competing motion while something else is driving the stage.
         free = self._ctrl is not None and not self._motion_busy()
         self._motion.setEnabled(free)
-        self._nav.setEnabled(free)
-        self._fovs.setEnabled(free)
         self._update_frame_status()
 
     def _sync_drag(self, frame_ok: bool) -> None:
@@ -768,17 +755,6 @@ class SettingsPanel(QWidget):
             lo, hi = self._axis(key).soft_limits_um()
             w["goto"].setRange(lo, hi)
 
-    # ── session home ────────────────────────────────────────────────────────
-    def _update_home_label(self) -> None:
-        hx, hy = self._s.x.home_um(), self._s.y.home_um()
-        have = hx is not None and hy is not None
-        if have:
-            self._lbl_home.setText(f"home: {hx:.1f}, {hy:.1f} µm (this session only)")
-        else:
-            self._lbl_home.setText("home: not set")
-        self._btn_go_home.setEnabled(have)
-        self._btn_clear_home.setEnabled(have)
-
     def _call(self, what: str, fn) -> bool:
         """Run `fn(controller)` if connected, reporting failure in one place —
         the shape every motion command shares."""
@@ -791,23 +767,7 @@ class SettingsPanel(QWidget):
             return False
         return True
 
-    def _set_home_here(self) -> None:
-        if self._call("Could not set home", lambda c: c.set_home_here()):
-            self._update_home_label()
-            self._map.update()
-
-    def _clear_home(self) -> None:
-        # The label and map clear either way — the bookmark is ours, not the
-        # controller's, so a failed round-trip must not strand the UI.
-        self._call("Could not clear home", lambda c: c.clear_home())
-        self._update_home_label()
-        self._map.update()
-
     # Every other motion command ends a map drag, or its next tick would undo it.
-    def _go_home(self) -> None:
-        self._end_drag()
-        self._call("Move failed", lambda c: c.go_home())
-
     def _go_zero(self) -> None:
         self._end_drag()
         self._call("Move failed", lambda c: c.go_to_center())

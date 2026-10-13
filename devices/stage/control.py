@@ -280,33 +280,6 @@ class StageController:
                     f"{ax.name}: no valid frame — see move_to_um.")
             dev.move_to_readout(ax.index, int(round(ax.ref_counts)))
 
-    # ── session home (a bookmark, not calibration) ──────────────────────────
-    # Never persisted: it must not outlive the sample or pass for the zero.
-
-    def set_home_here(self) -> tuple[float, float]:
-        """Bookmark the current position as this session's home. No motion."""
-        cx, cy = self.read_xy_counts()
-        self._s.x.home_counts, self._s.y.home_counts = cx, cy
-        return (self._s.x.to_um(cx), self._s.y.to_um(cy))
-
-    def clear_home(self) -> None:
-        self._s.x.home_counts = self._s.y.home_counts = None
-
-    def go_home(self) -> None:
-        """MOTION: absolute move of X and Y to the session home. Home is raw
-        counts, independent of the origin, so like jog it needs only a
-        non-stale map, not `has_frame`."""
-        dev = self._connected()
-        if self._s.x.home_counts is None or self._s.y.home_counts is None:
-            raise StageControllerError("no home set this session")
-        for ax in (self._s.x, self._s.y):
-            if ax.frame_stale:
-                raise StageControllerError(
-                    f"{ax.name}: a hard limit was hit since the last "
-                    f"calibration — the command map is unreliable. "
-                    f"Re-establish the frame before moving further.")
-            dev.move_to_readout(ax.index, ax.clamp_counts(int(ax.home_counts)))
-
 
 class MockStageController:
     """Simulated stage: position eases toward the last commanded target."""
@@ -445,20 +418,3 @@ class MockStageController:
                 raise StageControllerError(
                     f"{ax.name}: no valid frame — see StageController.go_to_center.")
         self._target.update(x=0.0, y=0.0)       # Z stays where it is
-
-    def set_home_here(self) -> tuple[float, float]:
-        self._s.x.home_counts, self._s.y.home_counts = self.read_xy_counts()
-        return (self._pos["x"], self._pos["y"])
-
-    def clear_home(self) -> None:
-        self._s.x.home_counts = self._s.y.home_counts = None
-
-    def go_home(self) -> None:
-        if self._s.x.home_counts is None or self._s.y.home_counts is None:
-            raise StageControllerError("no home set this session")
-        for k, ax in (("x", self._s.x), ("y", self._s.y)):
-            if ax.frame_stale:
-                raise StageControllerError(
-                    f"{ax.name}: a hard limit was hit since the last "
-                    f"calibration — see StageController.go_home.")
-            self._target[k] = self._clamp_um(k, ax.to_um(ax.home_counts))

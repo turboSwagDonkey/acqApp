@@ -106,7 +106,7 @@ path in use.
 | [devices/stage/driver.py](../devices/stage/driver.py) | `MCM6101` APT/serial driver. All motion methods flagged. Copy of the standalone `mcm6101.py`. |
 | [devices/stage/control.py](../devices/stage/control.py) | `StageController` (owns the serial connection) + `MockStageController`. Motion API in **microns**; soft limits clamp every target. |
 | [devices/stage/acquisition.py](../devices/stage/acquisition.py) | `StagePollWorker` — read-only position poller (a `PullWorker`). Never issues motion. |
-| [devices/stage/settings.py](../devices/stage/settings.py) | `StageAxis`/`StageSettings` dataclasses + Qt panel (port, poll rate, live X/Y readout, travel map, jog/go-to/stop, session home, **Calibrate…**) + `CalibrationDialog`. `config_path()`, `load_settings()`, `save_axis_updates()`. |
+| [devices/stage/settings.py](../devices/stage/settings.py) | `StageAxis`/`StageSettings` dataclasses + Qt panel (port, poll rate, live X/Y readout, travel map, jog/go-to/stop, saved FOVs, **Calibrate…**) + `CalibrationDialog`. `config_path()`, `load_settings()`, `save_axis_updates()`. |
 | [devices/stage/map_widget.py](../devices/stage/map_widget.py) | `StageMap` — read-only picture of the stage inside its travel. Nothing here commands motion. |
 | [devices/stage/stage_config.json](../devices/stage/stage_config.json) | **Fallback copy only** — the live calibration is `stage_control/config.json`. |
 
@@ -154,38 +154,33 @@ right — **this assumes the frame in the JSON is still valid.**
 
 ## Panel layout
 
-Top to bottom: connection + µm readout → **travel map** → Motion (jog / go-to /
-stop) → **Home (this session)** → STOP ALL → frame status line → **Calibrate…**.
+Top to bottom: large µm readout + frame status line → **travel map** (+ Z
+gauge) → Move (jog / go-to / stop, saved FOVs, Go to 0,0) → STOP ALL (Esc) →
+**Advanced** (folded: port, poll rate, frame rotation, drag speed, camera axes,
+**Calibrate…**). The session home bookmark was removed 2026-10-13: saved FOVs
+do the same job and persist.
 
-### Three tiers, deliberately separated
+### Two tiers, deliberately separated
 
-The stage has three kinds of "position reference" and they are kept apart because
+The stage has two kinds of "position reference" and they are kept apart because
 confusing them is how a coordinate system gets silently destroyed:
 
 | | What it is | Lifetime | Where |
 |---|---|---|---|
 | **true zero (0,0)** | The calibrated origin. All recorded µm are relative to it. | Saved to the config; survives restarts | behind **Calibrate…** |
-| **session home** | A bookmark: "the spot I'm working at today." | In memory; cleared at session start/end | main panel |
 | **frame** (`slope`/`offset`) | The command→encoder map that makes absolute go-to land. | Until the next hard-limit hit | behind **Calibrate…** |
-
-**Session home** (`StageAxis.home_counts`, `set_home_here` / `go_home` /
-`clear_home`) is deliberately **never loaded from or written to the config** —
-`load_settings()` doesn't read it and `save_axis_updates()` never writes it. A
-convenience marker that outlived the sample and got mistaken for the true zero
-would be worse than no marker at all. It's stored in **encoder counts**, so
-re-zeroing 0,0 moves where home *reads* in µm but not where it physically is.
 
 ### The travel map
 
 [devices/stage/map_widget.py](../devices/stage/map_widget.py) draws, in µm relative to 0,0:
 the hard travel rectangle, the soft-limit rectangle dashed inside it, the origin
-(green cross), the session home (orange diamond), and the current position (blue
+(green cross), saved FOVs (purple squares), and the current position (blue
 dot with guide lines to the edges). +Y is drawn screen-up when `xy_pad.invert_y`
 is set, so the picture matches the rig.
 
 - **Display only.** The standalone Tkinter app's drag-to-move map is deliberately
   *not* ported — a stray click on a settings tab must never move the stage.
-- Outline markers (origin, home) are painted **over** the filled position dot;
+- The origin cross is painted **over** the filled position dot;
   sitting exactly on 0,0 is the common case and the dot would otherwise hide the
   marker you're lining up with.
 - With `margin_um` at 50, the soft-limit rectangle sits 0.2 % inside the travel
@@ -203,7 +198,7 @@ the buttons used all day.
 | **Set 0,0 = center (here)** | **No** | Declares the current position the origin; writes `true_center` + `travel_*` + `soft_*` (±½″ around it) and saves. Centre the stage yourself first. |
 | **Re-establish frame…** | **Yes — into the reverse hard limits** | `StageController.establish_frame()`: per axis, drive to the reverse limit, then two in-range probes → new `slope`/`offset`. **Never writes an origin.** Confirm dialog first. |
 
-**Go to 0,0** stays on the main panel next to Go home — it's navigation, not
+**Go to 0,0** stays on the main panel (Move box) — it's navigation, not
 calibration.
 
 ⚠️ The dialog is **modal**, so the panel's STOP ALL can't be clicked while it's
@@ -249,7 +244,7 @@ Implementation notes:
   `has_frame` is false** — a stale frame silently mislands, so the UI refuses it
   rather than doing it wrong. **Jog stays enabled** (it's relative and unaffected).
 - `establish_frame` blocks for a minute or more per axis, so it runs on a
-  `_FrameWorker` QThread with a progress label. The Motion and Home groups are
+  `_FrameWorker` QThread with a progress label. The Move group is
   disabled for the duration so no competing move can be issued. **`STOP ALL` is
   deliberately outside the Motion group box** — a Qt child of a disabled parent is
   unclickable, and the abort has to stay live exactly during that move.
@@ -300,7 +295,7 @@ Implementation notes:
 | Origin preservation | ✅ fixed 2026-08-07 after it clobbered a user-set 0,0 on the rig. Covered by a regression test that asserts both the kept and dropped branches. |
 | Travel map | ✅ built 2026-08-10; render-tested offscreen (marker presence, +X right / +Y up, no cross when 0,0 unset, bare-axes fallback). |
 | Calibration behind a gate | ✅ built 2026-08-10 — `CalibrationDialog`, with its own STOP ALL and Esc-stops-not-closes. |
-| Session home | ✅ built 2026-08-10; in-memory only, verified it never reaches the config and is cleared on session start/stop. |
+| Session home | Removed 2026-10-13 (saved FOVs replace it). |
 | Config duplication | ✅ resolved — single shared `stage_control/config.json`; acqApp copy is a stale fallback. |
 | **0,0 currently on the rig** | ❌ **not set.** `slope`/`offset` are good, but `true_center` holds the bogus geometric centre the old code wrote (X −584511, Y −324391). Centre the stage and click *Set 0,0 = center (here)* — one click overwrites it. |
 | Z / Focus axis | Disabled (`active:false`); not exposed. |

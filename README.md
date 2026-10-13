@@ -158,11 +158,10 @@ The **Puffer** tab can **schedule puffs** at fixed session times
 
 The **XY stage** tab both logs and moves. It polls X/Y (µm) into `/stage_x_um`,
 `/stage_y_um` (plus `/stage_z_um` when the rig's config enables a Z axis) and
-drives the stage: jog, absolute go-to, stop, a session-scoped "home" bookmark,
-and a calibration that **drives both axes into their reverse hard limits** to
+drives the stage: jog, absolute go-to, stop, saved FOVs, and a calibration that **drives both axes into their reverse hard limits** to
 re-measure the command→encoder map. Soft limits clamp every target, and absolute
 go-to is refused until the frame is known. This is enforced once, in
-`StageController` (`move_to_um`/`jog_um`/`go_home`/`go_to_center`), so every
+`StageController` (`move_to_um`/`jog_um`/`go_to_center`), so every
 caller gets it, including saved-FOV recall and a routine's Move step.
 
 **A hard limit hit mid-session is detected.** Touching a limit re-references the

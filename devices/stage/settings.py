@@ -19,7 +19,7 @@ _SHARED_CONFIG = Path(__file__).resolve().parents[3] / "stage_control" / "config
 FULL_TRAVEL_UM = 25400.0        # 1 inch per axis
 
 # Legend colours, shared with map_widget.py.
-_C_CUR, _C_ORIGIN, _C_HOME, _C_SOFT = "#1f77b4", "#2ca02c", "#ff7f0e", "#b58900"
+_C_CUR, _C_ORIGIN, _C_SOFT = "#1f77b4", "#2ca02c", "#b58900"
 _C_FOV = "#9467bd"
 _BAD = "#c0392b"
 
@@ -44,8 +44,6 @@ class StageAxis:
     travel_max:     int | None = None
     span_counts:    int | None = None
     step_um:        float = 50.0
-    # A bookmark, never persisted, so it can't be mistaken for the true zero.
-    home_counts:    int | None = None
     # Runtime-only: set when a hard-limit bit is seen on this axis (the map
     # is then wrong), cleared only by establish_frame's remeasured slope.
     frame_stale:    bool = False
@@ -123,9 +121,6 @@ class StageAxis:
             a, b = self.to_um(self.travel_min), self.to_um(self.travel_max)
             return (min(a, b), max(a, b))
         return self.soft_limits_um()
-
-    def home_um(self) -> float | None:
-        return None if self.home_counts is None else self.to_um(self.home_counts)
 
 
 @dataclass

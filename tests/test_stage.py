@@ -224,12 +224,6 @@ def check_mock_controller(r: Report) -> None:
     c.go_to_center()
     r.check(c._target["z"] == 50.0 and c.read_z_um() == 50.0,
             "go_to_center moves X/Y only; Z keeps its target")
-    try:
-        c.go_home()
-        r.check(False, "go_home with no home set must raise")
-    except StageControllerError:
-        r.check(True, "the mock refuses go_home with the real controller's "
-                      "error type")
 
 
 def check_no_z_controller_refuses(r: Report) -> None:

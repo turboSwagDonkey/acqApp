@@ -71,10 +71,7 @@ def _drive(p: SettingsPanel) -> None:
     p._jog("x", -1)
     p._jog("y", +1)
     p._goto("x")
-    p._go_home()
     p._go_zero()
-    p._set_home_here()
-    p._clear_home()
     p._stop("x")
     p._stop_all()
 
@@ -90,8 +87,8 @@ def check_healthy(r: Report) -> None:
     _drive(p)
 
     names = [n for n, _ in c.calls]
-    for want in ("jog_xy_um", "move_to_um", "go_home", "go_to_center",
-                 "set_home_here", "clear_home", "stop", "stop_all"):
+    for want in ("jog_xy_um", "move_to_um", "go_to_center", "stop",
+                 "stop_all"):
         r.check(want in names, f"{want} reaches the controller")
 
     jogs = [a for n, a in c.calls if n == "jog_xy_um"]
@@ -137,9 +134,9 @@ def check_dead_link(r: Report) -> None:
     except Exception as e:                       # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} escaped a handler: {e}")
 
-    r.check(len(c.calls) >= 8,
+    r.check(len(c.calls) >= 6,
             f"every command was still attempted ({len(c.calls)})")
-    r.check(len(WARNINGS) >= 7,
+    r.check(len(WARNINGS) >= 5,
             f"each failure is reported, not swallowed ({len(WARNINGS)})")
     r.check(any("STOP ALL" in w for w in WARNINGS),
             "the panic path reports by name")
