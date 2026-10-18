@@ -229,6 +229,14 @@ def check_map_repaint_guard(r: Report) -> None:
     r.check(len(calls) == 1,
             f"control: a real move still repaints ({calls})")
 
+    # Disconnect clears the dot; reconnecting at the same spot must redraw it.
+    p.bind_controller(FakeCtrl())
+    p.bind_controller(None)
+    calls.clear()
+    p.set_readout(100.0 + p._MAP_EPS_UM * 4, 200.0)
+    r.check(len(calls) == 1,
+            f"after a disconnect the same position repaints the map ({calls})")
+
 
 def _framed(p: SettingsPanel) -> SettingsPanel:
     for ax in (p._s.x, p._s.y):
@@ -361,6 +369,25 @@ def check_fovs_on_map(r: Report) -> None:
     p._map.resize(400, 400)
     p._map.grab()                                    # paints without raising
 
+    # A hand-edited or foreign file must not break the panel or the picker.
+    from acqApp.devices.stage.fov_picker import FovPicker
+    bad = fov_store.SESSION_DIR / f"bad{fov_store.SUFFIX}"
+    bad.write_text('{"name": "bad", "x_um": null}', encoding="utf-8")
+    (fov_store.SESSION_DIR / f"list{fov_store.SUFFIX}").write_text("[1]", encoding="utf-8")
+    try:
+        p.refresh_fovs()
+        names = [n for n, _, _ in p._map._fovs]
+        r.check("bad" not in names and "spotB_fov" in names,
+                f"an unreadable FOV is skipped, the rest still listed ({names})")
+        WARNINGS.clear()
+        dlg = FovPicker()
+        dlg.chose(bad)                               # as Browse would
+        r.check(dlg.fov is None and len(WARNINGS) == 1,
+                f"choosing an unreadable file warns, not raises ({WARNINGS})")
+    finally:
+        bad.unlink()
+        (fov_store.SESSION_DIR / f"list{fov_store.SUFFIX}").unlink()
+
 
 def check_cam_axes(r: Report) -> None:
     """Measured axes turn the jogs and the map to the camera, and persist."""
@@ -406,6 +433,36 @@ def check_cam_axes(r: Report) -> None:
     r.check(not WARNINGS, f"no warnings ({WARNINGS})")
 
 
+def check_save_fov_disk_error(r: Report) -> None:
+    """Save FOV is a slot: a full or read-only disk warns, never escapes."""
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QInputDialog
+    from acqApp.adapters.stage import StageModule
+    from acqApp.devices.stage import fov_store
+
+    def refuse(*_a, **_k):
+        raise PermissionError("read-only")
+
+    panel = SimpleNamespace(connected=True, current_position=(1.0, 2.0, None),
+                            refresh_fovs=lambda: None)
+    win = SimpleNamespace(pattern_target=lambda: None,
+                          camera_preset=lambda _k: None,
+                          status=lambda _m: None)
+    fake = SimpleNamespace(panel=panel, win=win, _snapshot_png=lambda: None)
+    WARNINGS.clear()
+    saved = fov_store.save, QInputDialog.getText
+    fov_store.save = refuse
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("spot", True))
+    try:
+        StageModule.save_fov(fake)
+        r.check(len(WARNINGS) == 1 and "read-only" in WARNINGS[0],
+                f"a failed FOV write is reported ({WARNINGS})")
+    except Exception as e:                            # noqa: BLE001
+        r.check(False, f"save_fov raised {type(e).__name__}: {e}")
+    finally:
+        fov_store.save, QInputDialog.getText = saved
+
+
 def check_measure_gating(r: Report) -> None:
     """A measurement owns the stage: other motion off, Esc cancels it."""
     from PyQt6.QtWidgets import QInputDialog
@@ -432,11 +489,17 @@ def check_measure_gating(r: Report) -> None:
     r.check(p._axes_run is not None and p._axes_run.running
             and not p._motion.isEnabled() and not p._map._draggable,
             "measuring: jog/go-to and map drag are off")
+    run = p._axes_run
     p._stop_all()
     r.check(p._axes_run is None and p._motion.isEnabled(),
             "Esc cancels the measurement and gives the controls back")
     r.check(len(WARNINGS) == 1 and "Cancelled" in WARNINGS[0],
             f"…and says so, with where the stage is ({WARNINGS})")
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    r.check(sip.isdeleted(run), "the finished measurement is freed, not "
+            "kept as a child of the panel")
 
 
 def main() -> int:
@@ -460,6 +523,7 @@ def main() -> int:
     check_fovs_on_map(r)
     check_cam_axes(r)
     check_measure_gating(r)
+    check_save_fov_disk_error(r)
     check_real_config_untouched(r)
 
     after = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None

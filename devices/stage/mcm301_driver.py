@@ -222,7 +222,7 @@ class MCM301:
             raise MCM301Error(f"Open({self._serial!r}) failed (code {hdl}).")
         self._hdl = hdl
         if self._lib.IsOpen(self._serial.encode("ascii")) != 1:
-            self._hdl = -1
+            self.close()
             raise MCM301Error(f"Opened but IsOpen() reports closed for {self._serial!r}.")
         self._verify_responds()
 

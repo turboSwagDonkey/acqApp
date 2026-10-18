@@ -49,7 +49,6 @@ class VideoFileCameraWorker(PullWorker):
         return self._reader.path.name
 
     def _run(self) -> None:
-        self._stop = False
         t0 = time.perf_counter()
         period = 1.0 / self._hz
         total = len(self._reader)

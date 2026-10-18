@@ -428,7 +428,7 @@ class ZGauge(_TravelWidget):
                    f"{lo:.0f}")
 
         if self._ax.origin_set:
-            self._side_tick(p, bar, self._y_for(0.0, zt, bar), _ORIGIN, "left")
+            self._origin_tick(p, bar, self._y_for(0.0, zt, bar))
         else:
             p.setPen(QPen(_STALE))
             p.drawText(bar.adjusted(-6, 0, 6, 0),
@@ -453,10 +453,8 @@ class ZGauge(_TravelWidget):
                        "no frame")
 
     # ── drawing helpers ─────────────────────────────────────────────────────
-    def _side_tick(self, p: QPainter, bar: QRectF, y: float, color: QColor,
-                   side: str) -> None:
-        """A marker extending outward from one edge of the bar."""
-        x0 = bar.left() if side == "left" else bar.right()
-        x1 = x0 + (-self._SIDE_TICK + 4 if side == "left" else self._SIDE_TICK - 4)
-        p.setPen(QPen(color, 1.8))
-        p.drawLine(QPointF(x0, y), QPointF(x1, y))
+    def _origin_tick(self, p: QPainter, bar: QRectF, y: float) -> None:
+        """A marker extending outward from the bar's left edge."""
+        p.setPen(QPen(_ORIGIN, 1.8))
+        p.drawLine(QPointF(bar.left(), y),
+                   QPointF(bar.left() - self._SIDE_TICK + 4, y))

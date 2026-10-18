@@ -349,6 +349,19 @@ def _part_review_safety() -> int:  # noqa: PLR0915 — one linear scenario
             "a json that isn't an object is ignored too")
     r.check(not list(tmp.glob("*.tmp")), "no temp files left behind")
 
+    # fit_at reads only the frames its average reaches: still the table's row.
+    import dataclasses
+    sm = PupilReview(clip, dataclasses.replace(st, smooth=True, smooth_window=5))
+    sm.auto[:] = np.random.default_rng(1).uniform(20, 60, (N, 5))
+    sm.auto[[3, 7]] = np.nan
+    sm.set_manual(5, PupilFit(80, 60, 30, 30, 0))
+    t = sm.table()
+    rows = [sm.fit_at(i) for i in range(N)]
+    r.check(all(np.isnan(t[i, 0]) if f is None
+                else np.allclose(dataclasses.astuple(f), t[i])
+                for i, f in enumerate(rows)),
+            "fit_at agrees with the table, stabilized and edited")
+
     # ── the dialog ──
     app = qt_app()
     isolate_user_state()
@@ -363,6 +376,11 @@ def _part_review_safety() -> int:  # noqa: PLR0915 — one linear scenario
     QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a))
     real_save = PupilReview.save
     try:
+        empty = rd.ReviewWidget()
+        for slot in (empty._pin_current, empty._reset_current, empty._place_new):
+            slot()      # enabled before a clip; raising in a slot aborts
+        r.check(empty.review is None, "the frame edit buttons with no clip do nothing")
+        empty.deleteLater()
         dlg = rd.PupilReviewDialog(str(clip))
         dlg.show()
         dlg.edit_frame(1, PupilFit(80, 60, 20, 20, 0))
@@ -723,6 +741,14 @@ def _part_seed() -> int:  # noqa: PLR0915 — one linear scenario
     r.check(m._seed_clicks == [] and "click" in win.messages[-1]
             and m.panel.tracking._btn_auto.text() == "click pupil",
             f"live: no answer asks for clicks ({win.messages[-1][:50]})")
+    r.check(m.panel.tracking._btn_auto.isEnabled(),
+            "live: …and Auto stays pressable, to cancel")
+    m._seed_clicks, m._auto_worker = [1, 2, 3], object()    # the seeded run
+    m._seed_click(None)
+    m._on_auto_requested()
+    r.check(m._seed_clicks == [1, 2, 3],
+            "live: while the seeded run works, a click or Auto changes nothing")
+    m._seed_clicks, m._auto_worker = [], None
     m._on_auto_requested()
     r.check(m._seed_clicks is None and m.panel.tracking._btn_auto.text() == "Auto",
             "live: Auto again cancels")

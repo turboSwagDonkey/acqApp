@@ -752,6 +752,7 @@ def _part_limit() -> int:
 
     # ── 12. none saved: the first frame gives it the middle half ─────────────
     panel.tracking._set_region((0.0, 0.0, 0.0, 0.0))    # as a fresh install
+    panel.tracking._fire()                  # the adapter reads its cached copy
     r.check(panel.settings.search_limit() is None, "fixture: no region saved")
     win._btn_run.setChecked(True)
     pump(app, 1.0)                       # frames flow

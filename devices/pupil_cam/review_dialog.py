@@ -70,8 +70,13 @@ class _TrackAllWorker(PullWorker):
         self._cancel.set()
 
     def _run(self) -> None:
-        done = self._job(self.progress.emit, self._cancel.is_set)
+        done = self._job(self._progress, self._cancel.is_set)
         self.finished_ok.emit(done)
+
+    def _progress(self, i: int, n: int) -> None:
+        # ~200 updates a run, not a queued GUI event per 1-2 ms fit.
+        if i == n or i % max(1, n // 200) == 0:
+            self.progress.emit(i, n)
 
 
 class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
@@ -435,12 +440,15 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
             self._show_fit(rebuild_roi=not keep_roi)
         self._refresh_plot()
 
+    # These three buttons are enabled before any clip is open.
     def _pin_current(self) -> None:
-        fit = self.review.fit_at(self._frame)
+        fit = self.review.fit_at(self._frame) if self.review is not None else None
         if fit is not None:
             self.edit_frame(self._frame, fit)
 
     def _reset_current(self) -> None:
+        if self.review is None:
+            return
         self.review.clear_manual(self._frame)
         self._dirty = True
         self.goto(self._frame, force=True)
@@ -449,7 +457,10 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
     def _place_new(self) -> None:
         """Seed an ellipse at the middle of the eye region for a frame the
         tracker missed; then drag it into place."""
-        x0, y0, x1, y1 = self._read_settings().search_limit()
+        lim = self._read_settings().search_limit() if self.review is not None else None
+        if lim is None:
+            return
+        x0, y0, x1, y1 = lim
         r = max(5.0, min(x1 - x0, y1 - y0) / 6.0)
         self.edit_frame(self._frame, PupilFit((x0 + x1) / 2, (y0 + y1) / 2,
                                               r, r, 0.0))

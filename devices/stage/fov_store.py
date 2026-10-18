@@ -78,8 +78,11 @@ def save(name: str, x_um: float, y_um: float, z_um: float | None = None,
 
 
 def load(path: str | Path) -> SavedFov:
+    """Raises OSError or ValueError (TypeError on a non-numeric position)."""
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name}: not a saved FOV")
     img = _img_for(path)
     z = data.get("z_um")
     return SavedFov(
@@ -108,6 +111,6 @@ def list_folder(folder: Path) -> list[SavedFov]:
     for p in sorted(folder.glob(f"*{SUFFIX}")):
         try:
             out.append(load(p))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError, TypeError):     # one bad file hides only itself
             continue
     return out

@@ -135,6 +135,7 @@ class SettingsPanel(QWidget):
             (None, self._chk_video, None, self._lbl_vid)))
         self._lbl_dark = QLabel()
         self._lbl_dark.setWordWrap(True)
+        self._lbl_dark.setStyleSheet("color:#c47f00; font-weight:bold;")
         cl.addRow(self._lbl_dark)
         self._cam_form = cl
         cl.setRowVisible(self._lbl_dark, False)
@@ -298,7 +299,6 @@ class SettingsPanel(QWidget):
             self._lbl_dark.setText(
                 f"Too dark: the pupil is {contrast:.1f} grey levels darker "
                 f"than the iris. Raise exposure or the LED.")
-            self._lbl_dark.setStyleSheet("color:#c47f00; font-weight:bold;")
         self._cam_form.setRowVisible(self._lbl_dark, low)
 
     def set_led(self, on: bool) -> None:

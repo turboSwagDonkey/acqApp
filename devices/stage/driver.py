@@ -33,13 +33,12 @@ CHAN_DISABLE = 0x00
 MGMSG_MOT_MOVE_HOME        = 0x0443
 MGMSG_MOT_MOVE_HOMED       = 0x0444
 MGMSG_MOT_MOVE_ABSOLUTE    = 0x0453  # long form (with data packet)
-MGMSG_MOT_MOVE_RELATIVE    = 0x0448  # long form (with data packet)
+# Not used: this firmware (MCM61010 fw 7.0.2) ignores MOVE_RELATIVE (0x0448)
+# and answers REQ_POSCOUNTER (0x0411) with 0; status updates carry position.
 MGMSG_MOT_MOVE_COMPLETED   = 0x0464
 MGMSG_MOT_MOVE_STOP        = 0x0465
 MGMSG_MOT_MOVE_STOPPED     = 0x0466
 MGMSG_MOT_MOVE_JOG         = 0x046A
-MGMSG_MOT_REQ_POSCOUNTER   = 0x0411
-MGMSG_MOT_GET_POSCOUNTER   = 0x0412
 MGMSG_MOT_REQ_STATUSUPDATE = 0x0480
 MGMSG_MOT_GET_STATUSUPDATE = 0x0481
 
@@ -115,30 +114,22 @@ class MCM6101:
     # measured readout ~= 17.78 * command on the XY axes.
     DEFAULT_SCALE = 17.78
 
-    def __init__(self, port: str, timeout: float = 0.5, default_scale: float = DEFAULT_SCALE):
+    def __init__(self, port: str, timeout: float = 0.5):
         self.port_name = port
         self.timeout = timeout
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
-        self.default_scale = default_scale
-        self._scale: dict[int, float] = {}   # axis -> readout counts per command unit
         # Per-axis encoder = slope * command + offset. A hard-limit hit
         # re-references the command origin, so `offset` goes stale with it.
         self._slope: dict[int, float] = {}
         self._offset: dict[int, float] = {}
-
-    def set_scale(self, axis: int, readout_per_cmd: float):
-        self._scale[axis] = float(readout_per_cmd)
-
-    def scale(self, axis: int) -> float:
-        return self._scale.get(axis, self.default_scale)
 
     def set_linear_map(self, axis: int, slope: float, offset: float):
         self._slope[axis] = float(slope)
         self._offset[axis] = float(offset)
 
     def linear_map(self, axis: int) -> tuple[float, float]:
-        return (self._slope.get(axis, self.scale(axis)),
+        return (self._slope.get(axis, self.DEFAULT_SCALE),
                 self._offset.get(axis, 0.0))
 
     # ---- connection -------------------------------------------------------
@@ -239,13 +230,6 @@ class MCM6101:
         return DeviceInfo(serial_no, model, f"{fw[2]}.{fw[1]}.{fw[0]}")
 
     # ---- per-axis reads (read-only) --------------------------------------
-    def get_position(self, axis: int) -> int:
-        msg = self._query(MGMSG_MOT_REQ_POSCOUNTER, MGMSG_MOT_GET_POSCOUNTER,
-                          BAY0 + axis, p1=axis)
-        if not msg or len(msg) < 12:
-            raise MCM6101Error(f"No position reply from axis {axis}.")
-        return struct.unpack_from("<i", msg, 8)[0]
-
     def get_status(self, axis: int, wait: float = 0.4) -> AxisStatus:
         msg = self._query(MGMSG_MOT_REQ_STATUSUPDATE,
                           MGMSG_MOT_GET_STATUSUPDATE, BAY0 + axis, p1=axis,
@@ -299,9 +283,6 @@ class MCM6101:
         self._send(MGMSG_MOD_SET_CHANENABLESTATE, axis, p1=axis,
                    p2=CHAN_ENABLE if enable else CHAN_DISABLE)
 
-    def is_enabled(self, axis: int) -> bool:
-        return self.get_status(axis).enabled
-
     def identify(self, axis: int | None = None):
         """Flash an LED (safe, no motion). axis=None flashes the controller."""
         self._send(MGMSG_MOD_IDENTIFY, axis, p1=0 if axis is None else axis)
@@ -309,12 +290,6 @@ class MCM6101:
     # ======================================================================
     #  MOTION COMMANDS BELOW - these physically move the stage.
     # ======================================================================
-    def move_relative(self, axis: int, delta_cmd: int):
-        """MOTION: relative move in COMMAND units. This firmware (MCM61010 fw
-        7.0.2) ignores MOVE_RELATIVE; use jog_by_readout()."""
-        self._send(MGMSG_MOT_MOVE_RELATIVE, axis,
-                   struct.pack("<Hi", axis, int(delta_cmd)))
-
     def move_absolute(self, axis: int, position_cmd: int):
         """MOTION: absolute move in COMMAND units; most callers want
         move_to_readout()."""

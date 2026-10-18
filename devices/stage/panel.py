@@ -107,7 +107,8 @@ class CalibrationDialog(QDialog):
         fl.addWidget(self._hint(
             "Needed when a hard limit has been hit and absolute go-to lands "
             "wrong. Drives into the reverse limits — the stage must be clear. "
-            "Rewrites slope/offset only; it never sets 0,0 for you."))
+            "Rewrites slope/offset; it never sets 0,0 for you, and clears it "
+            "if it lies outside the remeasured travel."))
         self._lbl_progress = QLabel("")
         self._lbl_progress.setWordWrap(True)
         fl.addWidget(self._lbl_progress)
@@ -226,8 +227,9 @@ class CalibrationDialog(QDialog):
             "X and then Y will be driven into their REVERSE hard limits, then "
             "probed to re-measure the command→encoder map. Takes a minute or more "
             "per axis.\n\n"
-            "Your 0,0 is NOT changed — only slope/offset are rewritten. The stage "
-            "is left at a probe position, not at 0,0.\n\n"
+            "Slope/offset are rewritten. Your 0,0 is kept if it lies inside the "
+            "remeasured travel, else cleared (set it again). The stage is left "
+            "at a probe position, not at 0,0.\n\n"
             "Make sure the stage is clear, watch it, and keep Esc (STOP ALL) "
             "reachable. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -668,6 +670,8 @@ class SettingsPanel(QWidget):
             self._map.clear_position()
             if self._z_gauge is not None:
                 self._z_gauge.clear_position()
+            # Else a reconnect at the same spot never redraws the cleared dot.
+            self._last_map_xy = self._last_gauge_z = None
             if self._cal_dialog is not None and not self._cal_dialog.running:
                 self._cal_dialog.reject()
                 self._cal_dialog = None
@@ -965,9 +969,13 @@ class SettingsPanel(QWidget):
         run.progress.connect(self._lbl_axes.setText)
         run.finished.connect(self._on_axes_measured)
         run.failed.connect(self._on_axes_failed)
+        # A child of the panel: freed per run, not kept until the panel goes.
+        run.finished.connect(run.deleteLater)
+        run.failed.connect(run.deleteLater)
         self._axes_run = run
         if not self._call("Could not start the measurement", lambda c: run.start()):
             self._axes_run = None
+            run.deleteLater()
             return
         self._apply_gating()
 

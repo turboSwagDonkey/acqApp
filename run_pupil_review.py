@@ -6,7 +6,7 @@
 First run builds a private `.venv-pupil` here (requirements-pupil.txt), clones
 EyeLoop beside the checkout (GPL-3.0, fetched not bundled) and applies
 `docs/eyeloop-3.14-patches.diff`. `--update` does a fast-forward `git pull`
-first, so the tool tracks the main branch. `--check` builds the window
+first, so the tool tracks the main branch, and re-installs the requirements. `--check` builds the window
 headless and exits (for tests). Stdlib only until the environment is ready.
 """
 from __future__ import annotations
@@ -49,12 +49,15 @@ def ensure_env() -> int | None:
         _say(f"{missing_modules()} still missing in {VENV}; "
              f"delete it and run again")
         return 1
-    if not py.exists():
+    fresh = not py.exists()
+    if fresh:
         _say(f"creating {VENV} ...")
         subprocess.check_call([sys.executable, "-m", "venv", str(VENV)])
-    _say("installing requirements-pupil.txt ...")
-    subprocess.check_call([str(py), "-m", "pip", "install", "-q", "-r",
-                           str(ROOT / "requirements-pupil.txt")])
+    # Not every launch: pip needs the network and ~10 s even when satisfied.
+    if fresh or "--update" in sys.argv[1:]:
+        _say("installing requirements-pupil.txt ...")
+        subprocess.check_call([str(py), "-m", "pip", "install", "-q", "-r",
+                               str(ROOT / "requirements-pupil.txt")])
     return subprocess.call([str(py), str(Path(__file__).resolve()),
                             *sys.argv[1:]])
 

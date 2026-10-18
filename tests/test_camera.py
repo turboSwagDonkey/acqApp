@@ -437,7 +437,7 @@ def check_host_wiring(r: Report, app, tmp: Path) -> None:
     win._rec_path = tmp / "M1_20260923_120000"
     got = win.dcimg_target("voltage_cam")
     r.check(got == win._rec_path / "M1_20260923_120000_voltage_cam.dcimg",
-            f"named like SplitWriter's other per-stream files (got {got})")
+            f"named like SessionWriter's other per-stream files (got {got})")
 
     fmt.setCurrentIndex(fmt.findData("tiff"))
     r.check(win.dcimg_target("voltage_cam") is None,
@@ -460,6 +460,34 @@ def check_host_wiring(r: Report, app, tmp: Path) -> None:
                 "a TIFF chosen on the old Save tab carries over to the camera")
     finally:
         old.close()
+
+
+def check_adapter_guards(r: Report, app) -> None:
+    """A bad saved binning must not stop startup, and a DAQ error from the
+    LED switch (a slot) must not escape and abort the app."""
+    vc = config.load_settings("voltage_cam")
+    config.save_settings("voltage_cam", {**vc, "binning": 3})
+    win = make_window({"voltage_cam"})
+    try:
+        cam = next(m for m in win._modules if m.key == "voltage_cam")
+        r.check(cam.binning() == P.DEFAULT_BINNING,
+                f"an unknown saved binning falls back ({cam.binning()})")
+
+        class DeadDaq:
+            def set(self, on):
+                raise OSError("DAQmx device disconnected")
+
+            def close(self):
+                pass
+        cam.controller = DeadDaq()
+        try:
+            cam.panel._chk_led.setChecked(True)
+            escaped = False
+        except OSError:
+            escaped = True
+        r.check(not escaped, "an LED write failure stays inside the slot")
+    finally:
+        win.close()
 
 
 def check_routine_counts_recorder(r: Report, app) -> None:
@@ -732,6 +760,7 @@ def _part_format() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_format_"))
     try:
         check_host_wiring(r, app, tmp)
+        check_adapter_guards(r, app)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
@@ -884,6 +913,50 @@ def check_write_errors(r: Report) -> None:
             f"the failure is counted and named ({rec.write_error_count}, "
             f"{rec.last_write_error!r})")
     r.check(remaining == 0, f"and the ring drains clean (remaining {remaining})")
+
+
+def check_final_metadata_failure_still_closes(r: Report) -> None:
+    """A module's final_metadata() raising must not leave the files open (or
+    escape into the Stop slot, which aborts the app)."""
+    rec, w, clock = new_recorder()
+    clock.start()
+    rec.start(Path("unused"), {})
+    rec.put("wheel", 1.0)
+
+    def final() -> dict:
+        raise KeyError("cam_dcimg_frames")
+    try:
+        remaining = rec.stop(final_metadata=final)
+        escaped = False
+    except Exception:                                # noqa: BLE001
+        remaining, escaped = -1, True
+    r.check(not escaped and remaining == 0, "the failure stays inside stop()")
+    r.check(w.events[-1] == "close" and len(w.written) == 1,
+            f"…and the drained file is still closed ({w.events})")
+
+
+def check_stop_right_after_start(r: Report) -> None:
+    """stop() before the thread reaches run() must still stop it: run() used
+    to clear the flag, so the loop ran on after Stop."""
+    from acqApp.acq.worker import PullWorker
+
+    class Spin(PullWorker):
+        _STOP_WAIT_MS = 2000
+
+        def _run(self):
+            t_end = time.perf_counter() + 5.0
+            while not self._stop and time.perf_counter() < t_end:
+                time.sleep(0.001)
+
+    stuck = 0
+    for _ in range(20):
+        w = Spin()
+        w.start()
+        w.stop()
+        stuck += w.isRunning()
+        w.wait()
+    r.check(stuck == 0, f"every stop() right after start() ends the thread "
+                        f"({stuck}/20 ran on)")
 
 
 def check_unstamped(r: Report) -> None:
@@ -1288,6 +1361,8 @@ def _part_losses() -> int:
     check_count_cap(r)
     check_late_samples(r)
     check_write_errors(r)
+    check_final_metadata_failure_still_closes(r)
+    check_stop_right_after_start(r)
     check_unstamped(r)
     check_drops_counted(r)
     check_offered_never_blocks(r)

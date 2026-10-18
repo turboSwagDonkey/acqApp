@@ -345,6 +345,7 @@ class TrackingControls(QWidget):
         self.changed.emit()
 
     def set_auto_busy(self, busy: bool, enabled: bool = True,
-                      text: str = "…") -> None:
-        self._btn_auto.setEnabled(enabled and not busy)
+                      text: str = "…", cancellable: bool = False) -> None:
+        """`cancellable`: stays pressable while busy (pressing it cancels)."""
+        self._btn_auto.setEnabled(enabled and (cancellable or not busy))
         self._btn_auto.setText(text if busy else "Auto")

@@ -9,6 +9,7 @@ and `describe()`. `recorded_clip(folder)` finds a session's pupil footage.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +41,11 @@ class SegmentedAvi:
     def __init__(self, parts: list[Path]) -> None:
         self._parts = [AviReader(p) for p in parts]
         first = self._parts[0]
+        odd = [p.path.name for p in self._parts[1:]
+               if (p.width, p.height) != (first.width, first.height)]
+        if odd:                     # one clip, one frame size: fits index by px
+            raise ValueError(f"{', '.join(odd)}: not {first.width}x"
+                             f"{first.height} like {first.path.name}")
         self.path = first.path
         self.width, self.height, self.hz = first.width, first.height, first.hz
         self._starts = np.cumsum([0] + [len(p) for p in self._parts])
@@ -73,12 +79,16 @@ class TiffReader:
         self.hz = 0.0
         self._n = len(pages)
         self._to8 = _To8(first)
+        # Track-all reads on a worker while the GUI pages through the clip;
+        # one TiffFile handle seeks a shared file pointer.
+        self._lock = threading.Lock()
 
     def __len__(self) -> int:
         return self._n
 
     def luma(self, i: int) -> np.ndarray:
-        f = self._tif.pages[i].asarray()
+        with self._lock:
+            f = self._tif.pages[i].asarray()
         return self._to8(f if f.ndim == 2 else f[..., 0])
 
     def describe(self) -> str:

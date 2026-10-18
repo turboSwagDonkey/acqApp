@@ -68,8 +68,10 @@ class TiffFileWriter:
         self._n += 1
 
     def close(self) -> None:
-        self._tif.close()
-        self._ts_file.close()
+        try:
+            self._tif.close()
+        finally:
+            self._ts_file.close()
 
 
 class AviFileWriter:
@@ -172,14 +174,16 @@ class AviFileWriter:
         f = self._f
         self._index.append(f.tell() - self._movi)
         f.write(b"00db" + struct.pack("<I", self._frame_bytes))
-        f.write(np.ascontiguousarray(data).tobytes())
+        f.write(np.ascontiguousarray(data))         # buffer protocol: no copy
         self._ts.append(timestamp)
         self._ts_file.write(f"{self._n},{timestamp!r}\n")
         self._n += 1
 
     def close(self) -> None:
-        self._close_segment()
-        self._ts_file.close()
+        try:
+            self._close_segment()
+        finally:
+            self._ts_file.close()
 
 
 class LongCsvWriter:
@@ -262,15 +266,16 @@ class SessionWriter(Writer):
                 self._csv.write(stream, timestamp, data)
 
     def close(self) -> None:
+        """Closes every file even if one fails (disk full), then raises the
+        first failure."""
         with self._lock:
-            for w in self._tiffs.values():
-                w.close()
-            self._tiffs = {}
-            if self._csv is not None:
-                self._csv.close()
-                self._csv = None
-            self._dir = None
-
-
-# The name it had while an .h5 was the default and a folder the option.
-SplitWriter = SessionWriter
+            files = [*self._tiffs.values(), *([self._csv] if self._csv else [])]
+            self._tiffs, self._csv, self._dir = {}, None, None
+            first: Exception | None = None
+            for w in files:
+                try:
+                    w.close()
+                except Exception as e:               # noqa: BLE001
+                    first = first or e
+            if first is not None:
+                raise first

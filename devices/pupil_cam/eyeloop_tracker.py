@@ -109,7 +109,6 @@ class EyeLoopTracker:
         self._last_radius: float | None = None
         self._last_shape: tuple[float, float, float] | None = None
         self.last_glint_mask: np.ndarray | None = None
-        self.last_glint_px = 0
         self.last_input: np.ndarray | None = None    # what was fitted
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -218,7 +217,7 @@ class EyeLoopTracker:
     def _deglint(self, gray: np.ndarray) -> np.ndarray:
         """Blank reflections around the PREVIOUS fit (a glint barely moves
         between frames); the first frame uses the seed and max radius."""
-        self.last_glint_mask, self.last_glint_px = None, 0
+        self.last_glint_mask = None
         if not self.glint.enabled or self._shape is None:
             return gray
 
@@ -232,7 +231,6 @@ class EyeLoopTracker:
         cleaned, mask = remove_glints(gray, (cx, cy), radius, self.glint,
                                       self._last_shape)
         self.last_glint_mask = mask
-        self.last_glint_px = int(mask.sum())
         return cleaned
 
     def _to_fit(self, params) -> PupilFit | None:

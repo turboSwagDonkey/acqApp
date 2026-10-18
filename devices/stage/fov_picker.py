@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtWidgets import QMessageBox
 
 from acqApp.devices.stage import fov_store
 from acqApp.widgets import SessionPicker
@@ -42,5 +43,9 @@ class FovPicker(SessionPicker):
 
     def chose(self, path: Path) -> None:
         # Callers read `.fov`, not `.path` — the position is the point.
-        self.fov = fov_store.load(path)
+        try:
+            self.fov = fov_store.load(path)
+        except (OSError, ValueError, TypeError) as e:     # Browse takes any file
+            QMessageBox.warning(self, "Saved FOV", f"Can't read {path.name}: {e}")
+            return
         super().chose(path)

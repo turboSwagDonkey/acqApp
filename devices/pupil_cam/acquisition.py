@@ -186,7 +186,6 @@ class PupilCameraWorker(PullWorker):
     def _run(self) -> None:
         from pypylon import pylon
 
-        self._stop = False
         own_cam = self._cam is None
         cam = open_camera(self._device_index) if own_cam else self._cam
         if cam is None:
@@ -280,7 +279,6 @@ class MockPupilCameraWorker(PullWorker):
         return (self.H, self.W)
 
     def _run(self) -> None:
-        self._stop = False
         t0 = time.perf_counter()
         period = 1.0 / self._hz
         cy, cx = self.H // 2, self.W // 2

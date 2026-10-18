@@ -905,7 +905,6 @@ class MockCameraWorker(PullWorker):
         self._rearm_req = True
 
     def _run(self) -> None:
-        self._stop = False
         H, W   = self._config.frame_shape
         cy, cx = H // 2, W // 2
         y, x   = np.ogrid[-cy:H - cy, -cx:W - cx]

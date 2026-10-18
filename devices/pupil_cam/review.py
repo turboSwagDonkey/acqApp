@@ -2,7 +2,7 @@
 
 The auto fit and the hand edits are kept apart, so re-tracking with new
 parameters never throws a correction away. What is reported (`fit_at`,
-`table`) is the edit where there is one, else the auto fit. Smoothing is not
+`table`) is the edit where there is one, else the auto fit. Smoothing is
 applied to the auto fits only (centred, so no lag), never to a hand edit.
 
 Sidecar files sit beside the video, which is never modified:
@@ -115,6 +115,36 @@ def same_tracking(a: PupilSettings | None, b: PupilSettings | None) -> bool:
     if a is None or b is None:
         return a is b
     return all(getattr(a, f) == getattr(b, f) for f in _TRACK_FIELDS)
+
+
+def _smoothed(auto: np.ndarray, half: int) -> np.ndarray:
+    """Each fitted row of `auto` averaged over the `half` rows either side,
+    within its run of consecutive fits. `auto` itself when `half` is 0."""
+    if half <= 0:
+        return auto
+    out = auto.copy()
+    ok = ~np.isnan(auto[:, 0])
+    n = len(ok)
+    if not ok.any():
+        return out
+    idx = np.arange(n)
+    # Each fitted frame's run of consecutive fits, as [start, end).
+    starts = np.where(ok & ~np.r_[False, ok[:-1]], idx, 0)
+    ends = np.where(ok & ~np.r_[ok[1:], False], idx + 1, n)
+    run_start = np.maximum.accumulate(starts)
+    run_end = np.minimum.accumulate(ends[::-1])[::-1]
+    # Angles average on the doubled circle: an ellipse at 179 deg and
+    # one at 1 deg are nearly the same.
+    ang = np.radians(auto[:, 4] * 2.0)
+    feat = np.where(ok[:, None], np.column_stack(
+        [auto[:, :4], np.cos(ang), np.sin(ang)]), 0.0)
+    cs = np.vstack([np.zeros((1, 6)), np.cumsum(feat, axis=0)])
+    a = np.maximum(run_start, idx - half)[ok]
+    b = np.minimum(run_end, idx + half + 1)[ok]
+    m = (cs[b] - cs[a]) / (b - a)[:, None]
+    out[ok, :4] = m[:, :4]
+    out[ok, 4] = (np.degrees(np.arctan2(m[:, 5], m[:, 4])) / 2.0) % 180.0
+    return out
 
 
 def _write_pair(files: list[tuple[Path, Callable]]) -> None:
@@ -375,37 +405,15 @@ class PupilReview:
         return True
 
     # ── the answer ───────────────────────────────────────────────────────────
+    def _half_window(self) -> int:
+        """Frames either side a stabilized fit averages; 0 when off."""
+        win = int(self.settings.smooth_window)
+        return win // 2 if self.settings.smooth and win > 1 else 0
+
     def smoothed_auto(self) -> np.ndarray:
         """`auto` averaged over `smooth_window` frames centred on each, when
         Stabilize is on. A frame with no fit breaks the average, as live."""
-        st = self.settings
-        win = int(st.smooth_window)
-        if not st.smooth or win <= 1:
-            return self.auto
-        half = win // 2
-        out = self.auto.copy()
-        ok = ~np.isnan(self.auto[:, 0])
-        n = len(ok)
-        if not ok.any():
-            return out
-        idx = np.arange(n)
-        # Each fitted frame's run of consecutive fits, as [start, end).
-        starts = np.where(ok & ~np.r_[False, ok[:-1]], idx, 0)
-        ends = np.where(ok & ~np.r_[ok[1:], False], idx + 1, n)
-        run_start = np.maximum.accumulate(starts)
-        run_end = np.minimum.accumulate(ends[::-1])[::-1]
-        # Angles average on the doubled circle: an ellipse at 179 deg and
-        # one at 1 deg are nearly the same.
-        ang = np.radians(self.auto[:, 4] * 2.0)
-        feat = np.where(ok[:, None], np.column_stack(
-            [self.auto[:, :4], np.cos(ang), np.sin(ang)]), 0.0)
-        cs = np.vstack([np.zeros((1, 6)), np.cumsum(feat, axis=0)])
-        a = np.maximum(run_start, idx - half)[ok]
-        b = np.minimum(run_end, idx + half + 1)[ok]
-        m = (cs[b] - cs[a]) / (b - a)[:, None]
-        out[ok, :4] = m[:, :4]
-        out[ok, 4] = (np.degrees(np.arctan2(m[:, 5], m[:, 4])) / 2.0) % 180.0
-        return out
+        return _smoothed(self.auto, self._half_window())
 
     def table(self) -> np.ndarray:
         """(n, 5) x, y, major, minor, angle: the edit where there is one, else
@@ -413,7 +421,13 @@ class PupilReview:
         return np.where(self.edited[:, None], self.manual, self.smoothed_auto())
 
     def fit_at(self, i: int):
-        return _fit_from(self.table()[i])
+        """`table()[i]` from the frames its average reaches only: called per
+        shown frame, where the whole table grows with the clip."""
+        if self.is_edited(i):
+            return _fit_from(self.manual[i])
+        half = self._half_window()
+        lo = max(0, i - half)
+        return _fit_from(_smoothed(self.auto[lo:i + half + 1], half)[i - lo])
 
     def radius(self) -> np.ndarray:
         t = self.table()

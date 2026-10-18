@@ -155,7 +155,8 @@ class PupilCamModule(ModuleAdapter):
     def _ensure_region(self, frame) -> None:
         """The region is always on: with none saved, the middle half of the
         first frame, until the user draws one."""
-        if self.panel is None or self.panel.settings.search_limit() is not None:
+        if (self.panel is None or self._settings is None
+                or self._settings.search_limit() is not None):
             return
         h, w = frame.shape[:2]
         self.panel.set_limit(w * 0.25, h * 0.25, w * 0.75, h * 0.75)
@@ -163,7 +164,7 @@ class PupilCamModule(ModuleAdapter):
                         "to draw your own")
 
     def _on_auto_requested(self) -> None:
-        if self._seed_clicks is not None:          # pressed again: cancel
+        if self._seed_clicks is not None and self._auto_worker is None:  # cancel
             self._end_seeding("pupil Auto cancelled")
             return
         if self._track is None or not self._track.isRunning():
@@ -198,7 +199,8 @@ class PupilCamModule(ModuleAdapter):
         self._end_auto()
         if not seeded and (res is None or res.confidence < NEEDS_HELP):
             self._seed_clicks = []
-            self.panel.tracking.set_auto_busy(True, text="click pupil")
+            self.panel.tracking.set_auto_busy(True, text="click pupil",
+                                              cancellable=True)
             self.win.status(f"pupil Auto needs help: click the pupil's centre on "
                             f"the preview {self._SEED_CLICKS} times, a moment "
                             f"apart (Auto again cancels)")
@@ -216,7 +218,8 @@ class PupilCamModule(ModuleAdapter):
         self.win.status(f"pupil Auto failed: {msg}")
 
     def _seed_click(self, ev) -> None:
-        if (self._last_frame is None
+        # Mid-run, a click would start a second run and drop this thread (abort).
+        if (self._auto_worker is not None or self._last_frame is None
                 or not self._vb.sceneBoundingRect().contains(ev.scenePos())):
             return
         p = self._vb.mapSceneToView(ev.scenePos())
@@ -468,7 +471,7 @@ class PupilCamModule(ModuleAdapter):
     def _refresh_limit_bar(self) -> None:
         if self.panel is None or self._lbl_limit is None:
             return
-        s = self.panel.settings
+        s = self._settings or self.panel.settings   # per drag step: the cache
         lim = s.search_limit()
         locked = s.limit_locked and lim is not None
         self._btn_lock.blockSignals(True)
@@ -518,13 +521,20 @@ class PupilCamModule(ModuleAdapter):
         # A new controller starts at full scale; apply the saved level first.
         self.controller.set_intensity(self.panel.settings.led_intensity)
 
+    # Slots: a DAQ error escaping them would abort the app mid-session.
     def _on_led_intensity(self, fraction: float) -> None:
         if self.controller is not None:
-            self.controller.set_intensity(fraction)
+            self._led_call(self.controller.set_intensity, fraction)
 
     def _on_led(self, on: bool) -> None:
         if self.controller is not None:
-            self.controller.set(on)
+            self._led_call(self.controller.set, on)
+
+    def _led_call(self, fn, arg) -> None:
+        try:
+            fn(arg)
+        except Exception as e:                       # noqa: BLE001
+            self.win.status(f"pupil LED: {type(e).__name__}: {e}")
 
     def _on_exposure(self, us: float) -> None:
         if isinstance(self.worker, ExposureControl):

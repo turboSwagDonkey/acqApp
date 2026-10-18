@@ -25,7 +25,7 @@ from acqApp.sidebar import MiniText
 
 
 MOVE_GRACE_S = 0.1
-# The camera whose picture the stage axes are measured against.
+# The camera the stage pairs with: axes measurement and FOV snapshots.
 CAMERA_KEY = "voltage_cam"
 
 
@@ -185,14 +185,18 @@ class StageModule(ModuleAdapter):
         if not ok or not base:
             return
         name = pairs.fov_name(base)
-        path = fov_store.save(
-            name, x_um, y_um, z_um=z_um,
-            camera_preset=self.win.camera_preset("voltage_cam"),
-            png_bytes=self._snapshot_png())
+        try:
+            path = fov_store.save(
+                name, x_um, y_um, z_um=z_um,
+                camera_preset=self.win.camera_preset(CAMERA_KEY),
+                png_bytes=self._snapshot_png())
+        except OSError as e:            # a slot: escaping would abort the app
+            QMessageBox.warning(self.panel, "Save FOV", f"Could not save: {e}")
+            return
         self.panel.refresh_fovs()
         self.win.status(f'Saved FOV "{name}" at {x_um:.0f}, {y_um:.0f} µm '
                         f"({path.name})")
-        if dmd is None or self.win.latest_frame("voltage_cam") is None:
+        if dmd is None or self.win.latest_frame(CAMERA_KEY) is None:
             return
         roi_path = dmd.draw_paired_rois(pairs.roi_name(base))
         if roi_path is not None:
@@ -202,7 +206,7 @@ class StageModule(ModuleAdapter):
     def _snapshot_png(self) -> bytes | None:
         """The newest camera frame as the preview shows it (downsampled,
         1-99 % stretch), or None."""
-        frame = self.win.latest_frame("voltage_cam")
+        frame = self.win.latest_frame(CAMERA_KEY)
         if frame is None:
             return None
         import io

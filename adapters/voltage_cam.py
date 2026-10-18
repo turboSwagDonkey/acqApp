@@ -16,7 +16,8 @@ from acqApp.adapters.base import (DISP_DS, PLOT_HISTORY, ModuleAdapter,
 from acqApp.devices.stage.axes_overlay import AxesOverlay
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
 from acqApp.devices.voltage_cam.led import LedController, MockLedController
-from acqApp.devices.voltage_cam.presets import (AcqConfig, DEFAULT_PRESET,
+from acqApp.devices.voltage_cam.presets import (AcqConfig, BINNING_OPTIONS,
+                                                DEFAULT_BINNING, DEFAULT_PRESET,
                                                 PRESET_KEYS, TRIGGER_MODES,
                                                 WRITER_MBPS, burst_stale,
                                                 burst_stale_indices)
@@ -114,14 +115,18 @@ class VoltageCamModule(ModuleAdapter):
             "primary LED")
 
     def _on_led(self, on: bool) -> None:
-        if self.controller is not None:
-            self.controller.set(on)
+        # A slot: a DAQ error escaping it would abort the app mid-session.
+        try:
+            self.set_led(on)
+        except Exception as e:                       # noqa: BLE001
+            self.win.status(f"primary LED: {type(e).__name__}: {e}")
 
     def led_target(self):
         return self if self.controller is not None else None
 
     def set_led(self, on: bool) -> None:
-        self._on_led(on)
+        if self.controller is not None:
+            self.controller.set(on)
 
     def _on_lut_visible(self, on: bool) -> None:
         if self._hist is not None:
@@ -160,6 +165,8 @@ class VoltageCamModule(ModuleAdapter):
         saved = config.load_settings("voltage_cam")
         if cfg.preset_key not in PRESET_KEYS:      # a preset may have been removed
             cfg.preset_key = DEFAULT_PRESET
+        if cfg.binning not in BINNING_OPTIONS:     # the panel's combo would raise
+            cfg.binning = DEFAULT_BINNING
         # Saved before capture rate existed: keep its exposure's rate.
         if "target_hz" not in saved and cfg.exposure_us > 0:
             cfg.target_hz = round(1e6 / cfg.exposure_us, 1)

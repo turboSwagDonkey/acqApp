@@ -37,8 +37,9 @@ class DeviceWorker(Protocol):
 
 @runtime_checkable
 class TimestampedWorker(DeviceWorker, Protocol):
-    """"hardware" (device clock) or "software" (Python loop, with jitter).
-    Filed, so it has no default."""
+    """"hardware" (device clock) or "software" (Python loop, with jitter);
+    a camera says "camera", "arrival" or "unknown". Filed, so it has no
+    default."""
 
     timestamp_source: str
 

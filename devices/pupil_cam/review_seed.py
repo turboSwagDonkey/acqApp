@@ -131,7 +131,12 @@ class _SeedMixin:
         if not marks:
             self._seed_cancel()
             return
-        frames = [np.array(self.review.reader.luma(i)) for i in self._seed_frames]
+        try:
+            frames = [np.array(self.review.reader.luma(i)) for i in self._seed_frames]
+        except Exception as e:                          # noqa: BLE001 — bad clip
+            self._seed_cancel()
+            self._prog.setText(f"Auto: can't read the clip ({e})")
+            return
         st = self._read_settings()
         region = None if self._region_default else st.search_limit()
         self._auto_worker = AutoTuneWorker(frames, region, self._seed_marks)

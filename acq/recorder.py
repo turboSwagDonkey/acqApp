@@ -80,9 +80,15 @@ class Recorder:
         with self._gate:
             self._closed = True
             remaining = len(self._buf)
-        if final_metadata is not None:
-            self._writer.update_metadata(final_metadata())
-        self._writer.close()
+        try:
+            if final_metadata is not None:
+                self._writer.update_metadata(final_metadata())
+        except Exception as e:                       # noqa: BLE001
+            # The data matters more than the summary: still close the files.
+            print(f"[recorder] final metadata not written "
+                  f"({type(e).__name__}: {e})")
+        finally:
+            self._writer.close()
         return remaining
 
     def offered(self, stream: str) -> int:

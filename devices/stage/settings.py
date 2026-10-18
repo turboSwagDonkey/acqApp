@@ -166,6 +166,8 @@ def load_settings() -> StageSettings:
         cfg = json.loads(config_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return StageSettings()
+    if not isinstance(cfg, dict):           # shared file, edited by hand too
+        return StageSettings()
 
     axes = {a["index"]: a for a in cfg.get("axes", [])}
     pad = cfg.get("xy_pad", {})
@@ -198,10 +200,13 @@ def load_settings() -> StageSettings:
     z = (_axis(zi, "Z") if zi is not None
          and bool(axes.get(zi, {}).get("active", False)) else None)
     confirm_counts = cfg.get("max_unconfirmed_move_counts", 200000)
+    poll_ms = cfg.get("poll_interval_ms", 250)
+    if not isinstance(poll_ms, (int, float)) or not 0 < poll_ms < 1e6:
+        poll_ms = 250                       # 0 divided; nonsense polls forever
     return StageSettings(
         port              = cfg.get("port", "COM54"),
         controller        = cfg.get("controller", "auto"),
-        poll_hz           = 1000.0 / cfg.get("poll_interval_ms", 250),
+        poll_hz           = 1000.0 / poll_ms,
         confirm_move_um   = confirm_counts / (x.counts_per_um or 1.0),
         confirm_move_z_um = float(cfg.get("max_unconfirmed_move_z_um", 500.0)),
         margin_um         = float(cfg.get("margin_um", 50)),

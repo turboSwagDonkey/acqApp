@@ -38,8 +38,14 @@ class PullWorker(QThread):
         self._sink: Callable[[Any], None] | None = None
 
     # ── thread entry (implement _run, not run) ────────────────────────────────
+    def start(self, *args) -> None:
+        # Cleared here, not in run(): a stop() before the thread got going
+        # would otherwise be undone and the loop run forever.
+        if not self.isRunning():
+            self._stop = False
+        super().start(*args)
+
     def run(self) -> None:
-        self._stop = False
         try:
             self._run()
         except Exception as e:                       # noqa: BLE001 — last line of defence

@@ -117,6 +117,32 @@ def check_persist_corrupt(r: Report, tmp: Path) -> None:
             "the corrupt original is preserved in .bak, not discarded")
 
 
+def check_mcm301_open_releases_handle(r: Report) -> None:
+    """An Open() whose IsOpen() then says closed must Close() its handle, not
+    drop it (no DLL, no port: a fake library)."""
+    from acqApp.devices.stage import mcm301_driver as M
+
+    class FakeLib:
+        closed: list[int] = []
+        def Open(self, *_a): return 7
+        def IsOpen(self, *_a): return 0
+        def Close(self, hdl): FakeLib.closed.append(hdl); return 0
+
+    saved = M._load_lib, M.list_devices
+    M._load_lib = lambda: FakeLib()
+    M.list_devices = lambda: [("101", "COM10")]
+    try:
+        dev = M.MCM301("COM10")
+        try:
+            dev.open()
+            r.check(False, "open() accepted a handle IsOpen() calls closed")
+        except M.MCM301Error:
+            r.check(FakeLib.closed == [7] and not dev.is_open,
+                    f"the refused handle was closed ({FakeLib.closed})")
+    finally:
+        M._load_lib, M.list_devices = saved
+
+
 def _part_state() -> int:
     r = Report("stage-state")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_stage_"))
@@ -124,6 +150,7 @@ def _part_state() -> int:
     before = real.stat().st_mtime_ns if real.is_file() else None
     try:
         check_guards(r)
+        check_mcm301_open_releases_handle(r)
         check_persist_missing(r, tmp)
         check_persist_merges(r, tmp)
         check_persist_corrupt(r, tmp)

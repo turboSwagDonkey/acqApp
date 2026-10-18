@@ -16,7 +16,7 @@ import numpy as np
 import tifffile
 from _harness import Report, run_parts
 from acqApp.acq.writer import (AviFileWriter, LongCsvWriter, SessionWriter,
-                               SplitWriter, TiffFileWriter)
+                               TiffFileWriter)
 from acqApp.saving import SaveConfig, benchmark_drive, sanitize
 
 
@@ -235,7 +235,7 @@ def check_split_writer_routes(r: Report, tmp: Path) -> None:
     """Image streams -> their own TIFF; scalars -> the one shared CSV;
     metadata (incl. a nested dict, like routine_protocol) -> JSON."""
     session = tmp / "sess_001"
-    w = SplitWriter()
+    w = SessionWriter()
     meta = {"subject": "m1", "emulated": True,
             "routine_protocol": {"name": "r1", "steps": [{"label": "a"}]}}
     w.open(session, meta)
@@ -325,12 +325,39 @@ def check_refuses_existing_folder(r: Report, tmp: Path) -> None:
     """A session is animal time with no undo: never write into an old one."""
     session = tmp / "sess_002"
     session.mkdir()
-    w = SplitWriter()
+    w = SessionWriter()
     try:
         w.open(session, {})
         r.check(False, "opening an existing session folder should raise")
     except FileExistsError:
         r.check(True, "opening an existing session folder raises")
+
+
+def check_close_survives_a_failing_stream(r: Report, tmp: Path) -> None:
+    """One stream failing to close (disk full) must not leave the others
+    open and unfinalised."""
+    w = SessionWriter()
+    w.open(tmp / "sess_close", {})
+    w.write("voltage_cam", 0.0, np.zeros((4, 4), np.uint16))
+    w.write("wheel", 0.0, 1.0)
+    bad = w._tiffs["voltage_cam"]
+    real_close = bad.close
+
+    def failing_close():
+        real_close()
+        raise OSError(28, "No space left on device")
+    bad.close = failing_close
+    try:
+        w.close()
+        raised = False
+    except OSError:
+        raised = True
+    csv_file = tmp / "sess_close" / "sess_close_data.csv"
+    r.check(raised, "the failure is still raised")
+    r.check(w._csv is None and not w._tiffs and w._dir is None,
+            "…after every stream was closed and the writer reset")
+    r.check(csv_file.read_text(encoding="utf-8").count("\n") == 2,
+            "the CSV beside the failing stream was flushed and closed")
 
 
 def _part_split() -> int:
@@ -342,6 +369,7 @@ def _part_split() -> int:
         check_split_writer_routes(r, tmp)
         check_avi_stream(r, tmp)
         check_refuses_existing_folder(r, tmp)
+        check_close_survives_a_failing_stream(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
