@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from PyQt6.QtCore import QObject, pyqtSignal
 
 from acqApp.devices.dmd import alp
 
@@ -31,13 +30,6 @@ MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
 # Keyed on path, invalidated on mtime: `roi_frame` runs on every preview
 # resize/nudge, and re-parsing the JSON was most of its cost (2026-08-27).
 _calib_cache: dict[str, tuple[int, object]] = {}
-
-
-def _emit_frame(sink: Callable[[int], None] | None, signal, idx: int) -> None:
-    """Tell the sink, then the Qt signal."""
-    if sink is not None:
-        sink(idx)
-    signal.emit(idx)
 
 
 def _load_calibration(path):
@@ -150,32 +142,18 @@ _GEOMETRY = attrgetter(
     "sub_sampling")
 
 
-class DmdController(QObject):
-    """The real ALP-4.2 device."""
-    pattern_started = pyqtSignal()
-    pattern_stopped = pyqtSignal()
-    frame_displayed = pyqtSignal(int)
+class _Base:
+    """What both controllers share: the held frame, the recording sink, and
+    reloading when the built frame would change."""
 
-    def __init__(self, settings: DmdSettings | None = None, parent=None):
-        super().__init__(parent)
+    def __init__(self, settings: DmdSettings | None) -> None:
         self._s = settings or DmdSettings()
         self._sink: Callable[[int], None] | None = None
         self._pattern: np.ndarray | None = None
         self._running = False
-        lib_dir, source = alp.resolve_lib_dir(self._s.lib_dir)
-        self._dev = alp.AlpDevice(lib_dir)
-        self._dev.open()
-        print(f"[DMD] ALP {self._dev.width}x{self._dev.height} (API from {source})")
-        if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
-            self.load_pattern(self._s.pattern_path)
-
-    @property
-    def device_name(self) -> str:
-        return f"ALP-4.2 {self._dev.width}x{self._dev.height}"
-
-    @property
-    def resolution(self) -> tuple[int, int]:
-        return self._dev.width, self._dev.height
+        # A `project_frame` (calibration) replaced the built frame: the next
+        # apply_settings must rebuild it, or Display re-shows the stripe.
+        self._raw = False
 
     @property
     def on_pixels(self) -> int:
@@ -193,19 +171,58 @@ class DmdController(QObject):
         self._sink = sink
 
     def _frame(self, idx: int) -> None:
-        _emit_frame(self._sink, self.frame_displayed, idx)
+        if self._sink is not None:
+            self._sink(idx)
+
+    def _changed(self, settings: DmdSettings) -> bool:
+        raise NotImplementedError
 
     def apply_settings(self, settings: DmdSettings) -> None:
-        changed = _GEOMETRY(settings) != _GEOMETRY(self._s)
-        self._s = settings
         # Reload even in MODE_PATTERN with no file: that clears a stale
         # ALL_ON/ROI frame, which a skipped reload would project.
-        if changed:
+        reload = self._raw or self._changed(settings)
+        self._s = settings
+        if reload:
             self.load_pattern(settings.pattern_path)
+
+    def load_pattern(self, path: Path | None = None) -> None:
+        raise NotImplementedError
+
+    def _hold_raw(self, frame: np.ndarray, size: tuple[int, int]) -> None:
+        w, h = size
+        if frame.shape != (h, w):
+            raise ValueError(f"frame is {frame.shape}, device is {(h, w)}")
+        self._pattern = np.ascontiguousarray(frame, dtype=np.uint8)
+        self._raw = True
+
+
+class DmdController(_Base):
+    """The real ALP-4.2 device."""
+
+    def __init__(self, settings: DmdSettings | None = None):
+        super().__init__(settings)
+        lib_dir, source = alp.resolve_lib_dir(self._s.lib_dir)
+        self._dev = alp.AlpDevice(lib_dir)
+        self._dev.open()
+        print(f"[DMD] ALP {self._dev.width}x{self._dev.height} (API from {source})")
+        if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
+            self.load_pattern(self._s.pattern_path)
+
+    @property
+    def device_name(self) -> str:
+        return f"ALP-4.2 {self._dev.width}x{self._dev.height}"
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return self._dev.width, self._dev.height
+
+    def _changed(self, settings: DmdSettings) -> bool:
+        return _GEOMETRY(settings) != _GEOMETRY(self._s)
 
     def load_pattern(self, path: Path | None = None) -> None:
         w, h = self.resolution
         mode = self._s.display_mode
+        self._raw = False
 
         if mode == MODE_ALL_ON:
             self._pattern = subsample_frame(
@@ -235,10 +252,7 @@ class DmdController(QObject):
     def project_frame(self, frame: np.ndarray) -> None:
         """Project a device-sized frame as-is, skipping `build_frame` (the
         sweep measures that geometry). Settings are untouched."""
-        w, h = self.resolution
-        if frame.shape != (h, w):
-            raise ValueError(f"frame is {frame.shape}, device is {(h, w)}")
-        self._pattern = np.ascontiguousarray(frame, dtype=np.uint8)
+        self._hold_raw(frame, self.resolution)
         self._dev.project(self._pattern, illumination_us=None, loop=True)
         self._running = True
         self._frame(FRAME_START)
@@ -267,7 +281,6 @@ class DmdController(QObject):
         self._dev.project(self._pattern, illumination_us=illum,
                           loop=loop, repeats=repeats)
         self._running = True
-        self.pattern_started.emit()
         self._frame(FRAME_START)
         if self._s.static_hold:
             how = "static hold"
@@ -282,26 +295,18 @@ class DmdController(QObject):
         self._dev.halt()
         self._running = False
         self._frame(FRAME_STOP)
-        self.pattern_stopped.emit()
 
     def close(self) -> None:
         self.stop()
         self._dev.close()
 
 
-class MockDmdController(QObject):
+class MockDmdController(_Base):
     """Renders patterns in memory and logs events — no hardware."""
-    pattern_started = pyqtSignal()
-    pattern_stopped = pyqtSignal()
-    frame_displayed = pyqtSignal(int)
 
-    def __init__(self, settings: DmdSettings | None = None, parent=None):
-        super().__init__(parent)
-        self._s       = settings or DmdSettings()
-        self._pattern: np.ndarray | None = None
-        self._running = False
-        self._thread:  threading.Thread | None = None
-        self._sink: Callable[[int], None] | None = None
+    def __init__(self, settings: DmdSettings | None = None):
+        super().__init__(settings)
+        self._thread: threading.Thread | None = None
 
     device_name = "mock (no DMD attached)"
 
@@ -309,31 +314,11 @@ class MockDmdController(QObject):
     def resolution(self) -> tuple[int, int]:
         return DEFAULT_W, DEFAULT_H
 
-    @property
-    def on_pixels(self) -> int:
-        return 0 if self._pattern is None else int((self._pattern > 0).sum())
-
-    @property
-    def frame(self) -> np.ndarray | None:
-        return self._pattern
-
-    @property
-    def projecting(self) -> bool:
-        return self._running
-
-    def set_sink(self, sink: Callable[[int], None] | None) -> None:
-        self._sink = sink
-
-    def apply_settings(self, settings: DmdSettings) -> None:
-        reload = settings != self._s
-        self._s = settings
-        if reload:
-            self.load_pattern(settings.pattern_path)
-
-    def _frame(self, idx: int) -> None:
-        _emit_frame(self._sink, self.frame_displayed, idx)
+    def _changed(self, settings: DmdSettings) -> bool:
+        return settings != self._s
 
     def load_pattern(self, path: Path | None = None) -> None:
+        self._raw = False
         if self._s.display_mode == MODE_ALL_ON:
             self._pattern = subsample_frame(
                 np.full((DEFAULT_H, DEFAULT_W), 255, dtype=np.uint8),
@@ -368,10 +353,7 @@ class MockDmdController(QObject):
 
     def project_frame(self, frame: np.ndarray) -> None:
         """Hold the frame so `on_pixels` is truthful; nothing is emitted."""
-        h, w = DEFAULT_H, DEFAULT_W
-        if frame.shape != (h, w):
-            raise ValueError(f"frame is {frame.shape}, device is {(h, w)}")
-        self._pattern = np.ascontiguousarray(frame, dtype=np.uint8)
+        self._hold_raw(frame, self.resolution)
         self._running = True
         self._frame(FRAME_START)
 
@@ -379,7 +361,6 @@ class MockDmdController(QObject):
         if self._running:
             return
         self._running = True
-        self.pattern_started.emit()
         self._frame(FRAME_START)
         if self._s.static_hold:
             return
@@ -405,7 +386,6 @@ class MockDmdController(QObject):
             self._thread = None
         if was_running:
             self._frame(FRAME_STOP)
-        self.pattern_stopped.emit()
 
     def close(self) -> None:
         self.stop()

@@ -23,8 +23,10 @@ class _Roi:
 
     def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
         """Coverage on the camera grid xs × ys -> (len(ys), len(xs)); a
-        coarse grid is enough for a percentage."""
-        raise NotImplementedError
+        coarse grid is enough for a percentage. Broadcast, not np.mgrid: that
+        is two 84 MB int64 grids per ROI per drag at ORCA full frame."""
+        return self.contains(np.asarray(xs, dtype=np.float64)[None, :],
+                             np.asarray(ys, dtype=np.float64)[:, None])
 
     def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
         """Membership at SCATTERED points (the projection path's mirror
@@ -69,14 +71,6 @@ class RectRoi(_Roi):
     angle_deg: float = 0.0
     kind: str = "rect"
 
-    def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
-        # Broadcast, not np.mgrid: that is two 84 MB int64 grids per ROI per
-        # drag at ORCA full frame.
-        dx = np.asarray(xs, dtype=np.float64)[None, :] - self.x
-        dy = np.asarray(ys, dtype=np.float64)[:, None] - self.y
-        dx, dy = _to_local(dx, dy, self.angle_deg)
-        return (np.abs(dx) <= self.w / 2.0) & (np.abs(dy) <= self.h / 2.0)
-
     def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
         dx = np.asarray(px, dtype=np.float64) - self.x
         dy = np.asarray(py, dtype=np.float64) - self.y
@@ -107,11 +101,6 @@ class CircleRoi(_Roi):
     y: float = 0.0
     r: float = 10.0
     kind: str = "circle"
-
-    def mask_at(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
-        dx2 = (np.asarray(xs, dtype=np.float64) - self.x) ** 2   # see RectRoi
-        dy2 = (np.asarray(ys, dtype=np.float64) - self.y) ** 2
-        return dx2[None, :] + dy2[:, None] <= self.r ** 2
 
     def contains(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
         dx = np.asarray(px, dtype=np.float64) - self.x

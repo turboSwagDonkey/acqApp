@@ -320,10 +320,9 @@ class SettingsPanel(QWidget):
         b_run = QPushButton("Calibrate…")
         b_run.setStyleSheet(style.solid_btn("dmd"))
         b_run.setToolTip(
-            "Measure the camera↔DMD transform by projecting a sweep.\n"
-            "THIS PROJECTS LIGHT — the dialog says what it will do and asks "
-            "first.\nIt also offers a dim probe that measures where the DMD "
-            "field lands without producing a calibration.")
+            "Measure the camera↔DMD transform: a stripe sweep, or by eye "
+            "(drag corners, or align to a reticle) on the live camera.\n"
+            "THIS PROJECTS LIGHT — the dialog says what each does first.")
         b_run.clicked.connect(self.calibrate_requested)
         b_load = QPushButton("Load…")
         b_load.setToolTip("A DmdCalibration JSON written by an earlier sweep.")
@@ -541,7 +540,9 @@ class SettingsPanel(QWidget):
                                     self._spn_subsample.value())
         elif mode == MODE_ROI:
             n = len(self._rois)
-            frame = roi_frame(self.settings, w, h)
+            # Guarded: roi_frame prints why it can't, and this runs per resize.
+            frame = (roi_frame(self.settings, w, h)
+                     if n and self._calib_path else None)
             if frame is None:
                 frame = np.zeros((h, w), dtype=np.uint8)
                 self._lbl_pattern.setText(

@@ -535,6 +535,33 @@ def check_light_switch(r) -> None:
             "ROIs mode with no ROIs drawn is 'nothing selected': all-on")
     btn.click()
 
+    # A device fault inside a slot is reported and ends dark; it must not
+    # escape (no excepthook: the app would abort with the DMD maybe lit).
+    c = dmd.controller
+
+    def boom():
+        c._running = True                   # it lit, then the driver failed
+        raise RuntimeError("ALP gone")
+    real_display = c.display
+    c.display = boom
+    try:
+        btn.click()
+        pump(app, 0.05)
+        r.check(not btn.isChecked() and not lit() and "ALP gone" in msg()
+                and "forced off" in msg(),
+                f"a failing Display from the switch ends dark and says so ({msg()!r})")
+        panel.display_requested.emit()
+        dmd.on_trigger(dmd.key, 0.0)
+        r.check(not lit(), "…as do the tab's Display and a trigger")
+        try:
+            dmd.display()
+            raised = False
+        except RuntimeError:
+            raised = True
+        r.check(raised, "…while display() itself still raises, for a routine to pause on")
+    finally:
+        c.display = real_display
+
     # Unloading the module takes the switch with it.
     try:
         win.set_modules({"voltage_cam"})
@@ -1227,6 +1254,17 @@ def check_project_frame(r: Report) -> None:
         r.check("device is" in str(e),
                 f"a mis-sized frame is refused, naming both shapes ({e})")
 
+    # After a calibration, Display (apply_settings, then display) must show
+    # the selection, not the last stripe, though no setting changed.
+    from acqApp.devices.dmd.control import MODE_ALL_ON
+    on = MockDmdController(DmdSettings(display_mode=MODE_ALL_ON))
+    on.apply_settings(on._s)
+    on.project_frame(pattern)
+    on.stop()
+    on.apply_settings(on._s)
+    r.check(bool(np.all(on.frame == 255)),
+            "a raw frame is replaced on the next apply_settings, unchanged or not")
+
 
 def check_wiring(r: Report) -> None:
     """The Calibrate button reaches the adapter, which opens the dialog with
@@ -1608,8 +1646,119 @@ def check_manual_live(r: Report) -> None:
     r.check(not still._timer.isActive(), "a still editor never polls")
 
 
+def check_reticle(r: Report) -> None:
+    """Align to reticle: the pose round-trips through a matrix, the projected
+    shapes land on the reticle under that pose, the dialog steers and applies
+    it, and the calibration dialog ends dark around it."""
+    _app = qt_app()
+    import acqApp.devices.dmd.reticle_align as RA
+    import acqApp.devices.dmd.sweep as SW
+    from acqApp.devices.dmd.calibration import (ReticlePose, apply_transform,
+                                                reticle_frame, with_vignette)
+
+    dmd, cam = (64, 48), (400, 300)
+    for p in (ReticlePose(30.0, 20.0, 12.5, 0.12, 0.1),
+              ReticlePose(33.0, 25.0, -170.0, 0.15, 0.11, mirrored=True)):
+        back = ReticlePose.from_calibration(p.to_calibration(dmd, cam))
+        r.check(np.allclose([back.cx, back.cy, back.angle_deg, back.sx, back.sy],
+                            [p.cx, p.cy, p.angle_deg, p.sx, p.sy])
+                and back.mirrored == p.mirrored,
+                f"a pose survives matrix -> pose (mirrored={p.mirrored})")
+
+    pose = ReticlePose(30.0, 22.0, 20.0, 0.12, 0.1)
+    disc = reticle_frame("centre", pose, dmd, cam)
+    ys, xs = np.nonzero(disc)
+    r.check(disc.shape == (48, 64) and disc.dtype == np.uint8
+            and abs(xs.mean() - 30) < 0.5 and abs(ys.mean() - 22) < 0.5,
+            "the disc sits on the mirror under the camera centre")
+    box = reticle_frame("size", pose, dmd, cam, box_frac=0.5)
+    ys, xs = np.nonzero(box)
+    seen = apply_transform(np.linalg.inv(pose.matrix(cam)),
+                           np.column_stack([xs, ys]).astype(float))
+    r.check(np.all(np.abs(seen[:, 0] - 199.5) <= 100)
+            and np.all(np.abs(seen[:, 1] - 149.5) <= 75)
+            and np.ptp(seen[:, 0]) > 180,
+            "the box's lit mirrors fill the reticle box on the camera")
+    flipped = ReticlePose(30.0, 22.0, 20.0, 0.12, 0.1, mirrored=True)
+    r.check(not np.array_equal(reticle_frame("angle", pose, dmd, cam),
+                               reticle_frame("angle", flipped, dmd, cam)),
+            "the L tells a mirror from a rotation")
+
+    projected: list = []
+    frame = np.zeros((300, 400), np.uint16)
+    dlg = RA.ReticleAlignDialog(projected.append, dmd, frame)
+    dlg._send()
+    r.check(len(projected) == 1 and projected[0].shape == (48, 64)
+            and projected[0].any(), "the dialog projects a device-sized frame")
+    cx = dlg.pose().cx
+    dlg.nudge(RA.Qt.Key.Key_Right, 10)
+    r.check(abs(dlg.pose().cx - cx - 10) < 1e-6, "Shift+→ moves the centre 10 mirrors")
+    dlg._steps.button(2).setChecked(True)
+    sy = dlg.pose().sy
+    dlg.nudge(RA.Qt.Key.Key_Up)
+    r.check(dlg.kind == "size" and dlg.pose().sy > sy, "↑ on the size step grows Y")
+    want = dlg.pose()
+    dlg._apply()
+    c = dlg.calibration
+    r.check(c is not None and c.model == "manual-reticle"
+            and np.allclose(c.cam_to_dmd, want.matrix(cam)) and c.cam_size == cam,
+            "Use this returns the steered pose as a calibration")
+
+    seed = with_vignette(want.to_calibration(dmd, cam), 200, 150, 90)
+    dlg2 = RA.ReticleAlignDialog(projected.append, dmd, frame, seed=seed)
+    r.check(np.allclose(dlg2.pose().matrix(cam), seed.cam_to_dmd, atol=1e-3),
+            "a loaded fit seeds the guess")
+    dlg2._apply()
+    r.check(dlg2.calibration.vignette == seed.vignette, "…and keeps its vignette")
+    dlg2.reject()
+
+    events: list = []
+
+    class FakeProjector:
+        resolution = dmd
+
+        def project_frame(self, f):
+            events.append("light")
+
+        def stop(self):
+            events.append("dark")
+
+    n = {"i": 0}
+
+    def source():
+        n["i"] += 1
+        return np.full((300, 400), n["i"] % 256, np.uint8)
+
+    class FakeAlign:
+        def __init__(self, project, dmd_size, frame, *, live_source=None,
+                     seed=None, parent=None):
+            pass
+
+        def exec(self):
+            events.append("exec")
+            return SW.QDialog.DialogCode.Accepted
+
+        calibration = c
+
+    cal = SW.CalibrationDialog(FakeProjector(), source, real=True)
+    cal._running = True
+    cal.reject()
+    r.check(cal._cancel, "closing mid-sweep stops the sweep rather than hiding it")
+    cal._running = cal._cancel = False
+    real_dlg = RA.ReticleAlignDialog
+    RA.ReticleAlignDialog = FakeAlign
+    try:
+        cal._align_reticle()
+    finally:
+        RA.ReticleAlignDialog = real_dlg
+    r.check(events == ["exec", "dark"] and cal._calib is c
+            and cal._btn_save.isEnabled() and cal._btn_reticle.isEnabled(),
+            f"Align to reticle adopts the result and ends dark ({events})")
+
+
 def _part_sweep() -> int:
     r = Report("dmd-sweep")
+    check_reticle(r)
     check_manual_live(r)
     check_fresh_grabber(r)
     check_end_to_end(r)

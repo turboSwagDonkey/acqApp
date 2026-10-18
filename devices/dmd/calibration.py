@@ -38,10 +38,6 @@ class CalibrationError(RuntimeError):
 
 # ── patterns ──────────────────────────────────────────────────────────────────
 
-def _blank(width: int, height: int) -> np.ndarray:
-    return np.full((height, width), OFF, np.uint8)
-
-
 def offset_stripe(width: int, height: int, axis: int, offset: float, *,
                   thick_frac: float = STRIPE_WIDTH,
                   cross_frac: float = STRIPE_CROSS) -> np.ndarray:
@@ -68,12 +64,9 @@ def modulation(on: np.ndarray, off: np.ndarray) -> np.ndarray:
     return (a - b) / np.maximum(a + b, 1e-9)
 
 
-def bounding_box(mask: np.ndarray) -> tuple[int, int, int, int] | None:
-    """(x0, y0, x1, y1), end-exclusive; None if empty."""
-    ys, xs = np.nonzero(mask)
-    if not len(xs):
-        return None
-    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+def _touches_edge(mask: np.ndarray) -> bool:
+    return bool(mask[0].any() or mask[-1].any()
+                or mask[:, 0].any() or mask[:, -1].any())
 
 
 def stripe_sweep(project: Callable[[np.ndarray], None],
@@ -94,8 +87,8 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
     w, h = int(dmd_size[0]), int(dmd_size[1])
     half = (w / 2.0, h / 2.0)
 
-    project(_blank(w, h))
-    dark = np.asarray(grab(), dtype=np.float32)
+    project(np.full((h, w), OFF, np.uint8))
+    dark = np.asarray(grab(), dtype=np.float64)     # converted once, not per stripe
 
     out: dict = {0: [], 1: []}
     for axis in (0, 1):
@@ -103,12 +96,10 @@ def stripe_sweep(project: Callable[[np.ndarray], None],
             frac = d / half[axis]
             project(offset_stripe(w, h, axis, d,
                                   thick_frac=thick_frac, cross_frac=cross_frac))
-            mod = np.abs(modulation(np.asarray(grab(), dtype=np.float32), dark))
+            mod = np.abs(modulation(grab(), dark))
             m = mod >= min_modulation
             n = int(m.sum())
-            box = bounding_box(m)
-            edge = bool(box and (box[0] == 0 or box[1] == 0
-                                 or box[2] == m.shape[1] or box[3] == m.shape[0]))
+            edge = n > 0 and _touches_edge(m)
             # Modulation-weighted centroid: a bare-mask one moves with the
             # threshold as vignetting tips edge pixels in or out.
             if n:
@@ -299,8 +290,7 @@ def holdout_error_homography(seen: dict, w: int, h: int) -> float | None:
     return float(max(errs))
 
 
-def _calibrate_homography(seen: dict, w: int, h: int,
-                          grab: Callable[[], np.ndarray],
+def _calibrate_homography(seen: dict, w: int, h: int, cam_size: tuple[int, int],
                           log: Callable[[str], None]) -> "DmdCalibration":
     fit = fit_homography(seen, w, h)
     if fit is None:
@@ -335,22 +325,25 @@ def _calibrate_homography(seen: dict, w: int, h: int,
             f"stripe, then asked to predict it. This is the number to trust, "
             f"not the residual.")
 
-    shape = np.asarray(grab()).shape
-    c = DmdCalibration(
-        cam_to_dmd=np.linalg.inv(H), dmd_size=(w, h),
-        cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
-        holdout_px=float(hold or 0.0), model="homography",
-        stripes=_raw_stripes(seen),
+    return _report(DmdCalibration(
+        cam_to_dmd=np.linalg.inv(H), dmd_size=(w, h), cam_size=cam_size,
+        rms_px=rms, n_points=n, holdout_px=float(hold or 0.0),
+        model="homography", stripes=_raw_stripes(seen),
         created=datetime.now().isoformat(timespec="seconds"),
         notes=f"full projective fit (8 DOF, for a steeply tilted camera) — "
               f"local scale near centre {kx:.3f} x {ky:.3f} px/mirror at "
-              f"{ax:+.2f}deg")
+              f"{ax:+.2f}deg"), log,
+        "for a homography fit too")
+
+
+def _report(c: "DmdCalibration", log: Callable[[str], None],
+            large: str) -> "DmdCalibration":
+    """The closing log lines both models share; `large` explains a big rms."""
     log(f"[dmd-calib] {c.describe()}")
     log(f"[dmd-calib] the camera sees mirrors {c.visible_mirrors()}")
-    if rms > 10.0:
-        log("[dmd-calib] WARNING: that residual is large for a homography "
-            "fit too — check the log above for a stripe that was kept but "
-            "looks out of place.")
+    if c.rms_px > 10.0:
+        log(f"[dmd-calib] WARNING: that residual is large {large} — check the "
+            f"log above for a stripe that was kept but looks out of place.")
     return c
 
 
@@ -389,12 +382,20 @@ def calibrate(project: Callable[[np.ndarray], None],
     if model not in ("affine", "homography"):
         raise CalibrationError(f"unknown calibration model {model!r}")
     w, h = int(dmd_size[0]), int(dmd_size[1])
-    seen = stripe_sweep(project, grab, (w, h), offsets=offsets,
+    shape: list = []
+
+    def grab_sized() -> np.ndarray:     # keeps the size: no extra exposure for it
+        f = grab()
+        shape[:] = np.shape(f)[:2]
+        return f
+
+    seen = stripe_sweep(project, grab_sized, (w, h), offsets=offsets,
                         min_modulation=min_modulation,
                         thick_frac=thick_frac, cross_frac=cross_frac, log=log)
+    cam_size = (int(shape[1]), int(shape[0]))
 
     if model == "homography":
-        return _calibrate_homography(seen, w, h, grab, log=log)
+        return _calibrate_homography(seen, w, h, cam_size, log=log)
 
     fit = fit_axes(seen)
     if fit is None:
@@ -442,26 +443,18 @@ def calibrate(project: Callable[[np.ndarray], None],
             "the two measured axes came out parallel, so the registration "
             "cannot be inverted — one of them was not really measured")
 
-    shape = np.asarray(grab()).shape
-    c = DmdCalibration(
-        cam_to_dmd=np.linalg.inv(A), dmd_size=(w, h),
-        cam_size=(int(shape[1]), int(shape[0])), rms_px=rms, n_points=n,
-        holdout_px=float(hold or 0.0),
+    return _report(DmdCalibration(
+        cam_to_dmd=np.linalg.inv(A), dmd_size=(w, h), cam_size=cam_size,
+        rms_px=rms, n_points=n, holdout_px=float(hold or 0.0),
         model="affine" if allow_shear else "affine-noshear",
         stripes=_raw_stripes(seen),
         created=datetime.now().isoformat(timespec="seconds"),
         notes=f"{kx:.3f} x {ky:.3f} px/mirror, DMD-x {ax:+.2f}deg, measured "
               f"shear {shear:+.2f}deg "
               f"({'kept' if allow_shear else 'discarded'}), panel centre "
-              f"({centre[0]:.0f}, {centre[1]:.0f})")
-    log(f"[dmd-calib] {c.describe()}")
-    log(f"[dmd-calib] the camera sees mirrors {c.visible_mirrors()}")
-    if rms > 10.0:
-        log("[dmd-calib] WARNING: that residual is large — the stripe centroids "
-            "are not on a straight line, so an affine does not describe this "
-            "relay. Check the log above for a stripe that was kept but looks "
-            "out of place.")
-    return c
+              f"({centre[0]:.0f}, {centre[1]:.0f})"), log,
+        "(the stripe centroids are off a straight line, so an affine does "
+        "not describe this relay)")
 
 
 @dataclass
@@ -659,6 +652,113 @@ def manual_seed(dmd_size: tuple[int, int], cam_size: tuple[int, int],
                            cam_size=cam_size, model="manual")
     return with_corners(blank, [(cx - hw, cy - hh), (cx + hw, cy - hh),
                                 (cx + hw, cy + hh), (cx - hw, cy + hh)])
+
+
+# ── manual reticle alignment ──────────────────────────────────────────────────
+# The DMD lights a reticle shape (camera px) through the operator's guess; once
+# the light sits on the reticle drawn over the live camera, the guess is right.
+RETICLE_KINDS = ("centre", "angle", "size")
+RETICLE_DISC = 0.08                 # disc radius, × the camera's short side
+RETICLE_ARMS = (0.8, 0.4, 0.12)     # L: +x arm, +y arm, thickness, × half that side
+RETICLE_BOX = 0.6                   # box, × the camera frame
+
+
+@dataclass(frozen=True)
+class ReticlePose:
+    """Camera→DMD as knobs: d = (cx, cy) + R(angle)·diag(sx, ±sy)·(p − centre).
+    Mirrored negates sy; with a free angle that covers a flip on either axis."""
+    cx: float                       # mirror under the camera's centre pixel
+    cy: float
+    angle_deg: float = 0.0
+    sx: float = 1.0                 # mirrors per camera px
+    sy: float = 1.0
+    mirrored: bool = False
+
+    def matrix(self, cam_size: tuple[int, int]) -> np.ndarray:
+        t = np.radians(self.angle_deg)
+        c, s = np.cos(t), np.sin(t)
+        A = np.array([[c, -s], [s, c]]) @ np.diag(
+            [self.sx, -self.sy if self.mirrored else self.sy])
+        M = np.eye(3)
+        M[:2, :2] = A
+        M[:2, 2] = np.array([self.cx, self.cy]) - A @ _cam_centre(cam_size)
+        return M
+
+    @classmethod
+    def from_calibration(cls, calib: DmdCalibration) -> "ReticlePose":
+        """The nearest pose to a fit; shear and perspective are dropped."""
+        M = np.asarray(calib.cam_to_dmd, dtype=np.float64)
+        cx, cy = apply_transform(M, _cam_centre(calib.cam_size)[None])[0]
+        A = M[:2, :2] / M[2, 2]
+        t = np.arctan2(A[1, 0], A[0, 0])
+        y = -np.sin(t) * A[0, 1] + np.cos(t) * A[1, 1]     # (Rᵀ·A)[1, 1]
+        return cls(float(cx), float(cy), float(np.degrees(t)),
+                   float(np.hypot(A[0, 0], A[1, 0])), float(abs(y)), bool(y < 0))
+
+    def to_calibration(self, dmd_size: tuple[int, int],
+                       cam_size: tuple[int, int]) -> DmdCalibration:
+        return DmdCalibration(
+            cam_to_dmd=self.matrix(cam_size), dmd_size=tuple(dmd_size),
+            cam_size=tuple(cam_size), model="manual-reticle",
+            created=datetime.now().isoformat(timespec="seconds"),
+            notes=f"aligned by eye to the camera reticle: {self}")
+
+
+def _cam_centre(cam_size) -> np.ndarray:
+    return np.array([(cam_size[0] - 1) / 2.0, (cam_size[1] - 1) / 2.0])
+
+
+def _reticle_dims(cam_size, box_frac: float) -> dict:
+    half = min(cam_size) / 2.0
+    ax, ay, th = RETICLE_ARMS
+    return {"r": RETICLE_DISC * 2 * half, "ax": ax * half, "ay": ay * half,
+            "t": th * half / 2, "bw": box_frac * cam_size[0] / 2,
+            "bh": box_frac * cam_size[1] / 2}
+
+
+def reticle_outline(kind: str, cam_size: tuple[int, int], *,
+                    box_frac: float = RETICLE_BOX) -> np.ndarray:
+    """(N, 2) closed outline of `kind`'s shape in camera px."""
+    d = _reticle_dims(cam_size, box_frac)
+    if kind == "centre":
+        a = np.linspace(0, 2 * np.pi, 97)
+        rel = d["r"] * np.column_stack([np.cos(a), np.sin(a)])
+    elif kind == "angle":
+        t, ax, ay = d["t"], d["ax"], d["ay"]
+        rel = np.array([(-t, -t), (ax, -t), (ax, t), (t, t), (t, ay),
+                        (-t, ay), (-t, -t)])
+    elif kind == "size":
+        bw, bh = d["bw"], d["bh"]
+        rel = np.array([(-bw, -bh), (bw, -bh), (bw, bh), (-bw, bh), (-bw, -bh)])
+    else:
+        raise ValueError(f"unknown reticle {kind!r}")
+    return rel + _cam_centre(cam_size)
+
+
+def reticle_frame(kind: str, pose: ReticlePose, dmd_size: tuple[int, int],
+                  cam_size: tuple[int, int], *,
+                  box_frac: float = RETICLE_BOX) -> np.ndarray:
+    """The DMD frame that lights `reticle_outline(kind)` on the camera, if
+    `pose` is right. Filled shapes: scattering leaves only coarse edges."""
+    w, h = dmd_size
+    inv = np.linalg.inv(pose.matrix(cam_size))
+    X, Y = np.meshgrid(np.arange(w, dtype=np.float32),
+                       np.arange(h, dtype=np.float32))
+    c = _cam_centre(cam_size)
+    u = inv[0, 0] * X + inv[0, 1] * Y + (inv[0, 2] - c[0])
+    v = inv[1, 0] * X + inv[1, 1] * Y + (inv[1, 2] - c[1])
+    d = _reticle_dims(cam_size, box_frac)
+    if kind == "centre":
+        lit = u * u + v * v <= d["r"] ** 2
+    elif kind == "angle":
+        t = d["t"]
+        lit = (((u >= -t) & (u <= d["ax"]) & (np.abs(v) <= t))
+               | ((v >= -t) & (v <= d["ay"]) & (np.abs(u) <= t)))
+    elif kind == "size":
+        lit = (np.abs(u) <= d["bw"]) & (np.abs(v) <= d["bh"])
+    else:
+        raise ValueError(f"unknown reticle {kind!r}")
+    return np.where(lit, ON, OFF)
 
 
 def with_vignette(calib: DmdCalibration, cx: float, cy: float,

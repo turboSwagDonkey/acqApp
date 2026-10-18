@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,22 @@ from acqApp.sidebar import MiniPattern
 _SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
 _LIGHT_OFF, _LIGHT_ON = "DMD OFF", "● DMD ON"       # the card's light switch
 
+
+def _shared_alignment() -> dict[str, float]:
+    """DmdSettings attribute -> the standalone app's value. Another program's
+    file: a value that isn't a finite number is skipped, not raised."""
+    shared = alp.sibling_config()
+    out: dict[str, float] = {}
+    for shared_key, attr in _SHARED_ALIGNMENT:
+        try:
+            val = float(shared[shared_key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(val):
+            out[attr] = val
+    return out
+
+
 class DmdModule(ModuleAdapter):
     key = "dmd"
     tab_label = "DMD"
@@ -37,13 +54,37 @@ class DmdModule(ModuleAdapter):
         self._live_timer = QTimer()
         self._live_timer.setSingleShot(True)
         self._live_timer.setInterval(self._LIVE_DEBOUNCE_MS)
-        self._live_timer.timeout.connect(self.display)
+        self._live_timer.timeout.connect(lambda: self._guard("display", self.display))
         # One timer, restarted per trigger: an earlier trigger's stop must not
         # cut a later stimulus short.
         self._stop_timer = QTimer()
         self._stop_timer.setSingleShot(True)
-        self._stop_timer.timeout.connect(self.stop_display)
+        self._stop_timer.timeout.connect(lambda: self._guard("stop", self.stop_display))
         self._light_btn: QPushButton | None = None
+
+    def _guard(self, what: str, fn, *args, dark: bool = True) -> None:
+        """Run a slot's work. A raise would abort the app (no excepthook) with
+        the DMD perhaps lit, so it is reported, and with `dark` the light is
+        forced off: after a failed display or stop its state is unknown."""
+        try:
+            fn(*args)
+        except Exception as e:                      # noqa: BLE001
+            msg = f"{what} failed ({type(e).__name__}: {e})"
+            print(f"[DMD] {msg}")
+            self.win.status(f"DMD {msg}" + (" — light forced off" if dark else ""))
+            if dark:
+                self._go_dark()
+
+    def _go_dark(self) -> None:
+        c = self.controller
+        if c is not None:
+            try:
+                c.stop()
+            except Exception as e:                  # noqa: BLE001
+                print(f"[DMD] could not stop after a failure: {e}")
+        self._stop_timer.stop()
+        self._live_timer.stop()
+        self._show_light(bool(c is not None and c.projecting))
 
     # ── the sidebar card: the uploaded frame and the light switch ──
     def mini_view(self) -> QWidget:
@@ -61,7 +102,7 @@ class DmdModule(ModuleAdapter):
             "THIS PROJECTS LIGHT.\nTurns the DMD on or off using the "
             "display selected on the DMD tab (Image, ROIs or All on). "
             "With nothing selected it projects all-on.")
-        b.toggled.connect(self._on_light_button)
+        b.toggled.connect(lambda on: self._guard("switch", self._on_light_button, on))
         self._light_btn = b
         self._show_light(self.controller is not None
                          and self.controller.projecting)
@@ -132,12 +173,14 @@ class DmdModule(ModuleAdapter):
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
         # Via the adapter: the controller is rebuilt on every Emulate toggle.
-        self.panel.load_requested.connect(self.load)
-        self.panel.display_requested.connect(self.display)
-        self.panel.stop_requested.connect(self.stop_display)
-        self.panel.settings_changed.connect(self._save)
-        self.panel.rois_edit_requested.connect(self.edit_rois)
-        self.panel.calibrate_requested.connect(self.calibrate)
+        g = self._guard
+        self.panel.load_requested.connect(lambda p: g("load", self.load, p))
+        self.panel.display_requested.connect(lambda: g("display", self.display))
+        self.panel.stop_requested.connect(lambda: g("stop", self.stop_display))
+        self.panel.settings_changed.connect(
+            lambda s: g("settings save", self._save, s, dark=False))
+        self.panel.rois_edit_requested.connect(lambda: g("ROI editor", self.edit_rois))
+        self.panel.calibrate_requested.connect(lambda: g("calibration", self.calibrate))
         self.panel.live_toggled.connect(self._on_live_toggled)
         return self.panel
 
@@ -205,6 +248,8 @@ class DmdModule(ModuleAdapter):
                 set_live=self.win.set_live)
             dlg.exec()
         finally:
+            # The dialog drives the controller directly; the card must follow.
+            self._show_light(self.controller.projecting)
             if needs_switch:
                 self.win.set_live(False)
                 if cropped:
@@ -344,22 +389,17 @@ class DmdModule(ModuleAdapter):
         if it re-aligned since our last save (`_shared_*` = what we saw)."""
         s = config.load_dataclass(DmdSettings, self.key)
         saved = config.load_settings(self.key)
-        shared = alp.sibling_config()
-        for shared_key, attr in _SHARED_ALIGNMENT:
-            if shared_key in shared:
-                val = float(shared[shared_key])
-                if attr not in saved or saved.get(f"_shared_{attr}") != val:
-                    setattr(s, attr, val)
+        for attr, val in _shared_alignment().items():
+            if attr not in saved or saved.get(f"_shared_{attr}") != val:
+                setattr(s, attr, val)
         return s
 
     def _save(self, s) -> None:
         d = asdict(s)
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
         d["rois"] = list(s.rois or ())
-        shared = alp.sibling_config()
-        for shared_key, attr in _SHARED_ALIGNMENT:
-            if shared_key in shared:
-                d[f"_shared_{attr}"] = float(shared[shared_key])
+        for attr, val in _shared_alignment().items():
+            d[f"_shared_{attr}"] = val
         config.save_settings(self.key, d)
         if self.panel is not None and self.panel.live:
             self._live_timer.start()
@@ -408,6 +448,9 @@ class DmdModule(ModuleAdapter):
         single-shot stop; `duration <= 0` leaves it up."""
         if name != self.key:
             return
+        self._guard("trigger", self._triggered, duration)
+
+    def _triggered(self, duration: float) -> None:
         self.display()
         if duration > 0:
             self._stop_timer.start(int(duration * 1000))

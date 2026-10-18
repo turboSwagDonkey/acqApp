@@ -153,6 +153,9 @@ devices/                one package per instrument
     pair_dialog.py      after Save FOV: draw its ROI set, Illuminate it on the
                         live camera, save as <base>_roi; light off on close
     panel.py
+    reticle_align.py    calibrate by eye: live camera + fixed reticle, the DMD
+                        lights the same shape through a steered pose (centre,
+                        angle, X/Y size); sweep.py's "Align to reticle"
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
     roi_live.py         live camera under the ROI editor, ROIs past the capture
                         area outlined amber

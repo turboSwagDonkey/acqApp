@@ -197,6 +197,14 @@ class CalibrationDialog(QDialog):
             "fit above if there is one. The light stays on until you close "
             "the window — do this before the animal is on the rig.")
         self._btn_manual.clicked.connect(self._manual_live)
+        self._btn_reticle = QPushButton("Align to reticle…")
+        self._btn_reticle.setToolTip(
+            "No sweep: the live camera shows a fixed reticle and the DMD "
+            "lights the same shape through a guess. Steer the guess (centre, "
+            "angle, X/Y size) until the light sits on the reticle. The light "
+            "stays on until you close the window — do this before the animal "
+            "is on the rig.")
+        self._btn_reticle.clicked.connect(self._align_reticle)
         self._btn_adjust = QPushButton("Adjust corners / vignette…")
         self._btn_adjust.setEnabled(False)
         self._btn_adjust.setToolTip(
@@ -212,13 +220,13 @@ class CalibrationDialog(QDialog):
         self._btn_close = QPushButton("Close")
         self._btn_close.clicked.connect(self.reject)
         for b in (self._btn_run, self._btn_stop, self._btn_manual,
-                  self._btn_adjust, self._btn_save):
+                  self._btn_reticle, self._btn_adjust, self._btn_save):
             row.addWidget(b)
         row.addStretch()
         row.addWidget(self._btn_close)
         root.addLayout(row)
-        self._actions = (self._btn_run, self._btn_manual, self._btn_adjust,
-                         self._btn_save, self._btn_close)
+        self._actions = (self._btn_run, self._btn_manual, self._btn_reticle,
+                         self._btn_adjust, self._btn_save, self._btn_close)
 
     # ── logging ──────────────────────────────────────────────────────────────
     def log(self, msg: str) -> None:
@@ -228,6 +236,14 @@ class CalibrationDialog(QDialog):
     def _request_cancel(self) -> None:
         self._cancel = True
         self.log("[sweep] stopping at the next exposure…")
+
+    def done(self, result: int) -> None:
+        """Esc or the title-bar X mid-sweep stops it; closing would only hide
+        the window while the stripes kept projecting."""
+        if self._running:
+            self._request_cancel()
+            return
+        super().done(result)
 
     def _pump(self) -> None:
         """Keep the GUI thread turning while blocked on a frame: the camera
@@ -311,46 +327,69 @@ class CalibrationDialog(QDialog):
             self._btn_stop.setEnabled(False)
             self._cmb_model.setEnabled(True)
             self._spn_cross.setEnabled(True)
-            for b in (self._btn_run, self._btn_manual, self._btn_close):
+            for b in (self._btn_run, self._btn_manual, self._btn_reticle,
+                      self._btn_close):
                 b.setEnabled(True)
 
     # ── manual calibration: live image, no sweep ────────────────────────────
-    def _manual_live(self) -> None:
-        """Hold all-on and drag the corners against the live camera. Light on
-        until the editor closes (always ends dark); on this click only, like
+    def _live_editor(self, tag: str, open_editor) -> None:
+        """Camera live, then `open_editor(w, h)` -> a calibration or None, the
+        light on while it runs. Always ends dark; on this click only, like
         `_adjust_corners`."""
         if self._running:
             return
         self._cancel = False            # a stopped sweep leaves it set; _pump would raise
         for b in self._actions:
             b.setEnabled(False)
-        was_live = self._start_live("for manual calibration")
-        self.log("[manual] projecting all-on; light stays on until the editor closes")
+        was_live = self._start_live(f"for {tag}")
         result = None
         try:
-            w, h = self._proj.resolution
+            result = open_editor(*self._proj.resolution)
+        except Exception as e:   # noqa: BLE001 — escaping a slot aborts the app
+            self.log(f"[{tag}] failed: {e}")
+        finally:
+            self._go_dark(was_live)
+            for b in (self._btn_run, self._btn_manual, self._btn_reticle,
+                      self._btn_close):
+                b.setEnabled(True)
+        if result is not None:
+            self._calib = result
+            self.log(f"[{tag}] set -> {self._calib.describe()}")
+        for b in (self._btn_adjust, self._btn_save):
+            b.setEnabled(self._calib is not None)
+
+    def _fresh_frame(self) -> np.ndarray:
+        return FreshGrabber(self._source, timeout_s=12.0, pump=self._pump).grab()
+
+    def _manual_live(self) -> None:
+        """Hold all-on and drag the corners against the live camera."""
+        def editor(w, h):
+            self.log("[manual] projecting all-on; light stays on until the editor closes")
             self._proj.project_frame(np.full((h, w), ON, np.uint8))
-            frame = FreshGrabber(self._source, timeout_s=12.0,
-                                 pump=self._pump).grab()
+            frame = self._fresh_frame()
             seed = self._calib or manual_seed(
                 (w, h), (frame.shape[1], frame.shape[0]))
             from acqApp.devices.dmd.corner_editor import CornerAdjustDialog
             dlg = CornerAdjustDialog(
                 seed, frame, live_source=self._source, parent=self,
                 start_label="sweep fit" if self._calib else "starting rectangle")
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                result = dlg.calibration
-        except Exception as e:   # noqa: BLE001 — escaping a slot aborts the app
-            self.log(f"[manual] failed: {e}")
-        finally:
-            self._go_dark(was_live)
-            for b in (self._btn_run, self._btn_manual, self._btn_close):
-                b.setEnabled(True)
-        if result is not None:
-            self._calib = result
-            self.log(f"[manual] corners set -> {self._calib.describe()}")
-        for b in (self._btn_adjust, self._btn_save):
-            b.setEnabled(self._calib is not None)
+            return dlg.calibration if dlg.exec() == QDialog.DialogCode.Accepted \
+                else None
+        self._live_editor("manual", editor)
+
+    def _align_reticle(self) -> None:
+        """Steer a projected disc / L / box onto the camera's reticle."""
+        def editor(w, h):
+            frame = self._fresh_frame()
+            self.log("[reticle] projecting the reticle; light stays on until "
+                     "the window closes")
+            from acqApp.devices.dmd.reticle_align import ReticleAlignDialog
+            dlg = ReticleAlignDialog(self._proj.project_frame, (w, h), frame,
+                                     live_source=self._source,
+                                     seed=self._calib, parent=self)
+            return dlg.calibration if dlg.exec() == QDialog.DialogCode.Accepted \
+                else None
+        self._live_editor("reticle", editor)
 
     # ── manual corner adjustment ────────────────────────────────────────────
     def _adjust_corners(self) -> None:

@@ -52,6 +52,11 @@ def _panel(key: str):
         return ReviewWidget(), None
     if key == "roi":
         return _roi_dialog(), None
+    if key == "reticle":
+        from acqApp.devices.dmd._roi_editor import DMD_H, DMD_W, demo_frame
+        from acqApp.devices.dmd.reticle_align import ReticleAlignDialog
+        return ReticleAlignDialog(lambda _f: None, (DMD_W, DMD_H),
+                                  demo_frame()), None
     from acqApp import config
     win = make_window({key} if key in config.MODULES else set())
     if key == "save":
@@ -65,7 +70,8 @@ def _panel(key: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("key", help="a config.MODULES key, 'save', 'review' or 'roi'")
+    ap.add_argument("key", help="a config.MODULES key, 'save', 'review', 'roi' "
+                                "or 'reticle'")
     ap.add_argument("--width", type=int, default=380)
     ap.add_argument("--out", default="",
                     help="default: snap_<key>.png in the temp dir")

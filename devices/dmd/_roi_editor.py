@@ -34,16 +34,10 @@ def demo_frame(w: int = CAM_W, h: int = CAM_H) -> np.ndarray:
 def stand_in_calibration(cam_size, dmd_size):
     """A *made-up* registration (the DMD over the middle ~60 % of the frame),
     only so the field outline has something to draw."""
-    from acqApp.devices.dmd.calibration import DmdCalibration
-    cw, ch = cam_size
-    dw, dh = dmd_size
-    scale = 0.6 * cw / dw                       # DMD mirrors → camera px
-    # camera px → DMD mirrors, centred
-    cam_to_dmd = np.array([[1.0 / scale, 0.0, -(cw / 2 - dw * scale / 2) / scale],
-                           [0.0, 1.0 / scale, -(ch / 2 - dh * scale / 2) / scale],
-                           [0.0, 0.0, 1.0]])
-    return DmdCalibration(cam_to_dmd=cam_to_dmd, dmd_size=dmd_size,
-                          cam_size=cam_size, model="affine", notes="STAND-IN")
+    from dataclasses import replace
+
+    from acqApp.devices.dmd.calibration import manual_seed
+    return replace(manual_seed(dmd_size, cam_size), notes="STAND-IN")
 
 
 def main() -> int:
