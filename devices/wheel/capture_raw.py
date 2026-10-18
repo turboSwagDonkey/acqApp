@@ -5,9 +5,9 @@ Records the RAW encoder voltage, hardware-clocked at a high rate, while you
 spin the wheel a few full turns forward and back. Prints live min/max, saves
 a CSV, and prints a summary of the signal's shape.
 
-  ..\..\.venv\Scripts\python.exe wheel\capture_raw.py
-  ..\..\.venv\Scripts\python.exe wheel\capture_raw.py --seconds 30 --rate 2000
-  ..\..\.venv\Scripts\python.exe wheel\capture_raw.py --chan Dev3/ai2 --out spin.csv
+  acqApp\.venv\Scripts\python.exe acqApp\devices\wheel\capture_raw.py
+  acqApp\.venv\Scripts\python.exe acqApp\devices\wheel\capture_raw.py --seconds 30 --rate 2000
+  acqApp\.venv\Scripts\python.exe acqApp\devices\wheel\capture_raw.py --chan Dev3/ai2 --out spin.csv
 
 Needs NI-DAQmx + nidaqmx. Ctrl+C stops early and still saves what was captured.
 """

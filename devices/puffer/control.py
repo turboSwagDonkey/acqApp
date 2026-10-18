@@ -98,8 +98,9 @@ class PufferController(QObject):
         except Exception:
             pass
 
-    def fire(self, duration_s: float | None = None) -> None:
-        """Open the valve for `duration_s`, or the configured default."""
+    def fire(self, duration_s: float | None = None) -> bool:
+        """Open the valve for `duration_s`, or the configured default. False
+        if there's no line to fire on."""
         with self._task_lock:
             task = self._task
         if task is None:
@@ -107,7 +108,7 @@ class PufferController(QObject):
             where = (f" on {self._s.channel}" if self._s.channel
                      else " — not fitted on this rig")
             print(f"[puffer] fire() ignored — no open DAQ task{where}")
-            return
+            return False
         d = duration_s if duration_s is not None else self._s.duration_s
         t = time.perf_counter()
         self.puff_fired.emit(t, d)
@@ -129,6 +130,7 @@ class PufferController(QObject):
                 print(f"[puffer] pulse failed ({e})")
 
         threading.Thread(target=_pulse, daemon=True).start()
+        return True
 
     def close(self) -> None:
         self._close_task()
@@ -154,7 +156,7 @@ class MockPufferController(QObject):
     def settings(self) -> PufferSettings:
         return self._s
 
-    def fire(self, duration_s: float | None = None) -> None:
+    def fire(self, duration_s: float | None = None) -> bool:
         d = duration_s if duration_s is not None else self._s.duration_s
         t = time.perf_counter()
         print(f"[puffer MOCK] fired at t={t:.3f}  duration={d:.3f} s "
@@ -163,6 +165,7 @@ class MockPufferController(QObject):
         sink = self._sink
         if sink is not None:
             sink(d)
+        return True
 
     def close(self) -> None:
         pass

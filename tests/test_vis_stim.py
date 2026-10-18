@@ -169,6 +169,44 @@ def check_tick_driven_map_run(r: Report) -> None:
     c.close()
 
 
+def check_mid_run_settings_wait(r: Report) -> None:
+    """A panel edit mid-run (here the trial type) waits for the next run:
+    stepping the new type's unbuilt timeline raised IndexError in a slot."""
+    from acqApp.devices.vis_stim.control import IDLE, RUNNING, VisStimController
+    from acqApp.devices.vis_stim.settings import (TRIAL_GRATING, TRIAL_MAP,
+                                                   TRIAL_TUNING, StimParams,
+                                                   VisStimSettings)
+
+    c = VisStimController(VisStimSettings(
+        trial_type=TRIAL_GRATING, params=StimParams(WaitTrigger=1)))
+    c.run()
+    c.on_tick(0.1)
+    r.check(c.phase == RUNNING, f"grating running ({c.phase})")
+    c.apply_settings(VisStimSettings(trial_type=TRIAL_MAP))
+    try:
+        for _ in range(3):
+            c.on_tick(0.0)
+        ok = True
+    except Exception as e:                                # noqa: BLE001
+        ok = False
+        r.check(False, f"a mid-run type switch raised {type(e).__name__}: {e}")
+    if ok:
+        r.check(c.phase == RUNNING and c._s.trial_type == TRIAL_GRATING,
+                "the running grating keeps its own settings")
+    c.stop()
+    r.check(c.phase == IDLE, "stops")
+    c.apply_settings(VisStimSettings(trial_type=TRIAL_TUNING))
+    c.run()
+    r.check(c._s.trial_type == TRIAL_TUNING,
+            "the next run takes up the latest settings")
+    states: list[str] = []
+    c.run_state_changed.connect(states.append)
+    c.close()
+    r.check(c.phase == IDLE and states[-1:] == [IDLE],
+            f"close() mid-run ends the run and says IDLE, so the panel's "
+            f"STOP button resets ({c.phase}, {states})")
+
+
 def check_map_shuffle(r: Report) -> None:
     import random
 
@@ -269,6 +307,10 @@ def check_circle_geometry(r: Report) -> None:
             "90° at 10 cm spans 2 x 10 x tan(45°) = 20 cm")
     r.check(abs(period_px(0.04, 10.0, 1.0) - deg_to_px(25.0, 10.0, 1.0))
             < 1e-9, "0.04 cyc/° is one cycle per 25°")
+    r.check(deg_to_px(200.0, 10.0, 1.0) > deg_to_px(170.0, 10.0, 1.0) > 0
+            and period_px(0.001, 10.0, 1.0) > 0,
+            "a span of 180° or more (or a tiny cyc/°) stays wide and positive, "
+            "never the negative period that aliased the grating")
 
     cx, cy, d = circle_geometry(1, screen_w=400, screen_h=300)
     r.check((cx, cy, d) == (50.0, 50.0, 100.0),
@@ -544,6 +586,7 @@ def main() -> int:
     app = qt_app()          # held: a collected QApplication aborts
     check_tick_driven_run(r, app)
     check_tick_driven_map_run(r)
+    check_mid_run_settings_wait(r)
     with tempfile.TemporaryDirectory() as tmp:
         check_panel_settings_file(r, Path(tmp))
     check_tuning_type_runs(r)

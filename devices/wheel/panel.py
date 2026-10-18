@@ -37,14 +37,14 @@ class SettingsPanel(QWidget):
         self._spn_vpr = spin(0.0, 20.0, self._s.volts_per_rev or 0.0,
                              decimals=3, suffix=" V/rev")
         self._spn_vpr.setSpecialValueText("— (raw V)")
-        self._spn_vpr.setToolTip("Encoder volts per full turn. Empty: report "
+        self._spn_vpr.setToolTip("Encoder volts per full turn. 0: report "
                                  "raw volts.")
 
         self._spn_dia = spin(0.0, 500.0, self._s.wheel_dia_mm or 0.0,
                              decimals=2, suffix=" mm")
         self._spn_dia.setSpecialValueText("— (no linear)")
         self._spn_dia.setToolTip("Turns the wheel's rotation into distance "
-                                 "run. Empty: no distance.")
+                                 "run. 0: speed and distance in revolutions.")
 
         lay.addRow(pairs_grid(
             ("Channel:", self._edt_chan, "Sample rate:", self._spn_rate),

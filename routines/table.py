@@ -281,9 +281,9 @@ class StepTable(QTableWidget):
             item.setData(VALUE, (s.x_um, s.y_um, s.z_um))
             item.setIcon(QIcon())
             item.setText(_xyz_text(s.x_um, s.y_um, s.z_um, s.fov))
-            z_part = f", {s.z_um:g} um" if s.z_um is not None else ""
+            # An axis can be None beside a FOV name (a migrated step).
             item.setToolTip(
-                f"{s.x_um:g} um, {s.y_um:g} um{z_part} — from saved FOV "
+                f"{_xyz_text(s.x_um, s.y_um, s.z_um, '')} — from saved FOV "
                 f"{s.fov!r}. Double-click to type new numbers, which "
                 f"detaches the name." if s.fov else
                 "Double-click to set a position, or right-click -> Fill "
@@ -353,10 +353,13 @@ class StepTable(QTableWidget):
             if s.kind not in _KIND_OF_FIELD[field]:
                 return                      # cell wasn't editable; ignore
             value = item.data(VALUE)
+            # Round frames here rather than have validate() refuse them, on
+            # either edit that can leave a fraction of a frame.
             if field == "unit":
                 s.unit = value if value in UNITS else s.unit
+                if s.unit == "frames":
+                    s.length = round(s.length)
             elif field == "length":
-                # Round frames here rather than have validate() refuse them.
                 s.length = (round(float(value)) if s.unit == "frames"
                             else float(value))
             elif field == "settle_s":
@@ -566,23 +569,23 @@ def _roi_icon(path: str) -> QIcon:
     """An ROI set's shapes rasterised over their bounding box (camera px)."""
     from acqApp.devices.dmd import roi_store
 
+    n = _THUMB.width()
     try:
         rois = roi_store.load(path)
+        shown = [r for r in rois if r.enabled] or list(rois)
+        if not shown:
+            return QIcon()
+        pts = np.concatenate([r.boundary() for r in shown])
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        pad = np.maximum(hi - lo, 1.0) * 0.15  # a sliver of margin, not edge-to-edge
+        lo, hi = lo - pad, hi + pad
+        xs = np.linspace(lo[0], hi[0], n)
+        ys = np.linspace(lo[1], hi[1], n)
+        mask = np.zeros((n, n), dtype=bool)
+        for r in shown:
+            mask |= r.mask_at(xs, ys)
     except Exception:                # noqa: BLE001 — no thumbnail, not a crash
         return QIcon()
-    shown = [r for r in rois if r.enabled] or list(rois)
-    if not shown:
-        return QIcon()
-    pts = np.concatenate([r.boundary() for r in shown])
-    lo, hi = pts.min(axis=0), pts.max(axis=0)
-    pad = np.maximum(hi - lo, 1.0) * 0.15      # a sliver of margin, not edge-to-edge
-    lo, hi = lo - pad, hi + pad
-    n = _THUMB.width()
-    xs = np.linspace(lo[0], hi[0], n)
-    ys = np.linspace(lo[1], hi[1], n)
-    mask = np.zeros((n, n), dtype=bool)
-    for r in shown:
-        mask |= r.mask_at(xs, ys)
     bits = np.where(mask, np.uint8(255), np.uint8(0))
     # .copy() detaches QImage from the buffer, which dies on return.
     img = QImage(bits.tobytes(), n, n, n, QImage.Format.Format_Grayscale8)

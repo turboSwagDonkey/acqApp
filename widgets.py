@@ -2,20 +2,23 @@
 from __future__ import annotations
 
 import html
+import math
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import (QEvent, QObject, QSettings, QSize, Qt, pyqtProperty,
-                          pyqtSignal)
+from PyQt6.QtCore import (QEvent, QObject, QPropertyAnimation, QRectF,
+                          QSettings, QSize, Qt, pyqtProperty, pyqtSignal)
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QCheckBox,
-                             QComboBox,
-                             QDialog, QDialogButtonBox,
+                             QComboBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                             QLayout, QListWidget,
-                             QListWidgetItem, QPushButton, QSpinBox, QStyle,
-                             QStyleOptionGroupBox, QToolTip, QVBoxLayout,
-                             QWidget)
+                             QLayout, QListWidget, QListWidgetItem,
+                             QPushButton, QSizePolicy, QSlider, QSpinBox,
+                             QStyle, QStyleOptionGroupBox, QToolTip,
+                             QVBoxLayout, QWidget)
+
+from acqApp import style
 
 _GEOM_ORG, _GEOM_APP = "acqApp", "acqApp"
 
@@ -33,7 +36,6 @@ def compact(w: QWidget, chars: int | None = None) -> QWidget:
     with `spin()` (which does it already); put closely related pairs on one
     row; end a row with addStretch() so its compact widgets stay left. Paths
     and table-cell editors stay full width."""
-    from PyQt6.QtWidgets import QSizePolicy
     w.setSizePolicy(QSizePolicy.Policy.Fixed, w.sizePolicy().verticalPolicy())
     if chars:
         w.setFixedWidth(w.fontMetrics().horizontalAdvance("0" * chars) + 16)
@@ -73,7 +75,6 @@ def spin(lo, hi, value=None, *, decimals: int | None = None, step=None,
 def hrow(*items) -> QHBoxLayout:
     """One line of controls, kept left. A str becomes the label of the item
     after it; a QLayout is nested."""
-    from PyQt6.QtWidgets import QLayout
     lay = QHBoxLayout()
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(4)
@@ -94,7 +95,6 @@ class ElidedLabel(QLabel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        from PyQt6.QtWidgets import QSizePolicy
         self._full = ""
         self.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Preferred)
@@ -172,13 +172,12 @@ def pairs_grid(*rows, per_row: int | None = None,
     labels share one width, and the inputs and the check boxes/buttons share
     the item's width: inputs widen to match a check box above them. A label
     shows its input's tooltip, so hovering either explains the control."""
-    from PyQt6.QtWidgets import QLayout, QSizePolicy
     if per_row:
         n = 2 * per_row
         rows = tuple(row[k:k + n] for row in rows
                      for k in range(0, len(row), n))
     rows = tuple(row for row in rows if row)
-    items = max(len(row) for row in rows) // 2
+    items = max((len(row) for row in rows), default=0) // 2
     g = QGridLayout()
     g.setContentsMargins(0, 0, 0, 0)
     g.setHorizontalSpacing(4)
@@ -193,7 +192,8 @@ def pairs_grid(*rows, per_row: int | None = None,
             base = 3 * k                # label, input, gap
             if label is not None:
                 lbl = QLabel(label)
-                first = w.itemAt(0).widget() if isinstance(w, QLayout) else w
+                head = w.itemAt(0) if isinstance(w, QLayout) else None
+                first = head and head.widget() if isinstance(w, QLayout) else w
                 lbl.setToolTip(first.toolTip() if first is not None else "")
                 lbl.setProperty("tipMirror", True)
                 if first is not None:       # for _field_label
@@ -404,7 +404,6 @@ def _field_label(w: QWidget, box: QGroupBox) -> str:
     if w.property("gridLabel"):             # set by pairs_grid
         return str(w.property("gridLabel")).rstrip(":")
     # In a row of several inputs, the label just before it names it.
-    from PyQt6.QtWidgets import QLayout
     for lay in box.findChildren(QLayout):
         i = lay.indexOf(w)
         if i > 0:
@@ -446,10 +445,10 @@ class _TitleTip(QObject):
         box = self._box
         opt = QStyleOptionGroupBox()
         box.initStyleOption(opt)
-        style = box.style()
-        rect = style.subControlRect(QStyle.ComplexControl.CC_GroupBox, opt,
-                                    QStyle.SubControl.SC_GroupBoxLabel, box)
-        rect = rect.united(style.subControlRect(
+        qs = box.style()
+        rect = qs.subControlRect(QStyle.ComplexControl.CC_GroupBox, opt,
+                                 QStyle.SubControl.SC_GroupBoxLabel, box)
+        rect = rect.united(qs.subControlRect(
             QStyle.ComplexControl.CC_GroupBox, opt,
             QStyle.SubControl.SC_GroupBoxCheckBox, box))
         if rect.isEmpty():       # a style that won't say: the top strip
@@ -503,6 +502,8 @@ def section_help(box: QGroupBox, keep: bool = False) -> str:
     old = getattr(box, "_title_tip", None)
     if old is not None:
         box.removeEventFilter(old)
+        old.deleteLater()               # parented to the box: else one per call
+        box._title_tip = None           # type: ignore[attr-defined]
     if text:
         tip = _TitleTip(box, text)
         box.installEventFilter(tip)
@@ -525,50 +526,6 @@ def _html(text: str) -> str:
 
 # ── a segmented switch ────────────────────────────────────────────────────────
 
-class SegmentedSwitch(QWidget):
-    """Joined buttons, exactly one lit: a mode switch that reads as one,
-    unlike a check box. `changed(key)` fires on a click, not on `set_value`."""
-
-    changed = pyqtSignal(str)
-
-    def __init__(self, options: list[tuple[str, str]], color: str,
-                 parent=None) -> None:
-        super().__init__(parent)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        self._buttons: dict[str, QPushButton] = {}
-        n = len(options)
-        for i, (label, key) in enumerate(options):
-            b = QPushButton(label)
-            b.setCheckable(True)
-            b.setAutoExclusive(True)
-            left = "6px" if i == 0 else "0px"
-            right = "6px" if i == n - 1 else "0px"
-            b.setStyleSheet(
-                "QPushButton{"
-                f"border:1px solid {color};padding:4px 14px;"
-                f"border-top-left-radius:{left};border-bottom-left-radius:{left};"
-                f"border-top-right-radius:{right};border-bottom-right-radius:{right};"
-                "background:transparent}"
-                f"QPushButton:checked{{background:{color};color:white;"
-                "font-weight:bold}"
-                "QPushButton:disabled{color:#777;border-color:#555}")
-            b.clicked.connect(lambda _c, k=key: self.changed.emit(k))
-            lay.addWidget(b, 1)
-            self._buttons[key] = b
-        self.set_value(options[0][1])
-
-    def value(self) -> str:
-        return next(k for k, b in self._buttons.items() if b.isChecked())
-
-    def set_value(self, key: str) -> None:
-        self._buttons[key].setChecked(True)
-
-    def button(self, key: str) -> QPushButton:
-        return self._buttons[key]
-
-
 # ── pills: the ROI editor's tool-strip look, shared by every panel ────────────
 PILL_GAP = 6        # between pills in one group
 ROW_GAP = 8         # between buttons, and between groups (twice this)
@@ -589,7 +546,6 @@ def pill(label: str, key: str, *, checked: bool = False,
     """An on/off option as a rounded accent toggle (`style.toggle_btn`): pale
     off, full accent on. Same isChecked/setChecked/toggled as a QCheckBox.
     Sparingly: only for the controls that matter (see `check`)."""
-    from acqApp import style
     b = QPushButton(label)
     b.setCheckable(True)
     b.setChecked(checked)
@@ -597,7 +553,6 @@ def pill(label: str, key: str, *, checked: bool = False,
     if tip:
         b.setToolTip(tip)
     # Room for the bold "on" label, so lighting a pill never clips its text.
-    from PyQt6.QtGui import QFont, QFontMetrics
     b.ensurePolished()
     bold = QFont(b.font())
     bold.setBold(True)
@@ -607,8 +562,9 @@ def pill(label: str, key: str, *, checked: bool = False,
 
 class PillGroup(QWidget):
     """Separate rounded pills, exactly one lit: a mode or tool choice, the
-    ROI editor's Rectangle/Circle/… strip. API as `SegmentedSwitch`;
-    `options` are (label, key) or (label, key, tooltip)."""
+    ROI editor's Rectangle/Circle/… strip. `options` are (label, key) or
+    (label, key, tooltip); `changed(key)` fires on a click, not on
+    `set_value`."""
 
     changed = pyqtSignal(str)
 
@@ -645,7 +601,6 @@ class SlideSwitch(QAbstractButton):
 
     def __init__(self, off_text: str, on_text: str, key: str,
                  parent=None) -> None:
-        from PyQt6.QtCore import QPropertyAnimation
         super().__init__(parent)
         self._texts = (off_text, on_text)
         self._color = key
@@ -674,14 +629,12 @@ class SlideSwitch(QAbstractButton):
         self._anim.setEndValue(1.0 if on else 0.0)
         self._anim.start()
 
-    def _bold(self):
-        from PyQt6.QtGui import QFont
+    def _bold(self) -> QFont:
         f = QFont(self.font())
         f.setBold(True)
         return f
 
     def sizeHint(self) -> QSize:
-        from PyQt6.QtGui import QFontMetrics
         fm = QFontMetrics(self._bold())
         half = max(fm.horizontalAdvance(t) for t in self._texts) + 24
         return QSize(2 * half + 4, fm.height() + 14)
@@ -690,9 +643,6 @@ class SlideSwitch(QAbstractButton):
         return self.sizeHint()
 
     def paintEvent(self, _ev) -> None:
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtGui import QColor, QPainter, QPen
-        from acqApp import style
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         accent = QColor(style.HEX[self._color])
@@ -755,7 +705,6 @@ class RangeBar(QWidget):
     def __init__(self, lo: float, hi: float, value: float, *,
                  fmt=lambda v: f"{v:g}", parent=None) -> None:
         super().__init__(parent)
-        from PyQt6.QtWidgets import QSlider
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self._sld = QSlider(Qt.Orientation.Horizontal)
@@ -778,7 +727,6 @@ class RangeBar(QWidget):
     def _to_pos(self, v: float) -> int:
         if self._hi <= self._lo:
             return 0
-        import math
         f = math.log(v / self._lo) / math.log(self._hi / self._lo)
         return int(round(f * self._STEPS))
 

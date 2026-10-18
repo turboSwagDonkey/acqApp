@@ -62,7 +62,7 @@ class VisStimController(QObject):
                  wheel_speed: Callable[[], tuple[float, float] | None] | None
                  = None) -> None:
         super().__init__(parent)
-        self._s = settings
+        self._s = self._next_s = settings
         self._phase = IDLE
         self._window: StimDisplay | None = None
         # (value, acquired_at) or None; without a wheel, visuomotor is static.
@@ -115,7 +115,9 @@ class VisStimController(QObject):
 
     # ── settings ──────────────────────────────────────────────────────────
     def apply_settings(self, s: VisStimSettings) -> None:
-        self._s = s
+        """Taken up by the next run(): a run keeps its own settings, as a
+        mid-run trial type switch would step another type's empty timeline."""
+        self._next_s = s
 
     # ── one shared-clock tick = one "trigger" ─────────────────────────────
     def on_tick(self, _elapsed_s: float) -> None:
@@ -129,6 +131,7 @@ class VisStimController(QObject):
         """Open the display and wait WaitTrigger ticks. False if running."""
         if self._phase != IDLE:
             return False
+        self._s = self._next_s
         base = self._s.params
         # Loop variables are grating/visuomotor only; region types sweep
         # internally.
@@ -575,4 +578,6 @@ class VisStimController(QObject):
         return region, white
 
     def close(self) -> None:
+        # Ends a run as ESC does, so the panel's button and live view see IDLE.
+        self.stop()
         self._teardown_window()

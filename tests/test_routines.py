@@ -2585,6 +2585,11 @@ def check_templates(r: Report) -> None:
             and templates.path_for("   ").name.startswith("routine"),
             f"a name is not a path — it cannot escape the folder "
             f"({templates.path_for(evil).name!r})")
+    back_evil = "..\\..\\evil\\name"
+    r.check(templates.path_for(back_evil).parent == templates.DIR
+            and "\\" not in templates.safe_name(back_evil),
+            f"…nor with Windows separators "
+            f"({templates.safe_name(back_evil)!r})")
 
     templates.save(Routine(name="b"), "b")
     templates.save(Routine(name="A"), "A")
@@ -2922,11 +2927,21 @@ def check_app(r: Report, app, tmp) -> None:
     except RuntimeError as e:
         r.check(True, f"set_modules is refused while a routine runs ({e})")
 
+    # A shorter template loaded mid-run used to IndexError the engine.
+    adapter.update_display()
+    r.check(adapter._routine is not panel._r
+            and len(adapter._routine.steps) == len(panel._r.steps),
+            "the engine runs a copy of the protocol, not the panel's object")
+    r.check(not panel._protocol.isEnabled(),
+            "…and the whole Protocol box (templates, ±Step, groups) is locked")
+
     for _ in range(200):
         win._display_tick()
         pump(app, 0.02)
         if eng0.phase == Phase.DONE:
             break
+    adapter.update_display()
+    r.check(panel._protocol.isEnabled(), "…unlocked again once it is done")
 
     phase, runs, filed, steps_done = (eng0.phase, list(eng0.runs),
                                       adapter._filed, eng0.steps_done())
@@ -3078,6 +3093,150 @@ def check_file_rolling(r: Report, app, tmp) -> None:
     pump(app, 0.2)
 
 
+def check_hand_edited_load(r: Report) -> None:
+    """Wrong-typed values in a hand-edited file fall back to defaults: the
+    table formats them at launch, before `validate` could refuse them."""
+    from acqApp.routines.estimate import estimate
+
+    rt = Routine.from_dict({
+        "cycles": float("inf"),
+        "steps": [{"kind": "wait", "length": "lots", "unit": None, "label": 3},
+                  {"kind": "move", "x_um": "12", "y_um": [1],
+                   "settle_s": float("nan"), "fov": "A_fov"},
+                  {"kind": "wait"}],
+        "groups": [{"start": [0], "end": 1},
+                   {"start": 0, "end": 2, "repeats": "3"}]})
+    w, m = rt.steps[0], rt.steps[1]
+    r.check(rt.cycles == 1, f"infinite cycles load as 1 ({rt.cycles})")
+    r.check(w.length == 100.0 and w.unit == "" and w.label == "",
+            f"a non-numeric length and non-text fields take defaults "
+            f"({w.length!r}, {w.unit!r}, {w.label!r})")
+    r.check(m.x_um == 12.0 and m.y_um is None and m.settle_s == 0.25,
+            f"…numeric text parses, junk and NaN drop to the default "
+            f"({m.x_um!r}, {m.y_um!r}, {m.settle_s!r})")
+    r.check([(g.start, g.end, g.repeats) for g in rt.groups] == [(0, 2, 3)],
+            f"an unhashable group index is dropped, text repeats parse "
+            f"({[(g.start, g.end, g.repeats) for g in rt.groups]})")
+    try:
+        validate(rt, FULL_RIG)
+        estimate(rt)
+        [s.describe() for s in rt.steps]
+        r.check(True, "…and validate, estimate and describe run on it")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} on a hand-edited routine: {e}")
+
+
+def check_adapter_guards(r: Report) -> None:
+    """The adapter's slots never raise: with no sys.excepthook, an exception
+    out of a Qt slot aborts the process with the light as it was."""
+    from acqApp.adapters.routines import RoutinesModule
+
+    a = RoutinesModule.__new__(RoutinesModule)
+    said: list[str] = []
+    a._status = said.append
+    a._timer = None
+    a._hold_t0 = None
+    a._pending_roll_run = None
+    a._seal_after = None
+    rig = FakeRig()
+    a._engine = RoutineEngine(Routine(steps=[Step(kind="wait", length=1,
+                                                  unit="seconds")]),
+                              rig.hooks())
+    a._engine.start()
+    try:
+        a._resume()                 # a second click: no longer paused
+        a._skip()
+        r.check(any("refused" in m for m in said),
+                f"Resume/Skip on a running routine say so ({said})")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} escaped a button slot: {e}")
+
+    def no_disk(_run):
+        raise RuntimeError("disk gone")
+
+    a._roll_for = no_disk
+    a._pending_roll_run = SimpleNamespace()
+    try:
+        a._tick()
+        r.check(a._engine.phase == Phase.PAUSED
+                and "disk gone" in a._engine.fault,
+                f"a raise after eng.tick() (the deferred roll) pauses the "
+                f"routine ({a._engine.phase}, {a._engine.fault!r})")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} escaped _tick: {e}")
+
+
+def check_step_edits_keep_groups(r: Report, app) -> None:
+    """Duplicate/Remove keep every group on the steps it repeated; the
+    table never leaves a fraction of a frame, nor fails on a FOV-named Move
+    with an axis left alone; a failed template delete is said, not raised."""
+    from acqApp.routines import panel as panel_mod
+    from acqApp.routines.panel import SettingsPanel
+    from acqApp.routines.table import FIELDS, VALUE
+
+    routine = Routine(steps=[Step(kind="wait", label=c) for c in "ABCDE"],
+                      groups=[Group(start=1, end=2), Group(start=3, end=4)])
+    panel = SettingsPanel(routine)
+
+    def spans():
+        return [(g.start, g.end) for g in routine.groups]
+
+    panel._tbl.select_row(1)
+    panel._dup_step()                           # B, inside group 1
+    r.check([s.label for s in routine.steps] == list("ABBCDE")
+            and spans() == [(1, 3), (4, 5)],
+            f"duplicating inside a group grows it and shifts the next "
+            f"({spans()})")
+    panel._tbl.select_row(0)
+    panel._del_step()                           # A, before both
+    r.check(spans() == [(0, 2), (3, 4)],
+            f"removing a step before the groups shifts them up ({spans()})")
+    panel._tbl.select_row(3)
+    panel._del_step()                           # D
+    panel._tbl.select_row(3)
+    panel._del_step()                           # E: group 2 is now empty
+    r.check([s.label for s in routine.steps] == list("BBC")
+            and spans() == [(0, 2)],
+            f"removing a group's steps shrinks it, then drops it ({spans()})")
+
+    tbl = panel._tbl
+    routine.steps[0].length, routine.steps[0].unit = 2.6, "seconds"
+    tbl.reload()
+    tbl.item(0, FIELDS.index("unit")).setData(VALUE, "frames")
+    r.check(routine.steps[0].unit == "frames" and routine.steps[0].length == 3,
+            f"switching a step to frames rounds its length "
+            f"({routine.steps[0].length!r})")
+
+    routine.steps[1] = Step(kind="move", fov="A_fov", x_um=10.0)
+    try:
+        tbl.reload()
+        tip = tbl.item(1, FIELDS.index("details")).toolTip()
+        r.check("A_fov" in tip and "NA" in tip,
+                f"a FOV-named Move with an axis left alone renders ({tip!r})")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} rendering a FOV-named Move: {e}")
+
+    said: list[str] = []
+    panel.status_message.connect(said.append)
+    real = panel_mod.templates.delete
+
+    def locked(_name):
+        raise PermissionError("in use")
+
+    panel_mod.templates.delete = locked
+    try:
+        panel._cmb_tpl.addItem("held")
+        panel._cmb_tpl.setCurrentText("held")
+        panel._on_delete_template()
+        r.check(said and "could not delete" in said[-1],
+                f"a template delete the OS refuses is reported ({said})")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} escaped Delete template: {e}")
+    finally:
+        panel_mod.templates.delete = real
+    app.processEvents()
+
+
 def _part_routines() -> int:
     r = Report("routines")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_routines_"))
@@ -3112,6 +3271,8 @@ def _part_routines() -> int:
         check_arm_camera_trigger(r)
         check_estimate(r)
         check_progress(r)
+        check_hand_edited_load(r)
+        check_adapter_guards(r)
         # Unisolated, this overwrites the operator's save folder and edits
         # their template library.
         state = isolate_user_state()
@@ -3122,6 +3283,7 @@ def _part_routines() -> int:
             check_panel_repaint(r, app)
             check_step_table(r, app, tmp)
             check_group_panel(r, app)
+            check_step_edits_keep_groups(r, app)
             check_per_edge_routine_is_buildable(r, app)
             check_move_row_repaint(r)
             check_panel_tracker(r, app)

@@ -23,7 +23,7 @@ SUFFIX = ".routine.json"
 # can redirect it — an unisolated run would write into the operator's library.
 DIR = Path(__file__).resolve().parents[1] / "routine_templates"
 
-_BAD = re.compile(r'[<>:"/\|?*\x00-\x1f]')
+_BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def safe_name(name: str) -> str:

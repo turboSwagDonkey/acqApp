@@ -76,10 +76,13 @@ def estimate(routine: Routine, hz: float | None = None) -> Estimate:
 
 
 def remaining(routine: Routine, hz: float | None, order_pos: int, cycle: int,
-              progress: float = 0.0) -> Estimate:
+              progress: float = 0.0, order: list[int] | None = None
+              ) -> Estimate:
     """What's left from `progress` (0..1) through position `order_pos` of
-    the expanded `play_order` in `cycle`, so repeats still ahead count."""
-    order = play_order(routine)
+    the expanded `play_order` in `cycle`, so repeats still ahead count.
+    `order`: that play order, if the caller already has it."""
+    if order is None:
+        order = play_order(routine)
     if not order:
         return Estimate(hz=hz)
     cycles = max(1, routine.cycles)

@@ -9,7 +9,8 @@ reads both IN. So MIRROR_OUT on both is the target, whatever ThorImage's
 Operator-authorized silent auto-correct (PLAN.md S2, 2026-09-11): a narrow
 exception to "ask before actuating", for this launch-time check only, never
 mid-session. If the port won't open (ThorImage holds COM54, or no
-controller), it reports instead of raising so startup isn't blocked.
+controller) or the exchange fails, it reports instead of raising so startup
+isn't blocked.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ class MirrorCheckResult:
     corrected: bool = False      # True if a SET was sent to fix a mismatch
     gr_state: int | None = None
     camera_state: int | None = None
-    error: str | None = None     # set when the port couldn't be opened
+    error: str | None = None     # set when the check couldn't run
 
 
 def ensure_camera_default(port: str = "COM54", driver_cls=MCM6101) -> MirrorCheckResult:
@@ -50,7 +51,7 @@ def ensure_camera_default(port: str = "COM54", driver_cls=MCM6101) -> MirrorChec
                 dev.set_mirror_state(AXIS, chan, CAMERA_STATE)
                 corrected = True
         return MirrorCheckResult(ok=True, corrected=corrected, gr_state=gr, camera_state=cam)
-    except MCM6101Error as exc:
+    except (MCM6101Error, OSError) as exc:     # OSError: pyserial's write errors
         return MirrorCheckResult(ok=False, error=str(exc))
     finally:
         dev.close()

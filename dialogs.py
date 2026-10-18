@@ -177,6 +177,7 @@ class ConnectionMonitor(QDialog):
         # A callable, so Refresh sees a port edited after opening.
         self._probe_kwargs = probe_kwargs or (lambda: {})
         self._rows: dict[str, tuple[QLabel, QLabel]] = {}
+        self._busy = False
 
         root = QVBoxLayout(self)
         grid = QGridLayout()
@@ -217,8 +218,12 @@ class ConnectionMonitor(QDialog):
 
     def refresh(self) -> None:
         """One module at a time, painting each row as it lands. Refresh is
-        disabled meanwhile: these touch hardware, and must not re-enter."""
+        disabled meanwhile: these touch hardware, and must not re-enter (nor
+        through the sidebar's Devices item, which calls this directly)."""
+        if self._busy:
+            return
         kwargs = self._probe_kwargs()
+        self._busy = True
         self._btn_refresh.setEnabled(False)
         try:
             for key, (status, detail) in self._rows.items():
@@ -233,4 +238,5 @@ class ConnectionMonitor(QDialog):
                 detail.setText(res.detail)
                 QApplication.processEvents()
         finally:
+            self._busy = False
             self._btn_refresh.setEnabled(True)

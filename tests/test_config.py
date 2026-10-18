@@ -157,6 +157,29 @@ def check_transient_locks(r: Report, tmp: Path) -> None:
             del config.open
 
 
+def check_bad_values(r: Report, tmp: Path) -> None:
+    """Values that used to raise out of a save or a load (a slot or startup,
+    both fatal) are reported or dropped instead."""
+    import io
+    from contextlib import redirect_stdout
+
+    path = tmp / "unencodable.json"
+    config._atomic_write_json(path, {"v": 1})
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        config._atomic_write_json(path, {"v": object()})
+    r.check("could not save" in buf.getvalue() and config._load_json(path) == {"v": 1}
+            and not list(tmp.glob("unencodable.json.*.tmp")),
+            "an unencodable value is reported, keeps the old file, leaves no temp")
+
+    _write(tmp, {"r": {"dmd_calibration": {"cross_frac": True}}}, active="r")
+    r.check(config.load_rigs()["r"]["dmd_calibration"]["cross_frac"] is None,
+            "a bool cross_frac is not taken for 1.0")
+    config.save_config({"enabled_modules": ["wheel", ["junk"], {"x": 1}, 7]})
+    r.check(config.load_enabled_modules() == config.order_modules(["wheel"]),
+            "junk in enabled_modules is skipped, not raised at startup")
+
+
 def check_resolution(r: Report, tmp: Path) -> None:
     _write(tmp, {"full": FULL}, active="full")
     r.check(config.rig_device() == "Dev3", "rig_device comes from the profile")
@@ -266,8 +289,9 @@ def check_puffer_skips_daq(r: Report) -> None:
         builtins.__import__ = real_import
     r.check(not attempted, "a blank channel never imports or opens nidaqmx")
     r.check(ctl._task is None, "...and leaves no task, so fire() no-ops")
-    ctl.fire(0.01)          # must not raise
-    r.check(True, "...and fire() on an unfitted puffer is silent, not an error")
+    r.check(ctl.fire(0.01) is False,
+            "...and fire() on an unfitted puffer is silent, not an error, and "
+            "says it didn't fire (the sidebar card counts only real puffs)")
 
 
 def check_puffer_typing(r: Report) -> None:
@@ -324,6 +348,7 @@ def _part_rigs() -> int:
         check_sanitize(r, tmp)
         check_corrupt(r, tmp)
         check_transient_locks(r, tmp)
+        check_bad_values(r, tmp)
         check_resolution(r, tmp)
         check_dmd_calibration(r, tmp)
         check_profile_beats_saved(r, tmp)
@@ -819,17 +844,32 @@ def _part_settings() -> int:
     # Rewritten on every spinbox step, while the app can die natively mid-write
     # (qFatal, a DCAM segfault).
     intact = cfg_path.read_text(encoding="utf-8")
-    real_dump = config.json.dump
+    import builtins
 
-    def die_partway(obj, fh, **kw):
-        fh.write('{"settings": {"voltage_cam": {"expos')     # a partial record
-        raise OSError("simulated: no space left on device")
+    class _DiesPartway:
+        """The temp file's handle: half of each write lands, then the disk fills."""
+        def __init__(self, fh):
+            self._fh = fh
 
-    config.json.dump = die_partway
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._fh.close()
+
+        def write(self, text):
+            self._fh.write(text[:len(text) // 2])             # a partial record
+            raise OSError("simulated: no space left on device")
+
+    def dying_open(file, mode="r", *a, **k):
+        fh = builtins.open(file, mode, *a, **k)
+        return _DiesPartway(fh) if "w" in mode and str(file).endswith(".tmp") else fh
+
+    config.open = dying_open
     try:
         config.save_config({"theme": "light", "settings": {"wiped": True}})
     finally:
-        config.json.dump = real_dump
+        del config.open
     r.check(cfg_path.read_text(encoding="utf-8") == intact,
             "a write that dies partway leaves the previous config untouched")
     r.check(not list(tmp.glob("*.tmp")),
@@ -956,12 +996,30 @@ def check_port_unavailable(r: Report) -> None:
     r.check(fake.set_calls == [], "no SET sent when the port never opened")
 
 
+def check_serial_error_reported(r: Report) -> None:
+    """A pyserial write error after the port opened (an OSError, not an
+    MCM6101Error) is reported, not raised out of startup."""
+    fake = FakeDriver("COM54")
+
+    def broken(axis, channel):
+        raise OSError("WriteFile failed")
+    fake.get_mirror_state = broken
+    try:
+        result = ensure_camera_default(driver_cls=lambda port: fake)
+    except Exception as e:                                # noqa: BLE001
+        r.check(False, f"a serial error raised {type(e).__name__} out of startup")
+        return
+    r.check(not result.ok and result.error, "serial error reported as not ok")
+    r.check(fake.closed, "port closed after the serial error")
+
+
 def _part_mirror() -> int:
     r = Report("mirror-startup")
     check_already_correct(r)
     check_corrects_mismatch(r)
     check_corrects_both(r)
     check_port_unavailable(r)
+    check_serial_error_reported(r)
     return r.finish()
 
 

@@ -76,7 +76,7 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        grp = QGroupBox("Protocol")
+        grp = self._protocol = QGroupBox("Protocol")
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
 
@@ -168,8 +168,7 @@ class SettingsPanel(QWidget):
         self._btn_g_add = QPushButton("Group selected")
         self._btn_g_add.setEnabled(False)
         self._btn_g_add.setToolTip("Group the steps selected in the table "
-                                   "above to repeat × times, nested inside "
-                                   "\"Repeat the list\" above.")
+                                   "above to repeat × times.")
         self._btn_g_add.clicked.connect(self._group_selected)
         grow.addWidget(self._btn_g_add)
         gl.addLayout(grow)
@@ -204,8 +203,8 @@ class SettingsPanel(QWidget):
             "recording if it is not already running, and run. With Trigger "
             "steps, each one waits for its own edge, from trial 1; without, "
             "the routine is ARMED and step 1 begins on the first triggered "
-            "frame.\nA recording this button started is stopped again when "
-            "the routine ends; one you started yourself is left alone.")
+            "frame.\nThe recording and the camera stop when the routine "
+            "ends or is aborted.")
         self._btn_start.clicked.connect(self.start_requested)
         rlay.addWidget(self._btn_start)
 
@@ -222,8 +221,8 @@ class SettingsPanel(QWidget):
                 (self._btn_skip, self.skip_requested,
                  "Give up on the paused step and go on to the next one."),
                 (self._btn_abort, self.abort_requested,
-                 "End the routine now. Motion stops and the light goes off; a "
-                 "recording this panel started is stopped with it.")):
+                 "End the routine now. Motion stops, the light goes off, and "
+                 "the recording stops with it.")):
             b.setToolTip(tip)
             b.clicked.connect(sig)
         rlay.addLayout(button_row(self._btn_pause, self._btn_resume,
@@ -348,13 +347,13 @@ class SettingsPanel(QWidget):
     def _dup_step(self) -> None:
         row = self._selected()
         if row >= 0:
-            self._r.steps.insert(row + 1, replace(self._r.steps[row]))
+            self._insert_step(row + 1, replace(self._r.steps[row]), owner=row)
             self._list_edited(row + 1)
 
     def _del_step(self) -> None:
         row = self._selected()
         if row >= 0:
-            del self._r.steps[row]
+            self._remove_step(row)
             self._list_edited(min(row, len(self._r.steps) - 1))
 
     def _move_up(self) -> None:
@@ -486,6 +485,17 @@ class SettingsPanel(QWidget):
                 g.start += 1
                 g.end += 1
 
+    def _remove_step(self, row: int) -> None:
+        """Delete step `row`: groups holding it shrink (an emptied one goes),
+        later groups shift, so each still repeats the steps it did."""
+        del self._r.steps[row]
+        for g in self._r.groups:
+            if g.start > row:
+                g.start -= 1
+            if g.end >= row:
+                g.end -= 1
+        self._r.groups[:] = [g for g in self._r.groups if g.start <= g.end]
+
     def _pair_roi_after(self, row: int, roi: Path, name: str) -> str:
         """Show `roi` in move `row`'s segment -> a status line. Reuses the
         segment's first showing display step; a "stop displaying" stays one."""
@@ -599,8 +609,8 @@ class SettingsPanel(QWidget):
             for b in (self._btn_resume, self._btn_skip):
                 b.setEnabled(paused)
             self._btn_abort.setEnabled(held)
-            # The engine holds an index into the step list.
-            self._tbl.setEnabled(not held)
+            # Every edit, not just the table's: templates, ±Step, groups.
+            self._protocol.setEnabled(not held)
             self._lbl_state.setStyleSheet(
                 "color:#d08770;" if paused else
                 f"color:{style.HEX['routines']};" if active else "")
@@ -667,7 +677,11 @@ class SettingsPanel(QWidget):
         name = self._cmb_tpl.currentText()
         if not name:
             return
-        templates.delete(name)
+        try:
+            templates.delete(name)
+        except OSError as e:
+            self.status_message.emit(f"could not delete {name!r}: {e}")
+            return
         self.refresh_templates()
         self.status_message.emit(f"template {name!r} deleted")
 

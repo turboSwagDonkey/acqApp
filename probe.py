@@ -99,14 +99,14 @@ def _dmd() -> ProbeResult:
                              f"one process at a time")
 
 
-def _vis_stim() -> ProbeResult:
-    return ProbeResult("stub", "shows on a display screen, gated by the "
-                              "shared session clock — no device of its own")
-
-
-def _mirror() -> ProbeResult:
-    return ProbeResult("stub", "operator-asserted state — no device of its "
-                              "own (ThorImage owns the real switch)")
+# Modules with no device of their own: the reason, shown as a "stub" row.
+_STUBS = {
+    "vis_stim": "shows on a display screen, gated by the shared session "
+                "clock — no device of its own",
+    "mirror":   "operator-asserted state — no device of its own (ThorImage "
+                "owns the real switch)",
+    "routines": "drives the other modules — no device of its own",
+}
 
 
 def probe(module: str, *, ni_device: str | None = None,
@@ -124,10 +124,8 @@ def probe(module: str, *, ni_device: str | None = None,
             return _stage(stage_port)
         if module == "dmd":
             return _dmd()
-        if module == "vis_stim":
-            return _vis_stim()
-        if module == "mirror":
-            return _mirror()
+        if module in _STUBS:
+            return ProbeResult("stub", _STUBS[module])
         return ProbeResult("error", "unknown module")
     except Exception as e:                       # belt-and-braces
         return ProbeResult("error", str(e))

@@ -1,5 +1,4 @@
-"""Aperture geometry for the circle-in-a-region trials (tuning, contrast,
-size). No Qt.
+"""Aperture geometry for the circle-in-a-region (tuning) trials. No Qt.
 
 Regions are 1-indexed (the operator's "region 1-9"); the diameter is the
 region's WIDTH, not height (the operator's spec).

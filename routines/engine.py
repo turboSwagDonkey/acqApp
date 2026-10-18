@@ -259,7 +259,10 @@ class RoutineEngine:
         return 1.0 if self._step_done else 0.0
 
     def total_runs(self) -> int:
-        return self._r.total_steps()
+        """From the order cached at start: `overall_progress` runs 30x/s."""
+        if not self._order:
+            return self._r.total_steps()
+        return len(self._order) * max(1, self._r.cycles)
 
     def overall_progress(self) -> float:
         """0..1 through the whole routine. Position-based, so a repeated

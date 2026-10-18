@@ -11,6 +11,7 @@ One recording per external edge is `[trigger, record]` in a repeat group.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -221,7 +222,7 @@ class Routine:
                 kw = {k: v for k, v in raw.items()
                       if k in Step.__dataclass_fields__}
                 try:
-                    s = Step(**kw)
+                    s = _typed(Step(**kw))
                 except TypeError:
                     continue
                 if s.kind not in KINDS:
@@ -243,7 +244,7 @@ class Routine:
 
         try:
             cycles = max(1, int(d.get("cycles", 1)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             cycles = 1
         mode = d.get("save_mode")
         if mode == "per_step":            # retired name
@@ -263,14 +264,27 @@ def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list
         kw = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
         try:
             obj = cls(**kw)
-        except TypeError:
+            lo, hi = old_to_new.get(obj.start), old_to_new.get(obj.end)
+        except TypeError:               # incl. an unhashable index
             continue
-        lo, hi = old_to_new.get(obj.start), old_to_new.get(obj.end)
         if lo is None or hi is None:
             continue
         obj.start, obj.end = lo[0], hi[1]
+        obj.repeats = int(_num(obj.repeats, 2))
         out.append(obj)
     return out
+
+
+def _typed(s: Step) -> Step:
+    """A hand-edited file's wrong-typed values back to defaults: the table
+    formats them at launch, before `validate` could refuse them."""
+    for f in ("kind", "label", "comment", "fov", "pattern", "unit"):
+        v = getattr(s, f)
+        setattr(s, f, v if isinstance(v, str) else "")
+    s.x_um, s.y_um, s.z_um = (_opt_num(v) for v in (s.x_um, s.y_um, s.z_um))
+    s.settle_s = _num(s.settle_s, Step.settle_s)
+    s.length = _num(s.length, Step.length)
+    return s
 
 
 def _migrate_step(raw: dict) -> list[Step]:
@@ -309,10 +323,12 @@ def _migrate_step(raw: dict) -> list[Step]:
 
 
 def _num(v, default: float) -> float:
+    """`v` as a finite float, else `default`."""
     try:
-        return float(v)
+        out = float(v)
     except (TypeError, ValueError):
         return default
+    return out if math.isfinite(out) else default
 
 
 def _opt_num(v) -> float | None:

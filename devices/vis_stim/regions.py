@@ -1,4 +1,4 @@
-"""The 3x3 region grid shared by the map/tuning/contrast/size trial types.
+"""The 3x3 region grid shared by the map and tuning trial types.
 
 4 vertical columns; the last is always black (fixed, not a setting). The
 other 3 split into 3 rows each: 9 regions, column-major:

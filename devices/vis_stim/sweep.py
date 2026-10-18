@@ -13,6 +13,7 @@ import math
 
 N_ORIENTATIONS = 8
 ORIENTATION_STEP_DEG = 45.0
+MAX_SPAN_DEG = 179.0
 
 
 def orientations() -> tuple[float, ...]:
@@ -29,7 +30,10 @@ def conditions(levels: tuple[float, ...]
 
 
 def deg_to_px(deg: float, distance_cm: float, px_per_cm: float) -> float:
-    """Screen span of `deg` of visual angle centred on the line of sight."""
+    """Screen span of `deg` of visual angle centred on the line of sight.
+    Capped below 180°, where tan turns negative: a very low spatial frequency
+    or a huge size gets a very wide span, not an aliased or empty stimulus."""
+    deg = min(float(deg), MAX_SPAN_DEG)
     return 2.0 * distance_cm * math.tan(math.radians(deg) / 2.0) * px_per_cm
 
 

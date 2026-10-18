@@ -184,7 +184,6 @@ class EncoderWorker(_EncoderBase):
         )
 
     def _run(self) -> None:
-        self._stop = False
         if not self._run_hardware():
             self._run_software()
 
@@ -279,7 +278,6 @@ class MockEncoderWorker(_EncoderBase):
     _STOP_WAIT_MS = 2000
 
     def _run(self) -> None:
-        self._stop = False
         self.actual_rate = self.RATE
         period = 1.0 / self.RATE
         rate_every = int(self.RATE)

@@ -51,8 +51,7 @@ class PufferModule(ModuleAdapter):
     def fire(self, duration: float | None = None) -> None:
         """Fire now. With no duration this uses the panel's Duration value —
         which is what "Test puff" is for: verifying the puff you scheduled."""
-        if self.controller is not None:
-            self.controller.fire(duration)
+        if self.controller is not None and self.controller.fire(duration):
             self._n_puffs += 1
             self._last_puff = time.monotonic()
 

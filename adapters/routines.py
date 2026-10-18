@@ -3,8 +3,8 @@ The routine's adapter: builds the `RoutineHooks` that point the Qt-free
 engine at loaded modules, via `ModuleHost` targets.
 
 - Ticks on the GUI thread (QTimer), non-blocking.
-- Start arms the camera (External edge) and opens the recording; the end
-  closes it. A recording the operator started is left alone.
+- Start arms the camera (External edge) and opens the recording; the end or
+  an abort stops it and capture, even a recording the operator started.
 - A `trigger` step re-arms the camera, which latches after one edge. With
   Trigger→Record pairs the camera bursts that Record's length per edge
   instead, re-arming itself; the Record ends on the burst. Its .dcimg is
@@ -18,6 +18,7 @@ engine at loaded modules, via `ModuleHost` targets.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import json
@@ -136,7 +137,7 @@ def delete_recording(path: Path) -> bool:
             folder = path.parent
             if folder.name == path.stem and not any(folder.iterdir()):
                 folder.rmdir()
-    except PermissionError:
+    except OSError:     # held open; anything else retries too (a QTimer slot)
         return False
     return True
 
@@ -155,6 +156,7 @@ class RoutinesModule(ModuleAdapter):
         self._filed = 0                 # boundaries handed to the file
         self._n_steps = 0
         self._group_repeat: list[tuple[int, int] | None] = []  # by order_position
+        self._order: list[int] = []     # play_order(self._routine), for _left
         self._routine: Routine | None = None
         self._rate_tick = 0
         self._own_rec = False           # Start opened the recording
@@ -310,12 +312,20 @@ class RoutinesModule(ModuleAdapter):
         return box.exec() == QMessageBox.StandardButton.Ok
 
     def _on_start_clicked(self) -> None:
-        if self._confirm_start():
-            self._start()
+        # A slot: a raise partway through would abort the app mid-arm.
+        try:
+            if self._confirm_start():
+                self._start()
+        except Exception as e:                       # noqa: BLE001
+            self._status(f"routine start failed ({type(e).__name__}: {e})")
+            if self._engine is not None and self._engine.running:
+                self._abort()
 
     def _start(self) -> None:
         """Validate, arm, open the recording, run — refusals leave no file."""
-        routine = self.panel.settings
+        # A copy: the engine holds step indices, so the panel's object must
+        # not change under it (a shorter template loaded mid-run -> IndexError).
+        routine = copy.deepcopy(self.panel.settings)
         problems = validate(routine, self._rig())
         n_burst, why = burst_frames(routine, self.win.frame_rate_hz())
         if why:
@@ -380,7 +390,8 @@ class RoutinesModule(ModuleAdapter):
         self._pending_scope = {}
         self._routine_origin = self.win.sync.clock.now()
         self._n_steps = len(routine.steps)
-        self._group_repeat = group_repeat_at(routine, play_order(routine))
+        self._order = play_order(routine)
+        self._group_repeat = group_repeat_at(routine, self._order)
         self._engine = RoutineEngine(
             routine, self._hooks(), burst_frames=n_burst,
             burst_stall_s=burst_stall_s(self.win.frame_rate_hz()))
@@ -448,16 +459,24 @@ class RoutinesModule(ModuleAdapter):
         self._discard(junk, bad)
 
     def _pause(self) -> None:
-        if self._engine is not None:
-            self._engine.pause()
+        self._control("pause")
 
     def _resume(self) -> None:
-        if self._engine is not None:
-            self._engine.resume()
+        self._control("resume")
 
     def _skip(self) -> None:
-        if self._engine is not None:
-            self._engine.skip()
+        self._control("skip")
+
+    def _control(self, action: str) -> None:
+        """A button's engine call. Guarded: a second click before the buttons
+        repaint finds the engine no longer paused, and a raise out of a slot
+        aborts the process."""
+        if self._engine is None:
+            return
+        try:
+            getattr(self._engine, action)()
+        except Exception as e:           # noqa: BLE001
+            self._status(f"routine {action} refused ({type(e).__name__}: {e})")
 
     def _abort(self) -> None:
         if self._engine is not None:
@@ -495,10 +514,8 @@ class RoutinesModule(ModuleAdapter):
         if eng is None:
             self._stop_ticking()
             return
-        if self._holding_for_camera(eng):
-            return
         try:
-            eng.tick()
+            self._tick_once(eng)
         except Exception as e:           # noqa: BLE001
             why = f"routine tick failed ({type(e).__name__}: {e})"
             self._status(why)
@@ -511,7 +528,12 @@ class RoutinesModule(ModuleAdapter):
                 pass
             if eng.phase != Phase.PAUSED:    # ARMED can't pause: don't spin
                 self._stop_ticking()
+
+    def _tick_once(self, eng) -> None:
+        """One tick, then the file work the engine's hooks deferred to it."""
+        if self._holding_for_camera(eng):
             return
+        eng.tick()
         if self._pending_roll_run is not None:
             run, self._pending_roll_run = self._pending_roll_run, None
             if self._roll_for(run):
@@ -870,7 +892,7 @@ class RoutinesModule(ModuleAdapter):
             return done
         _i, cycle, _a = eng.position
         est = remaining(self._routine, self.panel.frame_rate,
-                        eng.order_position, cycle, eng.progress())
+                        eng.order_position, cycle, eng.progress(), self._order)
         return f"{done} · {est.text()} left"
 
     # ── metadata ──

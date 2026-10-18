@@ -375,6 +375,9 @@ def check_devices_monitor(r: Report, win) -> None:
     win._show_devices()
     r.check(win._devices_dialog is not None, "the monitor opens")
     built_for = win._devices_dialog
+    status = built_for._rows["routines"][0].text()
+    r.check("stub" in status,
+            f"the always-on routines row is a stub, not 'unknown module' ({status!r})")
     win._devices_dialog.close()
 
     win.set_modules(["voltage_cam"])
@@ -515,6 +518,27 @@ def check_matplotlib_stays_lazy(r: Report, win) -> None:
     r.check(len(others.actions()) > 0, "the Others colormap submenu still fills on open")
 
 
+def check_dmd_shared_alignment(r: Report) -> None:
+    """The standalone DMD app's file is another program's: a junk value used
+    to raise from `float()` at startup and on every DMD settings save."""
+    from acqApp.adapters import dmd as dmd_adapter
+    from acqApp.devices.dmd import alp
+
+    real = alp.sibling_config
+    try:
+        alp.sibling_config = lambda: {"defaultScale": "abc", "defaultRot": "12.5"}
+        r.check(dmd_adapter._shared_alignment() == {"rotation_deg": 12.5},
+                "a non-numeric shared value is skipped, a numeric string kept")
+        alp.sibling_config = lambda: {"defaultScale": None, "defaultRot": float("nan")}
+        r.check(dmd_adapter._shared_alignment() == {},
+                "null and NaN are skipped, not raised or adopted")
+        alp.sibling_config = lambda: ["not", "a", "dict"]
+        r.check(dmd_adapter._shared_alignment() == {},
+                "a file that isn't an object is ignored")
+    finally:
+        alp.sibling_config = real
+
+
 def _part_hotload() -> int:
     r = Report("hotload")
     isolate_user_state()
@@ -538,6 +562,7 @@ def _part_hotload() -> int:
         check_devices_monitor(r, win)
         check_camera_handle_survives(r, win)
         check_live_session(r, win)
+        check_dmd_shared_alignment(r)
     finally:
         win.close()
     return r.finish()

@@ -75,10 +75,17 @@ def load_config() -> dict:
 def _atomic_write_json(path: Path, data) -> None:
     """Temp file + os.replace, so a native crash mid-write can't leave a
     truncated file. No fsync: the threat is a crash, not power loss."""
+    # Serialized first: a value json can't encode (a numpy int) is reported
+    # here, not raised into the slot that saved it (which aborts the app).
+    try:
+        text = json.dumps(data, indent=2)
+    except (TypeError, ValueError) as e:
+        print(f"[config] could not save {path}: {e}")
+        return
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
+            fh.write(text)
         for delay in (*_LOCK_RETRY_S, None):
             try:
                 os.replace(tmp, path)
@@ -190,8 +197,8 @@ def load_rigs() -> dict:
             "dmd_calibration": {
                 "model": model if model in ("affine", "homography") else None,
                 "cross_frac": float(cross_frac)
-                             if isinstance(cross_frac, (int, float))
-                             and 0.0 < cross_frac <= 1.0 else None,
+                             if _is_num(cross_frac) and 0.0 < cross_frac <= 1.0
+                             else None,
             },
         }
     return rigs
@@ -245,7 +252,7 @@ def load_enabled_modules() -> list[str]:
     saved = load_config().get("enabled_modules")
     if not isinstance(saved, list):
         return list(MODULES)
-    return order_modules(saved)
+    return order_modules(k for k in saved if isinstance(k, str))
 
 
 def save_enabled_modules(enabled: list[str]) -> None:

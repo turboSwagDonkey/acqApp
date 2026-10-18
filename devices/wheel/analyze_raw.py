@@ -3,8 +3,8 @@ Analyse a wheel_raw.csv capture: unwrap the single-turn sawtooth (0..Vfs per
 revolution) into revolutions and distance, at the captured rate and again
 decimated to the app's rate, so any aliasing shows.
 
-  ..\..\.venv\Scripts\python.exe wheel\analyze_raw.py wheel_raw.csv
-  ..\..\.venv\Scripts\python.exe wheel\analyze_raw.py wheel_raw.csv --dia 150 --vfs 5.0
+  acqApp\.venv\Scripts\python.exe acqApp\devices\wheel\analyze_raw.py wheel_raw.csv
+  acqApp\.venv\Scripts\python.exe acqApp\devices\wheel\analyze_raw.py wheel_raw.csv --dia 150 --vfs 5.0
 
 --vfs (volts per revolution / full-scale) defaults to the measured signal range.
 """

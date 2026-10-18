@@ -194,7 +194,10 @@ class ModuleAdapter:
     # ── illumination / preview (camera-shaped modules) ────────────────────────
     def _apply_led_follow(self, on: bool) -> None:
         if self.controller is not None:
-            self.controller.set(on)
+            try:                        # runs from Live's slots: must not abort
+                self.controller.set(on)
+            except Exception as e:                   # noqa: BLE001
+                self.win.status(f"{self.tab_label} LED: {type(e).__name__}: {e}")
         if self.panel is not None:
             self.panel.set_led(on)
 
