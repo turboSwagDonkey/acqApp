@@ -48,7 +48,7 @@ class StageModule(ModuleAdapter):
     # Only what the panel owns; calibration stays in the shared config
     # (nested StageAxis objects don't fit this flat JSON).
     _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg", "drag_speed_um_s",
-                   "cam_axes")
+                   "cam_axes", "window_limit")
 
     def __init__(self, win: ModuleHost) -> None:
         super().__init__(win)
@@ -97,6 +97,8 @@ class StageModule(ModuleAdapter):
             if speed > 0:
                 s.drag_speed_um_s = speed
         s.cam_axes = _cam_axes_or_none(saved.get("cam_axes"))
+        if isinstance(saved.get("window_limit"), bool):
+            s.window_limit = saved["window_limit"]
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)

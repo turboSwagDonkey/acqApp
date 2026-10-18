@@ -729,10 +729,95 @@ def _part_cam_axes() -> int:
     return r.finish()
 
 
+# ═══ window: motion confined around home (0,0) ══════════════════════════
+
+def _homed_axis(index: int, name: str) -> S.StageAxis:
+    """X or Y as "Set 0,0 = center" leaves it: origin at 5000 counts, ±½ inch."""
+    ax = S.StageAxis(index, name, 2.0, slope=1.0, offset=0.0)
+    ax.apply_updates(ax.center_updates(5000))
+    return ax
+
+
+def check_window_limits(r: Report) -> None:
+    ax = _homed_axis(4, "X")
+    full = ax.soft_limits_um()
+    r.check(full[1] > 12000 and ax.view_limits_um() == ax.travel_limits_um(),
+            f"window off: the ±½-inch soft limits and the whole travel ({full})")
+    ax.window_um = S.WINDOW_RANGE_UM
+    r.check(ax.soft_limits_um() == (-350.0, 350.0)
+            and ax.view_limits_um() == (-350.0, 350.0),
+            f"window on: motion and the map are ±350 µm of 0,0 "
+            f"({ax.soft_limits_um()}, {ax.view_limits_um()})")
+    r.check(ax.travel_limits_um()[1] > 12000,
+            "…while the travel itself is unchanged")
+    r.check(ax.clamp_counts(ax.um_to_counts(1000.0)) == ax.um_to_counts(350.0),
+            "a 1000 µm target clamps to the window edge, 350 µm")
+    bare = S.StageAxis(4, "X", 2.0, window_um=S.WINDOW_RANGE_UM)
+    r.check(bare.window_limits_um() is None,
+            "no 0,0 yet: no window (nothing to centre it on)")
+
+
+def check_window_jog_never_jumps(r: Report) -> None:
+    s = S.StageSettings()
+    c = MockStageController(s)
+    c.connect()
+    c.set_center_here()
+    s.x.window_um = s.y.window_um = S.WINDOW_RANGE_UM
+    for _ in range(4):
+        c.jog_um("x", 100.0)
+        c.read_xy_um()
+    r.check(c.read_xy_um()[0] == 350.0,
+            f"jogs stop at the window edge ({c.read_xy_um()[0]})")
+    s.x.window_um = s.y.window_um = None
+    c.jog_um("x", 650.0)
+    c.read_xy_um()
+    s.x.window_um = s.y.window_um = S.WINDOW_RANGE_UM
+    for label, call in (("jog", lambda: c.jog_um("x", -50.0)),
+                        ("diagonal", lambda: c.jog_xy_um(0.0, 10.0) or
+                         c.jog_xy_um(-50.0, 10.0))):
+        before = dict(c._target)
+        try:
+            call()
+            r.check(False, f"outside the window, a 50 µm {label} must refuse "
+                           f"rather than jump 650 µm to its edge")
+        except StageControllerError as e:
+            r.check("outside its allowed range" in str(e),
+                    f"outside the window, a {label} that would jump to the "
+                    f"edge refuses ({e})")
+        if label == "diagonal":
+            r.check(c._target["x"] == before["x"],
+                    "…and the diagonal moved neither axis (Y alone was fine)")
+
+    from acqApp.devices.stage.driver import AxisStatus
+    rs = S.StageSettings(x=_homed_axis(4, "X"), y=_homed_axis(5, "Y"))
+    rs.x.window_um = rs.y.window_um = S.WINDOW_RANGE_UM
+    ctrl = StageController(rs)
+    ctrl._dev = _FakeDev()
+    ctrl._dev.statuses[4] = AxisStatus(4, 5000 + 2000, 0, 0)   # +1000 µm
+    ctrl._dev.statuses[5] = AxisStatus(5, 5000, 0, 0)
+    try:
+        ctrl.jog_xy_um(-50.0, 20.0)
+        r.check(False, "real controller: the jump must refuse")
+    except StageControllerError:
+        r.check(ctrl._dev.moves == [],
+                "real controller: refused before EITHER axis was commanded")
+    ctrl.jog_xy_um(0.0, 20.0)
+    r.check(ctrl._dev.moves == [(5, 5040)],
+            f"…an ordinary jog inside the window goes through ({ctrl._dev.moves})")
+
+
+def _part_window() -> int:
+    r = Report("stage-window")
+    check_window_limits(r)
+    check_window_jog_never_jumps(r)
+    return r.finish()
+
+
 PARTS = {
     "state": _part_state,
     "z": _part_z,
     "cam-axes": _part_cam_axes,
+    "window": _part_window,
 }
 
 

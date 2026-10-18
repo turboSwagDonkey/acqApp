@@ -7,7 +7,7 @@ import time
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox,
+    QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout,
     QWidget,
 )
@@ -22,7 +22,8 @@ from acqApp.devices.stage.cam_axes import camera_jog, describe
 from acqApp.devices.stage.control import step_toward
 from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_FOV,
-                                   _C_ORIGIN, _C_SOFT, StageSettings,
+                                   _C_ORIGIN, _C_SOFT, WINDOW_DIAMETER_UM,
+                                   WINDOW_RANGE_UM, StageSettings,
                                    config_path, load_settings)
 
 
@@ -82,14 +83,25 @@ class CalibrationDialog(QDialog):
         self._lbl_status.setWordWrap(True)
         lay.addWidget(self._lbl_status)
 
-        zero = QGroupBox("Origin (0,0)")
+        zero = QGroupBox("Origin (0,0) = home, the window's centre")
         zl = QVBoxLayout(zero)
         self._btn_set_zero = QPushButton("Set 0,0 = center (here)")
         self._btn_set_zero.setToolTip(
-            "Declare the CURRENT position as 0,0 and put soft limits at ±½ inch "
-            "around it. Doesn't move the stage — centre it first.")
+            "Declare the CURRENT position as 0,0 (home: the centre of the "
+            "imaging window) and put soft limits at ±½ inch around it. "
+            "Doesn't move the stage — centre it first.")
         self._btn_set_zero.clicked.connect(self._set_zero_here)
         zl.addWidget(self._btn_set_zero)
+        self._chk_window = QCheckBox(
+            f"Limit to window (±{WINDOW_RANGE_UM:g} µm around 0,0)")
+        self._chk_window.setChecked(self._s.window_limit)
+        self._chk_window.setToolTip(
+            f"X/Y moves stay within ±{WINDOW_RANGE_UM:g} µm of 0,0 and the map "
+            f"zooms to that range, with the {WINDOW_DIAMETER_UM:g} µm window "
+            f"dashed. acqApp only: the shared config keeps its ±½-inch soft "
+            f"limits. Untick to reach the full travel; setting 0,0 ticks it.")
+        self._chk_window.toggled.connect(self._on_window_toggled)
+        zl.addWidget(self._chk_window)
         zl.addWidget(self._hint(
             "Centre the stage yourself first — this doesn't move it. "
             "Saved to the config; survives restarts."))
@@ -204,9 +216,10 @@ class CalibrationDialog(QDialog):
             return
         if QMessageBox.question(
             self, "Set 0,0 = center",
-            "Set the CURRENT position as 0,0 (true center)?\n\n"
+            "Set the CURRENT position as 0,0 (home: the window's centre)?\n\n"
             "Centre the stage first — this does NOT move it. Soft limits will be "
-            "set to ±½ inch around this point."
+            f"set to ±½ inch around this point, and X/Y limited to "
+            f"±{WINDOW_RANGE_UM:g} µm of it."
         ) != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -214,8 +227,16 @@ class CalibrationDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Stage", f"Could not set origin: {e}")
             return
-        self._lbl_progress.setText("0,0 set here; soft limits ±0.5 inch.")
+        self._lbl_progress.setText(
+            f"0,0 set here; X/Y limited to ±{WINDOW_RANGE_UM:g} µm of it.")
         self._update_status()
+        if self._chk_window.isChecked():
+            self.changed.emit()
+        else:
+            self._chk_window.setChecked(True)   # -> _on_window_toggled -> changed
+
+    def _on_window_toggled(self, on: bool) -> None:
+        self._s.window_limit = on
         self.changed.emit()
 
     def _reestablish_frame(self) -> None:
@@ -421,6 +442,7 @@ class SettingsPanel(QWidget):
         # Set by the adapter: () -> newest camera frame, () -> its binning.
         self._grab_frame = lambda: None
         self._frame_binning = lambda: 1
+        self._apply_window()                    # before the go-to ranges are built
         self._build()
         self.refresh_fovs()
         self._set_cam_axes(self._cam_axes, save=False)
@@ -528,7 +550,8 @@ class SettingsPanel(QWidget):
         legend = QLabel(
             f'<span style="color:{_C_CUR}">●</span> position &nbsp; '
             f'<span style="color:{_C_ORIGIN}">✚</span> 0,0 &nbsp; '
-            f'<span style="color:{_C_SOFT}">▭</span> soft limits &nbsp; '
+            f'<span style="color:{_C_ORIGIN}">◌</span> window &nbsp; '
+            f'<span style="color:{_C_SOFT}">▭</span> limits &nbsp; '
             f'<span style="color:{_C_FOV}">□</span> saved FOV')
         legend.setStyleSheet("font-size: 10px;")
         ml.addWidget(legend)
@@ -693,8 +716,15 @@ class SettingsPanel(QWidget):
         self._cal_dialog = None
         self._on_calibration_changed()
 
+    def _apply_window(self) -> None:
+        """Push the Limit-to-window choice onto the live X/Y axes, which the
+        controller shares: every clamp and the map read it from there."""
+        w = WINDOW_RANGE_UM if self._s.window_limit else None
+        self._s.x.window_um = self._s.y.window_um = w
+
     def _on_calibration_changed(self) -> None:
         """Calibration was rewritten (or a frame run started/ended) — re-sync."""
+        self._apply_window()
         self._apply_gating()
         self._refresh_goto_ranges()
         self._map.update()
@@ -818,6 +848,16 @@ class SettingsPanel(QWidget):
         """MOTION: move to a saved FOV (and its Z, if both have one), asking
         first if either XY or Z is a large move."""
         if self._ctrl is None:
+            return
+        # A clamped move would land short of it and still call it "active".
+        out = [ax.name for ax, v in ((self._s.x, fov.x_um), (self._s.y, fov.y_um))
+               if not ax.soft_limits_um()[0] <= v <= ax.soft_limits_um()[1]]
+        if out:
+            why = (f" — beyond ±{WINDOW_RANGE_UM:g} µm of 0,0; untick Calibrate… "
+                   f"▸ Limit to window to reach it" if self._s.window_limit else "")
+            QMessageBox.warning(
+                self, "Stage", f'FOV "{fov.name}" is outside the allowed '
+                f"{'/'.join(out)} range{why}.")
             return
         cur_x, cur_y = self._last_xy
         dist_xy = max(abs(fov.x_um - cur_x), abs(fov.y_um - cur_y))
@@ -1074,5 +1114,6 @@ class SettingsPanel(QWidget):
             frame_rotation_deg=self._spn_rotation.value(),
             drag_speed_um_s=self._spn_drag.value(),
             cam_axes=self._cam_axes,
+            window_limit=s.window_limit,
             x=s.x, y=s.y, z=s.z,
         )

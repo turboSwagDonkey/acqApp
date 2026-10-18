@@ -17,7 +17,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
-from .settings import _BAD, _C_CUR, _C_FOV, _C_ORIGIN, _C_SOFT
+from .settings import _BAD, _C_CUR, _C_FOV, _C_ORIGIN, _C_SOFT, WINDOW_DIAMETER_UM
 
 _TRAVEL_EDGE = QColor("#8a8a8a")
 _TRAVEL_FILL = QColor("#f4f4f4")
@@ -241,10 +241,11 @@ class StageMap(_TravelWidget):
         return (1.0, 0.0, 0.0, -1.0) if self._invert_y else (1.0, 0.0, 0.0, 1.0)
 
     def _frame(self) -> _MapXf | None:
-        """The µm <-> px map for this size, or None with nothing to draw."""
+        """The µm <-> px map for this size (the window's range while it
+        confines motion, else the travel), or None with nothing to draw."""
         if self._x is None or self._y is None:
             return None
-        xt, yt = self._x.travel_limits_um(), self._y.travel_limits_um()
+        xt, yt = self._x.view_limits_um(), self._y.view_limits_um()
         if xt[1] <= xt[0] or yt[1] <= yt[0]:
             return None
         return _MapXf(self._orientation(), xt, yt, self._box())
@@ -269,9 +270,10 @@ class StageMap(_TravelWidget):
         if xf is None:
             self._center_text(p, "No travel limits — calibrate")
             return
-        xt, yt = self._x.travel_limits_um(), self._y.travel_limits_um()
+        xt, yt = self._x.view_limits_um(), self._y.view_limits_um()
 
-        travel_poly = xf.poly(xt, yt)
+        # Clamped to the view: zoomed to the window, the travel fills it.
+        travel_poly = xf.poly(self._x.travel_limits_um(), self._y.travel_limits_um())
         travel = travel_poly.boundingRect()
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
         p.setBrush(QBrush(_TRAVEL_FILL))
@@ -281,8 +283,11 @@ class StageMap(_TravelWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPolygon(xf.poly(self._x.soft_limits_um(), self._y.soft_limits_um()))
 
+        if self._x.window_limits_um() is not None:
+            self._draw_window(p, xf)
+
         small = self._small()
-        self._draw_fovs(p, xf, travel, small)
+        self._draw_fovs(p, xf, travel)
 
         if self._pos is not None:
             px, py = self._pos
@@ -310,24 +315,37 @@ class StageMap(_TravelWidget):
                        "0,0 not set")
 
     # ── drawing helpers ─────────────────────────────────────────────────────
-    def _draw_fovs(self, p: QPainter, xf: _MapXf, travel: QRectF,
-                   font: QFont) -> None:
+    def _draw_window(self, p: QPainter, xf: _MapXf) -> None:
+        """The imaging window around 0,0, dashed. Traced through the map, so
+        a camera-turned map stays exact."""
+        r = WINDOW_DIAMETER_UM / 2.0
+        pts = [xf.to_px(r * math.cos(t), r * math.sin(t))
+               for t in (2.0 * math.pi * i / 96 for i in range(96))]
+        p.setPen(QPen(_ORIGIN, 1.5, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolygon(QPolygonF(pts))
+
+    def _draw_fovs(self, p: QPainter, xf: _MapXf, travel: QRectF) -> None:
         """A square per saved FOV, its name beside it (flipped left near the
-        right edge); the active one filled."""
+        right edge); the active one filled. Labels a point above the widget's
+        own font: they are read from across the rig."""
+        font = QFont(self.font())
+        font.setPointSizeF(font.pointSizeF() + 1.0)
         p.setFont(font)
         fm = p.fontMetrics()
+        h = fm.height()
         for name, x_um, y_um in self._fovs:
             c = xf.to_px(x_um, y_um)
             active = name == self._active_fov
-            self._square(p, c, _FOV, 5, filled=active)
+            self._square(p, c, _FOV, 6, filled=active)
             w = fm.horizontalAdvance(name)
-            left = c.x() + 8 if c.x() + 8 + w <= travel.right() else c.x() - 8 - w
+            left = c.x() + 10 if c.x() + 10 + w <= travel.right() else c.x() - 10 - w
             f = QFont(font)
             f.setBold(active)
             p.setFont(f)
             p.setPen(QPen(_FOV.darker(120)))
-            p.drawText(QRectF(left, c.y() - 8, w + 4, 16), _LEFT_VCENTER, name)
-        p.setFont(font)
+            p.drawText(QRectF(left, c.y() - h / 2, w + 6, h), _LEFT_VCENTER, name)
+            p.setFont(font)
 
     def _square(self, p: QPainter, c: QPointF, color: QColor, r: int,
                 filled: bool = False) -> None:

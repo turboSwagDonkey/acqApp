@@ -502,6 +502,56 @@ def check_measure_gating(r: Report) -> None:
             "kept as a child of the panel")
 
 
+def check_window(r: Report) -> None:
+    """Home (0,0) set: motion and the map confined to ±350 µm of it, the
+    window dashed; the Origin box's toggle releases it; setting 0,0 re-ties."""
+    from types import SimpleNamespace
+
+    from acqApp.devices.stage.panel import CalibrationDialog
+    S = stage_settings
+
+    def homed(i: int, name: str) -> S.StageAxis:
+        ax = S.StageAxis(i, name, 2.0, slope=1.0, offset=0.0)
+        ax.apply_updates(ax.center_updates(5000))
+        return ax
+
+    ctrl = FakeCtrl()
+    p = SettingsPanel(S.StageSettings(x=homed(0, "X"), y=homed(1, "Y")))
+    p.bind_controller(ctrl)
+    goto = p._axis_widgets["x"]["goto"]
+    r.check(p._s.x.window_um == S.WINDOW_RANGE_UM
+            and (goto.minimum(), goto.maximum()) == (-350.0, 350.0),
+            f"home set: X/Y confined to ±350 µm, Go to ranged to match "
+            f"({goto.minimum()}, {goto.maximum()})")
+    r.check(p._s.x.view_limits_um() == (-350.0, 350.0),
+            "…and the map shows that range")
+    p._map.resize(400, 400)
+    p._map.set_fovs([("near_fov", 100.0, -50.0)])
+    p._map.grab()                                   # window + labels paint
+
+    WARNINGS.clear()
+    ctrl.calls.clear()
+    p.goto_fov(SimpleNamespace(name="far_fov", x_um=1000.0, y_um=0.0,
+                               z_um=None, path=None))
+    r.check(not ctrl.calls and WARNINGS and "Limit to window" in WARNINGS[-1],
+            f"an FOV beyond the window is refused, not clamped short "
+            f"({WARNINGS[-1:] or 'no warning'})")
+
+    dlg = CalibrationDialog(ctrl, p._s, p)
+    dlg.changed.connect(p._on_calibration_changed)
+    r.check(dlg._chk_window.isChecked(), "the Origin box's toggle starts on")
+    dlg._chk_window.setChecked(False)
+    r.check(p._s.x.window_um is None and goto.maximum() > 12000
+            and p.settings.window_limit is False
+            and p._s.x.view_limits_um() == p._s.x.travel_limits_um(),
+            "unticked: full travel back, for motion, Go to and the map")
+    dlg._set_zero_here()
+    r.check(dlg._chk_window.isChecked() and p._s.x.window_um == S.WINDOW_RANGE_UM
+            and ("set_center_here", ()) in ctrl.calls,
+            "setting 0,0 (home) re-confines to the window")
+    dlg.reject()
+
+
 def main() -> int:
     r = Report("stage-panel")
     isolate_user_state()
@@ -524,6 +574,7 @@ def main() -> int:
     check_cam_axes(r)
     check_measure_gating(r)
     check_save_fov_disk_error(r)
+    check_window(r)
     check_real_config_untouched(r)
 
     after = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None

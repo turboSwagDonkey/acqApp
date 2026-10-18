@@ -44,6 +44,14 @@ def step_toward(cur: tuple[float, float], target: tuple[float, float],
     return (cur[0] + dx * k, cur[1] + dy * k)
 
 
+def _jump_refused(ax: StageAxis) -> str:
+    """A jog never moves further than its step: from outside the allowed
+    range, clamping would turn a small jog into a jump to the range's edge."""
+    return (f"{ax.name} is outside its allowed range, so this jog would jump "
+            f"to the range's edge. Use Go to, or untick Calibrate… ▸ Limit "
+            f"to window.")
+
+
 def _center_here_updates(s: StageSettings, cx: int, cy: int) -> dict[int, dict]:
     """X/Y origin and soft-limit updates, applied to the live axes; the
     caller decides whether to persist."""
@@ -148,7 +156,8 @@ class StageController:
         counts = ax.clamp_counts(ax.um_to_counts(target_um))
         dev.move_to_readout(ax.index, counts)
 
-    def _jog_axis(self, dev, ax: StageAxis, delta_um: float) -> None:
+    def _jog_counts(self, dev, ax: StageAxis, delta_um: float) -> int:
+        """The jog's target readout, or a refusal; moves nothing."""
         st = dev.get_status(ax.index)
         self._note_limit(ax, st)
         if ax.frame_stale:
@@ -157,19 +166,25 @@ class StageController:
                 f"calibration — the command map is unreliable, so even a "
                 f"jog can land somewhere else. Re-establish the frame "
                 f"before moving further.")
-        dev.move_to_readout(ax.index, ax.clamp_counts(
-            int(round(st.position + ax.sign * delta_um * ax.counts_per_um))))
+        want = int(round(st.position + ax.sign * delta_um * ax.counts_per_um))
+        counts = ax.clamp_counts(want)
+        if abs(counts - st.position) > abs(want - st.position) + 1:
+            raise StageControllerError(_jump_refused(ax))
+        return counts
 
     # Jogs are in the stage's own axes; camera alignment is the caller's
     # (`cam_axes.camera_jog`).
     def jog_um(self, which: str, delta_um: float) -> None:
-        self._jog_axis(self._connected(), self._axis(which), delta_um)
+        dev, ax = self._connected(), self._axis(which)
+        dev.move_to_readout(ax.index, self._jog_counts(dev, ax, delta_um))
 
     def jog_xy_um(self, dx_um: float, dy_um: float) -> None:
         dev = self._connected()
-        for ax, d in ((self._s.x, dx_um), (self._s.y, dy_um)):
-            if d:
-                self._jog_axis(dev, ax, d)
+        # Both checked before either moves: no half-done diagonal.
+        moves = [(ax.index, self._jog_counts(dev, ax, d))
+                 for ax, d in ((self._s.x, dx_um), (self._s.y, dy_um)) if d]
+        for index, counts in moves:
+            dev.move_to_readout(index, counts)
 
     def stop(self, which: str) -> None:
         if self._dev is not None:
@@ -346,12 +361,19 @@ class MockStageController:
                 f"{ax.name}: no valid frame — see StageController.move_to_um.")
         self._target[which] = self._clamp_um(which, target_um)
 
+    def _jog_target(self, which: str, delta_um: float) -> float:
+        """See StageController._jog_counts: never further than the step."""
+        to = self._clamp_um(which, self._pos[which] + delta_um)
+        if abs(to - self._pos[which]) > abs(delta_um) + 1e-6:
+            raise StageControllerError(_jump_refused(self._axis(which)))
+        return to
+
     def jog_um(self, which: str, delta_um: float) -> None:
         if self._axis(which).frame_stale:
             raise StageControllerError(
                 f"{which.upper()}: a hard limit was hit since the last "
                 f"calibration — see StageController.jog_um.")
-        self._target[which] = self._clamp_um(which, self._pos[which] + delta_um)
+        self._target[which] = self._jog_target(which, delta_um)
 
     def jog_xy_um(self, dx_um: float, dy_um: float) -> None:
         for k in ("x", "y"):
@@ -359,9 +381,10 @@ class MockStageController:
                 raise StageControllerError(
                     f"{k.upper()}: a hard limit was hit since the last "
                     f"calibration — see StageController.jog_um.")
-        for k, d in (("x", dx_um), ("y", dy_um)):
-            if d:
-                self._target[k] = self._clamp_um(k, self._pos[k] + d)
+        # Both checked before either moves: no half-done diagonal.
+        targets = {k: self._jog_target(k, d)
+                   for k, d in (("x", dx_um), ("y", dy_um)) if d}
+        self._target.update(targets)
 
     def stop(self, which: str) -> None:
         self._target[which] = self._pos[which]

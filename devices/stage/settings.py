@@ -17,6 +17,11 @@ _LOCAL_CONFIG  = Path(__file__).with_name("stage_config.json")
 _SHARED_CONFIG = Path(__file__).resolve().parents[3] / "stage_control" / "config.json"
 
 FULL_TRAVEL_UM = 25400.0        # 1 inch per axis
+# Home (0,0) is the imaging window's centre. While "Limit to window" is on,
+# acqApp keeps X/Y within ±WINDOW_RANGE_UM of it (never written to the shared
+# file) and the map shows that range, with the window drawn dashed.
+WINDOW_RANGE_UM = 350.0
+WINDOW_DIAMETER_UM = 300.0
 
 # Legend colours, shared with map_widget.py.
 _C_CUR, _C_ORIGIN, _C_SOFT = "#1f77b4", "#2ca02c", "#b58900"
@@ -47,6 +52,8 @@ class StageAxis:
     # Runtime-only: set when a hard-limit bit is seen on this axis (the map
     # is then wrong), cleared only by establish_frame's remeasured slope.
     frame_stale:    bool = False
+    # Runtime-only, acqApp's: motion confined to ±this µm of 0,0 (None = off).
+    window_um:      float | None = None
 
     @property
     def sign(self) -> int:
@@ -97,10 +104,16 @@ class StageAxis:
     def um_to_counts(self, um: float) -> int:
         return int(round(self.ref_counts + self.sign * um * self.counts_per_um))
 
+    def window_limits_um(self) -> tuple[float, float] | None:
+        """±window_um around 0,0, or None when off or there is no 0,0."""
+        if self.window_um is None or not self.origin_set:
+            return None
+        return (-self.window_um, self.window_um)
+
     def clamp_counts(self, counts: int) -> int:
-        """Clamp to soft limits; unbounded on a never-calibrated axis (jog must
-        work to set the first zero). An origin with no soft limits is a
-        hand-edit contradiction and refuses."""
+        """Clamp to soft limits (and the window); unbounded on a
+        never-calibrated axis (jog must work to set the first zero). An origin
+        with no soft limits is a hand-edit contradiction and refuses."""
         if self.soft_min is None or self.soft_max is None:
             if self.origin_set:
                 raise ValueError(
@@ -108,19 +121,38 @@ class StageAxis:
                     f"soft limits — refusing to clamp {counts} counts "
                     f"unbounded. Re-establish the frame.")
             return counts
-        return max(self.soft_min, min(counts, self.soft_max))
+        c = max(self.soft_min, min(counts, self.soft_max))
+        w = self.window_limits_um()
+        if w is not None:
+            lo, hi = sorted(self.um_to_counts(u) for u in w)
+            c = max(lo, min(c, hi))
+        return c
 
     def soft_limits_um(self) -> tuple[float, float]:
+        """Where motion may go, in µm: the soft limits, narrowed to the
+        window while it is on."""
         if self.soft_min is not None and self.soft_max is not None:
             a, b = self.to_um(self.soft_min), self.to_um(self.soft_max)
-            return (min(a, b), max(a, b))
-        return (-6350.0, 6350.0)   # ±¼ inch fallback
+            lo, hi = min(a, b), max(a, b)
+        else:
+            lo, hi = (-6350.0, 6350.0)   # ±¼ inch fallback
+        w = self.window_limits_um()
+        if w is not None and max(lo, w[0]) < min(hi, w[1]):
+            lo, hi = max(lo, w[0]), min(hi, w[1])
+        return (lo, hi)
+
+    def view_limits_um(self) -> tuple[float, float]:
+        """What the map shows: the window's range while on, else the travel."""
+        return self.window_limits_um() or self.travel_limits_um()
 
     def travel_limits_um(self) -> tuple[float, float]:
         if self.travel_min is not None and self.travel_max is not None:
             a, b = self.to_um(self.travel_min), self.to_um(self.travel_max)
             return (min(a, b), max(a, b))
-        return self.soft_limits_um()
+        if self.soft_min is not None and self.soft_max is not None:
+            a, b = self.to_um(self.soft_min), self.to_um(self.soft_max)
+            return (min(a, b), max(a, b))
+        return (-6350.0, 6350.0)
 
 
 @dataclass
@@ -140,6 +172,8 @@ class StageSettings:
     cam_axes: tuple[float, float, float, float] | None = None
     # Speed cap for dragging the position on the travel map; local to acqApp.
     drag_speed_um_s: float = 200.0
+    # Confine X/Y to ±WINDOW_RANGE_UM of 0,0 (the axes' `window_um`); local.
+    window_limit: bool = True
     x: StageAxis = None      # type: ignore[assignment]
     y: StageAxis = None      # type: ignore[assignment]
     z: StageAxis | None = None         # None on a rig without focus
