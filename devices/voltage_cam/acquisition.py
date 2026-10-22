@@ -41,6 +41,7 @@ _TRIG_ACTIVE_SYNCREADOUT = 3
 
 _WAIT_TIMEOUT = 0.5
 _WAIT_MSG_EVERY = 5.0
+_STATUS_EVERY_S = 1.0       # rate / drop report cadence
 
 # DCAMERR_NOCAMERA on a fresh open is sometimes a transient USB-enumeration
 # race in the driver, not a real absence.
@@ -824,7 +825,7 @@ class OrcaFireWorker(PullWorker):
                             pass
 
                     now = time.perf_counter()
-                    if now - status_t0 >= 1.0:
+                    if now - status_t0 >= _STATUS_EVERY_S:
                         dt = now - status_t0
                         status_t0 = now
                         try:

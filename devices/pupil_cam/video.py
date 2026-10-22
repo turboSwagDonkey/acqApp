@@ -52,7 +52,7 @@ class VideoFileCameraWorker(PullWorker):
         t0 = time.perf_counter()
         period = 1.0 / self._hz
         total = len(self._reader)
-        for n in paced(period, t0):     # counts from 1
+        for n in paced(period, t0, lambda: self._stop):     # counts from 1
             if self._stop:
                 break
             i = (n - 1) % total if self._loop else (n - 1)

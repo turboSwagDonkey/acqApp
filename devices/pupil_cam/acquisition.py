@@ -286,7 +286,7 @@ class MockPupilCameraWorker(PullWorker):
         Y, X = np.ogrid[:self.H, :self.W]
         d2 = (X - cx) ** 2 + (Y - cy) ** 2
 
-        for n in paced(period, t0):
+        for n in paced(period, t0, lambda: self._stop):
             if self._stop:
                 break
             t = time.perf_counter() - t0

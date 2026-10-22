@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import collections
+import io
 import math
 import shutil
 import sys
@@ -12,12 +13,15 @@ import tempfile
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from _harness import (Report, qt_app, isolate_user_state, make_window, pump,
                       run_parts)
 from acqApp import config
+from acqApp.devices.voltage_cam import acquisition as ACQ
 from acqApp.devices.voltage_cam import presets as P
 from acqApp.devices.voltage_cam.acquisition import OrcaFireWorker
 from acqApp.devices.voltage_cam.presets import AcqConfig
@@ -27,6 +31,22 @@ from acqApp.devices.voltage_cam.dcimg import (MIN_FRAMES, DcimgError,
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
 from acqApp.acq.writer import Writer
+
+
+def quiet():
+    """Swallow the worker's console chatter."""
+    return redirect_stdout(io.StringIO())
+
+
+@contextmanager
+def fast_status(every_s: float = 0.1):
+    """The loop's rate/drop report every `every_s`, not 1 s: the checks that
+    wait for reports scale their windows to it."""
+    old, ACQ._STATUS_EVERY_S = ACQ._STATUS_EVERY_S, every_s
+    try:
+        yield
+    finally:
+        ACQ._STATUS_EVERY_S = old
 
 
 # ═══ readout (was test_readout_hz.py) ═══════════════════════════════════
@@ -621,7 +641,6 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
     """A trigger step's file swap must bind the NEW recorder while capture is
     stopped, cycle the master pulse, and only then start - so capture comes
     back gated with the file already open. The plain swap must not cycle."""
-    from types import SimpleNamespace
 
     from acqApp.devices.voltage_cam import acquisition as acq
     from acqApp.devices.voltage_cam import dcimg as dc
@@ -791,7 +810,6 @@ def check_final_metadata_follows_recording(r: Report, tmp: Path) -> None:
     """A worker's .dcimg counts outlive the recording that made them: a TIFF
     recording after a DCIMG one, same Live session, was filed with the old
     file's frame count and clock span and no drop count."""
-    from types import SimpleNamespace
 
     from acqApp.adapters.voltage_cam import VoltageCamModule
 
@@ -1154,7 +1172,7 @@ def check_offered_never_blocks(r: Report) -> None:
 # ── #8 ────────────────────────────────────────────────────────────────────────
 
 def check_no_hot_spin(r: Report) -> None:
-    RUN_S = 1.0
+    RUN_S = 0.3                     # the backoff holds ~20 waits/s by then
 
     class BrokenCam(FakeCam):
         """A camera whose link has gone: every wait fails instantly."""
@@ -1228,8 +1246,6 @@ def check_memory_capped_buffer_is_announced(r: Report) -> None:
     """A 768 MB budget silently cut full frame from 2 s of slack to 0.33 s
     (~6% real frame loss). The memory-cap branch is exercised with a shrunk
     budget rather than this machine's headroom."""
-    import io
-    from contextlib import redirect_stdout
 
     def sizing(worker, cfg, hz):
         buf = io.StringIO()
@@ -1373,8 +1389,6 @@ def check_edge_rate_reported(r: Report) -> None:
     """External edge reports the rate its interval sets, not Internal's: the
     panel said 528 Hz while files came out at 446 (rig, 2026-09-30), which
     read as lost frames. And exposure fills whatever the rate leaves."""
-    import io
-    from contextlib import redirect_stdout
     from acqApp.devices.voltage_cam.presets import (
         EXTERNAL_EDGE, master_pulse_interval)
 
@@ -1397,7 +1411,7 @@ def check_edge_rate_reported(r: Report) -> None:
         cam = Cam(cfg.frame_shape)
         w = OrcaFireWorker(0, cfg, cam=cam)
         w._master_pulse, w._syncreadout, w._readout_s = True, sync, readout
-        with redirect_stdout(io.StringIO()):
+        with quiet():
             w._apply_rate(cam, cfg)
             got = w._query_timings(cam, cfg)
         name = "SYNCREADOUT" if sync else "EDGE"
@@ -1413,7 +1427,7 @@ def check_edge_rate_reported(r: Report) -> None:
 
     ctrl_cfg = AcqConfig(preset_key="4432x512", binning=4)
     ctrl = OrcaFireWorker(0, ctrl_cfg)
-    with redirect_stdout(io.StringIO()):
+    with quiet():
         ctrl._query_timings(FakeCam(ctrl_cfg.frame_shape), ctrl_cfg)
     r.check(abs(ctrl.achievable_hz - FPS) < 1e-6,
             "control: Internal still reports the camera's frame period")
@@ -1428,10 +1442,6 @@ def check_dcimg_preview_skips_not_drops(r: Report) -> None:
     """With a .dcimg attached the loop only previews the newest frame, so the
     ring's skip count grows by design; the recorder writes every frame. Files
     carried 26-183 "dropped" with 0 gaps in their frame counters (2026-09-30)."""
-    import io
-    from contextlib import redirect_stdout
-    from types import SimpleNamespace
-
     cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
 
     class Rec:
@@ -1450,7 +1460,7 @@ def check_dcimg_preview_skips_not_drops(r: Report) -> None:
 
         def newest():
             cam._idx += BATCH
-            if time.perf_counter() - t0 > 1.3:
+            if time.perf_counter() - t0 > 0.5:
                 w._stop = True
             return np.zeros(cfg.frame_shape, dtype=np.uint16)
 
@@ -1461,10 +1471,10 @@ def check_dcimg_preview_skips_not_drops(r: Report) -> None:
                 acquired=cam._idx, skipped=min(cam.reads, 1), unread=0,
                 buffer_size=64)
             w.set_sink(lambda item: setattr(w, "_stop",
-                                            time.perf_counter() - t0 > 1.3))
+                                            time.perf_counter() - t0 > 0.5))
         else:
             w._dcimg = Rec()
-        with redirect_stdout(io.StringIO()):
+        with quiet(), fast_status():
             w._run()
         return w.skipped_frames
 
@@ -1478,10 +1488,6 @@ def check_preview_skips_before_record_not_drops(r: Report) -> None:
     """The ring's skip count runs from capture start, and Live view skips by
     design for minutes before Record attaches a sink. Those aren't the
     recording's drops: cam_dropped_frames carried them all."""
-    import io
-    from contextlib import redirect_stdout
-    from types import SimpleNamespace
-
     cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
     cam = FakeCam(cfg.frame_shape)
     w = OrcaFireWorker(0, cfg, cam=cam)
@@ -1493,7 +1499,7 @@ def check_preview_skips_before_record_not_drops(r: Report) -> None:
     t_rec = [0.0]
 
     def sink(item):
-        if time.perf_counter() - t_rec[0] > 1.3:
+        if time.perf_counter() - t_rec[0] > 0.35:
             w._stop = True
 
     def newest():                           # preview: 40 skipped per read
@@ -1512,7 +1518,7 @@ def check_preview_skips_before_record_not_drops(r: Report) -> None:
 
     cam.read_newest_image = newest
     cam.read_multiple_images = recorded
-    with redirect_stdout(io.StringIO()):
+    with quiet(), fast_status():
         w._run()
     r.check(w.skipped_frames == 2,
             f"only skips after Record count as the recording's drops "
@@ -1524,10 +1530,6 @@ def check_rate_after_restart(r: Report) -> None:
     """Capture restarting under the loop (a failed .dcimg open restarts it,
     then raises) puts the camera's count back near 0: the next rate must not
     read as a large negative one."""
-    import io
-    from contextlib import redirect_stdout
-    from types import SimpleNamespace
-
     cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
     cam = FakeCam(cfg.frame_shape)
     w = OrcaFireWorker(0, cfg, cam=cam)
@@ -1535,17 +1537,17 @@ def check_rate_after_restart(r: Report) -> None:
     w.hz_update.connect(lambda _n, hz: rates.append(hz))
     t0 = time.perf_counter()
 
-    def newest():                           # 1 kHz, restarted at 1.5 s
+    def newest():                           # 1 kHz, restarted at 0.5 s
         el = time.perf_counter() - t0
-        cam._idx = int(1000 * (el if el < 1.5 else el - 1.5))
-        if el > 2.4:
+        cam._idx = int(1000 * (el if el < 0.5 else el - 0.5))
+        if el > 0.9:
             w._stop = True
         return np.zeros(cfg.frame_shape, dtype=np.uint16)
 
     cam.read_newest_image = newest
     cam.get_frames_status = lambda: SimpleNamespace(
         acquired=cam._idx, skipped=0, unread=0, buffer_size=64)
-    with redirect_stdout(io.StringIO()):
+    with quiet(), fast_status():
         w._run()
     r.check(len(rates) >= 2 and min(rates) >= 0,
             f"no negative frame rate after capture restarts "
@@ -1568,10 +1570,17 @@ def _part_losses() -> int:
     check_skip_report_blames_the_loop(r)
     check_memory_capped_buffer_is_announced(r)
     check_readout_speed_absence_is_reported(r)
-    check_nocamera_retry(r)
     check_edge_rate_reported(r)
     check_dcimg_preview_skips_not_drops(r)
     check_preview_skips_before_record_not_drops(r)
+    return r.finish()
+
+
+def _part_open() -> int:
+    """Its own part: the real pylablib DCAM import is 2-4 s, and the check
+    uses pylablib's own error type, so it runs beside `losses`, not in it."""
+    r = Report("open")
+    check_nocamera_retry(r)
     return r.finish()
 
 
@@ -1601,7 +1610,6 @@ def check_burst_arithmetic(r: Report) -> None:
 def check_burst_gate(r: Report) -> None:
     """In burst mode a re-arm doesn't stop the camera: the gate moves to the
     end of the burst the count was in when the re-arm was ASKED for."""
-    from types import SimpleNamespace
     w = OrcaFireWorker(0, AcqConfig())
     w._burst_n, w._syncreadout = 900, True
 
@@ -1649,7 +1657,6 @@ def check_burst_gate(r: Report) -> None:
 def check_seal_dcimg(r: Report) -> None:
     """A sealed .dcimg is closed but still this recording's: its count stays
     readable and the next roll may re-arm with it, until the sink changes."""
-    from types import SimpleNamespace
 
     from acqApp.adapters.voltage_cam import VoltageCamModule
 
@@ -1745,6 +1752,7 @@ PARTS = {
     "dcimg": _part_dcimg,
     "format": _part_format,
     "losses": _part_losses,
+    "open": _part_open,
     "burst": _part_burst,
 }
 

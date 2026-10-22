@@ -8,7 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _harness import Report, isolate_user_state, make_window, pump, qt_app
+from _harness import (Report, isolate_user_state, make_window, pump,
+                      pump_until, qt_app)
 
 
 def check_trials(r: Report) -> None:
@@ -469,7 +470,7 @@ def check_visuomotor_run(r: Report, app) -> None:
     c2 = VisStimController(s2, wheel_speed=lambda: (50.0, 0.0))
     c2.run()
     c2.on_tick(0.1)
-    pump(app, 0.3)
+    pump_until(app, lambda: c2._xoffset > 0.0, 2.0)
     r.check(c2._xoffset > 0.0,
             f"a live wheel_speed source drives the drift forward "
             f"({c2._xoffset})")
@@ -525,7 +526,7 @@ def check_tick_driven_run(r: Report, app) -> None:
     r.check(not c._is_visible, "a further tick (TriggersStim=1) returns to blank")
 
     # The display's paint timer advances the frames that finish the trials.
-    pump(app, 5.0)
+    pump_until(app, lambda: c.phase == IDLE, 10.0)
     r.check(c.phase == IDLE, f"back to idle once both trials finish ({c.phase})")
     r.check(c.last_run_stats == {"trials_total": 2, "trials_completed": 2,
                                  "aborted": False},

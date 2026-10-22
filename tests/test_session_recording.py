@@ -10,7 +10,7 @@ import shutil
 import sys
 
 from _harness import (MemorySettings, Report, isolate_user_state, make_window,
-                      pump, qt_app, run_parts)
+                      pump, pump_until, qt_app, run_parts)
 
 EXPECTED_STREAMS = [
     "voltage_cam", "voltage_cam_index", "pupil_cam",
@@ -148,10 +148,15 @@ def _part_session() -> int:
     drops = win._recorder.drop_count if win._recorder else -1
 
     # The size readout counts what the session folder holds; stat() on the
-    # folder itself is 0 on NTFS.
-    win._rec_size_t0 = 0.0
-    win._refresh_rec_readout(win._sync.elapsed())
-    m = re.search(r"(\d+) MB|[\d.]+ GB", win._lbl_rec.text())
+    # folder itself is 0 on NTFS. Under load the writer can still be < 1 MB.
+    def readout():
+        win._rec_size_t0 = 0.0
+        win._refresh_rec_readout(win._sync.elapsed())
+        return re.search(r"(\d+) MB|[\d.]+ GB", win._lbl_rec.text())
+
+    pump_until(app, lambda: (lambda m: m is not None and (
+        m.group(1) is None or int(m.group(1)) > 0))(readout()), 5.0)
+    m = readout()
     r.check(m is not None and (m.group(1) is None or int(m.group(1)) > 0),
             f"the status bar shows the bytes on disk ({win._lbl_rec.text()!r})")
 

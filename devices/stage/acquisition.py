@@ -21,7 +21,8 @@ class StagePollWorker(PullWorker):
     def _run(self) -> None:
         # paced() is replay-tested but not yet run on the physical stage:
         # confirm cadence / no missed reads there before trusting it.
-        for _ in paced(1.0 / self._hz, time.perf_counter()):
+        for _ in paced(1.0 / self._hz, time.perf_counter(),
+                       lambda: self._stop):
             if self._stop:
                 break
             try:

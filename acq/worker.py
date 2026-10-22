@@ -11,16 +11,24 @@ from typing import Any, Callable, Iterator
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
-def paced(period: float, t0: float) -> Iterator[int]:
+_STOP_POLL_S = 0.05
+
+
+def paced(period: float, t0: float,
+          stopped: Callable[[], bool] | None = None) -> Iterator[int]:
     """Yield 1, 2, 3, ... at absolute targets t0 + n*period, so per-iteration
-    overhead never accumulates as drift. Use the same `t0` for timestamps."""
+    overhead never accumulates as drift. Use the same `t0` for timestamps.
+    `stopped()` ends it within _STOP_POLL_S: a 4 Hz poll held stop() 250 ms.
+    Slices of time.sleep, not Event.wait, whose Windows timeout is coarse."""
     n = 0
     while True:
         n += 1
         yield n
-        slp = t0 + n * period - time.perf_counter()
-        if slp > 0:
-            time.sleep(slp)
+        target = t0 + n * period
+        while (slp := target - time.perf_counter()) > 0:
+            if stopped is not None and stopped():
+                return
+            time.sleep(min(slp, _STOP_POLL_S) if stopped is not None else slp)
 
 
 class PullWorker(QThread):

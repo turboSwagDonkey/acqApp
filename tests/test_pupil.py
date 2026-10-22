@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 from _harness import (Report, isolate_user_state, make_window, npoints, pump,
-                      qt_app, run_parts)
+                      pump_until, qt_app, run_parts)
 from _pupil_helpers import video_eye_frame, write_avi
 from acqApp.devices.pupil_cam.settings import PupilSettings
 from acqApp.devices.pupil_cam.tracking import PupilTracking
@@ -649,10 +649,9 @@ def _part_track() -> int:
 
     # ── 9. pins go on and come off, on the preview ───────────────────────────
     win._btn_run.setChecked(True)
-    pump(app, 1.0)
-    for _ in range(4):
-        win._display_tick()
-        pump(app, 0.05)
+    mod._last_frame = None                  # so the wait proves a new frame
+    pump_until(app, lambda: (win._display_tick(),
+                             mod._last_frame is not None)[1])
     r.check(mod._img.image is not None, "frames still reach the preview")
     r.check(mod._last_frame is not None, "…and the newest one is kept for pinning")
 
@@ -743,7 +742,8 @@ def _part_track() -> int:
     r.check(took < 0.3 and held and tune.isRunning(),
             f"a slow Auto doesn't freeze closing ({took:.2f} s); its thread is "
             f"held, not dropped live (held={held})")
-    pump(app, 0.6)
+    pump_until(app, lambda: not tune.isRunning()
+               and tune not in pupil_adapter._RUNNING_TUNES, 3.0)
     r.check(not tune.isRunning() and tune not in pupil_adapter._RUNNING_TUNES,
             "…and let go once it finishes")
 
@@ -854,7 +854,8 @@ def _part_limit() -> int:
     panel.tracking._fire()                  # the adapter reads its cached copy
     r.check(panel.settings.search_limit() is None, "fixture: no region saved")
     win._btn_run.setChecked(True)
-    pump(app, 1.0)                       # frames flow
+    pump_until(app, lambda: (win._display_tick(),
+                             mod._last_frame is not None)[1])   # frames flow
     h, w = mod._last_frame.shape[:2]
     default = (w * 0.25, h * 0.25, w * 0.75, h * 0.75)
     r.check(panel.settings.search_limit() == default,
@@ -1040,7 +1041,7 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
     seen: list[np.ndarray] = []
     wk.set_sink(seen.append)           # the sink sees every frame
     wk.start()
-    pump(app, 0.6)
+    pump_until(app, lambda: len(seen) > 5, 3.0)
     wk.stop()
     r.check(len(seen) > 5,
             f"worker: loops past the end of the clip ({len(seen)} frames of 5)")
@@ -1053,7 +1054,7 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
 
     wk2 = VideoFileCameraWorker(clip, rate_hz=20.0, loop=False)
     wk2.start()
-    pump(app, 0.8)
+    pump_until(app, lambda: wk2.isFinished(), 3.0)
     r.check(wk2.isFinished() or not wk2.isRunning(),
             "worker: loop=False stops itself at the end of the clip")
     wk2.stop()
@@ -1391,10 +1392,8 @@ def _live_view(app):
     win.show()
     mod = win._modules[0]
     win._btn_run.setChecked(True)
-    pump(app, 1.0)
-    for _ in range(4):
-        win._display_tick()
-        pump(app, 0.05)
+    pump_until(app, lambda: (win._display_tick(),
+                             mod._last_frame is not None)[1])
     pump(app, 0.2)                           # let the dock lay the view out
     mod._vb.setRange(xRange=(0, 320), yRange=(0, 240), padding=0)
     pump(app, 0.1)

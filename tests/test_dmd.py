@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 from _harness import (Report, block_real_devices, isolate_user_state,
-                      make_window, pump, qt_app, run_parts)
+                      make_window, pump, pump_until, qt_app, run_parts)
 from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
                                             CalibrationError, DmdCalibration,
                                             apply_transform, calibrate,
@@ -373,7 +373,7 @@ def check_roi_wiring(r) -> None:
     r.check(win.latest_frame("voltage_cam") is None,
             "no frame before the camera has run")
     win._btn_run.setChecked(True)
-    pump(app, 1.2)
+    pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
 
     f = win.latest_frame("voltage_cam")
     if r.check(f is not None, "the DMD can reach a voltage-camera frame"):
@@ -1376,7 +1376,7 @@ def check_wiring(r: Report) -> None:
                 "stripe the card would show")
 
         was = win.set_live(True)
-        pump(app, 1.0)
+        pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
         r.check(was is False and win._btn_run.isChecked(),
                 "set_live(True) starts the live view and reports it was off")
         r.check(win.latest_frame("voltage_cam") is not None,
@@ -2880,7 +2880,7 @@ def _part_pair() -> int:
     dmd = next(m for m in win._modules if m.key == "dmd")
     stage = next(m for m in win._modules if m.key == "stage")
     win._btn_run.setChecked(True)
-    pump(app, 1.2)
+    pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
 
     seen: list = []
 

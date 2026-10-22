@@ -235,6 +235,20 @@ def pump(app, seconds: float) -> None:
         time.sleep(0.005)
 
 
+def pump_until(app, cond, timeout: float = 5.0) -> bool:
+    """Turn the event loop until `cond()` is true or `timeout` s pass; ->
+    cond(). For waits that expect something; a wait proving something
+    DOESN'T happen stays a fixed `pump`."""
+    import time
+    end = time.perf_counter() + timeout
+    while not cond():
+        if time.perf_counter() >= end:
+            return bool(cond())
+        app.processEvents()
+        time.sleep(0.005)
+    return True
+
+
 def make_window(enabled, **kw):
     """A MainWindow built the way every GUI test builds one: mocked, no real
     camera handle, an explicit module set."""

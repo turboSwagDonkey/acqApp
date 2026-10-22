@@ -10,8 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
-                      run_parts)
+from _harness import (Report, isolate_user_state, make_window, pump,
+                      pump_until, qt_app, run_parts)
 from acqApp import config
 from acqApp.devices.puffer.control import PufferSettings
 from acqApp.devices.wheel.settings import EncoderSettings
@@ -1009,7 +1009,7 @@ def _part_settings() -> int:
 
     win2._btn_run.setChecked(True)
     r.check(win2._sync.running, "session starts with the restored settings")
-    pump(app, 0.5)
+    pump_until(app, lambda: win2._modules[0].worker is not None, 2.0)
     win2._display_tick()
     r.check(win2._modules[0].worker is not None, "workers built")
     win2._btn_run.setChecked(False)
