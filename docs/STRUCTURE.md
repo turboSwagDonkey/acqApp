@@ -303,6 +303,7 @@ saving/                 where the session file goes
   panel.py
 docs/
   AUDIT-2026-08.md      closed audit — archive — gitignored, private repo
+  AUDIT-2026-10.md      open optimization/terseness audit — gitignored, private repo
   CAMERA_TRANSFER.md
   DECISIONS.md          closed items, kept for their reasoning — archive — gitignored, private repo
   EYELOOP-INTEGRATION.md  the plan for moving it into devices/ — start here
