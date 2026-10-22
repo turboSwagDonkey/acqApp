@@ -65,6 +65,7 @@ Thumbs.db
 *.bak
 /.claude/settings.local.json
 /.claude/settings.json
+/.claude/hooks/
 # The rig's active DMD calibration (dmd_calibration setting): rig-local.
 /newCal.json
 
