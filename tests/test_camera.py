@@ -560,7 +560,9 @@ def check_wait_for_camera(r: Report, app) -> None:
     eng = adapter._engine
     r.check(eng is not None, "fixture: the routine is running")
 
-    pump(app, 0.15)
+    t_end = time.perf_counter() + 2.0        # a fixed 0.15 s lost under load
+    while eng.progress() <= 0 and time.perf_counter() < t_end:
+        pump(app, 0.05)
     before = eng.progress()
     r.check(before > 0, f"fixture: the wait has started ({before:.3f})")
     r.check(eng.rearm_step() is True, "rearm_step() re-arms a Wait step")
@@ -844,6 +846,25 @@ def check_final_metadata_follows_recording(r: Report, tmp: Path) -> None:
             "an empty .dcimg says 0 frames rather than nothing")
 
 
+def check_preview_running_mean(r: Report) -> None:
+    """The preview average's running sum equals np.mean of the last n, the
+    truncation the old deque mean used, and survives a reused frame buffer."""
+    from acqApp.adapters.voltage_cam import RunningMean
+    rng = np.random.default_rng(3)
+    frames = [rng.integers(0, 65535, (6, 5), dtype=np.uint16) for _ in range(12)]
+    rm, ok = RunningMean(4), True
+    buf = np.empty((6, 5), np.uint16)            # one buffer, rewritten per frame
+    for i, f in enumerate(frames):
+        buf[:] = f
+        got = rm.push(buf)
+        want = np.mean(frames[max(0, i - 3):i + 1], axis=0).astype(np.uint16)
+        ok &= got.dtype == np.uint16 and np.array_equal(got, want)
+    r.check(ok, "running mean == np.mean of the last 4, through a reused buffer")
+    got = rm.push(np.ones((3, 3), np.uint16))
+    r.check(np.array_equal(got, np.ones((3, 3), np.uint16)),
+            "a new frame shape restarts the average")
+
+
 def _part_format() -> int:
     """The DCIMG/TIFF choice and the host's file path: no driver needed."""
     r = Report("format")
@@ -851,6 +872,7 @@ def _part_format() -> int:
     app = qt_app()
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_format_"))
     try:
+        check_preview_running_mean(r)
         check_host_wiring(r, app, tmp)
         check_adapter_guards(r, app)
         check_final_metadata_follows_recording(r, tmp)

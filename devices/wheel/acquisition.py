@@ -10,12 +10,49 @@ else rev/s.
 from __future__ import annotations
 import threading
 import time
-from collections import deque
 
 import numpy as np
 from PyQt6.QtCore import pyqtSignal
 
 from acqApp.acq.worker import PullWorker, paced
+
+
+class _History:
+    """(t, rev) samples, oldest first, as numpy views: rebuilding arrays
+    from a deque per sample was ~0.5 ms of GIL at 120 Hz."""
+
+    def __init__(self, cap: int = 512) -> None:
+        self._t = np.empty(cap)
+        self._p = np.empty(cap)
+        self._lo = self._hi = 0
+
+    def __len__(self) -> int:
+        return self._hi - self._lo
+
+    @property
+    def t(self) -> np.ndarray:
+        return self._t[self._lo:self._hi]
+
+    @property
+    def p(self) -> np.ndarray:
+        return self._p[self._lo:self._hi]
+
+    def append(self, t: float, p: float) -> None:
+        if self._hi == self._t.size:            # full: compact, or grow
+            n, cap = len(self), self._t.size
+            cap *= 2 if 2 * n > cap else 1
+            for name in ("_t", "_p"):
+                old = getattr(self, name)
+                new = np.empty(cap) if cap != old.size else old
+                new[:n] = old[self._lo:self._hi]
+                setattr(self, name, new)
+            self._lo, self._hi = 0, n
+        self._t[self._hi] = t
+        self._p[self._hi] = p
+        self._hi += 1
+
+    def drop_before(self, t: float) -> None:
+        self._lo += int(np.searchsorted(self.t, t, side="left"))
 
 
 class _EncoderBase(PullWorker):
@@ -52,7 +89,7 @@ class _EncoderBase(PullWorker):
         self._t_prev = 0.0
         self._pos = 0.0                # cumulative position, rev
         self._vel = 0.0                # rev/s, coasts through resets
-        self._buf: deque[tuple[float, float]] = deque()   # (elapsed_s, rev)
+        self._buf = _History()          # (elapsed_s, rev)
         self._dist_rev = 0.0           # reported net distance
         self._t_report: float | None = None
         self._snap: tuple[float, float, float, float] | None = None
@@ -74,7 +111,7 @@ class _EncoderBase(PullWorker):
         frac = min(max(v / vpr, 0.0), 1.0)
         if self._frac_prev is None:
             self._frac_prev, self._t_prev = frac, t
-            self._buf.append((t, 0.0))
+            self._buf.append(t, 0.0)
             return 0.0, 0.0
 
         dt = t - self._t_prev
@@ -90,18 +127,15 @@ class _EncoderBase(PullWorker):
                 a = dt / (self._TAU_S + dt)
                 self._vel += a * (step / dt - self._vel)
             self._pos += step
-            self._buf.append((t, self._pos))
-            while self._buf and t - self._buf[0][0] > self._HIST_S:
-                self._buf.popleft()
+            self._buf.append(t, self._pos)
+            self._buf.drop_before(t - self._HIST_S)
 
         return self._report(t, circ)
 
     def _slope(self, t_lo: float, t_hi: float) -> float:
         """Least-squares rev/s of the buffered position over [t_lo, t_hi].
         Closed form: polyfit's SVD is too heavy per sample at 120 Hz."""
-        n = len(self._buf)
-        ts = np.fromiter((b[0] for b in self._buf), float, n)
-        ps = np.fromiter((b[1] for b in self._buf), float, n)
+        ts, ps = self._buf.t, self._buf.p
         lo = int(np.searchsorted(ts, t_lo, side="left"))
         hi = int(np.searchsorted(ts, t_hi, side="right"))
         tw, pw = ts[lo:hi], ps[lo:hi]
@@ -116,7 +150,7 @@ class _EncoderBase(PullWorker):
         deadband-gated so ADC noise can't random-walk it at rest."""
         td = t - self._LAG_S
         n = len(self._buf)
-        if n < 8 or self._buf[0][0] > td - self._SLOPE_WIN_S:
+        if n < 8 or self._buf.t[0] > td - self._SLOPE_WIN_S:
             return 0.0, self._SIGN * self._dist_rev * circ
 
         rev_s = self._slope(td - self._SLOPE_WIN_S, td + self._SLOPE_WIN_S)
@@ -143,7 +177,7 @@ class _EncoderBase(PullWorker):
             vpr, dia = self._vpr, self._dia
         if not vpr or len(self._buf) < 4:
             return 0.0
-        t = self._buf[-1][0]
+        t = self._buf.t[-1]
         rev_s = self._slope(t - self._LIVE_WIN_S, t)
         if abs(rev_s) < self._LIVE_DEADBAND_REV_S:
             return 0.0

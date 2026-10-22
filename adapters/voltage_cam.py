@@ -27,6 +27,33 @@ from acqApp.sidebar import MiniText
 _INT_TRIGGER, _EXT_TRIGGER = TRIGGER_MODES[0], TRIGGER_MODES[1]
 
 
+class RunningMean:
+    """Mean of the last `n` frames, O(1) frames a push: a running sum, exact
+    for integer frames. Frames are copied, as a reused buffer would corrupt
+    the sum on eviction."""
+
+    def __init__(self, n: int = 1) -> None:
+        self.maxlen = max(1, int(n))
+        self._buf: deque = deque()
+        self._sum: np.ndarray | None = None
+
+    def clear(self) -> None:
+        self._buf.clear()
+        self._sum = None
+
+    def push(self, frame: np.ndarray) -> np.ndarray:
+        frame = np.array(frame)
+        if self._sum is None or self._sum.shape != frame.shape:
+            self.clear()
+            acc = np.int64 if np.issubdtype(frame.dtype, np.integer) else np.float64
+            self._sum = np.zeros(frame.shape, acc)
+        self._buf.append(frame)
+        self._sum += frame
+        if len(self._buf) > self.maxlen:
+            self._sum -= self._buf.popleft()
+        return (self._sum / len(self._buf)).astype(frame.dtype, copy=False)
+
+
 class VoltageCamModule(ModuleAdapter):
     key = "voltage_cam"
     tab_label = "Voltage cam (primary)"
@@ -44,7 +71,7 @@ class VoltageCamModule(ModuleAdapter):
         self._last_frame = None         # full-res, for the DMD's ROI editor
         # Fixed at build_session: the panel may already name next session's preset.
         self._last_frame_preset: str | None = None
-        self._preview_buf: deque = deque(maxlen=1)
+        self._preview_buf = RunningMean(1)
         self._dcimg_sealed = False      # see seal_dcimg
         # This recording asked DCAM for a .dcimg; outlives detach_sink for
         # final_metadata, and a worker's counts outlive the recording.
@@ -98,7 +125,7 @@ class VoltageCamModule(ModuleAdapter):
         self.panel.led_toggled.connect(self._on_led)
         cfg = self.panel.get_config()
         self._auto_levels = cfg.auto_levels
-        self._preview_buf = deque(maxlen=max(1, cfg.preview_avg))
+        self._preview_buf = RunningMean(cfg.preview_avg)
         # At startup the central view is built first; on a hot-load, this is.
         # Whichever runs second applies the saved view prefs.
         if self._hist is not None:
@@ -142,7 +169,7 @@ class VoltageCamModule(ModuleAdapter):
         self._sync_auto_to_lut(on)
 
     def _on_preview_avg(self, n: int) -> None:
-        self._preview_buf = deque(maxlen=max(1, n))
+        self._preview_buf = RunningMean(n)
 
     def build_plot(self) -> QWidget:
         pw, self._curve = _plot("ΔF/F", "ΔF/F", "%", "Frame", self.key)
@@ -315,12 +342,8 @@ class VoltageCamModule(ModuleAdapter):
         small = f[::DISP_DS, ::DISP_DS]
 
         # Preview-only averaging; the trace and the file use unaveraged frames.
-        if self._preview_buf.maxlen > 1:
-            self._preview_buf.append(small)
-            disp = (np.mean(self._preview_buf, axis=0, dtype=np.float32)
-                     .astype(small.dtype, copy=False))
-        else:
-            disp = small
+        disp = (self._preview_buf.push(small) if self._preview_buf.maxlen > 1
+                else small)
 
         self._paint(disp, self._auto_levels)
         stage = self.win.stage_target()

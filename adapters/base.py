@@ -7,7 +7,8 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (QCheckBox, QGraphicsItem, QHBoxLayout, QLabel,
+                             QVBoxLayout, QWidget)
 
 from acqApp import config, style
 from acqApp.console import short_error
@@ -29,6 +30,11 @@ def _plot(title: str, left: str, units: str, bottom: str, key: str):
     pw.setLabel("left", left, units=units)
     pw.setLabel("bottom", bottom)
     pw.showGrid(x=True, y=True, alpha=0.3)
+    # The grid is drawn by the axes, so every curve update replayed it: a
+    # pixmap cache took a 600-pt trace from 17 to 8 ms a repaint.
+    for side in ("left", "bottom"):
+        pw.getPlotItem().getAxis(side).setCacheMode(
+            QGraphicsItem.CacheMode.DeviceCoordinateCache)
     curve = pw.plot(pen=pg.mkPen(style.HEX[key], width=1.5))
     return pw, curve
 
@@ -83,6 +89,8 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     img = pg.ImageItem()
     hist = pg.HistogramLUTWidget()
     hist.setImageItem(img)
+    # Per-frame histograms cost ~2 ms a frame; `_paint` refreshes it instead.
+    img.sigImageChanged.disconnect(hist.item.imageChanged)
     hist.setFixedWidth(86)
     gv = pg.GraphicsView()
     vb = vb_cls(lockAspect=True, invertY=True)
@@ -217,18 +225,21 @@ class ModuleAdapter:
         self._level_ctr = 0
 
     def _paint(self, data, auto: bool) -> None:
-        """Auto recomputes percentiles every LEVELS_EVERY ticks. Manual re-passes
-        the LUT bar's own levels: omitting `levels=` left pyqtgraph showing
-        stale contrast."""
+        """Auto recomputes percentiles every LEVELS_EVERY ticks; the LUT bar's
+        histogram refreshes on the same beat. Manual re-passes the bar's own
+        levels: omitting `levels=` left pyqtgraph showing stale contrast."""
+        refresh = self._level_ctr % LEVELS_EVERY == 0
+        self._level_ctr += 1
         if auto:
-            if self._levels is None or self._level_ctr % LEVELS_EVERY == 0:
+            if self._levels is None or refresh:
                 lo, hi = np.percentile(data, (1, 99))
                 self._levels = (float(lo), float(hi))
-            self._level_ctr += 1
             levels = self._levels
         else:
             levels = self._hist.item.getLevels() if self._hist is not None else None
         self._img.setImage(data, autoLevels=False, levels=levels)
+        if refresh and self._hist is not None and self._hist.isVisible():
+            self._hist.item.imageChanged()
 
     def _sync_rec_dot(self) -> None:
         if self._rec_dot is not None:

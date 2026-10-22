@@ -176,6 +176,26 @@ def _part_derive() -> int:
     r.check(enc._derive(1.25, 0.0) == (1.25, 0.0),
             "set_scaling(None, ...) takes effect on the next sample")
 
+    # ── history ring vs the deque it replaced, through compaction + growth ──
+    from collections import deque
+    from acqApp.devices.wheel.acquisition import _History
+    h, ref = _History(cap=8), deque()
+    rng = random.Random(1)
+    t_now, ok = 0.0, True
+    for i in range(400):
+        t_now += rng.uniform(0.001, 0.02)
+        h.append(t_now, float(i))
+        ref.append((t_now, float(i)))
+        hist_s = 0.5 if i < 200 else 0.05      # a long window forces growth
+        h.drop_before(t_now - hist_s)
+        while ref and t_now - ref[0][0] > hist_s:
+            ref.popleft()
+        ok &= (list(h.t) == [a for a, _ in ref]
+               and list(h.p) == [b for _, b in ref])
+    r.check(ok and h._t.size > 8,
+            f"_History matches deque append/popleft across compaction and "
+            f"growth (capacity 8 -> {h._t.size})")
+
     return r.finish()
 
 
