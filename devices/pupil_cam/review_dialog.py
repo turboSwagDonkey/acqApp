@@ -143,6 +143,12 @@ class ReviewWidget(_LayoutMixin, _SeedMixin, _PlaybackMixin, QWidget):
             return False
         self.pause()
         self._btn_pin_cr.setChecked(False)
+        if self._seed_frames is not None:   # marks for the old clip
+            self._seed_cancel()
+        # The old clip's overlays, keyed by frame number only.
+        self._preview = self._mask = self._overlay_at = None
+        self._mask_img.clear()
+        self._seed_r0 = 0.0
         self.review = rev
         n = len(rev)
         h, w = rev.reader.height, rev.reader.width

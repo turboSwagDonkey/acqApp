@@ -13,8 +13,9 @@ Every backend driver exposes the same axis-indexed surface:
 carried opaquely from StageAxis.index, so the two backends' configs index
 the same logical X/Y/Z differently.
 
-`establish_frame` is MCM6101-only: it works around that controller
-re-referencing its origin on every hard-limit hit. The MCM301's readout is a
+`establish_frame` (with `begin_frame_run`, after which `stop_all` ends a
+run) is MCM6101-only: it works around that controller re-referencing its
+origin on every hard-limit hit. The MCM301's readout is a
 stable encoder count, and StageController.establish_frame() says so.
 """
 from __future__ import annotations

@@ -205,8 +205,12 @@ class DmdController(_Base):
         self._dev = alp.AlpDevice(lib_dir)
         self._dev.open()
         print(f"[DMD] ALP {self._dev.width}x{self._dev.height} (API from {source})")
-        if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
-            self.load_pattern(self._s.pattern_path)
+        try:
+            if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
+                self.load_pattern(self._s.pattern_path)
+        except BaseException:
+            self._dev.close()           # the caller falls back to the mock; free the ALP
+            raise
 
     @property
     def device_name(self) -> str:
@@ -259,6 +263,7 @@ class DmdController(_Base):
 
     def display(self) -> None:
         if self._pattern is None:
+            self.stop()                 # or the frame already up stays lit
             print("[DMD] display: no pattern loaded — nothing to project")
             return
         if self.on_pixels == 0:
@@ -307,6 +312,8 @@ class MockDmdController(_Base):
     def __init__(self, settings: DmdSettings | None = None):
         super().__init__(settings)
         self._thread: threading.Thread | None = None
+        if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
+            self.load_pattern(self._s.pattern_path)     # as the real one does
 
     device_name = "mock (no DMD attached)"
 
@@ -358,6 +365,10 @@ class MockDmdController(_Base):
         self._frame(FRAME_START)
 
     def display(self) -> None:
+        if self._pattern is None:       # as the real one: dark, not "lit" with nothing
+            self.stop()
+            print("[DMD mock] display: no pattern loaded — nothing to project")
+            return
         if self._running:
             return
         self._running = True

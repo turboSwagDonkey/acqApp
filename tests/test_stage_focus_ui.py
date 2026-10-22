@@ -188,7 +188,7 @@ def check_goto_uses_z_threshold(r: Report) -> None:
     p = SettingsPanel(s)
     c = FakeCtrl()
     p.bind_controller(c)
-    p._last_z = 0.0
+    p.set_readout(0.0, 0.0, z_um=0.0)
     p._axis_widgets["z"]["goto"].setValue(1000.0)   # > z threshold, < xy one
 
     _ANSWERS[:] = [QMessageBox.StandardButton.No]
@@ -211,6 +211,7 @@ def check_active_fov(r: Report) -> None:
                    camera_preset=None, image_path=None)
 
     r.check(p.active_fov_name == "", "no FOV is active before any goto")
+    p.set_readout(100.0, 200.0)
     p.goto_fov(fov)
     r.check(p.active_fov_name == "window1", "goto_fov marks the FOV active")
 

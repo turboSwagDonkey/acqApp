@@ -674,6 +674,7 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         w._exp_lock = threading.Lock()
         w._rearm_with_file = False
         w._mp_mode = acq._MP_MODE_START
+        w._skipped, w._skip_base = 0, None
 
         w._swap_dcimg(FakeCam(), tmp / "a.dcimg", rearm_nframes=59, cap=800)
         want = [("cap", 800), "open", "stop", ("attach", "H"),
@@ -718,6 +719,37 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
                     and w._dcimg is None,
                     f"a recorder that never bound is closed, and capture "
                     f"still restarts ({calls})")
+
+        class StopFails(FakeCam):
+            def stop_acquisition(self):
+                calls.append("stop-fails")
+                raise RuntimeError("DCAMERR_TIMEOUT")
+        dc.DcimgRecorder = FakeRec
+        calls.clear()
+        try:
+            w._swap_dcimg(StopFails(), tmp / "d.dcimg")
+            r.check(False, "a failed stop must raise")
+        except RuntimeError:
+            r.check(calls == [("cap", None), "open", "stop-fails", "close"],
+                    f"a stop that fails still closes the recorder it opened "
+                    f"({calls})")
+
+        # The last file's count, then a new one that can't open.
+        w._dcimg_total, w._dcimg_missing, w._dcimg_t0 = 2500, 3, 1.0
+
+        class NoRoom(FakeRec):
+            @classmethod
+            def for_frames(cls, path, bpf, cap=None):
+                raise dc.DcimgError("no room for a .dcimg")
+        dc.DcimgRecorder = NoRoom
+        try:
+            w._swap_dcimg(FakeCam(), tmp / "e.dcimg")
+        except dc.DcimgError:
+            pass
+        r.check(w.dcimg_frames == 0 and w.dcimg_missing == 0
+                and w.dcimg_span is None,
+                f"a file that failed to open doesn't report the last one's "
+                f"count ({w.dcimg_frames}, {w.dcimg_missing}, {w.dcimg_span})")
     finally:
         dc.DcimgRecorder = real
 
@@ -733,16 +765,17 @@ def _have_dcam() -> bool:
 
 def _part_dcimg() -> int:
     r = Report("dcimg")
-    if not _have_dcam():                # every check builds a real DcimgRecorder
-        print("[dcimg] SKIPPED: no DCAM driver on this machine (runs on the rig)")
-        return 0
     isolate_user_state()
     app = qt_app()
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_dcimg_"))
     try:
-        check_frame_cap(r, tmp)
-        check_naming(r, tmp)
-        check_cap_guards(r, tmp)
+        if _have_dcam():                # these build a real DcimgRecorder
+            check_frame_cap(r, tmp)
+            check_naming(r, tmp)
+            check_cap_guards(r, tmp)
+        else:
+            print("[dcimg] driver checks SKIPPED: no DCAM driver on this "
+                  "machine (they run on the rig)")
         check_cap_vs_gated(r)
         check_routine_counts_recorder(r, app)
         check_wait_for_camera(r, app)
@@ -750,6 +783,65 @@ def _part_dcimg() -> int:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
+
+
+def check_final_metadata_follows_recording(r: Report, tmp: Path) -> None:
+    """A worker's .dcimg counts outlive the recording that made them: a TIFF
+    recording after a DCIMG one, same Live session, was filed with the old
+    file's frame count and clock span and no drop count."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.voltage_cam import VoltageCamModule
+
+    class Worker:
+        supports_dcimg = True
+        dcimg_active = False
+        dcimg_frames, dcimg_missing = 2500, 0
+        dcimg_span = (1.0, 2.0)
+        skipped_frames = 7
+        timestamp_source = "camera"
+        burst_rule = None
+        _config = AcqConfig()
+
+        def __init__(self):
+            self.files = []
+
+        def set_record_file(self, path):
+            self.files.append(path)
+
+        def set_sink(self, sink):
+            pass
+
+    m = VoltageCamModule.__new__(VoltageCamModule)
+    m._dcimg_sealed = m._rec_dcimg = False
+    m.worker = w = Worker()
+    m.controller = None
+    target = [tmp / "a.dcimg"]
+    m.win = SimpleNamespace(dcimg_target=lambda key: target[0])
+    m.attach_sink(None)
+    m.detach_sink()
+    fin = m.final_metadata()
+    r.check(fin.get("cam_dcimg_frames") == 2500
+            and "cam_dropped_frames" not in fin,
+            f"a DCIMG recording reports its file's count ({fin})")
+    r.check(w.files == [target[0], None],
+            f"…and its Stop closes the file ({w.files})")
+    target[0] = None                            # the next one is TIFF
+    w.files.clear()
+    m.attach_sink(None)
+    m.detach_sink()
+    fin = m.final_metadata()
+    r.check("cam_dcimg_frames" not in fin and fin.get("cam_dropped_frames") == 7,
+            f"a TIFF recording after it reports its own drops, not the old "
+            f"file ({fin})")
+    r.check(w.files == [],
+            f"a TIFF Stop asks for no .dcimg close, which would restart "
+            f"capture ({w.files})")
+    target[0] = tmp / "b.dcimg"
+    m.worker.dcimg_frames = 0                   # gated, never triggered
+    m.attach_sink(None)
+    r.check(m.final_metadata().get("cam_dcimg_frames") == 0,
+            "an empty .dcimg says 0 frames rather than nothing")
 
 
 def _part_format() -> int:
@@ -761,6 +853,7 @@ def _part_format() -> int:
     try:
         check_host_wiring(r, app, tmp)
         check_adapter_guards(r, app)
+        check_final_metadata_follows_recording(r, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return r.finish()
@@ -1341,6 +1434,10 @@ def check_dcimg_preview_skips_not_drops(r: Report) -> None:
 
         cam.read_newest_image = newest
         if with_sink:
+            # One skip, after the sink attached (earlier ones are preview's).
+            cam.get_frames_status = lambda: SimpleNamespace(
+                acquired=cam._idx, skipped=min(cam.reads, 1), unread=0,
+                buffer_size=64)
             w.set_sink(lambda item: setattr(w, "_stop",
                                             time.perf_counter() - t0 > 1.3))
         else:
@@ -1355,6 +1452,84 @@ def check_dcimg_preview_skips_not_drops(r: Report) -> None:
             "control: with a sink the same skip count is a real drop")
 
 
+def check_preview_skips_before_record_not_drops(r: Report) -> None:
+    """The ring's skip count runs from capture start, and Live view skips by
+    design for minutes before Record attaches a sink. Those aren't the
+    recording's drops: cam_dropped_frames carried them all."""
+    import io
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+
+    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
+    cam = FakeCam(cfg.frame_shape)
+    w = OrcaFireWorker(0, cfg, cam=cam)
+    skips = [0]
+    emitted: list[int] = []
+    w.drops_update.connect(lambda n, _b: emitted.append(n))
+    cam.get_frames_status = lambda: SimpleNamespace(
+        acquired=cam._idx, skipped=skips[0], unread=0, buffer_size=64)
+    t_rec = [0.0]
+
+    def sink(item):
+        if time.perf_counter() - t_rec[0] > 1.3:
+            w._stop = True
+
+    def newest():                           # preview: 40 skipped per read
+        skips[0] += 40
+        if skips[0] >= 400:                 # then Record
+            t_rec[0] = time.perf_counter()
+            w.set_sink(sink)
+        return np.zeros(cfg.frame_shape, dtype=np.uint16)
+
+    reads = cam.read_multiple_images
+
+    def recorded(return_info=False):        # 2 real drops while recording
+        if cam.reads == 0:
+            skips[0] += 2
+        return reads(return_info=return_info)
+
+    cam.read_newest_image = newest
+    cam.read_multiple_images = recorded
+    with redirect_stdout(io.StringIO()):
+        w._run()
+    r.check(w.skipped_frames == 2,
+            f"only skips after Record count as the recording's drops "
+            f"({w.skipped_frames}, preview skipped {skips[0] - 2})")
+    r.check(emitted == [2], f"…and only those are announced ({emitted})")
+
+
+def check_rate_after_restart(r: Report) -> None:
+    """Capture restarting under the loop (a failed .dcimg open restarts it,
+    then raises) puts the camera's count back near 0: the next rate must not
+    read as a large negative one."""
+    import io
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+
+    cfg = AcqConfig(preset_key="4432x512", binning=4, exposure_us=1000.0)
+    cam = FakeCam(cfg.frame_shape)
+    w = OrcaFireWorker(0, cfg, cam=cam)
+    rates: list[float] = []
+    w.hz_update.connect(lambda _n, hz: rates.append(hz))
+    t0 = time.perf_counter()
+
+    def newest():                           # 1 kHz, restarted at 1.5 s
+        el = time.perf_counter() - t0
+        cam._idx = int(1000 * (el if el < 1.5 else el - 1.5))
+        if el > 2.4:
+            w._stop = True
+        return np.zeros(cfg.frame_shape, dtype=np.uint16)
+
+    cam.read_newest_image = newest
+    cam.get_frames_status = lambda: SimpleNamespace(
+        acquired=cam._idx, skipped=0, unread=0, buffer_size=64)
+    with redirect_stdout(io.StringIO()):
+        w._run()
+    r.check(len(rates) >= 2 and min(rates) >= 0,
+            f"no negative frame rate after capture restarts "
+            f"({[round(x) for x in rates]})")
+
+
 def _part_losses() -> int:
     r = Report("losses")
     qt_app()                            # the camera worker declares pyqtSignals
@@ -1364,6 +1539,7 @@ def _part_losses() -> int:
     check_final_metadata_failure_still_closes(r)
     check_stop_right_after_start(r)
     check_unstamped(r)
+    check_rate_after_restart(r)
     check_drops_counted(r)
     check_offered_never_blocks(r)
     check_no_hot_spin(r)
@@ -1373,6 +1549,7 @@ def _part_losses() -> int:
     check_nocamera_retry(r)
     check_edge_rate_reported(r)
     check_dcimg_preview_skips_not_drops(r)
+    check_preview_skips_before_record_not_drops(r)
     return r.finish()
 
 
@@ -1487,6 +1664,28 @@ def check_seal_dcimg(r: Report) -> None:
             "control: once the sink changes, no .dcimg is this recording's")
 
 
+def check_mock_gate_index(r: Report) -> None:
+    """Emulate's dark time after a re-arm makes no frames, so its frame index
+    must not jump there: a jump in voltage_cam_index reads as dropped frames."""
+    from acqApp.devices.voltage_cam.acquisition import MockCameraWorker
+
+    w = MockCameraWorker(AcqConfig(preset_key="4432x128", binning=4))
+    w._GATE_S = 0.15
+    got: list[int] = []
+
+    def sink(item):
+        got.append(item[2])
+        if len(got) == 3:
+            w.rearm_trigger()
+        if len(got) >= 6:
+            w._stop = True
+
+    w.set_sink(sink)
+    w._run()
+    r.check(got == list(range(6)) and w.trigger_gate[0] == 1,
+            f"indices stay contiguous across the gate ({got})")
+
+
 def check_burst_panel(r: Report) -> None:
     from acqApp.devices.voltage_cam.panel import SettingsPanel
     pnl = SettingsPanel(AcqConfig(trigger_mode=P.TRIGGER_MODES[0],
@@ -1512,6 +1711,7 @@ def _part_burst() -> int:
     check_burst_arithmetic(r)
     check_burst_gate(r)
     check_seal_dcimg(r)
+    check_mock_gate_index(r)
     check_burst_panel(r)
     del app
     return r.finish()

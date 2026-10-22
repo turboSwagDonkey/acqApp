@@ -32,6 +32,8 @@ class VisStimModule(ModuleAdapter):
         # Run turned live view on, so it turns it off (RoutinesModule's
         # `_own_rec` twin).
         self._own_live = False
+        # This recording's runs: the controller's (trial_log, stats), trials logged before Record.
+        self._runs: list[tuple[list, dict, int]] = []
 
     # ── construction ──
     def build_panel(self) -> QWidget:
@@ -92,6 +94,8 @@ class VisStimModule(ModuleAdapter):
 
     def _on_run_state(self, state: str) -> None:
         self.panel.set_run_state(state)
+        if state == "PRIMING" and self._rec is not None:
+            self._note_run()
         if state == "IDLE" and self._own_live:
             self._own_live = False
             self.win.set_live(False)
@@ -104,6 +108,14 @@ class VisStimModule(ModuleAdapter):
     # ── recording ──
     def attach_sink(self, rec) -> None:
         self._rec = rec
+        self._runs = []
+        if self.controller is not None and self.controller.phase != "IDLE":
+            # Already running: its earlier trials have no marks in this file.
+            self._note_run(skip=len(self.controller.trial_log))
+
+    def _note_run(self, skip: int = 0) -> None:
+        c = self.controller
+        self._runs.append((c.trial_log, c.last_run_stats, skip))
 
     def detach_sink(self) -> None:
         super().detach_sink()
@@ -131,14 +143,20 @@ class VisStimModule(ModuleAdapter):
         }
 
     def final_metadata(self) -> dict[str, Any]:
-        stats = (self.controller.last_run_stats if self.controller is not None
-                 else {"trials_total": 0, "trials_completed": 0, "aborted": False})
-        log = self.controller.trial_log if self.controller is not None else []
+        """This recording's runs only; trial indices restart each run, as
+        the /vis_stim marks do."""
+        runs = self._runs
+        kept = [(n, log[skip:]) for n, (log, _, skip) in enumerate(runs, 1)]
         return {
-            "vis_stim_started":          stats.get("trials_total", 0) > 0,
-            "vis_stim_trials_total":     stats.get("trials_total", 0),
-            "vis_stim_trials_completed": stats.get("trials_completed", 0),
-            "vis_stim_aborted":          stats.get("aborted", False),
-            # Every trial run, with params and outcome.
-            "vis_stim_trials":           json.dumps(log),
+            "vis_stim_started":          bool(runs),
+            "vis_stim_runs":             len(runs),
+            "vis_stim_trials_total":     sum(st.get("trials_total", 0)
+                                             for _, st, _ in runs),
+            "vis_stim_trials_completed": sum(not rec.get("interrupted", False)
+                                             for _, log in kept for rec in log),
+            "vis_stim_aborted":          any(st.get("aborted", False)
+                                             for _, st, _ in runs),
+            # Every trial recorded, with params and outcome.
+            "vis_stim_trials":           json.dumps(
+                [{"run": n, **rec} for n, log in kept for rec in log]),
         }

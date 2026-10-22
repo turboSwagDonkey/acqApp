@@ -11,7 +11,7 @@ from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen,
                          QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
@@ -502,7 +502,13 @@ class SettingsPanel(QWidget):
                 self, "Select ROI set", str(roi_store.SESSION_DIR),
                 "ROI sets (*.roi.json)")
             if path:
-                name, rois = roi_store.load_named(path)
+                try:
+                    name, rois = roi_store.load_named(path)
+                except (OSError, ValueError, KeyError) as e:
+                    QMessageBox.warning(self, "ROI set not loaded",
+                                        f"{Path(path).name} could not be read "
+                                        f"({type(e).__name__}: {e}).")
+                    return
                 self.set_roi_pattern(name, rois.to_list())
             return
         path, _ = QFileDialog.getOpenFileName(

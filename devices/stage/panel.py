@@ -690,15 +690,21 @@ class SettingsPanel(QWidget):
         self._set_controls_enabled(controller is not None)
         if controller is None:
             self._cancel_axes_run()
-            self._map.clear_position()
-            if self._z_gauge is not None:
-                self._z_gauge.clear_position()
-            # Else a reconnect at the same spot never redraws the cleared dot.
-            self._last_map_xy = self._last_gauge_z = None
+            self.clear_position()
             if self._cal_dialog is not None and not self._cal_dialog.running:
                 self._cal_dialog.reject()
                 self._cal_dialog = None
         self._update_frame_status()
+
+    def clear_position(self) -> None:
+        """The readout stopped (unbound, or the poll died): take the dot off
+        the map, so no drag starts from a stale position."""
+        self._end_drag()
+        self._map.clear_position()
+        if self._z_gauge is not None:
+            self._z_gauge.clear_position()
+        # Else a reconnect at the same spot never redraws the cleared dot.
+        self._last_map_xy = self._last_gauge_z = None
 
     def _set_controls_enabled(self, on: bool) -> None:
         self._motion.setEnabled(on)      # Z and the FOV buttons ride along
@@ -783,6 +789,19 @@ class SettingsPanel(QWidget):
             return self._s.y
         return self._s.z
 
+    # A position clamped to an edge reads back a count's rounding past it.
+    _EDGE_TOL_UM = 0.5
+
+    _POSITION_UNKNOWN = ("The stage position is unknown: no reading since "
+                         "connecting, or the readout stopped.")
+
+    def _outside_range(self, x_um: float, y_um: float) -> list[str]:
+        """The X/Y axes on which (x, y) is outside where motion may go."""
+        tol = self._EDGE_TOL_UM
+        return [ax.name for ax, v in ((self._s.x, x_um), (self._s.y, y_um))
+                if not ax.soft_limits_um()[0] - tol <= v
+                <= ax.soft_limits_um()[1] + tol]
+
     def _refresh_goto_ranges(self) -> None:
         """Re-range the go-to spin boxes after the soft limits move."""
         for key, w in self._axis_widgets.items():
@@ -828,13 +847,17 @@ class SettingsPanel(QWidget):
         else:
             cur = self._last_z
         thresh = self._s.confirm_move_z_um if key == "z" else self._s.confirm_move_um
-        if abs(target - cur) > thresh:
-            if QMessageBox.question(
-                self, "Confirm move",
-                f"Move {self._axis(key).name} from {cur:.0f} to {target:.0f} µm "
-                f"({abs(target - cur):.0f} µm)?"
-            ) != QMessageBox.StandardButton.Yes:
-                return
+        name = self._axis(key).name
+        if not self.position_known:
+            ask = f"{self._POSITION_UNKNOWN} Move {name} to {target:.0f} µm anyway?"
+        elif abs(target - cur) > thresh:
+            ask = (f"Move {name} from {cur:.0f} to {target:.0f} µm "
+                   f"({abs(target - cur):.0f} µm)?")
+        else:
+            ask = ""
+        if ask and QMessageBox.question(self, "Confirm move", ask) \
+                != QMessageBox.StandardButton.Yes:
+            return
         self._call("Move failed", lambda c: c.move_to_um(key, target))
 
     def _pick_and_goto_fov(self) -> None:
@@ -850,8 +873,7 @@ class SettingsPanel(QWidget):
         if self._ctrl is None:
             return
         # A clamped move would land short of it and still call it "active".
-        out = [ax.name for ax, v in ((self._s.x, fov.x_um), (self._s.y, fov.y_um))
-               if not ax.soft_limits_um()[0] <= v <= ax.soft_limits_um()[1]]
+        out = self._outside_range(fov.x_um, fov.y_um)
         if out:
             why = (f" — beyond ±{WINDOW_RANGE_UM:g} µm of 0,0; untick Calibrate… "
                    f"▸ Limit to window to reach it" if self._s.window_limit else "")
@@ -863,9 +885,10 @@ class SettingsPanel(QWidget):
         dist_xy = max(abs(fov.x_um - cur_x), abs(fov.y_um - cur_y))
         move_z = (self._s.has_z and fov.z_um is not None)
         dist_z = abs(fov.z_um - self._last_z) if move_z else 0.0
-        big_xy = dist_xy > self._s.confirm_move_um
-        big_z = move_z and dist_z > self._s.confirm_move_z_um
-        if big_xy or big_z:
+        known = self.position_known
+        big_xy = known and dist_xy > self._s.confirm_move_um
+        big_z = known and move_z and dist_z > self._s.confirm_move_z_um
+        if big_xy or big_z or not known:
             msg = (f'Move to FOV "{fov.name}" at {fov.x_um:.0f}, '
                    f"{fov.y_um:.0f}")
             if move_z:
@@ -875,7 +898,8 @@ class SettingsPanel(QWidget):
                 parts.append(f"XY {dist_xy:.0f} µm")
             if big_z:
                 parts.append(f"Z {dist_z:.0f} µm")
-            msg += f" µm ({', '.join(parts)})?"
+            msg += (f" µm ({', '.join(parts)})?" if known
+                    else f" µm anyway?\n\n{self._POSITION_UNKNOWN}")
             if QMessageBox.question(
                 self, "Confirm move", msg
             ) != QMessageBox.StandardButton.Yes:
@@ -900,6 +924,22 @@ class SettingsPanel(QWidget):
     def _on_drag_moved(self, x_um: float, y_um: float) -> None:
         if self._ctrl is None:
             return
+        if self._drag_cmd is None:
+            if not self.position_known:
+                self._end_drag()
+                QMessageBox.warning(self, "Stage", f"{self._POSITION_UNKNOWN} "
+                                    f"Dragging starts from it, so it is off.")
+                return
+            out = self._outside_range(*self._last_xy)
+            if out:
+                # Its first step would clamp to the range's edge: a jump at
+                # full speed, not a speed-capped drag.
+                self._end_drag()
+                QMessageBox.warning(
+                    self, "Stage", f"{'/'.join(out)} is outside its allowed "
+                    f"range, so dragging would jump to the range's edge. Use "
+                    f"Go to, or untick Calibrate… ▸ Limit to window.")
+                return
         self._drag_target = (x_um, y_um)
         self._map.set_target(self._drag_target)
         if self._drag_cmd is None:
@@ -1003,6 +1043,23 @@ class SettingsPanel(QWidget):
             "field.\n\nStep (µm):", 50.0, 2.0, 1000.0, 1)
         if not ok:
             return
+        if not self.position_known:
+            QMessageBox.warning(self, "Measure camera axes",
+                                f"{self._POSITION_UNKNOWN} The room for the "
+                                f"nudges can't be checked.")
+            return
+        # A nudge clamped at a limit moves less than `step`: wrong axes, and
+        # the full step back leaves the stage off its start.
+        short = [ax.name for ax, v in zip((self._s.x, self._s.y), self._last_xy)
+                 if ax.soft_min is not None and ax.soft_max is not None
+                 and v + step > ax.soft_limits_um()[1] + self._EDGE_TOL_UM]
+        if short:
+            QMessageBox.warning(
+                self, "Measure camera axes",
+                f"No room for a +{step:g} µm nudge on {'/'.join(short)}: it "
+                f"would stop at the limit and mis-measure. Move back from "
+                f"that edge, or use a smaller step.")
+            return
         self._end_drag()
         run = AxesMeasurement(self._ctrl, self._grab_frame, step,
                               int(self._frame_binning() or 1), self)
@@ -1093,6 +1150,11 @@ class SettingsPanel(QWidget):
     @property
     def active_fov_name(self) -> str:
         return self._active_fov.name if self._active_fov is not None else ""
+
+    @property
+    def position_known(self) -> bool:
+        """A readout arrived since binding, and the poll hasn't died since."""
+        return self._last_map_xy is not None
 
     @property
     def current_position(self) -> tuple[float, float, float | None]:

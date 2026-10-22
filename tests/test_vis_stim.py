@@ -100,6 +100,12 @@ def check_settings_roundtrip(r: Report) -> None:
             "start:step:stop range syntax parses (MATLAB colon vectors)")
     r.check(parse_values("not a number") == (),
             "unparseable text yields an empty tuple, not a crash")
+    try:
+        bad = parse_values("0:4.5.:90")
+    except ValueError as e:
+        bad = e
+    r.check(bad == (), f"a malformed range yields (), not a ValueError out "
+                       f"of the panel's slot ({bad!r})")
 
 
 def check_regions(r: Report) -> None:
@@ -573,6 +579,63 @@ def check_hotload(r: Report, win) -> None:
             f"…and hot-unloads cleanly ({added}, {removed})")
 
 
+def check_session_metadata(r: Report, win) -> None:
+    """final_metadata reports the runs of THIS recording: not a run from
+    before it (the controller is always-on), and every run within it."""
+    import json
+    from acqApp.devices.vis_stim.settings import StimParams, VisStimSettings
+
+    win.set_modules(["voltage_cam", "vis_stim"])
+    try:
+        m = next(x for x in win._modules if x.key == "vis_stim")
+        c = m.controller
+        c.apply_settings(VisStimSettings(params=StimParams(WaitTrigger=1)))
+
+        def one_run() -> None:          # prime, start trial 1, Esc
+            c.run()
+            c.on_tick(0.1)
+            c.stop()
+
+        class Rec:
+            def put(self, *_a, **_kw) -> None:
+                pass
+
+        one_run()                       # before the recording
+        m.attach_sink(Rec())
+        md = m.final_metadata()
+        r.check(md["vis_stim_started"] is False
+                and json.loads(md["vis_stim_trials"]) == [],
+                f"a run before Record isn't this session's "
+                f"({md['vis_stim_started']}, {md['vis_stim_trials'][:60]})")
+        one_run()
+        one_run()
+        m.detach_sink()
+        md = m.final_metadata()
+        trials = json.loads(md["vis_stim_trials"])
+        r.check(md.get("vis_stim_runs") == 2
+                and md["vis_stim_trials_total"] == 2
+                and [t.get("run") for t in trials] == [1, 2],
+                f"both runs in the recording are kept, not just the last "
+                f"({md.get('vis_stim_runs')}, {[t.get('run') for t in trials]})")
+
+        c.run()
+        c.on_tick(0.1)
+        c.trial_log.extend({"index": i, "interrupted": False} for i in (90, 91))
+        m.attach_sink(Rec())            # Record pressed mid-run
+        c.stop()
+        m.detach_sink()
+        md = m.final_metadata()
+        trials = json.loads(md["vis_stim_trials"])
+        idx = [t["index"] for t in trials]
+        r.check(trials and not {90, 91} & set(idx)
+                and md["vis_stim_trials_completed"]
+                == sum(not t["interrupted"] for t in trials),
+                f"Record mid-run: only the trials after it are this file's "
+                f"({idx}, completed={md['vis_stim_trials_completed']})")
+    finally:
+        win.set_modules(["voltage_cam"])
+
+
 def main() -> int:
     r = Report("vis_stim")
     check_trials(r)
@@ -596,6 +659,7 @@ def main() -> int:
     win = make_window({"voltage_cam"})
     try:
         check_hotload(r, win)
+        check_session_metadata(r, win)
     finally:
         win.close()
     return r.finish()

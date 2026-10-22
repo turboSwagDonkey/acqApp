@@ -135,8 +135,7 @@ class PanelWindow(QDialog):
     def showEvent(self, event) -> None:
         if not self._sized:
             self._sized = True
-            _restore_or_fit(self, self._saved_geom,
-                            (0, 0) if self._size else self._MIN_DEFAULT)
+            _restore_or_fit(self, self._saved_geom, self._MIN_DEFAULT)
         super().showEvent(event)
         self.visibility_changed.emit(True)
 
@@ -145,7 +144,9 @@ class PanelWindow(QDialog):
         self.visibility_changed.emit(False)
 
     def save_geometry(self) -> None:
-        _qsettings().setValue(self._geom_key, self.saveGeometry())
+        # Never shown: its geometry is Qt's default, not the operator's.
+        if self._sized:
+            _qsettings().setValue(self._geom_key, self.saveGeometry())
 
     def closeEvent(self, event) -> None:
         self.save_geometry()

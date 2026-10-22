@@ -46,6 +46,9 @@ class VoltageCamModule(ModuleAdapter):
         self._last_frame_preset: str | None = None
         self._preview_buf: deque = deque(maxlen=1)
         self._dcimg_sealed = False      # see seal_dcimg
+        # This recording asked DCAM for a .dcimg; outlives detach_sink for
+        # final_metadata, and a worker's counts outlive the recording.
+        self._rec_dcimg = False
 
     def last_frame(self):
         return self._last_frame
@@ -334,7 +337,7 @@ class VoltageCamModule(ModuleAdapter):
 
     # ── recording ──
     def attach_sink(self, rec) -> None:
-        self._dcimg_sealed = False
+        self._dcimg_sealed = self._rec_dcimg = False
         if self.worker is None:
             return
 
@@ -342,6 +345,7 @@ class VoltageCamModule(ModuleAdapter):
         if target is not None:
             if getattr(self.worker, "supports_dcimg", False):
                 self.worker.set_record_file(target)   # DCAM writes; no sink
+                self._rec_dcimg = True
                 return
             self.win.status("No DCAM camera — recording TIFF, not DCIMG")
 
@@ -375,8 +379,11 @@ class VoltageCamModule(ModuleAdapter):
     def detach_sink(self) -> None:
         self._dcimg_sealed = False
         # Base only clears the sink; an attached recorder would keep writing.
-        if self.worker is not None and getattr(self.worker, "supports_dcimg", False):
-            self.worker.set_record_file(None)
+        # A TIFF recording has none: closing one anyway restarts capture.
+        w = self.worker
+        if w is not None and (self._rec_dcimg
+                              or getattr(w, "dcimg_active", False)):
+            w.set_record_file(None)
         super().detach_sink()
 
     def metadata(self) -> dict[str, Any]:
@@ -407,7 +414,7 @@ class VoltageCamModule(ModuleAdapter):
         rule = self._burst_rule()
         if rule:
             out["cam_burst_leading_stale"] = rule[1]
-        if getattr(self.worker, "dcimg_frames", 0):
+        if self._rec_dcimg:
             out["cam_dcimg_frames"] = self.worker.dcimg_frames
             out["cam_dcimg_missing"] = self.worker.dcimg_missing
             out.update(self._dcimg_clock_span())

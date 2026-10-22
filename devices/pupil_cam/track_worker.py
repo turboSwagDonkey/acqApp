@@ -120,6 +120,7 @@ class PupilTrackWorker(PullWorker):
         self._radii: deque[tuple[float, bool]] = deque(maxlen=history)
         self._smoother = _FitSmoother()
         self._blink = _BlinkDetector()
+        self._fit_key: tuple | None = None
         self._fit_sink: Callable[[Any, bool, float], None] | None = None
         self._seen = 0
         self._fits = 0
@@ -168,6 +169,11 @@ class PupilTrackWorker(PullWorker):
     def blinks(self) -> int:
         return self._blinks
 
+    def counts(self) -> tuple[int, int, int]:
+        """(frames seen, fits, blinks), one consistent snapshot."""
+        with self._lock:
+            return self._seen, self._fits, self._blinks
+
     # ── thread ───────────────────────────────────────────────────────────────
     def _run(self) -> None:
         while not self._stop:
@@ -177,11 +183,15 @@ class PupilTrackWorker(PullWorker):
                 continue
             at = time.perf_counter()
             st = self._settings
-            self._seen += 1
+            # These rescale the radius: a lower threshold would otherwise be
+            # one endless blink, since blink frames never enter the baseline.
+            key = (st.track_threshold, st.track_blur, st.track_model)
+            if key != self._fit_key:
+                self._fit_key = key
+                self._blink.reset()
+                self._smoother.reset()
 
             fit = self._tracking.track(frame, st)
-            if fit is not None:
-                self._fits += 1
 
             if st.blink_detect:
                 is_blink = self._blink.check(
@@ -190,8 +200,11 @@ class PupilTrackWorker(PullWorker):
             else:
                 self._blink.reset()
                 is_blink = False
-            if is_blink:
-                self._blinks += 1
+            # Together, so `counts()` never sees a frame without its fit.
+            with self._lock:
+                self._seen += 1
+                self._fits += int(fit is not None)
+                self._blinks += int(is_blink)
 
             if st.smooth:
                 fit = self._smoother.apply(fit, max(1, st.smooth_window))

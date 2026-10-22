@@ -137,7 +137,7 @@ class _LayoutMixin:
                                            connect="finite")
         self._vb.addItem(self._pin_curve)
         # Red over what reflection removal blanked, as in the live view.
-        self._mask_img = pg.ImageItem()
+        self._mask_img = pg.ImageItem(axisOrder="row-major")
         self._mask_img.setZValue(1)
         self._vb.addItem(self._mask_img)
         self._mask: tuple | None = None         # (frame, mask, box)

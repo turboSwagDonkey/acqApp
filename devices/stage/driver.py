@@ -119,6 +119,9 @@ class MCM6101:
         self.timeout = timeout
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
+        # Set by stop_all: a running establish_frame must not issue its next
+        # move after STOP ALL.
+        self._abort = threading.Event()
         # Per-axis encoder = slope * command + offset. A hard-limit hit
         # re-references the command origin, so `offset` goes stale with it.
         self._slope: dict[int, float] = {}
@@ -136,12 +139,17 @@ class MCM6101:
     def open(self):
         self._ser = serial.Serial(self.port_name, baudrate=115200, bytesize=8,
                                    parity="N", stopbits=1, timeout=self.timeout)
-        # MCM6101 is a USB-CDC device; it only transmits with DTR asserted.
-        self._ser.dtr = True
-        self._ser.rts = True
-        time.sleep(0.2)
-        self._ser.reset_input_buffer()
-        self._ser.reset_output_buffer()
+        try:
+            # MCM6101 is a USB-CDC device; it only transmits with DTR asserted.
+            self._ser.dtr = True
+            self._ser.rts = True
+            time.sleep(0.2)
+            self._ser.reset_input_buffer()
+            self._ser.reset_output_buffer()
+        except Exception:
+            # The caller never gets the driver to close(): don't hold the port.
+            self.close()
+            raise
 
     def close(self):
         if self._ser and self._ser.is_open:
@@ -331,6 +339,7 @@ class MCM6101:
         last = None
         stable = 0
         while time.time() - t0 < timeout:
+            self._check_abort()
             s = self.get_status(axis)
             if not s.moving and last is not None and abs(s.position - last) < tol:
                 stable += 1
@@ -345,10 +354,12 @@ class MCM6101:
     def drive_to_reverse_limit(self, axis: int, timeout: float = 150) -> int:
         """MOTION: drive to the reverse hard limit; return its encoder value.
         Re-references the command origin."""
+        self._check_abort()             # a STOP ALL between two axes
         self.move_absolute(axis, REVERSE_LIMIT_SEEK_COUNTS)
         time.sleep(0.4)
         t0 = time.time()
         while time.time() - t0 < timeout:
+            self._check_abort()
             s = self.get_status(axis)
             if s.at_rev_limit and not s.moving:
                 return s.position
@@ -362,8 +373,11 @@ class MCM6101:
         travel_max, true_center} in encoder counts; travel = [R, R+span],
         since positive command drives away from the reverse limit."""
         R = self.drive_to_reverse_limit(axis)
+        self._check_abort()
         self.move_absolute(axis, probe_a); e1 = self.wait_stopped(axis)
+        self._check_abort()
         self.move_absolute(axis, probe_b); e2 = self.wait_stopped(axis)
+        self._check_abort()
         if abs(e2 - e1) < 1000:
             raise MCM6101Error(f"Axis {axis}: frame probe saturated "
                                f"(e1={e1}, e2={e2}); could not measure slope.")
@@ -384,9 +398,28 @@ class MCM6101:
         self._send(MGMSG_MOT_MOVE_STOP, axis, p1=axis,
                    p2=STOP_PROFILED if profiled else STOP_IMMEDIATE)
 
+    def begin_frame_run(self) -> None:
+        """Forget earlier STOP ALLs: call once before a run of
+        establish_frame calls, so one between two axes still ends it."""
+        self._abort.clear()
+
+    def _check_abort(self) -> None:
+        if self._abort.is_set():
+            raise MCM6101Error("Stopped by STOP ALL; frame not re-established.")
+
     def stop_all(self, axes):
+        """Every axis gets its stop even after one fails (the panic path);
+        the first failure is raised once all were tried. Also ends a running
+        establish_frame before its next move."""
+        self._abort.set()
+        err = None
         for a in axes:
-            self.stop(a, profiled=False)
+            try:
+                self.stop(a, profiled=False)
+            except Exception as e:      # noqa: BLE001 - re-raised below
+                err = err or e
+        if err is not None:
+            raise err
 
 
 if __name__ == "__main__":

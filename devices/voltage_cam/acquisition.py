@@ -122,6 +122,8 @@ class OrcaFireWorker(PullWorker):
         self._achievable_hz: float = 0.0
         self._master_pulse = False
         self._skipped: int = 0
+        # Ring skips when the sink attached: the preview's, not the recording's.
+        self._skip_base: int | None = None
         self._last_exp_error: str | None = None
         self._t_offset: float | None = None    # camera clock -> perf_counter
         self._use_cam_time = True
@@ -260,8 +262,16 @@ class OrcaFireWorker(PullWorker):
             except Exception as e:                   # noqa: BLE001
                 rec, err = None, e
         t1 = time.perf_counter()
-        cam.stop_acquisition()
+        try:
+            cam.stop_acquisition()
+        except Exception:
+            if rec is not None:
+                rec.close()             # never bound: free the dcamrec handle
+            raise
         self._close_dcimg()
+        if path is not None:            # a failed open must not report the last file
+            self._dcimg_total = self._dcimg_missing = 0
+            self._dcimg_t0 = self._dcimg_t1 = None
         t_stop = time.perf_counter()
         try:
             if err is not None:
@@ -273,9 +283,8 @@ class OrcaFireWorker(PullWorker):
                     rec.close()         # never bound: free the dcamrec handle
                     raise
                 self._dcimg = rec
-                self._dcimg_total = self._dcimg_missing = 0
                 self._dcimg_full = False
-                self._dcimg_t0, self._dcimg_t1 = time.perf_counter(), None
+                self._dcimg_t0 = time.perf_counter()
                 name = rec.path.name
         finally:
             t_start = time.perf_counter()
@@ -284,6 +293,7 @@ class OrcaFireWorker(PullWorker):
                 cam.start_acquisition(nframes=rearm_nframes)
             else:
                 cam.start_acquisition()
+            self._restarted()
         # Split: the attach dominates when the cap is drive-sized (dcimg.py).
         t2 = time.perf_counter()
         print(f"[voltage_cam] dcimg -> {name or 'closed'}: prep {t1 - t0:.2f} s, "
@@ -554,11 +564,30 @@ class OrcaFireWorker(PullWorker):
             last = img
         return n, last
 
+    def _restarted(self) -> None:
+        """Capture restarted: the camera's frame counters are back at 0."""
+        self._skipped = 0
+        if self._skip_base is not None:
+            self._skip_base = 0
+
+    def _track_sink(self, cam, sink) -> None:
+        """Baseline the ring's skips when a sink attaches: preview reads only
+        the newest frame, so every skip before it is deliberate."""
+        if sink is None:
+            self._skip_base = None
+        elif self._skip_base is None:
+            try:
+                self._skip_base = int(cam.get_frames_status().skipped)
+            except Exception:                        # noqa: BLE001
+                self._skip_base = 0
+            self._skipped = 0
+
     @staticmethod
-    def _skip_report(st) -> str:
+    def _skip_report(st, dropped: int | None = None) -> str:
         # The sink only enqueues, so a camera-side skip is this loop, never
         # the writer (whose drops are counted separately).
-        return (f"[voltage_cam] DROPPED {st.skipped} frames (driver buffer "
+        n = st.skipped if dropped is None else dropped
+        return (f"[voltage_cam] DROPPED {n} frames (driver buffer "
                 f"{st.unread}/{st.buffer_size} unread) — the read loop is not "
                 f"draining in time. Suspects: the per-frame copy at this frame "
                 f"size, or a sink that blocks. A slow WRITER is a separate "
@@ -652,6 +681,7 @@ class OrcaFireWorker(PullWorker):
             nframes = self._buffer_frames(cfg, hz)
             self._warn_data_rate(cfg, hz)
             self._skipped = 0        # camera clears its own counter on start
+            self._skip_base = None
             cam.start_acquisition(nframes=nframes)
             mark = _t(f"start_acquisition (nframes={nframes})", mark)
 
@@ -686,10 +716,9 @@ class OrcaFireWorker(PullWorker):
                                 cam, rec_path,
                                 rearm_nframes=nframes if rearm_file else None,
                                 cap=self._file_cap(rearm_file))
+                            n_acquired = 0
                             if rearm_file and self._dcimg is not None:
                                 self._gated()
-                                self._skipped = 0
-                                n_acquired = 0
                                 print("[voltage_cam] re-armed with the new file")
                         except Exception as e:      # noqa: BLE001
                             print(f"[voltage_cam] .dcimg recording failed "
@@ -706,7 +735,7 @@ class OrcaFireWorker(PullWorker):
                                 self._gated()
                                 # Camera counters restart at 0; stale totals
                                 # would read as a negative rate and a drop.
-                                self._skipped = 0
+                                self._restarted()
                                 n_acquired = 0
                                 print("[voltage_cam] re-armed")
                             except Exception as e:  # noqa: BLE001
@@ -752,6 +781,7 @@ class OrcaFireWorker(PullWorker):
                         continue
 
                     sink = self._sink
+                    self._track_sink(cam, sink)
                     if sink is None:
                         # Preview only: copying every frame can't keep up, so
                         # skips here are deliberate.
@@ -799,16 +829,19 @@ class OrcaFireWorker(PullWorker):
                         status_t0 = now
                         try:
                             st = cam.get_frames_status()
+                            if st.acquired < n_acquired:    # restarted, e.g. a failed swap
+                                n_acquired = 0
                             self.hz_update.emit(
                                 st.acquired, (st.acquired - n_acquired) / dt)
                             n_acquired = st.acquired
                             # Only a sink reads every frame. The .dcimg writes
                             # behind the preview's skips; its own `missing` is
                             # its loss (rig 2026-09-30: 146 "drops", 0 gaps).
-                            if sink is not None and st.skipped != self._skipped:
-                                self._skipped = st.skipped
-                                print(self._skip_report(st))
-                                self.drops_update.emit(st.skipped, st.buffer_size)
+                            dropped = st.skipped - (self._skip_base or 0)
+                            if sink is not None and dropped != self._skipped:
+                                self._skipped = dropped
+                                print(self._skip_report(st, dropped))
+                                self.drops_update.emit(dropped, st.buffer_size)
                         except Exception:      # no status support — count our own
                             self.hz_update.emit(win_n, win_n / dt)
                         win_n = 0
@@ -914,6 +947,7 @@ class MockCameraWorker(PullWorker):
         rng    = np.random.default_rng(0)
         period = 1.0 / self._FPS
         t0     = time.perf_counter()
+        index  = 0          # frames made: a gated tick is no frame, not a drop
 
         for n in paced(period, t0):
             if self._stop:
@@ -935,6 +969,7 @@ class MockCameraWorker(PullWorker):
             frame[blob] = np.clip(
                 frame[blob].astype(np.int32) + sig, 0, 65535
             ).astype(np.uint16)
-            self._publish(frame, record=(frame, acquired, n - 1))
+            self._publish(frame, record=(frame, acquired, index))
+            index += 1
             if n % int(self._FPS) == 0:
                 self.hz_update.emit(n, n / max(time.perf_counter() - t0, 1e-9))

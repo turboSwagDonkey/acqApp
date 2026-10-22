@@ -256,6 +256,7 @@ class MainWindow(QMainWindow):
         self._disp_timer = QTimer(self)
         self._disp_timer.setInterval(33)   # ~30 Hz
         self._disp_timer.timeout.connect(self._display_tick)
+        self._display_failed: set[str] = set()     # reported once per session
 
     # ── Services the module adapters use (see ModuleHost) ─────────────────────
 
@@ -936,26 +937,52 @@ class MainWindow(QMainWindow):
             self._call("voltage_cam", "set_trigger_mode_manual")
 
         # Build first, start after: the clock must be at t=0 before any sample.
-        for m in self._modules:
-            m.build_session(self._emulate)
+        where = "clock"
+        try:
+            for m in self._modules:
+                where = m.key
+                m.build_session(self._emulate)
+            where = "clock"
+            self._sync.start_all()
+            for m in self._modules:
+                where = m.key
+                m.start()
+        except Exception as e:      # noqa: BLE001 — a slot: an escape aborts the app
+            self._abort_start(where, e)
+            return
 
-        self._sync.start_all()
-        for m in self._modules:
-            m.start()
-
+        self._display_failed.clear()
         self._session_on = True
         self._disp_timer.start()
         self._btn_run.setText("Stop")
         self._btn_emulate.setEnabled(False)
 
-    def _safe_stop(self, m) -> None:
-        """Guarded: one raise would strand every later module running (and,
-        via closeEvent, skip the DCAM close)."""
+    def _abort_start(self, where: str, e: Exception) -> None:
+        """Undo a half-started session: every module stopped, the clock off,
+        the button back up (signals blocked, so the error stays on screen)."""
+        print(f"[main] Live view failed at {where}: {type(e).__name__}: {e}")
+        for m in self._modules:
+            self._safe_stop(m)
+        self._sync.stop_all()
+        self._btn_run.blockSignals(True)
+        self._btn_run.setChecked(False)
+        self._btn_run.blockSignals(False)
+        self.status(f"Live view failed — {where}: {type(e).__name__}: {e}")
+
+    def _guarded(self, m, method: str) -> None:
+        """Guarded: one raise would strand every later module running or open
+        (and, via closeEvent, skip the DCAM close)."""
         try:
-            m.stop()
+            getattr(m, method)()
         except Exception as e:
-            self.status(f"{m.key}: stop failed ({type(e).__name__}: {e})")
-            print(f"[main] {m.key}.stop() raised: {type(e).__name__}: {e}")
+            self.status(f"{m.key}: {method} failed ({type(e).__name__}: {e})")
+            print(f"[main] {m.key}.{method}() raised: {type(e).__name__}: {e}")
+
+    def _safe_stop(self, m) -> None:
+        self._guarded(m, "stop")
+
+    def _safe_close(self, m) -> None:
+        self._guarded(m, "close_controller")
 
     def _stop_session(self) -> None:
         if self._btn_rec.isChecked():
@@ -1033,8 +1060,13 @@ class MainWindow(QMainWindow):
         self._size_status_boxes()
 
         if self._session_on:
-            m.build_session(self._emulate)
-            m.start()
+            try:
+                m.build_session(self._emulate)
+                m.start()
+            except Exception as e:  # noqa: BLE001 — loaded, but not running
+                self._safe_stop(m)
+                self.status(f"{key}: start failed ({type(e).__name__}: {e})")
+                print(f"[main] {key} start raised: {type(e).__name__}: {e}")
 
     def _unload_module(self, key: str) -> None:
         """Stop one adapter and take back everything it put on the window."""
@@ -1042,7 +1074,7 @@ class MainWindow(QMainWindow):
         if m is None:
             return
         self._safe_stop(m)
-        m.close_controller()
+        self._safe_close(m)
 
         # setParent(None) before deleteLater: removal only leaves the layout,
         # and a still-parented dock would come back on restoreState().
@@ -1114,7 +1146,7 @@ class MainWindow(QMainWindow):
     def _build_controllers(self) -> None:
         """(Re)create the output controllers for the current emulate mode."""
         for m in self._modules:
-            m.close_controller()
+            self._safe_close(m)
         for m in self._modules:
             m.build_controller(self._emulate)
 
@@ -1299,7 +1331,14 @@ class MainWindow(QMainWindow):
 
     def _display_tick(self) -> None:
         for m in self._modules:
-            m.update_display()
+            try:
+                m.update_display()
+            except Exception as e:  # noqa: BLE001 — a timer slot: an escape aborts the app
+                if m.key not in self._display_failed:     # once, not at 30 Hz
+                    self._display_failed.add(m.key)
+                    self.status(f"{m.key}: display failed ({type(e).__name__}: {e})")
+                    print(f"[main] {m.key}.update_display() raised: "
+                          f"{type(e).__name__}: {e}")
 
     def _save_save_settings(self, *_args) -> None:
         if self._save_panel is not None:
@@ -1316,10 +1355,10 @@ class MainWindow(QMainWindow):
         try:
             if self._session_on:
                 self._stop_session()
-            for m in self._modules:
-                m.close_controller()
         except Exception as e:      # noqa: BLE001 — an escape aborts the process
             print(f"[main] shutdown raised {type(e).__name__}: {e}")
+        for m in self._modules:
+            self._safe_close(m)
         # Always: a handle left open crashes the next launch.
         _close_camera(self._cam_handle)
         self._cam_handle = None

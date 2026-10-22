@@ -84,6 +84,19 @@ def check_corrupt(r: Report, tmp: Path) -> None:
             "...and is quarantined, not discarded (the load_config policy)")
 
 
+def check_non_object_quarantined(r: Report, tmp: Path) -> None:
+    """Valid JSON that isn't an object (a hand edit gone wrong) loads as empty
+    too, and the next save would overwrite the only copy: moved aside."""
+    _write(tmp, {})
+    keep = config._CONFIG_PATH.with_suffix(".corrupt.json")
+    keep.unlink(missing_ok=True)
+    config._CONFIG_PATH.write_text('["rig", "Dev3"]', encoding="utf-8")
+    r.check(config.load_config() == {}, "a JSON list config loads as empty")
+    r.check(keep.is_file() and json.loads(keep.read_text(encoding="utf-8"))
+            == ["rig", "Dev3"],
+            "…and is kept as .corrupt.json before a save can overwrite it")
+
+
 def check_transient_locks(r: Report, tmp: Path) -> None:
     """On Windows a file held open for a moment (a reader, a virus scanner)
     refuses a read or a replace with PermissionError. That used to drop the
@@ -178,6 +191,17 @@ def check_bad_values(r: Report, tmp: Path) -> None:
     config.save_config({"enabled_modules": ["wheel", ["junk"], {"x": 1}, 7]})
     r.check(config.load_enabled_modules() == config.order_modules(["wheel"]),
             "junk in enabled_modules is skipped, not raised at startup")
+
+    # A __post_init__ that converts (the pupil's pins) raises ValueError.
+    from acqApp.devices.pupil_cam.settings import PupilSettings
+    config.save_config({"settings": {"pupil_cam": {"cr_pins": [["x", 1, 2]]}}})
+    try:
+        got = config.load_dataclass(PupilSettings, "pupil_cam")
+        ok = got.cr_pins == []
+    except Exception:                               # noqa: BLE001
+        ok = False
+    r.check(ok, "a saved value its __post_init__ rejects falls back to "
+                "defaults, not a startup crash")
 
 
 def check_resolution(r: Report, tmp: Path) -> None:
@@ -294,6 +318,31 @@ def check_puffer_skips_daq(r: Report) -> None:
             "says it didn't fire (the sidebar card counts only real puffs)")
 
 
+def check_puffer_closes_on_error(r: Report) -> None:
+    """A pulse that fails after opening the valve (here time.sleep refusing a
+    negative duration) still closes it. Mock task: no puff."""
+    qt_app()
+    import time
+    from acqApp.devices.puffer.control import PufferController
+
+    class FakeTask:
+        def __init__(self):
+            self.writes: list[bool] = []
+
+        def write(self, v):
+            self.writes.append(bool(v))
+
+    ctl = PufferController(PufferSettings(channel=""))
+    task = ctl._task = FakeTask()
+    r.check(ctl.fire(-0.1) is True, "a fire with a task reports it fired")
+    deadline = time.perf_counter() + 2.0
+    while len(task.writes) < 2 and time.perf_counter() < deadline:
+        time.sleep(0.01)
+    r.check(task.writes == [True, False],
+            f"the valve is closed again after a failed pulse ({task.writes})")
+    ctl._task = None
+
+
 def check_puffer_typing(r: Report) -> None:
     """Typing a channel must not apply (close and reopen the DAQ task) once
     per keystroke; Enter or focus-out applies it."""
@@ -347,6 +396,7 @@ def _part_rigs() -> int:
     try:
         check_sanitize(r, tmp)
         check_corrupt(r, tmp)
+        check_non_object_quarantined(r, tmp)
         check_transient_locks(r, tmp)
         check_bad_values(r, tmp)
         check_resolution(r, tmp)
@@ -354,6 +404,7 @@ def _part_rigs() -> int:
         check_profile_beats_saved(r, tmp)
         check_no_profile_is_unchanged(r, tmp)
         check_puffer_skips_daq(r)
+        check_puffer_closes_on_error(r)
         check_puffer_typing(r)
         check_puffer_lines(r, tmp)
     finally:
@@ -609,6 +660,49 @@ def same(a, b) -> bool:
     return a == b
 
 
+def check_unshown_keeps_geometry(r: Report, app) -> None:
+    """Exit saves every panel window's geometry; one not opened this session
+    must keep the size the operator gave it last time, not Qt's default."""
+    from acqApp.dialogs import PanelWindow
+    from PyQt6.QtWidgets import QWidget as _Blank
+
+    def throwaway() -> PanelWindow:
+        return PanelWindow(_Blank(), "test", "sync")
+
+    seed = throwaway()
+    seed.show()
+    pump(app, 0.05)
+    seed.resize(523, 317)
+    pump(app, 0.05)
+    seed.close()                        # saves 523x317
+    throwaway().save_geometry()         # never shown: the app-exit path
+    again = throwaway()
+    again.show()
+    pump(app, 0.1)
+    r.check((again.width(), again.height()) == (523, 317),
+            f"a window never opened this session leaves its saved geometry "
+            f"alone ({again.width()}x{again.height()})")
+    again.close()
+
+    # A window with its own size (the routines page) is guarded the same way.
+    seed = PanelWindow(_Blank(), "test", "sync", size=(500, 400))
+    seed.show()
+    pump(app, 0.05)
+    seed.resize(60, 50)
+    pump(app, 0.05)
+    tiny_geom = seed.saveGeometry()
+    seed.close()
+    sized = PanelWindow(_Blank(), "test", "sync", size=(500, 400))
+    sized._saved_geom = tiny_geom
+    sized.show()
+    pump(app, 0.1)
+    floor = PanelWindow._MIN_DEFAULT
+    r.check(sized.width() >= floor[0] // 2 and sized.height() >= floor[1] // 2,
+            f"a sized window doesn't trust an implausibly tiny saved geometry "
+            f"either ({sized.width()}x{sized.height()})")
+    sized.close()
+
+
 def _part_settings() -> int:
     r = Report("settings")
     tmp = isolate_user_state()
@@ -737,6 +831,7 @@ def _part_settings() -> int:
             f"too, not trusted just because restoreGeometry() succeeded "
             f"({tiny.width()}x{tiny.height()})")
     tiny.close()
+    check_unshown_keeps_geometry(r, app)
 
     win._page_actions["wheel"].trigger()
     pump(app, 0.2)

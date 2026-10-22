@@ -95,7 +95,9 @@ class AviReader:
         while pos + 8 <= stop:
             sz = self._u32(pos + 4)
             # `##db`/`##dc` = a stream's data chunk; anything else is skipped.
-            if self._tag(pos)[2:] in (b"db", b"dc") and sz >= need:
+            # A crashed recording ends mid-chunk: its last frame is short.
+            if (self._tag(pos)[2:] in (b"db", b"dc") and sz >= need
+                    and pos + 8 + need <= stop):
                 offs.append(pos + 8)
             pos += 8 + sz + (sz & 1)
         return offs

@@ -364,7 +364,8 @@ class StepTable(QTableWidget):
                             else float(value))
             elif field == "settle_s":
                 s.settle_s = float(value)
-        self._repaint_row(row)
+        # A kind change can add or drop the row header's Record badge.
+        self._repaint((row,), numbers=field == "kind")
         self.changed.emit()
 
     def _on_double_click(self, row: int, col: int) -> None:

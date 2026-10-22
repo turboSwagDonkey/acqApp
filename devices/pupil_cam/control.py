@@ -46,8 +46,9 @@ class LedController:
         self.set(False)
 
     def set(self, value: bool) -> None:
-        self._state = value
+        # Written first: a failed write must not leave is_on claiming it.
         self._task.write(self._intensity * self.MAX_VOLTS if value else 0.0)
+        self._state = bool(value)
 
     def close(self) -> None:
         try:

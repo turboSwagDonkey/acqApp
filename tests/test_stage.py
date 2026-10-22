@@ -143,6 +143,135 @@ def check_mcm301_open_releases_handle(r: Report) -> None:
         M._load_lib, M.list_devices = saved
 
 
+def check_drivers_stop_every_axis(r: Report) -> None:
+    """STOP ALL is pressed exactly when the link is failing: one axis's
+    failed stop must not leave the others moving (no port, no DLL)."""
+    from acqApp.devices.stage import driver as D
+    from acqApp.devices.stage import mcm301_driver as M
+
+    for label, dev in (("MCM6101", D.MCM6101("COM_NONE")),
+                       ("MCM301", M.MCM301("COM_NONE"))):
+        sent: list[int] = []
+
+        def stop(axis, profiled=True, _sent=sent):
+            _sent.append(axis)
+            if axis == 0:
+                raise OSError("write timeout")
+        dev.stop = stop
+        try:
+            dev.stop_all([0, 1, 2])
+            r.check(False, f"{label}: a failed stop was swallowed")
+        except OSError:
+            r.check(sent == [0, 1, 2],
+                    f"{label}: axes 1 and 2 still got their stop after axis "
+                    f"0's failed, and the failure is raised ({sent})")
+
+
+def check_stop_all_ends_frame_run(r: Report) -> None:
+    """Esc (STOP ALL) during Re-establish frame: the run used to keep waiting
+    for the limit (up to 150 s), then send its probe moves anyway. No port:
+    the driver's status and sends are faked."""
+    import struct
+    import threading
+    import time
+    from acqApp.devices.stage import driver as D
+
+    for phase in ("seek", "probe"):
+        dev = D.MCM6101("COM_NONE")
+        state = {"moving": phase == "seek"}
+        sends: list[tuple[int, int | None]] = []
+
+        def get_status(axis, wait=0.4, _s=state):
+            bits = D.STATUS_MOVING_REV if _s["moving"] else D.STATUS_REV_HWLIMIT
+            return D.AxisStatus(axis, 0, 0, bits)
+
+        def send(cmd, axis, data=None, _s=state, _sends=sends, **_k):
+            target = struct.unpack("<Hi", data)[1] if data else None
+            _sends.append((cmd, target))
+            if cmd == D.MGMSG_MOT_MOVE_ABSOLUTE and target == 20000:
+                _s["moving"] = True                 # the first probe runs on
+        dev.get_status, dev._send = get_status, send
+
+        s = S.StageSettings(x=S.StageAxis(0, "X", 2.0), y=S.StageAxis(1, "Y", 2.0))
+        ctrl = StageController(s)
+        ctrl._dev, ctrl.backend_kind = dev, "mcm6101"
+        dev.stop_all([0, 1])                        # an earlier, unrelated STOP ALL
+        out: list[BaseException] = []
+
+        def run(_out=out):
+            try:
+                ctrl.establish_frame()
+            except BaseException as e:              # noqa: BLE001 - checked below
+                _out.append(e)
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        time.sleep(1.2)
+        r.check(t.is_alive(), f"{phase}: fixture — the run is under way, "
+                              f"an earlier STOP ALL forgotten")
+        stop_at = len(sends)
+        ctrl.stop_all()
+        t.join(2.0)
+        moves_after = [x for x in sends[stop_at:]
+                       if x[0] == D.MGMSG_MOT_MOVE_ABSOLUTE]
+        r.check(not t.is_alive() and out and "STOP ALL" in str(out[0])
+                and not moves_after,
+                f"{phase}: STOP ALL ends the frame run with no further move "
+                f"({'running' if t.is_alive() else out[:1]}, {moves_after})")
+
+    # Between axes: X done, STOP ALL, then the controller calls Y's run.
+    dev = D.MCM6101("COM_NONE")
+    sends = []
+    dev._send = lambda cmd, axis, data=None, **_k: sends.append(cmd)
+    dev.begin_frame_run()
+    dev.stop_all([0, 1])
+    try:
+        dev.establish_frame(1, 100000)
+        raised = ""
+    except D.MCM6101Error as e:
+        raised = str(e)
+    r.check("STOP ALL" in raised and D.MGMSG_MOT_MOVE_ABSOLUTE not in sends,
+            f"a STOP ALL between axes stops the next axis before it moves "
+            f"({raised or 'no raise'}, {sends})")
+
+
+def check_mcm6101_open_releases_port(r: Report) -> None:
+    """A port that opens but then fails its setup is closed, not held: the
+    caller never gets the driver back to close() it."""
+    from acqApp.devices.stage import driver as D
+
+    class FakeSerial:
+        opened: list["FakeSerial"] = []
+
+        def __init__(self, *_a, **_k):
+            self.is_open = True
+            FakeSerial.opened.append(self)
+
+        @property
+        def dtr(self):
+            return False
+
+        @dtr.setter
+        def dtr(self, _v):
+            raise OSError("device not functioning")
+
+        def close(self):
+            self.is_open = False
+
+    saved = D.serial.Serial
+    D.serial.Serial = FakeSerial
+    try:
+        dev = D.MCM6101("COM_NONE")
+        try:
+            dev.open()
+            r.check(False, "open() hid a failed port setup")
+        except OSError:
+            r.check(len(FakeSerial.opened) == 1
+                    and not FakeSerial.opened[0].is_open and not dev.is_open,
+                    "a failed DTR/RTS setup closes the port it opened")
+    finally:
+        D.serial.Serial = saved
+
+
 def _part_state() -> int:
     r = Report("stage-state")
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_stage_"))
@@ -150,6 +279,9 @@ def _part_state() -> int:
     before = real.stat().st_mtime_ns if real.is_file() else None
     try:
         check_guards(r)
+        check_drivers_stop_every_axis(r)
+        check_stop_all_ends_frame_run(r)
+        check_mcm6101_open_releases_port(r)
         check_mcm301_open_releases_handle(r)
         check_persist_missing(r, tmp)
         check_persist_merges(r, tmp)

@@ -69,8 +69,19 @@ def load_named(path: str | Path) -> tuple[str, RoiSet]:
     """-> (name as typed, set). Not the file stem, which `save()` sanitizes
     and de-duplicates ("L2/3" -> "L2_3_2.roi.json")."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return (data.get("name", Path(path).stem),
-            RoiSet.from_list(data.get("rois", [])))
+    if not isinstance(data, dict):
+        raise ValueError(f"{Path(path).name} is not an ROI set")
+    try:
+        rois = RoiSet.from_list(data.get("rois", []))
+    except (TypeError, AttributeError) as e:   # a malformed entry
+        raise ValueError(f"{Path(path).name}: bad ROI ({e})") from e
+    return _name(data, Path(path)), rois
+
+
+def _name(data: dict, path: Path) -> str:
+    """The typed name; a hand-edited non-string one falls back to the stem."""
+    name = data.get("name")
+    return name if isinstance(name, str) else path.stem
 
 
 def list_session() -> list[SavedRoiSet]:
@@ -88,10 +99,12 @@ def list_folder(folder: Path) -> list[SavedRoiSet]:
     for p in sorted(folder.glob("*.roi.json")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):   # ValueError: bad JSON or not UTF-8
             continue
-        out.append(SavedRoiSet(p, data.get("name", p.stem),
-                               data.get("saved_at", "")))
+        if not isinstance(data, dict):
+            continue
+        out.append(SavedRoiSet(p, _name(data, p),
+                               str(data.get("saved_at", ""))))
     return out
 
 

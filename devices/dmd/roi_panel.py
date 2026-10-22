@@ -561,7 +561,11 @@ class RoiEditor(QWidget):
         name, ok = QInputDialog.getText(self, "Save ROI set", "Name:")
         if not ok or not name.strip():
             return
-        path = roi_store.save(name.strip(), self._set)
+        try:
+            path = roi_store.save(name.strip(), self._set)
+        except OSError as e:
+            self._status.setText(f"Could not save ({type(e).__name__}: {e})")
+            return
         self._status.setText(f"Saved {len(self._set)} ROI(s) to {path.name}")
 
     def _on_load_roi(self) -> None:

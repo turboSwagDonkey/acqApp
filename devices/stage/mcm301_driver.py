@@ -363,8 +363,16 @@ class MCM301:
         self._call(f"MoveStop(slot={slot})", "MoveStop", slot)
 
     def stop_all(self, slots):
+        """Every slot gets its stop even after one fails (the panic path);
+        the first failure is raised once all were tried."""
+        err = None
         for s in slots:
-            self.stop(s)
+            try:
+                self.stop(s)
+            except Exception as e:      # noqa: BLE001 - re-raised below
+                err = err or e
+        if err is not None:
+            raise err
 
     def set_enabled(self, slot: int, enable: bool):
         """Energize or de-energize a stepper."""

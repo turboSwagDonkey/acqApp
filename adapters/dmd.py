@@ -157,6 +157,10 @@ class DmdModule(ModuleAdapter):
         if fallback:
             self.panel.set_all_on()     # the tab shows what is lit
         self.display()
+        if not self.controller.projecting:
+            self.win.status("DMD not lit: the selection built no frame "
+                            "(the console says why)")
+            return
         name = {"pattern": "the pattern", "roi": "the ROIs",
                 "all_on": "all-on"}[self.panel.mode]
         self.win.status(f"DMD on: {name}"
@@ -257,6 +261,8 @@ class DmdModule(ModuleAdapter):
                 if binned:
                     self.win.set_camera_binning("voltage_cam", prev_binning)
                 self.win.set_live(was_live)
+            # The card shows the held frame: rebuild it over the last stripe/reticle.
+            self.controller.apply_settings(self.panel.settings)
 
     def _adopt_calibration(self, path: str) -> None:
         self.panel.set_calib_path(path)
@@ -436,7 +442,7 @@ class DmdModule(ModuleAdapter):
         if self.controller is not None:
             self.controller.apply_settings(self.panel.settings)
             self.controller.display()
-            self._show_light(True)
+            self._show_light(self.controller.projecting)
 
     def stop_display(self) -> None:
         if self.controller is not None:

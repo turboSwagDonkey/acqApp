@@ -58,6 +58,8 @@ class _SeedMixin:
         self._seed_roi = pg.CircleROI((p.x() - r, p.y() - r), (2 * r, 2 * r),
                                       pen=pg.mkPen("#ffd166", width=2))
         self._seed_r0 = r
+        # The frame clicked on, should the user have moved off the one asked.
+        self._seed_frames[len(self._seed_marks)] = self._frame
         self._vb.addItem(self._seed_roi)
         self._btn_seed_next.setEnabled(True)
         ev.accept()

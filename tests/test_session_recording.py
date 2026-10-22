@@ -9,7 +9,8 @@ import re
 import shutil
 import sys
 
-from _harness import MemorySettings, Report, isolate_user_state, make_window, pump, qt_app
+from _harness import (MemorySettings, Report, isolate_user_state, make_window,
+                      pump, qt_app, run_parts)
 
 EXPECTED_STREAMS = [
     "voltage_cam", "voltage_cam_index", "pupil_cam",
@@ -42,7 +43,7 @@ TEST_CHANNEL = "Dev3/port0/line3"
 TEST_DURATION = 0.250
 
 
-def main() -> int:
+def _part_session() -> int:
     r = Report("session")
     tmp = isolate_user_state()
     out = tmp / "recordings"
@@ -90,6 +91,17 @@ def main() -> int:
             "primary LED followed Live view on")
     r.check(not mod["pupil_cam"].controller.is_on,
             "eye-tracking LED did NOT follow Live view (explicitly overridden off)")
+
+    class _FailingLed:
+        def set(self, on):
+            raise OSError("DAQ gone")
+
+    vc = mod["voltage_cam"]
+    real_led, vc.controller = vc.controller, _FailingLed()
+    vc._apply_led_follow(False)
+    vc.controller = real_led
+    r.check(vc.panel._chk_led.isChecked(),
+            "a failed LED write leaves the switch showing the LED still on")
 
     # Without an eye region nothing is tracked (mock frame is 240x320). Before
     # Record, so the trace covers the file.
@@ -157,6 +169,9 @@ def main() -> int:
     r.check(not mod["voltage_cam"].controller.is_on,
             "primary LED followed Live view off again")
 
+    # Opened, as only a window that was shown saves its geometry.
+    win._panel_windows["saving"].show()
+    pump(app, 0.05)
     win.close()
     pump(app, 0.2)
     # Written, not just substituted: proves the substitute is on the real path.
@@ -282,5 +297,69 @@ def main() -> int:
     return r.finish()
 
 
+# ═══ the writer on its own ══════════════════════════════════════════════════
+
+def check_settings_json_survives_bad_values(r: Report, tmp) -> None:
+    """The settings JSON is rewritten on every update; a value that fails to
+    serialize used to truncate it (opened "w" first), and then poisoned every
+    later update, the final metadata too."""
+    import json
+    from acqApp.acq.writer import SessionWriter
+    w = SessionWriter()
+    d = tmp / "s_json"
+    path = d / "s_json_settings.json"
+    w.open(d, {"subject": "m1"})
+
+    def load():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    try:
+        w.update_metadata({"proto": {1: "a", "b": 2}})
+        raised = False
+    except Exception:                               # noqa: BLE001
+        raised = True
+    got = load()
+    r.check(not raised and got is not None and got.get("proto") == {"1": "a", "b": 2},
+            f"a dict with mixed int/str keys is filed, keys as text ({got})")
+
+    loop: list = []
+    loop.append(loop)
+    try:
+        w.update_metadata({"loop": loop})
+    except Exception:                               # noqa: BLE001
+        pass
+    got = load()
+    r.check(got is not None and got.get("subject") == "m1",
+            f"a value that can't be written leaves the file whole ({got})")
+    try:
+        w.update_metadata({"final": 1})
+        raised = False
+    except Exception:                               # noqa: BLE001
+        raised = True
+    got = load() or {}
+    r.check(not raised and got.get("final") == 1 and "loop" not in got,
+            f"…and later updates still land ({got})")
+    w.close()
+
+
+def _part_writer() -> int:
+    import tempfile
+    from pathlib import Path
+    r = Report("writer")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_writer_"))
+    check_settings_json_survives_bad_values(r, tmp)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
+PARTS = {
+    "session": _part_session,
+    "writer": _part_writer,
+}
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_parts(PARTS))

@@ -312,7 +312,52 @@ def _part_dmd() -> int:
     check_mode_switch_and_cache(r)
     check_light_switch(r)
     check_sub_sampling(r)
+    check_controller_faults(r)
     return r.finish()
+
+
+def check_controller_faults(r) -> None:
+    """Display with nothing to show ends dark rather than holding the old
+    frame, and a constructor that fails after opening the ALP frees it."""
+    from acqApp.devices.dmd.control import (MODE_ALL_ON, MODE_ROI,
+                                            DmdController, DmdSettings)
+
+    c = DmdController(DmdSettings(display_mode=MODE_ALL_ON))
+    dev = FakeALP4.instances[-1]
+    c.display()
+    r.check(c.projecting, "fixture: all-on is lit")
+    c.apply_settings(DmdSettings(display_mode=MODE_ROI, rois=()))
+    c.display()
+    r.check(c.frame is None and not c.projecting
+            and dev.names()[-2:] == ["Halt", "FreeSeq"],
+            f"Display with nothing to show (last ROI deleted under Live update) "
+            f"halts the frame already up, not leaves it lit ({dev.names()[-3:]})")
+    c.close()
+
+    from acqApp.devices.dmd.control import MockDmdController
+    m = MockDmdController(DmdSettings(display_mode=MODE_ALL_ON))
+    m.display()
+    lit = m.projecting
+    m.apply_settings(DmdSettings(display_mode=MODE_ROI, rois=()))
+    m.display()
+    r.check(lit and not m.projecting,
+            "the mock matches: nothing to show ends dark, so Emulate tests the "
+            "same 'not lit' path")
+    m.close()
+
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmdbad_"))
+    bad = tmp / "corrupt.png"
+    bad.write_bytes(b"not a png")
+    try:
+        DmdController(DmdSettings(pattern_path=bad))
+        raised = False
+    except Exception:
+        raised = True
+    dev = FakeALP4.instances[-1]
+    r.check(raised and dev.names()[-1] == "Free",
+            f"an unreadable saved pattern raises out of the constructor and the "
+            f"opened ALP is freed for the next try ({dev.names()})")
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def check_roi_wiring(r) -> None:
@@ -535,9 +580,20 @@ def check_light_switch(r) -> None:
             "ROIs mode with no ROIs drawn is 'nothing selected': all-on")
     btn.click()
 
+    # The real controller ends dark when the selection builds no frame.
+    c = dmd.controller
+    c.display = lambda: None
+    try:
+        btn.click()
+        pump(app, 0.05)
+        r.check(not btn.isChecked() and btn.text() == "DMD OFF"
+                and "not lit" in msg(),
+                f"a Display that lit nothing leaves the switch off and says so ({msg()!r})")
+    finally:
+        del c.display
+
     # A device fault inside a slot is reported and ends dark; it must not
     # escape (no excepthook: the app would abort with the DMD maybe lit).
-    c = dmd.controller
 
     def boom():
         c._running = True                   # it lit, then the driver failed
@@ -1293,12 +1349,16 @@ def check_wiring(r: Report) -> None:
         """Stands in for the sweep window — it must be constructed AND exec'd,
         so a wiring that builds it and forgets to show it still fails."""
 
-        def __init__(self, *_a, **kw):
+        def __init__(self, projector, *_a, **kw):
             seen["dialog"] += 1
             seen["live"].append(kw.get("set_live"))
+            self._proj = projector
 
         def exec(self):
             seen["exec"] += 1
+            w, h = self._proj.resolution
+            self._proj.project_frame(offset_stripe(w, h, 0, 100.0))
+            self._proj.stop()
             return 0
 
     SW.CalibrationDialog = FakeDialog
@@ -1311,6 +1371,9 @@ def check_wiring(r: Report) -> None:
         r.check(callable(seen["live"][0]),
                 "…and is handed set_live, so it can start the camera and put "
                 "it back")
+        r.check(not dmd.controller._raw and not dmd.controller.projecting,
+                "after it the held frame is the selection again, not the last "
+                "stripe the card would show")
 
         was = win.set_live(True)
         pump(app, 1.0)
@@ -1756,9 +1819,62 @@ def check_reticle(r: Report) -> None:
             f"Align to reticle adopts the result and ends dark ({events})")
 
 
+def check_reticle_seed(r: Report) -> None:
+    """A homography seed gives the pose of its Jacobian at the camera centre
+    (not M/M22), and a failed calibration save is logged, not raised."""
+    _app = qt_app()
+    import acqApp.devices.dmd.sweep as SW
+    from acqApp.devices.dmd.calibration import ReticlePose
+
+    dmd, cam = (64, 48), (400, 300)
+    p0 = ReticlePose(30.0, 20.0, 25.0, 0.12, 0.1, mirrored=True)
+    c = np.array([(cam[0] - 1) / 2.0, (cam[1] - 1) / 2.0])
+    g = np.array([3e-4, -2e-4])
+    T, Ti = np.eye(3), np.eye(3)
+    T[:2, 2], Ti[:2, 2] = c, -c
+    persp = np.eye(3)
+    persp[2, :2] = g
+    # Fixes the centre with an identity Jacobian there, so p0 is the answer.
+    H = p0.matrix(cam) @ T @ persp @ Ti
+    seed = p0.to_calibration(dmd, cam)
+    seed.cam_to_dmd = 2.0 * H                    # a DLT's scale is arbitrary
+    back = ReticlePose.from_calibration(seed)
+    r.check(np.allclose([back.cx, back.cy, back.angle_deg, back.sx, back.sy],
+                        [p0.cx, p0.cy, p0.angle_deg, p0.sx, p0.sy], atol=1e-6)
+            and back.mirrored,
+            f"a perspective seed's pose is its local scale at the centre ({back})")
+
+    class Proj:
+        resolution = dmd
+
+        def project_frame(self, f): pass
+
+        def stop(self): pass
+
+    cal = SW.CalibrationDialog(Proj(), lambda: None, real=False)
+    cal._calib = seed
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_calsave_"))
+    (tmp / "a_file").write_text("x")
+    real_ask = SW.QFileDialog.getSaveFileName
+    SW.QFileDialog.getSaveFileName = staticmethod(
+        lambda *a, **k: (str(tmp / "a_file" / "calib.json"), ""))
+    try:
+        cal._save()
+        ok = True
+    except Exception:                       # noqa: BLE001
+        ok = False
+    finally:
+        SW.QFileDialog.getSaveFileName = real_ask
+        shutil.rmtree(tmp, ignore_errors=True)
+    r.check(ok and "could not save" in cal._log.toPlainText() and cal.result() == 0,
+            "an unwritable calibration path is logged and the dialog stays open")
+    cal.reject()
+
+
 def _part_sweep() -> int:
     r = Report("dmd-sweep")
     check_reticle(r)
+    check_reticle_seed(r)
     check_manual_live(r)
     check_fresh_grabber(r)
     check_end_to_end(r)
@@ -2538,7 +2654,84 @@ def _part_roi() -> int:
     r.check('"column A"' in panel._lbl_rois.text(),
             f"the loaded set's name is shown ({panel._lbl_rois.text()!r})")
 
+    check_roi_store_corrupt(r)
     return r.finish()
+
+
+def check_roi_store_corrupt(r) -> None:
+    """A damaged .roi.json is skipped by the list and refused with ValueError
+    on load (what the editor and the DMD tab's Browse catch), never a crash."""
+    import acqApp.devices.dmd.panel as P
+    from acqApp.devices.dmd import roi_store
+
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_roibad_"))
+    good = tmp / "good.roi.json"
+    good.write_text('{"name": "ok", "rois": []}', encoding="utf-8")
+    bad = {"binary": b"\xff\xfe\x00garbage", "list": b"[1, 2]",
+           "entry": b'{"rois": [7]}', "keys": b'{"rois": [{"kind": "rect", "zz": 1}]}'}
+    for stem, data in bad.items():
+        (tmp / f"{stem}.roi.json").write_bytes(data)
+    try:
+        listed = roi_store.list_folder(tmp)
+        crashed = ""
+    except Exception as e:                  # noqa: BLE001
+        listed, crashed = [], type(e).__name__
+    r.check(not crashed and {s.name for s in listed} >= {"ok"}
+            and all(s.path.stem != "binary.roi" for s in listed)
+            and all(s.path.stem != "list.roi" for s in listed),
+            f"the picker's list skips unreadable sets ({crashed or len(listed)})")
+    wrong = []
+    for stem in bad:
+        try:
+            roi_store.load_named(tmp / f"{stem}.roi.json")
+            wrong.append(f"{stem}: loaded")
+        except ValueError:
+            pass
+        except Exception as e:              # noqa: BLE001
+            wrong.append(f"{stem}: {type(e).__name__}")
+    r.check(not wrong, f"loading a damaged set raises ValueError ({wrong})")
+    (tmp / "num.roi.json").write_text('{"name": 7, "rois": []}', encoding="utf-8")
+    names = [roi_store.load_named(tmp / "num.roi.json")[0]]
+    names += [s.name for s in roi_store.list_folder(tmp) if s.path.name == "num.roi.json"]
+    r.check(names == ["num.roi", "num.roi"],
+            f"a non-text name falls back to the file stem, never reaches .strip() ({names})")
+
+    panel = P.SettingsPanel()
+    panel._rb["roi"].setChecked(True)
+    warned: list = []
+    real_open, real_warn = P.QFileDialog.getOpenFileName, P.QMessageBox.warning
+    P.QFileDialog.getOpenFileName = staticmethod(
+        lambda *a, **k: (str(tmp / "list.roi.json"), ""))
+    P.QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a[2]))
+    try:
+        panel._browse()
+        raised = ""
+    except Exception as e:                  # noqa: BLE001
+        raised = type(e).__name__
+    finally:
+        P.QFileDialog.getOpenFileName, P.QMessageBox.warning = real_open, real_warn
+    r.check(not raised and len(warned) == 1 and panel.rois == (),
+            f"the DMD tab's Browse warns about a damaged set ({raised or warned})")
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    import acqApp.devices.dmd.roi_panel as RP
+    ed = RP.RoiEditor(None)
+    ed._add(RectRoi(x=10, y=10, w=5, h=5))
+    real_text, real_save = RP.QInputDialog.getText, RP.roi_store.save
+    RP.QInputDialog.getText = staticmethod(lambda *a, **k: ("set", True))
+
+    def bad_save(*_a):
+        raise PermissionError("read-only")
+    RP.roi_store.save = bad_save
+    try:
+        ed._on_save_roi()
+        raised = ""
+    except Exception as e:                  # noqa: BLE001
+        raised = type(e).__name__
+    finally:
+        RP.QInputDialog.getText, RP.roi_store.save = real_text, real_save
+    r.check(not raised and "read-only" in ed._status.text(),
+            f"the editor's Save reports a write failure ({raised or ed._status.text()!r})")
 
 
 # ═══ pair ═══════════════════════════════════════════════════════════════
@@ -2725,7 +2918,61 @@ def _part_pair() -> int:
     pump(app, 0.3)
     win.close()
     pump(app, 0.1)
+    check_pair_faults(r)
     return r.finish()
+
+
+def check_pair_faults(r: Report) -> None:
+    """A projector fault inside the pair dialog's slots is shown, not raised
+    (that aborts the app), and the light is still asked off; a failed save
+    keeps the dialog open."""
+    import acqApp.devices.dmd.pair_dialog as PD
+    from acqApp.devices.dmd.roi_panel import RoiEditor
+
+    _app = qt_app()
+    calls: list = []
+    alp_gone = [True]
+
+    def illuminate(rois):
+        calls.append(rois is not None)
+        if alp_gone[0]:
+            raise RuntimeError("ALP gone")
+
+    ed = RoiEditor(calib())
+    ed.set_image(np.zeros((CH, CW), np.uint8))
+    ed._add(RectRoi(x=100, y=80, w=40, h=20))
+    dlg = PD.PairRoiDialog(ed, "cellC_roi", live_source=lambda: None,
+                           illuminate=illuminate)
+    try:
+        dlg._btn_light.setChecked(True)
+        raised = False
+    except RuntimeError:
+        raised = True
+    r.check(not raised and calls == [True, False]
+            and not dlg._btn_light.isChecked() and "ALP gone" in dlg._lbl_err.text(),
+            f"a failing Illuminate is reported, unticked and asked dark ({calls})")
+    alp_gone[0] = False
+    dlg._btn_light.setChecked(True)
+    r.check(dlg._btn_light.isChecked() and dlg._lbl_err.text() == "",
+            f"a retry that lights clears the old error ({dlg._lbl_err.text()!r})")
+    dlg._btn_light.setChecked(False)
+
+    real_save = PD.roi_store.save
+
+    def bad_save(*_a):
+        raise PermissionError("read-only")
+    PD.roi_store.save = bad_save
+    try:
+        dlg._save()
+        raised = False
+    except OSError:
+        raised = True
+    finally:
+        PD.roi_store.save = real_save
+    r.check(not raised and dlg.path is None and dlg.result() == 0
+            and "read-only" in dlg._lbl_err.text(),
+            "a failed save is reported and the dialog stays open")
+    dlg.reject()
 
 
 PARTS = {

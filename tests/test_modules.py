@@ -428,6 +428,96 @@ def check_live_session(r: Report, win) -> None:
     r.check(not win._session_on, "and it stops cleanly afterwards")
 
 
+def _boom(*_a):
+    raise OSError("device gone")
+
+
+def _catch_escapes() -> tuple[list, object]:
+    """An excepthook that records, where PyQt would otherwise abort the run."""
+    escaped: list = []
+    hook = sys.excepthook
+    sys.excepthook = lambda _t, e, _tb: escaped.append(e)
+    return escaped, hook
+
+
+def check_start_failure_rolls_back(r: Report, win) -> None:
+    """A module raising at Live view: the session rolls back (workers
+    stopped, clock off, button up) instead of aborting the app."""
+    win.set_modules(["voltage_cam", "wheel"])
+    first, last = win._modules[0], win._modules[-1]
+    started: list = []
+    real_start = first.start
+    first.start = lambda: (real_start(), started.append(first.key))
+    last.start = _boom
+    escaped, hook = _catch_escapes()
+    try:
+        win._btn_run.setChecked(True)
+    finally:
+        sys.excepthook = hook
+        del first.start, last.start
+    r.check(bool(started), f"control: {first.key} started before {last.key} raised")
+    r.check(not escaped, f"nothing escaped the Live view slot ({escaped})")
+    r.check(not win._session_on and not win._btn_run.isChecked()
+            and not win._sync.running,
+            "…the session rolled back: not on, button up, clock off")
+    r.check(all(m.worker is None or not m.worker.isRunning() for m in win._modules),
+            "…and every worker already started was stopped")
+    r.check("Live view failed" in win.statusBar().currentMessage(),
+            f"…and says why ({win.statusBar().currentMessage()!r})")
+    win._btn_run.setChecked(True)
+    r.check(win._session_on, "Live view starts normally afterwards")
+    win._btn_run.setChecked(False)
+
+
+def check_display_failure_contained(r: Report, win) -> None:
+    """One module's update_display raising: the tick carries on to the rest,
+    tick after tick, and reports it once."""
+    win._btn_run.setChecked(True)
+    first, last = win._modules[0], win._modules[-1]
+    bad: list = []
+    ran: list = []
+    real = last.update_display
+
+    def raising():
+        bad.append(1)
+        raise ValueError("bad frame")
+
+    first.update_display = raising
+    last.update_display = lambda: (ran.append(1), real())
+    try:
+        win._display_tick()
+        win._display_tick()
+        escaped = ""
+    except Exception as e:                          # noqa: BLE001
+        escaped = f"{type(e).__name__}: {e}"
+    finally:
+        del first.update_display, last.update_display
+        win._btn_run.setChecked(False)
+    r.check(not escaped and len(bad) == 2,
+            f"a raising update_display is contained, tick after tick ({escaped or len(bad)})")
+    r.check(len(ran) == 2, f"…and {last.key} still refreshes after it")
+    failed = getattr(win, "_display_failed", None)
+    r.check(failed == {first.key}, f"…reported once per module ({failed})")
+
+
+def check_close_survives_a_failing_device(r: Report, win) -> None:
+    """App exit: one controller raising on close still closes the others."""
+    first, last = win._modules[0], win._modules[-1]
+    closed: list = []
+    real = last.close_controller
+    first.close_controller = _boom
+    last.close_controller = lambda: (closed.append(last.key), real())
+    escaped, hook = _catch_escapes()
+    try:
+        win.close()
+    finally:
+        sys.excepthook = hook
+        del first.close_controller, last.close_controller
+    r.check(not escaped, f"nothing escaped closeEvent ({escaped})")
+    r.check(closed == [last.key],
+            f"{last.key} closed although {first.key} raised first ({closed})")
+
+
 def check_always_on(r: Report, win) -> None:
     """`config.ALWAYS_ON` (the routine panel) cannot be switched off: the
     picker offers no checkbox, `selected()` puts it back, and so does
@@ -562,7 +652,10 @@ def _part_hotload() -> int:
         check_devices_monitor(r, win)
         check_camera_handle_survives(r, win)
         check_live_session(r, win)
+        check_start_failure_rolls_back(r, win)
+        check_display_failure_contained(r, win)
         check_dmd_shared_alignment(r)
+        check_close_survives_a_failing_device(r, win)
     finally:
         win.close()
     return r.finish()

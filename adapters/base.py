@@ -198,6 +198,7 @@ class ModuleAdapter:
                 self.controller.set(on)
             except Exception as e:                   # noqa: BLE001
                 self.win.status(f"{self.tab_label} LED: {type(e).__name__}: {e}")
+                return                  # the switch keeps showing the real state
         if self.panel is not None:
             self.panel.set_led(on)
 

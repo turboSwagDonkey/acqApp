@@ -29,8 +29,8 @@ class LedController:
         self.set(False)
 
     def set(self, value: bool) -> None:
-        self._state = value
         self._task.write(value)
+        self._state = value
 
     def close(self) -> None:
         try:

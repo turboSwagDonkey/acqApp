@@ -8,6 +8,7 @@ its JSON.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -84,14 +85,22 @@ def load(path: str | Path) -> SavedFov:
     if not isinstance(data, dict):
         raise ValueError(f"{path.name}: not a saved FOV")
     img = _img_for(path)
-    z = data.get("z_um")
+    # No default position: a file without one (Browse takes any) must not
+    # send the stage to 0,0.
+    if "x_um" not in data or "y_um" not in data:
+        raise ValueError(f"{path.name}: no saved position")
+    x, y, z = float(data["x_um"]), float(data["y_um"]), data.get("z_um")
+    z = None if z is None else float(z)
+    if not all(math.isfinite(v) for v in (x, y, 0.0 if z is None else z)):
+        raise ValueError(f"{path.name}: the position is not a finite number")
+    name, saved_at = data.get("name"), data.get("saved_at")
     return SavedFov(
         path=path,
-        name=data.get("name", path.stem),
-        saved_at=data.get("saved_at", ""),
-        x_um=float(data.get("x_um", 0.0)),
-        y_um=float(data.get("y_um", 0.0)),
-        z_um=None if z is None else float(z),
+        name=name if isinstance(name, str) else path.stem,
+        saved_at=saved_at if isinstance(saved_at, str) else "",
+        x_um=x,
+        y_um=y,
+        z_um=z,
         camera_preset=data.get("camera_preset"),
         image_path=img if img.is_file() else None)
 

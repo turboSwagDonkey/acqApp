@@ -30,7 +30,8 @@ def _json_value(v: Any) -> Any:
     if isinstance(v, np.ndarray):
         return v.tolist()
     if isinstance(v, dict):
-        return {k: _json_value(x) for k, x in v.items()}
+        # str keys: mixed int/str keys make sort_keys raise mid-file.
+        return {str(k): _json_value(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
         return [_json_value(x) for x in v]
     return str(v)
@@ -232,20 +233,25 @@ class SessionWriter(Writer):
         self._dir = path
         self._stem = path.name
         self._metadata = dict(metadata)
-        self._write_json()
+        self._write_json(self._metadata)
 
-    def _write_json(self) -> None:
+    def _write_json(self, metadata: dict[str, Any]) -> None:
+        # Serialized before the file opens: a value that fails must not leave
+        # the settings file truncated.
+        text = json.dumps(_json_value(metadata), indent=2, sort_keys=True)
         p = self._dir / f"{self._stem}_settings.json"
         with open(p, "w", encoding="utf-8") as f:
-            json.dump({k: _json_value(v) for k, v in self._metadata.items()},
-                      f, indent=2, sort_keys=True)
+            f.write(text)
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
+        """Merged in only once written, so a failing value can't poison every
+        later update (the final metadata above all)."""
         with self._lock:
             if self._dir is None:
                 return
-            self._metadata.update(metadata)
-            self._write_json()
+            merged = {**self._metadata, **metadata}
+            self._write_json(merged)
+            self._metadata = merged
 
     def write(self, stream: str, timestamp: float, data: Any) -> None:
         with self._lock:

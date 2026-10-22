@@ -440,7 +440,11 @@ class CalibrationDialog(QDialog):
             self, "Save DMD calibration", name, "Calibration (*.json)")
         if not path:
             return
-        self._calib.save(path)
+        try:
+            self._calib.save(path)
+        except OSError as e:
+            self.log(f"[sweep] could not save ({type(e).__name__}: {e})")
+            return
         self.log(f"[sweep] saved to {Path(path).name}")
         if self._on_saved is not None:
             self._on_saved(path)

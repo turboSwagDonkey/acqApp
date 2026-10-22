@@ -46,10 +46,12 @@ def _load_json(path: Path) -> dict:
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                raise ValueError(f"not a JSON object: {type(data).__name__}")
+            return data
         except FileNotFoundError:
             return {}
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except ValueError as e:         # JSONDecodeError, UnicodeDecodeError too
             keep = path.with_suffix(".corrupt.json")
             try:
                 os.replace(path, keep)
@@ -312,5 +314,5 @@ def load_dataclass(cls, module: str):
                 kwargs[field] = chan
     try:
         return cls(**kwargs)
-    except TypeError:
+    except (TypeError, ValueError):     # ValueError: a converting __post_init__
         return cls()

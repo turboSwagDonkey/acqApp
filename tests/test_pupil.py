@@ -1,11 +1,12 @@
 """Pupil camera: EyeLoop seam, tracking, the eye region, clip replay,
-the exposure bar, section help. Review is test_pupil_review.py, Auto
+the exposure bar, grab/LED on fakes, section help. Review is test_pupil_review.py, Auto
 test_pupil_auto.py.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_pupil.py [-v] [--part NAME]
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 import tempfile
@@ -465,6 +466,61 @@ def _part_track() -> int:
     r.check(bd.check(None, drop_frac=0.35, window=10) is False,
             "no radius (no fit) is never itself a flagged blink")
 
+    # A threshold edit rescales the radius: a new baseline, not one long blink.
+    class _ThrTracking:
+        last_mask = last_box = None
+
+        def track(self, frame, st):
+            return PupilFit(10.0, 10.0, st.track_threshold, st.track_threshold, 0.0)
+
+    st_hi = PupilSettings(track=True, blink_detect=True, **REGION)
+    st_lo = dataclasses.replace(st_hi, track_threshold=st_hi.track_threshold // 2)
+    n = {"i": 0}
+
+    def src():
+        n["i"] += 1
+        if n["i"] == 11:
+            bw.configure(st_lo)
+        if n["i"] > 20:
+            bw._stop = True
+            return None
+        return eye_frame()
+
+    bw = PupilTrackWorker(src, st_hi)
+    bw._tracking = _ThrTracking()
+    flags: list = []
+    bw.set_fit_sink(lambda _f, is_blink, _at: flags.append(is_blink))
+    bw._run()
+    r.check(len(flags) == 20 and not any(flags),
+            f"lowering the threshold mid-run flags no blinks ({sum(flags)} of "
+            f"{len(flags)})")
+
+    # Mid-fit, a frame isn't counted yet: fits never outrun frames in a snapshot.
+    gate, inside = threading.Event(), threading.Event()
+
+    class _SlowTracking(_ThrTracking):
+        def track(self, frame, st):
+            if n["i"] == 2:
+                inside.set()
+                gate.wait(2.0)
+            return super().track(frame, st)
+
+    n["i"] = 0
+    cw = PupilTrackWorker(lambda: (n.__setitem__("i", n["i"] + 1), eye_frame())[1]
+                          if n["i"] < 3 else None, st_hi)
+    cw._tracking = _SlowTracking()
+    cw.start()
+    inside.wait(2.0)
+    mid = cw.counts()
+    gate.set()
+    t_end = time.perf_counter() + 2.0
+    while cw.counts()[0] < 3 and time.perf_counter() < t_end:
+        time.sleep(0.01)
+    cw.stop()
+    r.check(mid == (1, 1, 0) and cw.counts()[:2] == (3, 3),
+            f"counts() is one frame per fit, mid-fit and after ({mid}, "
+            f"{cw.counts()})")
+
     # ══ the app half ═════════════════════════════════════════════════════════
     sys.argv = ["main.py", "--mock"]
 
@@ -647,6 +703,49 @@ def _part_track() -> int:
     mod._btn_pin.setChecked(True)
     r.check(not mod._btn_limit.isChecked(), "…and the other way round")
     mod._btn_pin.setChecked(False)
+
+    # Auto mid-tune when the module goes: its thread must not be dropped live.
+    from acqApp.devices.pupil_cam.track_worker import AutoTuneWorker
+
+    class _SlowTune(AutoTuneWorker):
+        def _run(self) -> None:
+            time.sleep(0.4)
+            self.done.emit(None)
+
+    tune = _SlowTune([])
+    mod._auto_worker = tune
+    tune.done.connect(mod._on_auto_done)
+    tune.error.connect(mod._on_auto_failed)
+    tune.start()
+    r.check("Auto" in mod.busy_reason(),
+            f"a running Auto blocks a module change ({mod.busy_reason()!r})")
+    mod.close_controller()
+    pump(app, 0.1)
+    r.check(not tune.isRunning() and mod._auto_worker is None
+            and mod._seed_clicks is None,
+            "closing waits for Auto's thread, and its late answer is ignored")
+
+    # A tune longer than the wait: the GUI is handed back, the thread kept alive.
+    from acqApp.adapters import pupil_cam as pupil_adapter
+    tune = _SlowTune([])
+    mod._auto_worker = tune
+    tune.done.connect(mod._on_auto_done)
+    tune.error.connect(mod._on_auto_failed)
+    tune.start()
+    mod._AUTO_CLOSE_WAIT_MS = 50
+    t0 = time.perf_counter()
+    try:
+        mod.close_controller()
+    finally:
+        del mod._AUTO_CLOSE_WAIT_MS
+    took = time.perf_counter() - t0
+    held = tune in pupil_adapter._RUNNING_TUNES
+    r.check(took < 0.3 and held and tune.isRunning(),
+            f"a slow Auto doesn't freeze closing ({took:.2f} s); its thread is "
+            f"held, not dropped live (held={held})")
+    pump(app, 0.6)
+    r.check(not tune.isRunning() and tune not in pupil_adapter._RUNNING_TUNES,
+            "…and let go once it finishes")
 
     win._btn_run.setChecked(False)
     pump(app, 0.2)
@@ -902,6 +1001,23 @@ def _part_video() -> int:  # noqa: PLR0915 — one linear scenario, split only b
                                                  - y2.astype(int)).max()) <= 1,
             "BI_RGB 24-bit: ditto, and still flipped upright")
 
+    # A crashed recording: movi size never patched, the last frame cut short.
+    p = write_avi(tmp / "crashed.avi", [y0.tobytes(), y1.tobytes()], W, H,
+                  b"Y800", 8)
+    raw = bytearray(p.read_bytes())
+    o = raw.find(b"movi") - 8
+    raw[o + 4:o + 8] = b"\xff\xff\xff\xff"
+    p.write_bytes(bytes(raw[:-(W * H) // 2]))
+    rd = AviReader(p)
+    try:
+        last = rd.luma(len(rd) - 1)
+    except ValueError as e:
+        last = e
+    r.check(len(rd) == 1 and isinstance(last, np.ndarray)
+            and np.array_equal(last, y0),
+            f"a crashed recording reads its whole frames, not the cut one "
+            f"({len(rd)} frames, last {type(last).__name__})")
+
     # ── 2. a compressed clip must say so, not guess ──────────────────────────
     p = write_avi(tmp / "mjpg.avi", [b"\xff\xd8" + b"\0" * (W * H)], W, H,
                   b"MJPG", 24)
@@ -1040,7 +1156,99 @@ def _part_exposure() -> int:
     r.check(len(saved) == n + 1 and 35.0 < p._exp.value() < 100_000,
             f"releasing saves once ({p._exp._lbl.text()})")
     r.check(not hasattr(p, "_chk_hz_link"), "no Link box: the bar is the link")
+
+    # A knob with no widget, set in the saved JSON, must survive a save.
+    p2 = SettingsPanel(PupilSettings(track_rim_dark=0.55))
+    kept = []
+    p2.settings_changed.connect(lambda s: kept.append(s.track_rim_dark))
+    p2._spn_hz.setValue(25.0)
+    r.check(kept and kept[-1] == 0.55 and p2.settings.track_rim_dark == 0.55,
+            f"a saved track_rim_dark is kept, not reset to the default ({kept})")
+    p2.deleteLater()
     app.processEvents()
+    return r.finish()
+
+
+class _FakeGrab:
+    """pylon's GrabResult: a timeout returns an empty one, which raises."""
+
+    def __init__(self, frame) -> None:
+        self._f = frame
+
+    def IsValid(self) -> bool:
+        return self._f is not None
+
+    def GrabSucceeded(self) -> bool:
+        if self._f is None:
+            raise RuntimeError("No grab result data is referenced. Cannot "
+                               "access NULL pointer.")
+        return True
+
+    @property
+    def Array(self):
+        return self._f
+
+    def Release(self) -> None:
+        pass
+
+
+class _FakeBasler:
+    """An open InstantCamera with no GenICam nodes, serving `results`."""
+
+    def __init__(self, worker_box: list, results: list) -> None:
+        self._box, self._results = worker_box, list(results)
+
+    def StartGrabbing(self, *_a) -> None:
+        pass
+
+    def StopGrabbing(self) -> None:
+        pass
+
+    def IsGrabbing(self) -> bool:
+        return True
+
+    def RetrieveResult(self, *_a):
+        if not self._results:
+            self._box[0]._stop = True
+            return _FakeGrab(None)
+        return self._results.pop(0)
+
+
+def _part_grab() -> int:
+    """Hardware wrappers on fakes: a grab timeout (an empty result) spins the
+    loop rather than ending it; the LED's state follows its writes."""
+    r = Report("pupil-grab")
+    app = qt_app()      # noqa: F841 — held, as elsewhere
+    from acqApp.devices.pupil_cam.acquisition import PupilCameraWorker
+    frame = np.full((8, 8), 7, np.uint8)
+    box: list = []
+    cam = _FakeBasler(box, [_FakeGrab(None), _FakeGrab(frame), _FakeGrab(frame)])
+    w = PupilCameraWorker(cam=cam)
+    box.append(w)
+    got = []
+    w.set_sink(got.append)
+    try:
+        w._run()
+        err = None
+    except Exception as e:      # noqa: BLE001 — what the guard would report
+        err = e
+    r.check(err is None and len(got) == 2,
+            f"frames after a timeout still arrive ({len(got)} frames, {err!r})")
+
+    # The LED on a DAQ that refuses the write: it must not claim to be on.
+    from acqApp.devices.pupil_cam.control import LedController
+
+    class _DeadTask:
+        def write(self, _v) -> None:
+            raise OSError("DAQ unplugged")
+
+    led = LedController.__new__(LedController)
+    led._task, led._state, led._intensity = _DeadTask(), False, 1.0
+    try:
+        led.on()
+    except OSError:
+        pass
+    r.check(not led.is_on, "a failed LED write leaves it reported off")
     return r.finish()
 
 
@@ -1737,6 +1945,7 @@ def _part_dark() -> int:  # noqa: PLR0915 — one linear scenario
     for _ in range(20):
         win._display_tick()
         pump(app, 0.05)
+    seen_before = mod._track.frames_seen
     md = mod.metadata()
     r.check(all(k in md for k in ("pupil_track_rim_check", "pupil_track_rim_dark",
                                   "pupil_track_whiskers")),
@@ -1750,8 +1959,14 @@ def _part_dark() -> int:  # noqa: PLR0915 — one linear scenario
             f"Live on the mock's bright eye: measured, no warning "
             f"({meter.value})")
     fin = mod.final_metadata()
+    seen_after = mod._track.frames_seen
     r.check(fin.get("pupil_underexposed") is False and "pupil_contrast" in fin,
             f"…and the recording says it was bright enough ({fin})")
+    n_rec = fin.get("pupil_frames_tracked", -1)
+    r.check(seen_before > 0 and 0 < n_rec <= seen_after - seen_before
+            and fin.get("pupil_fits", -1) <= n_rec,
+            f"frames and fits are counted from the recording's start, not "
+            f"Live view's ({n_rec} of {seen_before}..{seen_after})")
     mod.metadata()                           # a new recording starts here
     meter.samples.extend([1.5] * 15)
     win._display_tick()
@@ -1778,6 +1993,7 @@ PARTS = {
     "limit": _part_limit,
     "video": _part_video,
     "exposure": _part_exposure,
+    "grab": _part_grab,
     "help": _part_help,
 }
 

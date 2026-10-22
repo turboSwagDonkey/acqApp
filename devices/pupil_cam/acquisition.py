@@ -210,10 +210,11 @@ class PupilCameraWorker(PullWorker):
                                      "ExposureTimeAbs", label="exposure")
 
                     # Return, not Throw: a timeout must spin the loop so the
-                    # stop flag is seen.
+                    # stop flag is seen. It returns an empty result, whose
+                    # GrabSucceeded() raises.
                     grab = cam.RetrieveResult(self._GRAB_TIMEOUT_MS,
                                               pylon.TimeoutHandling_Return)
-                    if grab is None:
+                    if grab is None or not grab.IsValid():
                         continue
                     try:
                         if not grab.GrabSucceeded():

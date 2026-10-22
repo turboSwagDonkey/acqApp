@@ -688,8 +688,10 @@ class ReticlePose:
     def from_calibration(cls, calib: DmdCalibration) -> "ReticlePose":
         """The nearest pose to a fit; shear and perspective are dropped."""
         M = np.asarray(calib.cam_to_dmd, dtype=np.float64)
-        cx, cy = apply_transform(M, _cam_centre(calib.cam_size)[None])[0]
-        A = M[:2, :2] / M[2, 2]
+        c = _cam_centre(calib.cam_size)
+        cx, cy = apply_transform(M, c[None])[0]
+        # The fit's Jacobian at the centre: a homography's local scale is not M/M22.
+        A = (M[:2, :2] - np.outer([cx, cy], M[2, :2])) / (M[2, :2] @ c + M[2, 2])
         t = np.arctan2(A[1, 0], A[0, 0])
         y = -np.sin(t) * A[0, 1] + np.cos(t) * A[1, 1]     # (Rᵀ·A)[1, 1]
         return cls(float(cx), float(cy), float(np.degrees(t)),

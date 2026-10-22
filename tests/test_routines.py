@@ -3166,6 +3166,106 @@ def check_adapter_guards(r: Report) -> None:
         r.check(False, f"{type(e).__name__} escaped _tick: {e}")
 
 
+def check_abort_is_not_finish(r: Report) -> None:
+    """An aborted routine says so on the panel, the banner and in the file,
+    rather than reading as finished; a restart clears it."""
+    from acqApp.adapters.routines import RoutinesModule
+    from acqApp.routines.banner import look_for
+
+    rig = FakeRig()
+    one = Routine(steps=[Step(kind="wait", length=0.05, unit="seconds")])
+    eng = RoutineEngine(one, rig.hooks())
+    eng.start()
+    drive(eng, rig)
+    r.check(eng.phase == Phase.DONE and not eng.aborted,
+            "control: a routine run to its end is not aborted")
+    eng.start()
+    eng.abort()
+    r.check(eng.phase == Phase.DONE and eng.aborted, "abort() marks it aborted")
+
+    a = RoutinesModule.__new__(RoutinesModule)
+    shown: list[tuple[str, str]] = []
+    a.panel = SimpleNamespace(
+        set_state=lambda phase, text, _row: shown.append((phase, text)),
+        set_progress=lambda *_a: None)
+    a._rate_tick = 0
+    a._engine = eng
+    a._routine, a._routine_origin = one, 0.0
+    a._filed = a._filed_from = 0
+    a._edge_log = None
+    a.update_display()
+    phase, text = shown[-1]
+    r.check(text.startswith("aborted") and look_for(phase, text)[0] == "ABORTED",
+            f"the panel and banner say aborted, not finished ({text!r}, "
+            f"{look_for(phase, text)})")
+    fault = a.final_metadata()["routine_fault"]
+    r.check(fault == "aborted", f"…and so does the file's fault ({fault!r})")
+    r.check(a._mini_text()[0] == "aborted",
+            f"…and the sidebar ({a._mini_text()})")
+    eng.start()
+    r.check(not eng.aborted, "a restart clears the abort")
+    eng.abort()
+
+
+def check_restart_forgets_edge(r: Report) -> None:
+    """Aborted between a trigger's edge and its burst, a restarted engine
+    must not run its first Record as a burst with no edge."""
+    rig = FakeRig(hz=100.0)
+    rig.report_gate = True
+    routine = Routine(steps=[Step(kind="record", length=0.2, unit="seconds"),
+                             Step(kind="trigger"),
+                             Step(kind="record", length=0.5, unit="seconds")])
+    eng = RoutineEngine(routine, rig.hooks(), burst_frames=50)
+    eng.start()
+    drive(eng, rig, until=lambda e: e.phase == Phase.WAITING and rig.gated)
+    rig.fire_trigger()
+    drive(eng, rig, limit_s=rig.t + 1.0,
+          until=lambda e: e.phase == Phase.RUNNING)
+    r.check(eng.phase == Phase.RUNNING and eng.position[0] == 1,
+            f"fixture: the edge is seen, the burst not entered yet "
+            f"({eng.phase}, {eng.position})")
+    eng.abort()
+    eng.start()
+    drive(eng, rig, limit_s=rig.t + 1.0,
+          until=lambda e: e.phase == Phase.WAITING)
+    r.check(eng.phase == Phase.WAITING and eng.position[0] == 1,
+            f"the restart's first Record runs its 0.2 s, not a burst "
+            f"({eng.phase}, {eng.fault!r})")
+    eng.abort()
+
+
+def check_roll_rebases_frames(r: Report) -> None:
+    """A deferred file roll restarts the file's frame count: a frames Record
+    and its run re-baseline on the new file, or it runs the old count long."""
+    from acqApp.adapters.routines import RoutinesModule
+
+    rig = FakeRig(hz=100.0)
+    rig.advance(1.0)                    # the old file already holds 100 frames
+    rec = Routine(steps=[Step(kind="record", length=10, unit="frames")])
+    eng = RoutineEngine(rec, rig.hooks())
+    eng.start()
+    a = RoutinesModule.__new__(RoutinesModule)
+    a._status = lambda _m: None
+    a._timer = a._hold_t0 = a._seal_after = a._rec = None
+    a._routine = rec
+    a.win = SimpleNamespace(camera_ready=lambda _k: True)
+
+    def roll(_run) -> bool:
+        rig._gated_total = rig.t        # the new file counts from 0
+        return True
+
+    a._roll_for = roll
+    a._pending_roll_run = SimpleNamespace()
+    a._tick_once(eng)
+    drive(eng, rig, limit_s=rig.t + 0.5)
+    run = eng.runs[-1] if eng.runs else None
+    r.check(eng.phase == Phase.DONE and run is not None and run.frame0 == 0
+            and abs(run.frames - 10) <= 1,
+            f"the Record takes its 10 frames of the new file "
+            f"({eng.phase}, frame0={run and run.frame0}, "
+            f"frames={run and run.frames})")
+
+
 def check_step_edits_keep_groups(r: Report, app) -> None:
     """Duplicate/Remove keep every group on the steps it repeated; the
     table never leaves a fraction of a frame, nor fails on a FOV-named Move
@@ -3215,6 +3315,11 @@ def check_step_edits_keep_groups(r: Report, app) -> None:
                 f"a FOV-named Move with an axis left alone renders ({tip!r})")
     except Exception as e:                       # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} rendering a FOV-named Move: {e}")
+
+    tbl.item(2, FIELDS.index("kind")).setData(VALUE, "record")
+    head = tbl.verticalHeaderItem(2).text()
+    r.check(routine.steps[2].kind == "record" and "⏺" in head,
+            f"a step made a Record gets the Record badge at once ({head!r})")
 
     said: list[str] = []
     panel.status_message.connect(said.append)
@@ -3273,6 +3378,9 @@ def _part_routines() -> int:
         check_progress(r)
         check_hand_edited_load(r)
         check_adapter_guards(r)
+        check_abort_is_not_finish(r)
+        check_restart_forgets_edge(r)
+        check_roll_rebases_frames(r)
         # Unisolated, this overwrites the operator's save folder and edits
         # their template library.
         state = isolate_user_state()

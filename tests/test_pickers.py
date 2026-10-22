@@ -195,9 +195,36 @@ def _part_pairs() -> int:
     return r.finish()
 
 
+def _part_fov_files() -> int:
+    """A file the FOV picker's Browse took that isn't a sound bookmark is
+    refused, never read as a move to 0,0."""
+    r = Report("fov-files")
+    folder = fov_store.SESSION_DIR.parents[1] / "foreign"
+    for label, payload in (
+            ("no position at all (an ROI file, say)", {"name": "x_roi", "rois": []}),
+            ("only one axis", {"name": "half", "x_um": 5.0}),
+            ("a NaN position", {"name": "nan", "x_um": float("nan"), "y_um": 0.0}),
+            ("an infinite Z", {"name": "inf", "x_um": 0.0, "y_um": 0.0,
+                               "z_um": float("inf")})):
+        path = _write(folder / f"bad{fov_store.SUFFIX}", **payload)
+        try:
+            got = fov_store.load(path)
+            r.check(False, f"{label}: loaded as a move to "
+                           f"({got.x_um}, {got.y_um}, {got.z_um})")
+        except ValueError:
+            r.check(True, f"{label}: refused")
+    odd = fov_store.load(_write(folder / f"odd{fov_store.SUFFIX}", name=7,
+                                saved_at=None, x_um=1.0, y_um=2.0))
+    r.check(isinstance(odd.name, str) and isinstance(odd.saved_at, str),
+            f"a non-text name/saved_at reads as text, for the map and the "
+            f"routine pairing ({odd.name!r}, {odd.saved_at!r})")
+    return r.finish()
+
+
 PARTS = {
     "pickers": main,
     "pairs": _part_pairs,
+    "fov-files": _part_fov_files,
 }
 
 

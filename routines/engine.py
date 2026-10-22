@@ -166,6 +166,7 @@ class RoutineEngine:
         self._trig_settle = trigger_settle_s
         self.runs: list[RecordingRun] = []
         self.fault = ""
+        self.aborted = False            # DONE by abort(), not by the last step
         self._phase = Phase.IDLE
         self._order: list[int] = []     # play_order(routine)
         self._rec_ids: list[int | None] = []
@@ -292,12 +293,17 @@ class RoutineEngine:
             raise RoutineError("routine has no steps")
         self.runs = []
         self.fault = ""
+        self.aborted = False
         self._order = play_order(self._r)
         self._rec_ids = recording_run_ids(self._r, self._order)
         self._pos = self._cycle = 0
         self._i = self._order[0]
         self._attempt = 1
         self._steps_completed = 0
+        # A previous run aborted between its edge and the burst would make
+        # this run's first Record a burst with no edge.
+        self._after_edge = self._in_burst = False
+        self._burst_retries = 0
         self._dmd_on = False
         self._open_run = None
         self._open_key = None
@@ -335,6 +341,8 @@ class RoutineEngine:
 
     def abort(self) -> None:
         """Stop for good. The adapter stops capture."""
+        if self.running:
+            self.aborted = True
         if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.WAITING):
             self._halt("aborted")
         self._safe(self._h.stop_motion)
@@ -583,9 +591,10 @@ class RoutineEngine:
                             attempt=1, t0=self._h.now(), frame0=None)
 
     def rearm_step(self) -> bool:
-        """Restart the current Wait step's clock, after a .dcimg roll stopped
-        the camera mid-step. Wait steps only: a trigger step's baseline must
-        not move, or it would swallow its own edge."""
+        """Restart the current Wait step's clock and frame baseline, after a
+        file roll restarted the file's frame count (and a .dcimg roll stopped
+        the camera). Wait steps only: a trigger step's baseline must not move,
+        or it would swallow its own edge."""
         if not self._order:
             return False
         step = self._r.steps[self._i]
@@ -593,6 +602,8 @@ class RoutineEngine:
             return False
         self._wait_t0 = self._h.now()
         self._wait_frame0 = self._frames()
+        if self._open_run is not None:
+            self._open_run.frame0 = self._wait_frame0
         return True
 
     def _advance(self) -> None:

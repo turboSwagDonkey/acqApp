@@ -22,10 +22,10 @@ _REARMING = ("RE-ARMING — DON'T TRIGGER", "#b26a00")
 
 
 def look_for(phase: str, text: str) -> tuple[str, str] | None:
-    """(headline, colour) for a state, None for idle. An abort is a pause with
-    the fault "aborted", and a re-arm a wait whose edge would be lost; each
-    reads as its own state."""
-    if phase == Phase.PAUSED and "abort" in text.lower():
+    """(headline, colour) for a state, None for idle. An abort (a pause with
+    the fault "aborted", or the end it leads to) and a re-arm (a wait whose
+    edge would be lost) each read as their own state."""
+    if phase in (Phase.PAUSED, Phase.DONE) and "abort" in text.lower():
         return _ABORTED
     if phase == Phase.WAITING and text.startswith("RE-ARMING"):
         return _REARMING

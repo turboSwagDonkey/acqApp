@@ -122,10 +122,12 @@ class PufferController(QObject):
                     if self._task is not task:
                         return              # re-pointed or closed before we ran
                     task.write(True)
-                time.sleep(d)
-                with self._task_lock:
-                    if self._task is task:
-                        task.write(False)
+                try:
+                    time.sleep(d)       # raises on a negative/NaN duration
+                finally:
+                    with self._task_lock:
+                        if self._task is task:
+                            task.write(False)
             except Exception as e:
                 print(f"[puffer] pulse failed ({e})")
 

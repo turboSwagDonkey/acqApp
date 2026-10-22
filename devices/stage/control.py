@@ -252,6 +252,7 @@ class StageController:
             if progress is not None:
                 progress(msg)
 
+        dev.begin_frame_run()       # from here, STOP ALL ends the run
         updates: dict[int, dict] = {}
         dropped: list[str] = []
         for ax in (self._axis(a) for a in axes):

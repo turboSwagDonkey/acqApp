@@ -31,8 +31,12 @@ from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
 from acqApp.sidebar import MiniText
 from acqApp.widgets import compact
 
+# Auto tunes outliving their module: held until they finish, never dropped live.
+_RUNNING_TUNES: set = set()
+
 
 class PupilCamModule(ModuleAdapter):
+    _AUTO_CLOSE_WAIT_MS = 5000
     key = "pupil_cam"
     tab_label = "Pupil cam"
     plot_label = "Pupil"
@@ -49,7 +53,8 @@ class PupilCamModule(ModuleAdapter):
         self._lbl_limit = None
         self._cmb_view = None
         self._view_mode = "full"        # "full" | "bare" | "crop"
-        self._contrast_mark = (None, 0)   # (meter, first sample) per recording
+        # (tracker, contrast samples, frames, fits, blinks) at record start.
+        self._rec_mark: tuple = (None, 0, 0, 0, 0)
         self._theta = np.linspace(0, 2 * np.pi, 48)
         # Cached: `panel.settings` rebuilds from ~25 widgets per call.
         self._settings: PupilSettings | None = None
@@ -785,9 +790,11 @@ class PupilCamModule(ModuleAdapter):
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
-        # Where this recording's contrast samples begin (final_metadata).
-        meter = self._track.contrast if self._track is not None else None
-        self._contrast_mark = (meter, len(meter.samples) if meter else 0)
+        # Where this recording's counts begin (final_metadata): the tracker
+        # has been counting since Live view started.
+        tr = self._track
+        self._rec_mark = ((tr, len(tr.contrast.samples), *tr.counts())
+                          if tr is not None else (None, 0, 0, 0, 0))
         # Everything that shapes the trace travels with it — the threshold
         # above all, which moves the radius ~60% at an unchanged fit rate.
         return {"pupil_exposure_us": s.exposure_us,
@@ -821,26 +828,40 @@ class PupilCamModule(ModuleAdapter):
     def final_metadata(self) -> dict[str, Any]:
         """Fit rate is a floor, not a quality measure (docs/EYELOOP.md)."""
         s = self.panel.settings
-        if self._track is None or not s.track:
+        tr = self._track
+        if tr is None or not s.track:
             return {}
-        out = {"pupil_frames_tracked": self._track.frames_seen,
-               "pupil_fits":           self._track.fits}
+        mark, c0, seen0, fits0, blinks0 = self._rec_mark
+        if mark is not tr:          # a tracker built after the recording began
+            c0 = seen0 = fits0 = blinks0 = 0
+        seen, fits, blinks = tr.counts()     # the thread may still be running
+        out = {"pupil_frames_tracked": seen - seen0,
+               "pupil_fits":           fits - fits0}
         # Underexposure: the pupil-iris contrast over this recording.
-        meter, start = self._contrast_mark
-        samples = self._track.contrast.samples
-        out.update(contrast_summary(
-            samples[start:] if meter is self._track.contrast else samples))
+        out.update(contrast_summary(tr.contrast.samples[c0:]))
         if s.blink_detect:
-            out["pupil_blinks_flagged"] = self._track.blinks
+            out["pupil_blinks_flagged"] = blinks - blinks0
         return out
 
     # ── lifecycle of the review ──
     def busy_reason(self) -> str:
         if self._review is not None and self._review._worker is not None:
             return "Pupil review is fitting a clip"
+        if self._auto_worker is not None:
+            return "pupil Auto is still tuning"
         return ""
 
     def close_controller(self) -> None:
         if self._review is not None:
             self._review.shutdown()
+        w, self._auto_worker = self._auto_worker, None
+        if w is not None:   # a QThread dropped while running aborts the app
+            w.done.disconnect(self._on_auto_done)
+            w.error.disconnect(self._on_auto_failed)
+            if not w.wait(self._AUTO_CLOSE_WAIT_MS):    # bounded: the GUI (and STOP ALL) stay live
+                _RUNNING_TUNES.add(w)
+                w.finished.connect(lambda w=w: _RUNNING_TUNES.discard(w))
+            self._seed_clicks = None
+            if self.panel is not None:
+                self.panel.set_auto_busy(False)
         super().close_controller()

@@ -152,7 +152,10 @@ def parse_values(text: str) -> tuple[float, ...]:
         return ()
     m = _RANGE_RE.match(text)
     if m:
-        start, step, stop = (float(g) for g in m.groups())
+        try:            # the regex lets "1.2.3" through
+            start, step, stop = (float(g) for g in m.groups())
+        except ValueError:
+            return ()
         if step == 0:
             return ()
         n = int(round((stop - start) / step)) + 1

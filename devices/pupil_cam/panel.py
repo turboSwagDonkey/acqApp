@@ -9,6 +9,7 @@ at the next launch. That has happened; keep them in step.
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
@@ -277,8 +278,10 @@ class SettingsPanel(QWidget):
 
     @property
     def settings(self) -> PupilSettings:
-        """Everything the panel holds; the adapter persists exactly this."""
-        return self.tracking.settings_into(PupilSettings(
+        """Everything the panel holds; the adapter persists exactly this.
+        Fields with no widget (`track_rim_dark`) keep their loaded value."""
+        return self.tracking.settings_into(dataclasses.replace(
+            self._s,
             exposure_us=self._exp.value(),
             rate_hz=self._spn_hz.value(),
             video_path=self._video,

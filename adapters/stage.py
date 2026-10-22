@@ -129,6 +129,8 @@ class StageModule(ModuleAdapter):
         self.win.status(f"stage: connected ({ctrl.backend_kind})")
         self.controller = ctrl
         self._adopt(StagePollWorker(ctrl, s.poll_hz))
+        # A failed read ends the poll for good: the shown position goes stale.
+        self.worker.error.connect(self.panel.clear_position)
         self.worker.start()
         self.panel.bind_controller(ctrl)
         self._disp_timer.start()
@@ -177,6 +179,12 @@ class StageModule(ModuleAdapter):
                 "The stage isn't connected — check the port on the Stage "
                 "tab and that the hardware is powered on.")
             return
+        if not self.panel.position_known:
+            QMessageBox.information(
+                self.panel, "Save FOV",
+                "No position reading from the stage (yet, or its polling "
+                "stopped), so there is nothing true to save.")
+            return
         x_um, y_um, z_um = self.panel.current_position
         dmd = self.win.pattern_target()
         prompt = (f"Name (saved as <name>{pairs.FOV_SUFFIX}, its DMD ROI set "
@@ -224,7 +232,7 @@ class StageModule(ModuleAdapter):
         img8 = np.clip((small.astype(np.float32) - lo) / span * 255.0,
                        0, 255).astype(np.uint8)
         buf = io.BytesIO()
-        Image.fromarray(img8, mode="L").save(buf, format="PNG")
+        Image.fromarray(img8).save(buf, format="PNG")    # 2-D uint8: "L"
         return buf.getvalue()
 
     # ── recording ──

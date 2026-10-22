@@ -465,6 +465,27 @@ def check_bpod_match(r: Report, tmp: Path) -> None:
             f"every change is logged for undoing ({len(log) - 1} rows)")
 
 
+def check_bpod_revisited_state(r: Report, tmp: Path) -> None:
+    """A CamTrigger state entered twice in a trial reads as a 2x2 array; its
+    first entry is the onset, not an error."""
+    from scipy.io import savemat
+    from acqApp.saving import bpod_match as BM
+
+    trials = np.empty(2, dtype=object)
+    trials[0] = {"States": {"CamTrigger": np.array([[0.5, 0.6], [3.0, 3.1]])}}
+    trials[1] = {"States": {"CamTrigger": np.array([0.25, 0.35])}}
+    mat = tmp / "revisit.mat"
+    savemat(str(mat), {"SessionData": {"TrialStartTimestamp":
+                                       np.array([10.0, 20.0]),
+                                       "RawEvents": {"Trial": trials}}})
+    try:
+        got = BM.load_bpod_triggers(mat)
+    except Exception as e:                              # noqa: BLE001
+        got = e
+    r.check(isinstance(got, np.ndarray) and np.allclose(got, [10.5, 20.25]),
+            f"a revisited CamTrigger state uses its first onset ({got!r})")
+
+
 def check_bpod_rollback(r: Report, tmp: Path) -> None:
     """A file open part-way through Apply: the moved folders go back."""
     from acqApp.saving import bpod_match as BM
@@ -583,6 +604,7 @@ def _part_bpod() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_bpod_"))
     try:
         check_bpod_match(r, tmp)
+        check_bpod_revisited_state(r, tmp)
         check_bpod_rollback(r, tmp)
         check_scan_idle_while_recording(r, tmp)
         check_bpod_dialog(r, tmp)

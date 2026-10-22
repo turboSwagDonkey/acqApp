@@ -716,6 +716,22 @@ def _part_seed() -> int:  # noqa: PLR0915 — one linear scenario
         dlg._seed_cancel()
         r.check(not dlg.seeding and dlg._ctl._spn_thr.value() == thr
                 and dlg._btn_open.isEnabled(), "Cancel changes nothing")
+        # Moved off the frame asked: the circle goes, and a mark is kept
+        # for the frame it was clicked on.
+        dlg._seed_start()
+        asked = dlg._seed_frames[0]
+        dlg._on_image_click(Click(210, 150))
+        dlg.goto(asked + 1)
+        r.check(dlg._seed_roi is None and not dlg._btn_seed_next.isEnabled(),
+                "seeding: moving to another frame drops the circle")
+        dlg._on_image_click(Click(210, 150))
+        dlg._seed_next()
+        r.check(dlg._seed_frames[0] == asked + 1 and dlg._seed_marks[0] is not None,
+                f"…and the mark is for the frame clicked ({dlg._seed_frames[:1]})")
+        dlg.open_video(str(clip))
+        r.check(not dlg.seeding and dlg._seed_frames is None
+                and dlg._btn_open.isEnabled(),
+                "opening a clip mid-marking cancels the old clip's marks")
         dlg._dirty = False
         dlg.close()
     finally:
@@ -820,6 +836,9 @@ def _part_apply() -> int:
     settle()
     r.check(dlg._mask is not None and dlg._mask_img.image is not None,
             "with removal on, what it removed is painted on the clip")
+    r.check(dlg._mask_img.width() == 80 and dlg._mask_img.height() == 60,
+            f"…not transposed outside the rig's row-major config "
+            f"({dlg._mask_img.width()}x{dlg._mask_img.height()})")
     r.check(not hasattr(dlg._ctl, "_chk_cr_mask"), "…with no check box for it")
     # Playing: every frame gets its overlay, not just where it stops.
     dlg._spn_rate.setValue(200.0)
@@ -856,6 +875,23 @@ def _part_apply() -> int:
             and dlg._ctl._spn_thr.value() == 60 and not dlg.review.stale,
             "Revert restores the previous trace and its settings")
     r.check(not dlg._btn_revert.isEnabled(), "…once; then there is nothing older")
+    # A preview of frame 0 must not follow onto another clip's frame 0.
+    from acqApp.devices.pupil_cam.review import PupilReview
+    other = write_avi(tmp / "b.avi", [frame.tobytes()] * 8, W, H, b"Y800", 8)
+    done = PupilReview(other, dlg._read_settings())
+    done.track_all()
+    done.save()
+    dlg._ctl._spn_thr.setValue(100)
+    dlg.goto(0)
+    settle()
+    r.check(dlg._preview is not None and dlg._preview[0] == 0,
+            "fixture: frame 0 previewed")
+    dlg.open_video(str(other))
+    settle()
+    r.check(dlg._preview is None and not dlg.review.stale
+            and "preview" not in dlg._lbl_state.text(),
+            f"a newly opened, tracked clip shows no stale preview "
+            f"({dlg._lbl_state.text()})")
     dlg._dirty = False
     dlg.close()
     return r.finish()

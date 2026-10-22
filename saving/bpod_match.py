@@ -53,9 +53,10 @@ def load_bpod_triggers(path: Path) -> np.ndarray:
             for i, tr in enumerate(trials[:len(starts)]):
                 cam = getattr(tr.States, "CamTrigger", None)
                 if cam is not None:
-                    t = np.atleast_1d(cam)[0]
-                    if np.isfinite(t):
-                        onset[i] = float(t)
+                    # [start, end], or one such row per visit: the first start.
+                    t = np.ravel(np.asarray(cam, float))
+                    if t.size and np.isfinite(t[0]):
+                        onset[i] = float(t[0])
         except AttributeError:
             pass
         return starts + onset

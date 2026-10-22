@@ -51,6 +51,9 @@ class _PlaybackMixin:
             self.pause()
             self._prog.setText(f"frame {i} unreadable ({e})")
             return
+        if self.seeding and i != self._frame:   # a mark belongs to its frame
+            self._clear_seed_roi()
+            self._btn_seed_next.setEnabled(False)
         self._frame = i
         self._loading = True
         for w in (self._sld, self._spn_frame):

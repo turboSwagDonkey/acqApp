@@ -83,7 +83,7 @@ def check_healthy(r: Report) -> None:
     p._axis_widgets["x"]["step"].setValue(12.5)
     p._axis_widgets["y"]["step"].setValue(4.0)
     # Same target as current, so the confirm dialog is not involved here.
-    p._last_xy = (p._axis_widgets["x"]["goto"].value(), 0.0)
+    p.set_readout(p._axis_widgets["x"]["goto"].value(), 0.0)
     _drive(p)
 
     names = [n for n, _ in c.calls]
@@ -106,12 +106,12 @@ def check_confirm_threshold(r: Report) -> None:
     p = _panel(c)
     target = p._axis_widgets["x"]["goto"].value()
 
-    p._last_xy = (target, 0.0)
+    p.set_readout(target, 0.0)
     p._goto("x")
     r.check(not ASKED, "a zero-length move asks nothing")
     r.check([n for n, _ in c.calls] == ["move_to_um"], "and still moves")
 
-    p._last_xy = (target + 10 * p._s.confirm_move_um, 0.0)
+    p.set_readout(target + 10 * p._s.confirm_move_um, 0.0)
     _ANSWER = QMessageBox.StandardButton.No
     try:
         p._goto("x")
@@ -127,7 +127,7 @@ def check_dead_link(r: Report) -> None:
     WARNINGS.clear()
     c = FakeCtrl(boom=True)
     p = _panel(c)
-    p._last_xy = (p._axis_widgets["x"]["goto"].value(), 0.0)
+    p.set_readout(p._axis_widgets["x"]["goto"].value(), 0.0)
     try:
         _drive(p)
         r.check(True, "no handler lets an exception escape into the Qt slot")
@@ -158,7 +158,7 @@ def check_unbound(r: Report) -> None:
     """No controller at all is a silent no-op, not an AttributeError."""
     WARNINGS.clear()
     p = _panel(None)
-    p._last_xy = (p._axis_widgets["x"]["goto"].value(), 0.0)
+    p.set_readout(p._axis_widgets["x"]["goto"].value(), 0.0)
     try:
         _drive(p)
         r.check(True, "an unbound panel ignores every command")
@@ -261,7 +261,7 @@ def check_drag_speed_cap(r: Report) -> None:
     r.check(p.settings.drag_speed_um_s == speed,
             "the drag speed rides along in the saved settings")
 
-    p._last_xy = (0.0, 0.0)
+    p.set_readout(0.0, 0.0)
     p._on_drag_moved(5000.0, 0.0)
     r.check(p._drag_timer.isActive(), "a drag starts the chase timer")
     _tick(p, 0.1)
@@ -292,7 +292,7 @@ def check_drag_speed_cap(r: Report) -> None:
     r.check(not WARNINGS, f"no warnings on a healthy drag ({WARNINGS})")
 
     dead = _framed(_panel(FakeCtrl(boom=True)))
-    dead._last_xy = (0.0, 0.0)
+    dead.set_readout(0.0, 0.0)
     dead._on_drag_moved(1000.0, 0.0)
     try:
         _tick(dead, 0.1)
@@ -329,7 +329,7 @@ def check_map_mouse(r: Report) -> None:
     p = _framed(_panel(FakeCtrl()))
     m = p._map
     m.resize(400, 400)
-    m.set_position(0.0, 0.0)
+    p.set_readout(0.0, 0.0)
     got: list[tuple] = []
     m.drag_moved.connect(lambda x, y: got.append((x, y)))
     dot = m._frame().to_px(0.0, 0.0).toPoint()
@@ -361,7 +361,7 @@ def check_fovs_on_map(r: Report) -> None:
     names = [n for n, _, _ in p._map._fovs]
     r.check({"spotA_fov", "spotB_fov"} <= set(names),
             f"saved FOVs appear on the map by name ({names})")
-    p._last_xy = (100.0, 200.0)
+    p.set_readout(100.0, 200.0)
     p.goto_fov(a)
     r.check(p._map._active_fov == "spotA_fov", "the gone-to FOV is active")
     p.set_readout(900.0, 900.0)
@@ -414,7 +414,7 @@ def check_cam_axes(r: Report) -> None:
 
     m = p._map
     m.resize(400, 400)
-    m.set_position(0.0, 0.0)
+    p.set_readout(0.0, 0.0)
     got: list[tuple] = []
     m.drag_moved.connect(lambda x, y: got.append((x, y)))
     dot = m._frame().to_px(0.0, 0.0).toPoint()
@@ -443,7 +443,8 @@ def check_save_fov_disk_error(r: Report) -> None:
     def refuse(*_a, **_k):
         raise PermissionError("read-only")
 
-    panel = SimpleNamespace(connected=True, current_position=(1.0, 2.0, None),
+    panel = SimpleNamespace(connected=True, position_known=True,
+                            current_position=(1.0, 2.0, None),
                             refresh_fovs=lambda: None)
     win = SimpleNamespace(pattern_target=lambda: None,
                           camera_preset=lambda _k: None,
@@ -459,6 +460,37 @@ def check_save_fov_disk_error(r: Report) -> None:
                 f"a failed FOV write is reported ({WARNINGS})")
     except Exception as e:                            # noqa: BLE001
         r.check(False, f"save_fov raised {type(e).__name__}: {e}")
+    finally:
+        fov_store.save, QInputDialog.getText = saved
+
+
+def check_save_fov_needs_a_reading(r: Report) -> None:
+    """Before the first readout (or after the poll died) the panel's position
+    is a placeholder (0,0) or stale: saving it would bookmark a wrong spot."""
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QInputDialog
+    from acqApp.adapters.stage import StageModule
+    from acqApp.devices.stage import fov_store
+
+    p = _panel(FakeCtrl())
+    r.check(not p.position_known, "bound, no readout yet: position unknown")
+    win = SimpleNamespace(pattern_target=lambda: None,
+                          camera_preset=lambda _k: None,
+                          status=lambda _m: None, latest_frame=lambda _k: None)
+    fake = SimpleNamespace(panel=p, win=win, _snapshot_png=lambda: None)
+    wrote: list = []
+    saved = fov_store.save, QInputDialog.getText
+    fov_store.save = lambda *a, **k: wrote.append(a) or Path("x.fov.json")
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("spot", True))
+    INFOS.clear()
+    try:
+        StageModule.save_fov(fake)
+        r.check(not wrote and INFOS and "No position" in INFOS[-1],
+                f"Save FOV with no reading refuses ({wrote}, {INFOS[-1:]})")
+        p.set_readout(12.0, 34.0)
+        StageModule.save_fov(fake)
+        r.check(wrote and wrote[-1][1:3] == (12.0, 34.0),
+                f"control: after a readout it saves that position ({wrote})")
     finally:
         fov_store.save, QInputDialog.getText = saved
 
@@ -480,6 +512,7 @@ def check_measure_gating(r: Report) -> None:
 
     frame = np.zeros((64, 64), np.float32)
     p.set_camera_source(lambda: frame, lambda: 1)
+    p.set_readout(0.0, 0.0)
     orig = QInputDialog.getDouble
     QInputDialog.getDouble = staticmethod(lambda *a, **k: (25.0, True))
     try:
@@ -552,6 +585,160 @@ def check_window(r: Report) -> None:
     dlg.reject()
 
 
+def check_window_edges(r: Report) -> None:
+    """Motion that starts at or past the window's edge: a drag from outside
+    would jump to it at full speed; a FOV saved on the edge reads back a
+    count's rounding past it; an axes nudge there would be cut short."""
+    from types import SimpleNamespace
+
+    from PyQt6.QtWidgets import QInputDialog
+    import numpy as np
+    S = stage_settings
+
+    def homed(i: int, name: str) -> S.StageAxis:
+        ax = S.StageAxis(i, name, 2.0, slope=1.0, offset=0.0)
+        ax.apply_updates(ax.center_updates(5000))
+        return ax
+
+    ctrl = FakeCtrl()
+    p = SettingsPanel(S.StageSettings(x=homed(0, "X"), y=homed(1, "Y")))
+    p.bind_controller(ctrl)
+    WARNINGS.clear()
+    p.set_readout(1000.0, 0.0)                    # reached with the window off
+    p._on_drag_moved(300.0, 0.0)
+    _tick(p, 0.1)
+    r.check(not [c for c in ctrl.calls if c[0] == "move_to_um"]
+            and p._drag_cmd is None and WARNINGS
+            and "outside its allowed range" in WARNINGS[-1],
+            f"a drag from outside the window refuses instead of jumping "
+            f"650 µm to its edge ({ctrl.calls}, {WARNINGS[-1:]})")
+    p.set_readout(100.0, 0.0)
+    WARNINGS.clear()
+    p._on_drag_moved(300.0, 0.0)
+    _tick(p, 0.1)
+    r.check(not WARNINGS and [c for c in ctrl.calls if c[0] == "move_to_um"],
+            "control: the same drag from inside the window goes")
+    p._end_drag()
+
+    ctrl.calls.clear()
+    p.set_readout(0.0, 0.0)
+    p.goto_fov(SimpleNamespace(name="edge_fov", x_um=350.01, y_um=0.0,
+                               z_um=None, path=None))
+    r.check(("move_to_um", ("x", 350.01)) in ctrl.calls,
+            f"a FOV saved on the window's edge can be gone to ({ctrl.calls})")
+    p._active_fov = None
+
+    p.set_camera_source(lambda: np.zeros((8, 8), np.float32), lambda: 1)
+    ctrl.calls.clear()
+    WARNINGS.clear()
+    p.set_readout(340.0, 0.0)
+    orig = QInputDialog.getDouble
+    QInputDialog.getDouble = staticmethod(lambda *a, **k: (50.0, True))
+    try:
+        p._measure_axes()
+    finally:
+        QInputDialog.getDouble = orig
+    r.check(p._axes_run is None and not ctrl.calls and WARNINGS
+            and "No room" in WARNINGS[-1],
+            f"a +50 µm axes nudge 10 µm from the edge refuses before moving "
+            f"({ctrl.calls}, {WARNINGS[-1:]})")
+
+    p.set_readout(0.0, 0.0)
+    p.clear_position()
+    r.check(p._map._pos is None and p._last_map_xy is None,
+            "the poll gone: the dot leaves the map, so no drag can grab it")
+
+    # Stale _last_xy (0,0) would make a Go to 0 look like no move at all.
+    ASKED.clear()
+    WARNINGS.clear()
+    ctrl.calls.clear()
+    p._axis_widgets["x"]["goto"].setValue(0.0)
+    p._goto("x")
+    r.check(ASKED and "unknown" in ASKED[-1],
+            f"position unknown: Go to always asks ({ASKED[-1:]})")
+    p._on_drag_moved(100.0, 0.0)
+    r.check(p._drag_cmd is None and WARNINGS and "unknown" in WARNINGS[-1],
+            f"…a map drag refuses ({WARNINGS[-1:]})")
+    QInputDialog.getDouble = staticmethod(lambda *a, **k: (5.0, True))
+    try:
+        p._measure_axes()
+    finally:
+        QInputDialog.getDouble = orig
+    r.check(p._axes_run is None and "unknown" in WARNINGS[-1],
+            f"…and so does Measure camera axes ({WARNINGS[-1:]})")
+    r.check([c for c in ctrl.calls if c[0] != "move_to_um"] == [],
+            f"…with no motion but the confirmed Go to ({ctrl.calls})")
+    p.set_readout(0.0, 0.0)
+    r.check(p._map._pos == (0.0, 0.0),
+            "…and the next readout puts it back, even at the same spot")
+
+
+def check_window_toggle_persists(r: Report) -> None:
+    """Unticking Limit to window survives a restart (the adapter's save and
+    load), and a hand-edited non-bool falls back to on."""
+    from types import SimpleNamespace
+
+    from acqApp import config
+    from acqApp.adapters.stage import StageModule
+    S = stage_settings
+
+    win = SimpleNamespace(status=lambda _m: None)
+    m = StageModule(win)
+    m.build_panel()
+    m.panel._s.window_limit = False
+    m.panel._on_calibration_changed()              # as the Origin box's toggle
+    r.check(config.load_settings("stage").get("window_limit") is False,
+            "unticking is saved")
+    again = StageModule(win)
+    again.build_panel()
+    r.check(again.panel._s.window_limit is False
+            and again.panel._s.x.window_um is None,
+            "…and restored unticked on the next start")
+    config.save_settings("stage", {"window_limit": "no"})
+    third = StageModule(win)
+    third.build_panel()
+    r.check(third.panel._s.x.window_um == S.WINDOW_RANGE_UM,
+            "a non-bool saved value leaves the window on (the safe default)")
+
+
+def check_poll_failure_clears_position(r: Report) -> None:
+    """The poll worker stops for good on a failed read: the adapter must take
+    the now-stale position off the map."""
+    from types import SimpleNamespace
+
+    from PyQt6.QtWidgets import QApplication
+    from acqApp.adapters.stage import StageModule
+    S = stage_settings
+
+    win = SimpleNamespace(status=lambda _m: None,
+                          on_worker_error=lambda _m: None)
+    m = StageModule(win)
+    s = S.StageSettings()
+    for ax in (s.x, s.y):
+        ax.apply_updates(ax.center_updates(0))
+    m.panel = SettingsPanel(s)
+    m.build_controller(emulate=True)
+    try:
+        deadline = time.monotonic() + 3.0
+        while m.panel._map._pos is None and time.monotonic() < deadline:
+            QApplication.processEvents()
+            m.update_display()
+            time.sleep(0.02)
+        r.check(m.panel._map._pos is not None, "fixture: the poll draws the dot")
+
+        def dead():
+            raise OSError("serial link gone")
+        m.controller.read_xy_um = dead
+        deadline = time.monotonic() + 3.0
+        while m.panel._map._pos is not None and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
+        r.check(m.panel._map._pos is None,
+                "a failed poll read takes the stale dot off the map")
+    finally:
+        m.close_controller()
+
+
 def main() -> int:
     r = Report("stage-panel")
     isolate_user_state()
@@ -574,7 +761,11 @@ def main() -> int:
     check_cam_axes(r)
     check_measure_gating(r)
     check_save_fov_disk_error(r)
+    check_save_fov_needs_a_reading(r)
     check_window(r)
+    check_window_edges(r)
+    check_window_toggle_persists(r)
+    check_poll_failure_clears_position(r)
     check_real_config_untouched(r)
 
     after = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None

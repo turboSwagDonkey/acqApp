@@ -538,6 +538,9 @@ class RoutinesModule(ModuleAdapter):
             run, self._pending_roll_run = self._pending_roll_run, None
             if self._roll_for(run):
                 self._put(run, opening=True)
+                # The new file counts frames from 0: a frames Record measured
+                # from the old file's count would run that much longer.
+                eng.rearm_step()
                 if (self._routine is not None
                         and self._routine.wait_for_camera
                         and not self.win.camera_ready(FRAME_STREAM)):
@@ -838,8 +841,9 @@ class RoutinesModule(ModuleAdapter):
             self.panel.set_progress(eng.overall_progress(), self._left(eng))
             return
         if eng.phase == Phase.DONE:
+            end = "aborted" if eng.aborted else "finished"
             self.panel.set_state(eng.phase,
-                                 f"finished — {eng.steps_done()} step(s)", None)
+                                 f"{end} — {eng.steps_done()} step(s)", None)
             self.panel.set_progress(1.0, f"took {clock(eng.elapsed())}")
             return
         i, cycle, attempt = eng.position
@@ -874,7 +878,7 @@ class RoutinesModule(ModuleAdapter):
             return "idle", ""
         name = self._routine.name if self._routine is not None else ""
         if eng.phase in (Phase.ARMED, Phase.DONE):
-            return eng.phase, name
+            return ("aborted" if eng.aborted else eng.phase), name
         i = eng.position[0]
         return (f"step {i + 1}/{self._n_steps}  ·  "
                 f"{eng.overall_progress() * 100:.0f} %",
@@ -936,8 +940,9 @@ class RoutinesModule(ModuleAdapter):
             # The only record of which run faulted and was repeated.
             "routine_runs": json.dumps([x.attrs(session_origin=origin)
                                         for x in file_runs]),
-            "routine_fault":             eng.fault if eng.phase == Phase.PAUSED
-                                         else "",
+            "routine_fault":             (eng.fault if eng.phase == Phase.PAUSED
+                                          else "aborted" if eng.aborted
+                                          else ""),
             "routine_boundaries":        self._filed,
             "routine_edge_log":          (self._edge_log.name
                                           if self._edge_log else ""),

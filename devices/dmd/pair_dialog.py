@@ -72,7 +72,10 @@ class PairRoiDialog(QDialog):
         self._btn_light.setStyleSheet(style.toggle_btn("dmd"))
         self._btn_light.toggled.connect(self._on_light_toggled)
         row.addWidget(self._btn_light)
-        row.addStretch(1)
+        self._lbl_err = QLabel()
+        self._lbl_err.setWordWrap(True)
+        self._lbl_err.setStyleSheet(f"color:{style.WARN};")
+        row.addWidget(self._lbl_err, 1)
         root.addLayout(row)
 
         self._bb = QDialogButtonBox()
@@ -109,13 +112,25 @@ class PairRoiDialog(QDialog):
 
     def _project(self) -> None:
         if self._btn_light.isChecked():
-            self._illuminate(self._ed.roi_set)
-            self._lit = True
+            self._lit = True            # before: a failed upload may have lit it
+            try:
+                self._illuminate(self._ed.roi_set)
+            except Exception as e:      # noqa: BLE001 — escaping a slot aborts the app
+                self._fail("Could not illuminate", e)
+                self._btn_light.setChecked(False)   # -> _stop_light
+            else:
+                self._lbl_err.clear()   # a retry worked: no stale "off" message by a lit DMD
 
     def _stop_light(self) -> None:
         if self._lit:
             self._lit = False
-            self._illuminate(None)
+            try:
+                self._illuminate(None)
+            except Exception as e:      # noqa: BLE001
+                self._fail("Could not turn the light off", e)
+
+    def _fail(self, what: str, e: Exception) -> None:
+        self._lbl_err.setText(f"{what}: {type(e).__name__}: {e}")
 
     def _on_rois_changed(self, *_a) -> None:
         self._btn_save.setEnabled(len(self._ed.roi_set) > 0)
@@ -127,7 +142,11 @@ class PairRoiDialog(QDialog):
         rois = self._ed.roi_set
         if not len(rois):
             return
-        self.path = roi_store.save(self._name, rois)
+        try:
+            self.path = roi_store.save(self._name, rois)
+        except OSError as e:
+            self._fail("Could not save", e)
+            return
         self.accept()
 
     def done(self, result: int) -> None:
