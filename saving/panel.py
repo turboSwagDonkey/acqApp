@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
@@ -157,12 +157,11 @@ class SavePanel(QWidget):
             self._lbl_space.setText(f"Could not open {folder}: {e}")
 
     def _reload_drives(self) -> None:
-        self._cmb_drive.blockSignals(True)
-        self._cmb_drive.clear()
-        for root, free, total in list_drives():
-            self._cmb_drive.addItem(
-                f"{root}   {_gb(free)} free of {_gb(total)}", root)
-        self._cmb_drive.blockSignals(False)
+        with QSignalBlocker(self._cmb_drive):
+            self._cmb_drive.clear()
+            for root, free, total in list_drives():
+                self._cmb_drive.addItem(
+                    f"{root}   {_gb(free)} free of {_gb(total)}", root)
         self._sync_drive_combo()
 
     def _sync_drive_combo(self) -> None:
@@ -174,9 +173,8 @@ class SavePanel(QWidget):
         for i in range(self._cmb_drive.count()):
             data = self._cmb_drive.itemData(i) or ""
             if os.path.splitdrive(data)[0].upper() == anchor:
-                self._cmb_drive.blockSignals(True)
-                self._cmb_drive.setCurrentIndex(i)
-                self._cmb_drive.blockSignals(False)
+                with QSignalBlocker(self._cmb_drive):
+                    self._cmb_drive.setCurrentIndex(i)
                 return
 
     def _on_drive_picked(self, idx: int) -> None:

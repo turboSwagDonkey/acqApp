@@ -236,7 +236,6 @@ devices/                one package per instrument
     circle.py           the circle-in-a-region aperture geometry (regions.py
                         grid + region width -> diameter) the tuning types
                         share, no Qt
-    contrast.py         OBSOLETE, unused (replaced by sweep.py): delete
     control.py          VisStimController: priming -> per-trial trigger
                         gating, counted off the shared session clock's own
                         tick (no DAQ line, unlike the .m code) and replacing
@@ -247,12 +246,10 @@ devices/                one package per instrument
     regions.py          the 3x3 region grid the map and tuning trial types
                         share, no Qt
     settings.py         StimParams/LoopVar/VisStimSettings — no Qt
-    size.py             OBSOLETE, unused (replaced by sweep.py): delete
     sweep.py            the tuning types (orientation/contrast/spatial freq/
                         size): conditions, degrees -> px, no Qt
     trials.py           loop variables -> full-factorial trial list; the
                         shuffled per-repeat order, no Qt
-    tuning.py           OBSOLETE, unused (replaced by sweep.py): delete
     window.py           the full-screen QWidget the grating paints into
   voltage_cam/
     _check_link.py      script: CoaXPress or USB3? run after any cabling change

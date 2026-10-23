@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -629,14 +629,11 @@ class SettingsPanel(QWidget):
     # ── templates ────────────────────────────────────────────────────────
     def refresh_templates(self, select: str = "") -> None:
         names = templates.names()
-        self._cmb_tpl.blockSignals(True)
-        try:
+        with QSignalBlocker(self._cmb_tpl):
             self._cmb_tpl.clear()
             self._cmb_tpl.addItems(names)
             if select in names:
                 self._cmb_tpl.setCurrentIndex(names.index(select))
-        finally:
-            self._cmb_tpl.blockSignals(False)
         self._cmb_tpl.setEnabled(bool(names))
         if not names:
             self._cmb_tpl.setPlaceholderText("no saved templates")

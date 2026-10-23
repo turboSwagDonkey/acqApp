@@ -1698,15 +1698,15 @@ def check_manual_live(r: Report) -> None:
     calib = manual_seed((64, 48), (400, 300))
     frames = [np.zeros((300, 400), np.uint8)]
     ed = CE.CornerAdjustDialog(calib, frames[0], live_source=lambda: frames[-1])
-    r.check(ed._timer.isActive(), "a live editor polls the camera")
+    r.check(ed._feed.active, "a live editor polls the camera")
     bright = np.full((300, 400), 200, np.uint8)
     frames.append(bright)
-    ed._refresh()
+    ed._feed.refresh()
     r.check(ed._img.image.max() == 200, "a newer frame replaces the image")
     ed.reject()
-    r.check(not ed._timer.isActive(), "closing the editor stops the polling")
+    r.check(not ed._feed.active, "closing the editor stops the polling")
     still = CE.CornerAdjustDialog(calib, frames[0])
-    r.check(not still._timer.isActive(), "a still editor never polls")
+    r.check(not still._feed.active, "a still editor never polls")
 
 
 def check_reticle(r: Report) -> None:

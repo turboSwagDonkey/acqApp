@@ -7,7 +7,7 @@ exposure) is hot. The owner builds the worker from `get_config()` and wires
 
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
 )
@@ -255,9 +255,8 @@ class SettingsPanel(QWidget):
 
     def set_led(self, on: bool) -> None:
         """Show the LED state without re-emitting `led_toggled`."""
-        self._chk_led.blockSignals(True)
-        self._chk_led.setChecked(on)
-        self._chk_led.blockSignals(False)
+        with QSignalBlocker(self._chk_led):
+            self._chk_led.setChecked(on)
 
     def set_running(self, running: bool) -> None:
         """Lock the structural settings while running."""

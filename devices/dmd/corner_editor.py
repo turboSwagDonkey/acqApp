@@ -13,7 +13,7 @@ from typing import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSignalBlocker, Qt
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
                              QLabel, QPushButton, QVBoxLayout)
 
@@ -21,13 +21,13 @@ from acqApp import style
 from acqApp.devices.dmd.calibration import (CalibrationError, DmdCalibration,
                                             with_corners, with_vignette,
                                             without_vignette)
+from acqApp.devices.dmd.roi_live import LiveImageFeed
 from acqApp.devices.dmd.roi_panel import snapshot_levels
 
 _FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
 _CORNER_PEN = pg.mkPen("#00d0ff", width=2)
 _CORNER_HOVER = pg.mkPen("#4dff88", width=3)
 _VIGNETTE_PEN = pg.mkPen(style.WARN, width=2, style=Qt.PenStyle.DotLine)
-_LIVE_MS = 50
 
 
 class CornerAdjustDialog(QDialog):
@@ -45,26 +45,15 @@ class CornerAdjustDialog(QDialog):
         self._auto_corners = np.asarray(calib.accessible_corners(), float)
         self._result: DmdCalibration | None = None
         self._start_label = start_label
-        self._live_source = live_source
-        self._last_frame = frame
         self.setWindowTitle("Adjust calibration corners / vignette")
         self.setStyleSheet(style.accent_panel("dmd"))
         self.resize(900, 720)
         self._build(frame)
-        self._timer = QTimer(self)
-        if live_source is not None:
-            self._timer.timeout.connect(self._refresh)
-            self._timer.start(_LIVE_MS)
+        self._feed = LiveImageFeed(self, self._img, live_source, frame)
 
     def done(self, result: int) -> None:
-        self._timer.stop()
+        self._feed.stop()
         super().done(result)
-
-    def _refresh(self) -> None:
-        f = self._live_source()
-        if f is not None and f is not self._last_frame:
-            self._last_frame = f
-            self._img.setImage(np.asarray(f), autoLevels=False)
 
     # ── construction ─────────────────────────────────────────────────────────
     def _build(self, frame: np.ndarray) -> None:
@@ -158,9 +147,8 @@ class CornerAdjustDialog(QDialog):
 
     def _reset(self) -> None:
         for t, (x, y) in zip(self._targets, self._auto_corners):
-            t.blockSignals(True)
-            t.setPos(x, y)
-            t.blockSignals(False)
+            with QSignalBlocker(t):
+                t.setPos(x, y)
         self._on_moved()
 
     # ── result ───────────────────────────────────────────────────────────────

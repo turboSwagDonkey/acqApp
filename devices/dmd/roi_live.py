@@ -11,7 +11,7 @@ from typing import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QRectF, QTimer
+from PyQt6.QtCore import QObject, QRectF, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from acqApp import style
@@ -24,6 +24,33 @@ _BEYOND_PEN = pg.mkPen(style.WARN, width=2)
 
 # (frame, its preset's (hpos, vpos) in sensor px, sensor px per frame px).
 LiveFrame = tuple[np.ndarray, tuple[float, float], float]
+
+
+class LiveImageFeed(QObject):
+    """Puts `source()`'s newest frame into `img` every _LIVE_MS until
+    `stop()`; `frame` is the one last shown. No source = a still image."""
+
+    def __init__(self, parent: QObject, img: pg.ImageItem,
+                 source: Callable[[], object] | None, frame) -> None:
+        super().__init__(parent)
+        self._img, self._source, self.frame = img, source, frame
+        self._timer = QTimer(self)
+        if source is not None:
+            self._timer.timeout.connect(self.refresh)
+            self._timer.start(_LIVE_MS)
+
+    @property
+    def active(self) -> bool:
+        return self._timer.isActive()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def refresh(self) -> None:
+        f = self._source() if self._source is not None else None
+        if f is not None and f is not self.frame:
+            self.frame = f
+            self._img.setImage(np.asarray(f), autoLevels=False)
 
 
 class RoiLiveView(QWidget):

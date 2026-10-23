@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.graphicsItems.ROI import Handle
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtGui import (QBrush, QColor, QCursor, QKeySequence, QPainter,
                          QPainterPath, QPen, QPixmap, QPolygonF, QShortcut)
 from PyQt6.QtWidgets import (
@@ -47,7 +47,6 @@ def snapshot_levels(frame: np.ndarray) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
-TOOLS = ("rectangle", "circle", "free", "pan")
 _SHAPE_LABEL = {"rect": "Rectangle", "circle": "Circle", "poly": "Free-form"}
 _TABLE_ROWS = 5                 # rows the ROI table always shows; more scroll
 
@@ -240,12 +239,9 @@ class _PolyItem(pg.ROI):
     def reset(self, points) -> None:
         """Back at the origin with a new outline, without announcing it (the
         caller does): a half-moved one must not reach the model."""
-        self.blockSignals(True)
-        try:
+        with QSignalBlocker(self):
             self.set_points(points)
             self.setPos((0.0, 0.0))
-        finally:
-            self.blockSignals(False)
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()

@@ -13,7 +13,7 @@ from typing import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QKeyCombination, Qt, QTimer
+from PyQt6.QtCore import QKeyCombination, QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QDialogButtonBox,
                              QFormLayout, QHBoxLayout, QLabel, QPushButton,
@@ -24,12 +24,12 @@ from acqApp.devices.dmd.calibration import (RETICLE_BOX, RETICLE_KINDS,
                                             DmdCalibration, ReticlePose,
                                             manual_seed, reticle_frame,
                                             reticle_outline)
+from acqApp.devices.dmd.roi_live import LiveImageFeed
 from acqApp.devices.dmd.roi_panel import snapshot_levels
 from acqApp.widgets import hrow, spin
 
 _RETICLE_PEN = pg.mkPen("#00d0ff", width=2)
 _CROSS_PEN = pg.mkPen("#00d0ff", width=1, style=Qt.PenStyle.DashLine)
-_LIVE_MS = 50
 _PROJECT_MS = 40            # coalesces a held arrow key into one upload per tick
 
 _STEP_HELP = {
@@ -60,8 +60,6 @@ class ReticleAlignDialog(QDialog):
         self._seed = seed
         self._start = ReticlePose.from_calibration(
             seed or manual_seed(self._dmd_size, self._cam_size))
-        self._live_source = live_source
-        self._last_frame = frame
         self._result: DmdCalibration | None = None
         self.setWindowTitle("Align DMD to camera reticle")
         self.setStyleSheet(style.accent_panel("dmd"))
@@ -71,13 +69,10 @@ class ReticleAlignDialog(QDialog):
         self._push.timeout.connect(self._send)
         self._build(f)
         self._set_pose(self._start)
-        self._timer = QTimer(self)
-        if live_source is not None:
-            self._timer.timeout.connect(self._refresh)
-            self._timer.start(_LIVE_MS)
+        self._feed = LiveImageFeed(self, self._img, live_source, frame)
 
     def done(self, result: int) -> None:
-        self._timer.stop()
+        self._feed.stop()
         self._push.stop()
         super().done(result)
 
@@ -201,12 +196,10 @@ class ReticleAlignDialog(QDialog):
         for s, v in ((self._spn_cx, p.cx), (self._spn_cy, p.cy),
                      (self._spn_angle, angle), (self._spn_sx, p.sx),
                      (self._spn_sy, p.sy)):
-            s.blockSignals(True)
-            s.setValue(v)
-            s.blockSignals(False)
-        self._chk_mirror.blockSignals(True)
-        self._chk_mirror.setChecked(p.mirrored)
-        self._chk_mirror.blockSignals(False)
+            with QSignalBlocker(s):
+                s.setValue(v)
+        with QSignalBlocker(self._chk_mirror):
+            self._chk_mirror.setChecked(p.mirrored)
         self._changed()
 
     def nudge(self, key: Qt.Key, n: int = 1) -> None:
@@ -243,14 +236,8 @@ class ReticleAlignDialog(QDialog):
             self._lbl_status.setText(f"Could not project: {e}")
 
     # ── live image ───────────────────────────────────────────────────────────
-    def _refresh(self) -> None:
-        f = self._live_source()
-        if f is not None and f is not self._last_frame:
-            self._last_frame = f
-            self._img.setImage(np.asarray(f), autoLevels=False)
-
     def _auto_levels(self) -> None:
-        self._img.setLevels(snapshot_levels(np.asarray(self._last_frame)))
+        self._img.setLevels(snapshot_levels(np.asarray(self._feed.frame)))
 
     # ── result ───────────────────────────────────────────────────────────────
     def _apply(self) -> None:

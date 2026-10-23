@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QSignalBlocker, QTimer
 from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 from acqApp import config, style
@@ -120,9 +120,8 @@ class DmdModule(ModuleAdapter):
         b = self._light_btn
         if b is None:
             return
-        b.blockSignals(True)
-        b.setChecked(lit)
-        b.blockSignals(False)
+        with QSignalBlocker(b):
+            b.setChecked(lit)
         b.setText(_LIGHT_ON if lit else _LIGHT_OFF)
         b.setEnabled(self.controller is not None)
 

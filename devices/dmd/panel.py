@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QRect, QSignalBlocker, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen,
                          QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
@@ -488,11 +488,8 @@ class SettingsPanel(QWidget):
         layout and change it. `_spn_dx` is blocked so one tick fires one
         `_emit` (disk write, live re-project), not two."""
         scale = self._preview_scale
-        self._spn_dx.blockSignals(True)
-        try:
+        with QSignalBlocker(self._spn_dx):
             self._spn_dx.setValue(self._spn_dx.value() + dx * scale)
-        finally:
-            self._spn_dx.blockSignals(False)
         self._spn_dy.setValue(self._spn_dy.value() + dy * scale)
 
     def _browse(self) -> None:

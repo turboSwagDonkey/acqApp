@@ -7,6 +7,7 @@ Trial types not in settings.IMPLEMENTED_TRIAL_TYPES are listed but disabled.
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
 
 from PyQt6.QtGui import QGuiApplication
@@ -15,7 +16,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QGroupBox, QLabel, QLineEdit, QListWidget, QMessageBox,
     QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, Qt, QTimer, pyqtSignal
 
 from acqApp import style
 from acqApp.widgets import (button_row, check, compact, pairs_grid,
@@ -289,9 +290,8 @@ class SettingsPanel(QWidget):
 
     def _show_sweep_type(self, t: str) -> None:
         """Point Repeats and Levels at tuning type `t`."""
-        self._spn_repeats.blockSignals(True)
-        self._spn_repeats.setValue(self._spins[_SWEEP_REPEATS[t]].value())
-        self._spn_repeats.blockSignals(False)
+        with QSignalBlocker(self._spn_repeats):
+            self._spn_repeats.setValue(self._spins[_SWEEP_REPEATS[t]].value())
         show_item(self._edt_levels, t in _LEVEL_UNITS)
         if t in _LEVEL_UNITS:
             unit = _LEVEL_UNITS[t]
@@ -386,9 +386,9 @@ class SettingsPanel(QWidget):
         self._s = s
         widgets = [self._cmb_trial, self._cmb_screen, self._chk_stretch,
                    *self._spins.values()]
-        for w in widgets:
-            w.blockSignals(True)
-        try:
+        with ExitStack() as blocked:
+            for w in widgets:
+                blocked.enter_context(QSignalBlocker(w))
             idx = self._cmb_trial.findData(s.trial_type)
             self._cmb_trial.setCurrentIndex(idx if idx >= 0 else 0)
             for name, box in self._spins.items():
@@ -396,9 +396,6 @@ class SettingsPanel(QWidget):
                 box.setValue(v / _TICK_HZ if name in _TICK_FIELDS else v)
             self._chk_stretch.setChecked(s.stretch_to_screen)
             self._refresh_screens()
-        finally:
-            for w in widgets:
-                w.blockSignals(False)
         self._region.set_value(int(s.params.TuneRegion))
         self._refresh_loops()
         self._update_group_visibility()
@@ -553,15 +550,14 @@ class SettingsPanel(QWidget):
             f"auto ({cm:.1f} cm)" if cm else "auto (unknown)")
 
     def _refresh_screens(self) -> None:
-        self._cmb_screen.blockSignals(True)
-        self._cmb_screen.clear()
-        for i, scr in enumerate(QGuiApplication.screens()):
-            g = scr.geometry()
-            self._cmb_screen.addItem(
-                f"{i}: {scr.name()} ({g.width()}x{g.height()})")
-        if 0 <= self._s.screen_index < self._cmb_screen.count():
-            self._cmb_screen.setCurrentIndex(self._s.screen_index)
-        self._cmb_screen.blockSignals(False)
+        with QSignalBlocker(self._cmb_screen):
+            self._cmb_screen.clear()
+            for i, scr in enumerate(QGuiApplication.screens()):
+                g = scr.geometry()
+                self._cmb_screen.addItem(
+                    f"{i}: {scr.name()} ({g.width()}x{g.height()})")
+            if 0 <= self._s.screen_index < self._cmb_screen.count():
+                self._cmb_screen.setCurrentIndex(self._s.screen_index)
 
     def _identify_displays(self) -> None:
         """Show each screen's "Show on:" index/name on it for 3 s."""

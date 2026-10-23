@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QRectF, Qt
+from PyQt6.QtCore import QRectF, QSignalBlocker, Qt
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
                              QStackedWidget, QVBoxLayout, QWidget)
 
@@ -479,9 +479,8 @@ class PupilCamModule(ModuleAdapter):
         s = self._settings or self.panel.settings   # per drag step: the cache
         lim = s.search_limit()
         locked = s.limit_locked and lim is not None
-        self._btn_lock.blockSignals(True)
-        self._btn_lock.setChecked(locked)
-        self._btn_lock.blockSignals(False)
+        with QSignalBlocker(self._btn_lock):
+            self._btn_lock.setChecked(locked)
         self._btn_lock.setEnabled(lim is not None)
         self._btn_limit.setEnabled(not locked)
         if self._btn_limit.isChecked():

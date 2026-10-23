@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QFileDialog, QFormLayout, QGroupBox, QLabel,
     QStackedWidget, QVBoxLayout, QWidget,
@@ -251,9 +251,8 @@ class SettingsPanel(QWidget):
         if on:
             self._pick_video()
             if not self._video:
-                self._chk_video.blockSignals(True)
-                self._chk_video.setChecked(False)
-                self._chk_video.blockSignals(False)
+                with QSignalBlocker(self._chk_video):
+                    self._chk_video.setChecked(False)
         else:
             self._set_video("")
 
@@ -272,9 +271,8 @@ class SettingsPanel(QWidget):
     def _show_video(self) -> None:
         self._lbl_vid.setText(Path(self._video).name if self._video else "")
         self._lbl_vid.setVisible(bool(self._video))
-        self._chk_video.blockSignals(True)
-        self._chk_video.setChecked(bool(self._video))
-        self._chk_video.blockSignals(False)
+        with QSignalBlocker(self._chk_video):
+            self._chk_video.setChecked(bool(self._video))
 
     @property
     def settings(self) -> PupilSettings:
@@ -306,6 +304,5 @@ class SettingsPanel(QWidget):
 
     def set_led(self, on: bool) -> None:
         """Show the LED's state without re-emitting `led_toggled`."""
-        self._chk_led.blockSignals(True)
-        self._chk_led.setChecked(on)
-        self._chk_led.blockSignals(False)
+        with QSignalBlocker(self._chk_led):
+            self._chk_led.setChecked(on)
