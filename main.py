@@ -153,7 +153,7 @@ def _close_camera(handle) -> None:
 
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 
-from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtCore import Qt, QTimer, QSettings, QSignalBlocker
 from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDockWidget, QLabel, QMainWindow,
@@ -964,9 +964,8 @@ class MainWindow(QMainWindow):
         for m in self._modules:
             self._safe_stop(m)
         self._sync.stop_all()
-        self._btn_run.blockSignals(True)
-        self._btn_run.setChecked(False)
-        self._btn_run.blockSignals(False)
+        with QSignalBlocker(self._btn_run):
+            self._btn_run.setChecked(False)
         self.status(f"Live view failed — {where}: {type(e).__name__}: {e}")
 
     def _guarded(self, m, method: str) -> None:
