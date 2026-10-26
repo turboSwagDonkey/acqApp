@@ -1,11 +1,13 @@
-"""Stage <-> camera axes: which way the picture slides when the stage moves.
+"""Stage <-> camera axes: which way the picture and view go when the stage moves.
 No Qt.
 
 `CamAxes` is (ax, ay, bx, by): the image shift, in unbinned camera pixels
 (x right, y down, as displayed), per µm of stage +X (ax, ay) and of stage +Y
 (bx, by). `axes_measure.py` measures it by nudging the stage and correlating
-frames; jogs then move the picture straight along the screen
-(`camera_jog`), and the camera view draws it as arrows.
+frames. Everything shown to the operator is the view's motion over the
+sample, the opposite of the picture's (`view_dir`): jogs move the view
+straight along the screen (`camera_jog`), the map turns to match, and the
+camera view draws the arrows.
 """
 from __future__ import annotations
 
@@ -118,8 +120,14 @@ def screen_angle(vx: float, vy: float) -> float:
     return math.degrees(math.atan2(-vy, vx))
 
 
+def view_dir(axes: CamAxes) -> CamAxes:
+    """Where the view heads over the sample per µm of stage +X, +Y: the
+    picture slides the other way."""
+    return tuple(-v for v in axes)
+
+
 def describe(axes: CamAxes) -> str:
-    ax, ay, bx, by = axes
+    ax, ay, bx, by = view_dir(axes)
     um_px = 2.0 / (math.hypot(ax, ay) + math.hypot(bx, by))
     return (f"+X {screen_angle(ax, ay):.0f}°, +Y {screen_angle(bx, by):.0f}°, "
             f"{um_px:.3g} µm/px")
@@ -129,11 +137,11 @@ def camera_jog(which: str, delta_um: float, rotation_deg: float,
                axes: CamAxes | None) -> tuple[float, float]:
     """A jog along the screen's `which` axis -> the stage's (dx, dy) in µm.
 
-    Measured `axes`: +x slides the picture right, +y up, by `delta_um` of
-    stage travel. Otherwise the manual `rotation_deg` (0 = stage axes as-is,
-    exact)."""
+    Measured `axes`: +x moves the view right (the picture slides left), +y
+    up, by `delta_um` of stage travel. Otherwise the manual `rotation_deg`
+    (0 = stage axes as-is, exact)."""
     if axes is not None:
-        ax, ay, bx, by = axes
+        ax, ay, bx, by = view_dir(axes)
         ux, uy = (1.0, 0.0) if which == "x" else (0.0, -1.0)
         det = ax * by - bx * ay
         sx, sy = (by * ux - bx * uy) / det, (ax * uy - ay * ux) / det

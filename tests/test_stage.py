@@ -708,7 +708,7 @@ def check_camera_jog(r: Report) -> None:
     for mirror in (False, True):
         axes = _rot_axes(30.0, 1.6, mirror)
         ax, ay, bx, by = axes
-        for which, want in (("x", (1, 0)), ("y", (0, -1))):
+        for which, want in (("x", (-1, 0)), ("y", (0, 1))):
             sx, sy = camera_jog(which, 10.0, 0.0, axes)
             ix, iy = ax * sx + bx * sy, ay * sx + by * sy
             n = np.hypot(ix, iy)
@@ -716,7 +716,7 @@ def check_camera_jog(r: Report) -> None:
                     and abs(ix / n - want[0]) < 1e-9
                     and abs(iy / n - want[1]) < 1e-9,
                     f"jog {which}+ ({'mirrored' if mirror else 'plain'}) "
-                    f"slides the picture {'right' if which == 'x' else 'up'} "
+                    f"moves the view {'right' if which == 'x' else 'up'} "
                     f"by 10 µm of travel (image {ix:.2f}, {iy:.2f})")
     r.check(camera_jog("x", 5.0, 0.0, None) == (5.0, 0.0)
             and camera_jog("y", -5.0, 0.0, None) == (0.0, -5.0),
@@ -730,7 +730,7 @@ def check_camera_jog(r: Report) -> None:
             "near-parallel X and Y are refused")
     r.check(implausible((1.6, 0.0, 0.0, 0.8)) != "",
             "X and Y at different scales are refused")
-    r.check("+X 30°" in describe(_rot_axes(30.0, 2.0, False))
+    r.check("+X -150°" in describe(_rot_axes(30.0, 2.0, False))
             and "0.5 µm/px" in describe(_rot_axes(30.0, 2.0, False)),
             f"describe names the angle and scale "
             f"({describe(_rot_axes(30.0, 2.0, False))})")

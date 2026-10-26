@@ -409,8 +409,9 @@ def check_cam_axes(r: Report) -> None:
     p._jog("x", +1)
     dx, dy = [a for n, a in c.calls if n == "jog_xy_um"][-1]
     ix, iy = axes[0] * dx + axes[2] * dy, axes[1] * dx + axes[3] * dy
-    r.check(ix > 0 and abs(iy) < 1e-9 and abs(math.hypot(dx, dy) - 10) < 1e-9,
-            f"Jog X+ slides the picture right ({ix:.2f}, {iy:.2f})")
+    r.check(ix < 0 and abs(iy) < 1e-9 and abs(math.hypot(dx, dy) - 10) < 1e-9,
+            f"Jog X+ moves the view right: the picture slides left "
+            f"({ix:.2f}, {iy:.2f})")
 
     m = p._map
     m.resize(400, 400)
@@ -423,9 +424,9 @@ def check_cam_axes(r: Report) -> None:
     QTest.mouseRelease(m, Qt.MouseButton.LeftButton, pos=dot + QPoint(40, 0))
     x, y = got[-1]
     ix, iy = axes[0] * x + axes[2] * y, axes[1] * x + axes[3] * y
-    r.check(ix > 0 and abs(iy) < 0.05 * ix,
-            f"the map is turned to the camera: dragging right moves the stage "
-            f"so the picture slides right ({ix:.1f}, {iy:.1f})")
+    r.check(ix < 0 and abs(iy) < 0.05 * -ix,
+            f"the map is turned to the camera: dragging right moves the view "
+            f"right, so the picture slides left ({ix:.1f}, {iy:.1f})")
 
     p._set_cam_axes(None)
     r.check(p.settings.cam_axes is None and p._spn_rotation.isEnabled(),

@@ -1,5 +1,5 @@
-"""Stage +X/+Y arrows on a camera view: the way the picture slides when the
-stage moves along each axis (`cam_axes.CamAxes`). Drawn in image
+"""Stage +X/+Y arrows on a camera view: the way the view moves over the
+sample when the stage moves along each axis (`cam_axes.view_dir`). Drawn in image
 coordinates at the lower-left; hidden until the axes are measured."""
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pyqtgraph as pg
 from PyQt6.QtGui import QBrush, QColor, QFont, QPen, QTransform
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsSimpleTextItem
 
-from .cam_axes import CamAxes
+from .cam_axes import CamAxes, view_dir
 
 _COLORS = {"X": "#ff6b6b", "Y": "#4cd964"}
 _HEAD_DEG = 28.0
@@ -57,7 +57,8 @@ class AxesOverlay:
         # Room for an arrow plus its label in any direction from the origin.
         length = 0.11 * min(h, w)
         ox, oy = 0.2 * min(h, w), h - 0.2 * min(h, w)
-        for name, (vx, vy) in (("X", axes[0:2]), ("Y", axes[2:4])):
+        view = view_dir(axes)
+        for name, (vx, vy) in (("X", view[0:2]), ("Y", view[2:4])):
             n = math.hypot(vx, vy) or 1.0
             ux, uy = vx / n, vy / n
             ex, ey = ox + ux * length, oy + uy * length

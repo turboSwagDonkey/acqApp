@@ -526,9 +526,10 @@ class SettingsPanel(QWidget):
         self._btn_measure_axes.setToolTip(
             "MOTION: nudges the stage +X, back, +Y, back (one step each) and "
             "finds how the camera picture shifts. Needs Live view on a "
-            "textured sample in focus. Afterwards Jog X+ slides the picture "
-            "right and Y+ up, the map turns to match the camera, and the "
-            "camera view shows +X/+Y arrows (the way the picture slides).")
+            "textured sample in focus. Afterwards Jog X+ moves the view "
+            "right and Y+ up (the picture slides the other way), the map "
+            "turns to match the camera, and the camera view shows +X/+Y "
+            "arrows (the way the view moves).")
         self._btn_measure_axes.clicked.connect(self._measure_axes)
         self._btn_clear_axes = QPushButton("Clear")
         self._btn_clear_axes.setToolTip(
@@ -1010,7 +1011,7 @@ class SettingsPanel(QWidget):
         self._lbl_axes.setText(describe(axes) if measured else "not measured")
         self._lbl_axes.setToolTip(
             "Angles are counter-clockwise from screen-right: the way the "
-            "picture slides for stage +X/+Y." if measured else
+            "view moves for stage +X/+Y." if measured else
             "Jogs use Frame rotation until the axes are measured.")
         self._spn_rotation.setEnabled(not measured)
         self._spn_rotation.setToolTip(

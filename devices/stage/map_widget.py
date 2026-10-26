@@ -17,6 +17,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
+from .cam_axes import view_dir
 from .settings import _BAD, _C_CUR, _C_FOV, _C_ORIGIN, _C_SOFT, WINDOW_DIAMETER_UM
 
 _TRAVEL_EDGE = QColor("#8a8a8a")
@@ -114,7 +115,7 @@ class StageMap(_TravelWidget):
             "FOVs. Drag the blue dot to move the stage (speed-capped; Esc "
             "stops). Clicking elsewhere does nothing. With measured camera "
             "axes the map is turned to match the camera: drag right and the "
-            "picture slides right.")
+            "view moves right.")
     _TIP_NO_DRAG = ("Stage position within its travel, with this session's "
                     "saved FOVs. Dragging needs a connected stage with a "
                     "valid frame.")
@@ -153,7 +154,7 @@ class StageMap(_TravelWidget):
 
     def set_cam_axes(self, axes) -> None:
         """Measured `cam_axes.CamAxes` (or None): the map turns to match the
-        camera, so a drag to the right slides the picture right."""
+        camera, so a drag to the right moves the view right."""
         self._cam_axes = axes
         self.update()
 
@@ -233,9 +234,9 @@ class StageMap(_TravelWidget):
     def _orientation(self) -> tuple[float, float, float, float]:
         """Stage (dx, dy) -> screen (right, down), as (a, b, c, d):
         right = a·dx + b·dy, down = c·dx + d·dy. Measured camera axes, at
-        unit scale, so the map turns like the picture; else +Y up (or down)."""
+        unit scale, so the dot moves like the view; else +Y up (or down)."""
         if self._cam_axes is not None:
-            ax, ay, bx, by = self._cam_axes
+            ax, ay, bx, by = view_dir(self._cam_axes)
             s = (math.hypot(ax, ay) + math.hypot(bx, by)) / 2.0 or 1.0
             return ax / s, bx / s, ay / s, by / s
         return (1.0, 0.0, 0.0, -1.0) if self._invert_y else (1.0, 0.0, 0.0, 1.0)
