@@ -8,8 +8,8 @@ import shutil
 import sys
 import traceback
 
-from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
-                      run_parts)
+from _harness import (Report, isolate_user_state, make_window, pump,
+                      pump_until, qt_app, run_parts)
 from acqApp import config
 
 
@@ -17,8 +17,8 @@ from acqApp import config
 
 SUBSETS = [
     ["voltage_cam"],
-    ["wheel"],                          # no central view at all
-    ["pupil_cam"],                      # extra dock, no central view
+    ["wheel"],                          # General only, no module dock
+    ["pupil_cam"],                      # one camera dock, not the primary
     ["stage"],                          # panel only, no plot
     ["puffer", "dmd"],                  # controllers only, no workers
     ["voltage_cam", "wheel"],
@@ -155,12 +155,12 @@ def check_empty_set(r: Report, win) -> None:
     win.set_modules([])
     r.check(_chosen(win) == [],
             f"every module the operator chose unloaded ({_keys(win)})")
-    r.check(win._central_owner is None, "the centre pane fell back")
-    r.check(win._plots_tabs.count() == 0, "no Signals tabs left")
-    left = set(win._panel_windows)
-    r.check(left == {"saving"} | {m.key for m in win._modules
-                                  if m.panel is not None},
-            f"only Save's window and the always-on modules' remain ({left})")
+    loaded = {m.key for m in win._modules}
+    r.check(set(win._docks) <= loaded,
+            f"no dock outlives its module ({sorted(win._docks)})")
+    left = set(win._folds)
+    r.check("saving" in left and left <= {"saving"} | loaded,
+            f"only Save's section and the always-on modules' remain ({left})")
     try:
         win._display_tick()
         win._on_theme_toggled(True)
@@ -193,92 +193,81 @@ def check_order(r: Report, win) -> None:
 
 def check_ui_released(r: Report, win) -> None:
     """A module takes its whole UI with it."""
+    from PyQt6.QtWidgets import QDockWidget
     win.set_modules(["voltage_cam", "wheel", "pupil_cam"])
-    r.check("pupil_cam" in win._panel_windows,
-            "control: the pupil camera has a settings window while loaded")
-    plots_with = win._plots_tabs.count()
+    r.check("pupil_cam" in win._docks and "pupil_cam" in win._folds,
+            "control: the pupil camera has a dock and settings while loaded")
     views_with = len(win._pg_views)
-    docks_with = len(win.findChildren(type(win._plots_dock)))
-    r.check("pupil_cam" in win._module_docks and win._module_docks["pupil_cam"],
-            "the pupil camera's dock was attributed to it")
+    docks_with = len(win.findChildren(QDockWidget))
 
     win.set_modules(["voltage_cam", "wheel"])
-    r.check("pupil_cam" not in win._panel_windows,
-            f"its settings window went ({sorted(win._panel_windows)})")
-    r.check(len(win.findChildren(type(win._plots_dock))) == docks_with - 1,
-            "its dock went")
+    r.check("pupil_cam" not in win._docks and "pupil_cam" not in win._folds,
+            f"its dock and settings went ({sorted(win._folds)})")
+    r.check(len(win.findChildren(QDockWidget)) == docks_with - 1,
+            "…off the window, not just out of the dict")
     r.check(len(win._pg_views) < views_with,
             f"its pyqtgraph views were unregistered ({len(win._pg_views)} vs "
             f"{views_with}) — a stale one crashes the theme toggle natively")
-    r.check(win._plots_tabs.count() == plots_with - 1,
-            f"its Signals tab went too ({win._plots_tabs.count()} vs "
-            f"{plots_with})")
 
-    before = win._plots_tabs.count()
-    win.set_modules(["wheel"])
-    r.check(win._plots_tabs.count() == before - 1,
-            f"the camera's Signals tab went ({win._plots_tabs.count()} vs "
-            f"{before})")
+    section = win._folds["wheel"]
+    win.set_modules(["voltage_cam"])
+    r.check("wheel" not in win._folds and win._sections.indexOf(section) < 0,
+            "a General section goes with its module")
 
 
 def check_sidebar_follows(r: Report, win) -> None:
-    """Each loaded instrument owns a sidebar item, only while loaded — a
-    stale item points at a deleted panel."""
+    """Each loaded instrument owns a card, only while loaded — a stale one
+    points at a deleted panel."""
     win.set_modules(["voltage_cam", "wheel"])
-    r.check(set(win._page_actions) ==
+    r.check(set(win._folds) ==
             {"saving", "voltage_cam", "wheel"} | config.ALWAYS_ON,
-            f"Save plus one per module ({sorted(win._page_actions)})")
+            f"Save plus one per module ({sorted(win._folds)})")
 
     win.set_modules(["voltage_cam", "wheel", "puffer"])
-    r.check("puffer" in win._page_actions,
-            f"a loaded module gains one ({sorted(win._page_actions)})")
+    r.check("puffer" in _section_keys(win),
+            f"a loaded module gains a section ({_section_keys(win)})")
 
-    dead = win._page_actions["puffer"]
+    dead = win._folds["puffer"]
     win.set_modules(["voltage_cam", "wheel"])
-    r.check("puffer" not in win._page_actions,
-            f"an unloaded one loses it ({sorted(win._page_actions)})")
-    r.check(dead not in win._sidebar.actions(),
-            "…and the item really is off the toolbar, not just out of the dict")
+    r.check("puffer" not in win._folds,
+            f"an unloaded one loses it ({sorted(win._folds)})")
+    r.check(win._sections.indexOf(dead) < 0,
+            "…and the section really is off General, not just out of the dict")
 
     win.set_modules(["mirror", "wheel", "voltage_cam"])
-    labels = [a.text() for a in win._sidebar.actions()
-              if a in win._page_actions.values()]
-    r.check(labels[0] == "Save", f"Save leads ({labels})")
-    keys = [k for k, a in win._page_actions.items() if a.text() != "Save"]
+    keys = _section_keys(win)
+    r.check(keys[0] == "saving", f"Save leads ({keys})")
     order = list(config.MODULES)
-    r.check(keys == sorted(keys, key=order.index),
+    r.check(keys[1:] == sorted(keys[1:], key=order.index),
             f"modules in config.MODULES order ({keys})")
 
 
 def check_sidebar_cards(r: Report, win) -> None:
-    """Each item is a card whose mini view reads its module without raising,
-    and a right-click on the card opens the page, as the button's click did."""
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QContextMenuEvent
+    """Each card's mini view reads its module without raising, in General and
+    in a dock alike. The DMD's card is its light switch alone."""
     from acqApp.sidebar import MiniView
 
     win.set_modules(["voltage_cam", "pupil_cam", "wheel", "puffer", "stage",
                      "dmd"])
-    for key, act in win._page_actions.items():
-        for view in act.card.findChildren(MiniView):
+    for key, fold in win._folds.items():
+        if fold.body is None:
+            continue
+        for view in fold.card.findChildren(MiniView):
             view.refresh()          # unguarded: a raise fails the check
-        r.check(bool(act.card.findChildren(MiniView)),
+        if key == "dmd":
+            r.check(win._module("dmd")._light_btn is not None
+                    and fold.card.mini is not None,
+                    "dmd: its card holds the light switch")
+            continue
+        r.check(bool(fold.card.findChildren(MiniView)),
                 f"{key}: its card has a live view")
-
-    act = win._page_actions["wheel"]
-    ev = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5))
-    act.card.contextMenuEvent(ev)
-    r.check(act.isChecked() and ev.isAccepted(),
-            "right-click opens the page, and the toolbar's own menu stays shut")
-    act.card.contextMenuEvent(ev)
-    r.check(not act.isChecked(), "a second right-click shuts it")
 
 
 def check_theme_toggle_survives(r: Report, win) -> None:
     """Recolouring walks `_pg_views`; a deleted view there is a native
     crash."""
     win.set_modules(["voltage_cam", "wheel"])
-    win.set_modules(["wheel"])              # drops the CENTRAL view's items
+    win.set_modules(["wheel"])              # drops the camera dock's view items
     try:
         win._on_theme_toggled(False)
         win._on_theme_toggled(True)
@@ -286,26 +275,9 @@ def check_theme_toggle_survives(r: Report, win) -> None:
     except Exception as e:                  # noqa: BLE001
         ok = False
         r.info(f"theme toggle raised: {type(e).__name__}: {e}")
-    r.check(ok, "the theme still toggles after the centre pane's owner was "
-                "unloaded")
+    r.check(ok, "the theme still toggles after the camera was unloaded")
     r.check(all(v is not None for v in win._pg_views),
             "no dead entries left in _pg_views")
-
-
-def check_central_pane(r: Report, win) -> None:
-    """The centre follows its owner, and is not rebuilt when nothing moved."""
-    win.set_modules(["wheel"])
-    r.check(win._central_owner is None,
-            f"no owner with the camera unloaded ({win._central_owner})")
-    win.set_modules(["voltage_cam", "wheel"])
-    r.check(win._central_owner == "voltage_cam",
-            f"the camera claims it when loaded ({win._central_owner})")
-
-    # central_widget() BUILDS a view: a needless rebuild drops the live image.
-    was = win.centralWidget()
-    win.set_modules(["voltage_cam", "wheel", "puffer"])
-    r.check(win.centralWidget() is was,
-            "loading an unrelated module leaves the centre pane alone")
 
 
 def check_recording_refused(r: Report, win) -> None:
@@ -369,24 +341,22 @@ def check_camera_handle_survives(r: Report, win) -> None:
 
 
 def check_devices_monitor(r: Report, win) -> None:
-    """`ConnectionMonitor` snapshots the keys: a cached one reports an
-    unloaded stage as "missing"."""
+    """Modules and devices are one dialog: each row's box is whether it is
+    loaded, beside whether its hardware is detected, loaded or not."""
     win.set_modules(["voltage_cam", "wheel"])
-    win._show_devices()
-    r.check(win._devices_dialog is not None, "the monitor opens")
-    built_for = win._devices_dialog
-    status = built_for._rows["routines"][0].text()
-    r.check("stub" in status,
-            f"the always-on routines row is a stub, not 'unknown module' ({status!r})")
-    win._devices_dialog.close()
-
-    win.set_modules(["voltage_cam"])
-    r.check(win._devices_dialog is None,
-            "changing the module set discards it")
-    win._show_devices()
-    r.check(win._devices_dialog is not built_for,
-            "…so the next open builds a fresh one for the new set")
-    win._devices_dialog.close()
+    dlg = win._modules_dialog()
+    dlg.refresh()
+    ticked = {k for k, cb in dlg._boxes.items() if cb.isChecked()}
+    r.check(ticked == {"voltage_cam", "wheel"},
+            f"the boxes are the loaded set ({sorted(ticked)})")
+    r.check(set(dlg._rows) == set(dlg._boxes),
+            "every module row reports its device, loaded or not")
+    blank = [k for k, (s, _d) in dlg._rows.items() if not s.text().startswith("● ")
+             or "checking" in s.text()]
+    r.check(not blank, f"after a check every row has a verdict ({blank})")
+    r.check("routines" not in dlg._rows,
+            "the always-on routines gets no row (it has no device)")
+    dlg.deleteLater()
 
 
 def check_live_session(r: Report, win) -> None:
@@ -552,47 +522,123 @@ def check_always_on(r: Report, win) -> None:
             f"({config.load_enabled_modules()})")
 
 
-def check_panel_windows(r: Report, win) -> None:
-    """Every panel, Save's included, has a window of its own, fitted to the
-    panel, opened and shut from its sidebar card."""
-    key = next(iter(config.ALWAYS_ON))
+def _section_keys(win) -> list[str]:
+    lay = win._sections
+    return [lay.itemAt(i).widget().key for i in range(lay.count())]
+
+
+def _click(widget) -> None:
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+
+
+def check_folds(r: Report, win) -> None:
+    """Every panel, Save's included, folds under its card inside the main
+    window: a General section, or the top of its module's own dock. A click
+    on the card opens or shuts it, and is remembered."""
+    from _harness import MemorySettings
     win.set_modules(["voltage_cam", "wheel"])
 
     panelled = {m.key for m in win._modules if m.panel is not None}
-    r.check(set(win._panel_windows) == panelled | {"saving"},
-            f"a window per panel, plus Save's ({sorted(win._panel_windows)})")
-    own, wheel = win._panel_windows[key], win._panel_windows["wheel"]
-    r.check(own.isWindow() and wheel.isWindow(), "…each a real window")
+    folded = {k for k, f in win._folds.items() if f.body is not None}
+    r.check(folded == panelled | {"saving"},
+            f"a fold per panel, plus Save's ({sorted(folded)})")
+    r.check(win._save_panel.window() is win
+            and win._module("wheel").panel.window() is win,
+            "…inside the main window, not a window of its own")
+    sections = _section_keys(win)
+    r.check("voltage_cam" in win._docks and "voltage_cam" not in sections
+            and "wheel" in sections,
+            f"the camera's settings sit in its dock, the wheel's in General "
+            f"({sections})")
 
-    # Fitted: the Save tab is small, and no longer floored at a shared size.
-    save = win._panel_windows["saving"]
-    hint = win._save_panel.sizeHint()
-    got = save.default_size()
-    r.check(got.height() <= max(save._MIN_DEFAULT[1],
-                                hint.height() + 2 * save._PAD),
-            f"Save's window opens at its panel's height ({got.height()} px "
-            f"for a {hint.height()} px panel)")
+    fold = win._folds["wheel"]
+    r.check(not fold.is_open() and not fold.body.isVisibleTo(fold),
+            "a section starts folded")
+    _click(fold.card)
+    r.check(fold.is_open() and fold.body.isVisibleTo(fold),
+            "a click on its card opens it")
+    r.check(MemorySettings.store.get("fold/wheel") == "1", "…and is remembered")
+    _click(fold.card)
+    r.check(not fold.is_open(), "a second click shuts it")
+    r.check(fold.maximumHeight() <= fold.card.sizeHint().height(),
+            "shut, it is no taller than its card (a splitter ignores size "
+            "policies)")
 
-    r.check(not own.isVisible() and not wheel.isVisible(),
-            "the windows start hidden")
-    win._page_actions[key].trigger()
-    r.check(own.isVisible(), "its sidebar card opens it")
-    r.check(win._page_actions[key].isChecked(),
-            "…and lights the card while it is open")
-    win._page_actions["wheel"].trigger()
-    r.check(own.isVisible() and wheel.isVisible(),
-            "opening another leaves the first open")
-    r.check(win._page_actions[key].isChecked()
-            and win._page_actions["wheel"].isChecked(),
-            "…and both cards stay lit — they are different windows")
 
-    win._page_actions["wheel"].trigger()
-    r.check(not wheel.isVisible()
-            and not win._page_actions["wheel"].isChecked(),
-            "the card again shuts its window and un-lights")
-    own.close()
-    r.check(not win._page_actions[key].isChecked(),
-            "closing a window with its own X un-lights the card")
+def check_dock_layout(r: Report, win) -> None:
+    """The sketch: General over stage | camera over routines | DMD over pupil
+    cam, every pane a dock that moves only within the window. Reset undoes a
+    rearrangement; a module loaded later joins its column; a camera's
+    settings open over its view."""
+    from PyQt6.QtWidgets import QDockWidget
+    app = qt_app()
+    mods = ["voltage_cam", "routines", "dmd", "pupil_cam", "stage", "wheel"]
+    win.set_modules(mods)
+    r.check(win.centralWidget() is None,
+            "no central widget, so every pane can be dragged")
+    r.check(set(win._docks) == {"voltage_cam", "routines", "dmd", "pupil_cam",
+                                "stage"},
+            f"a dock per own-dock module ({sorted(win._docks)})")
+    every = (win._general_dock, *win._docks.values())
+    r.check(all(d.features() == QDockWidget.DockWidgetFeature.DockWidgetMovable
+                for d in every),
+            "every dock moves, but none floats out of the window or closes")
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QMainWindow
+    r.check(not win.dockOptions() & QMainWindow.DockOption.AllowTabbedDocks,
+            "docks never stack as tabs: no region hides behind another")
+    # Moved under routines: the geometry checks below prove Reset undid it.
+    win.splitDockWidget(win._docks["routines"], win._docks["dmd"],
+                        Qt.Orientation.Vertical)
+    win._reset_action.trigger()
+
+    win.resize(1600, 900)
+    win.show()
+    try:
+        pump_until(app, lambda: win._docks["pupil_cam"].geometry().y() > 0)
+        d = {k: win._docks[k].geometry() for k in win._docks}
+        g = win._general_dock.geometry()
+        r.check(g.x() < d["voltage_cam"].x() < d["dmd"].x()
+                and d["voltage_cam"].x() == d["routines"].x()
+                and d["dmd"].x() == d["pupil_cam"].x(),
+                "three columns: General, camera + routines, DMD + pupil cam")
+        r.check(d["voltage_cam"].y() < d["routines"].y()
+                and d["dmd"].y() < d["pupil_cam"].y(),
+                "the camera over routines, the DMD over the pupil cam")
+        r.check(d["stage"].x() == g.x() and d["stage"].y() > g.y(),
+                f"the stage under General, in its column ({d['stage']} vs {g})")
+
+        win.set_modules([k for k in mods if k != "stage"])
+        win.set_modules(mods)
+        pump_until(app, lambda: win._docks["stage"].geometry().y() > 0)
+        got = win._docks["stage"].geometry()
+        g = win._general_dock.geometry()
+        r.check(got.x() == g.x() and got.y() > g.y(),
+                f"a stage loaded later lands under General again ({got} vs {g})")
+
+        win.set_modules([k for k in mods if k != "pupil_cam"])
+        win.set_modules(mods)
+        pump_until(app, lambda: win._docks["pupil_cam"].geometry().y() > 0)
+        got = win._docks["pupil_cam"].geometry()
+        dmd = win._docks["dmd"].geometry()
+        r.check(got.x() == dmd.x() and got.y() > dmd.y(),
+                f"a pupil cam loaded later lands under the DMD ({got} vs {dmd})")
+
+        fold = win._folds["voltage_cam"]
+        fold.set_open(False)
+        app.processEvents()
+        shut = fold.height()
+        fold.set_open(True)
+        pump_until(app, lambda: fold.height() > shut + 50)
+        split = fold.parentWidget()
+        r.check(fold.height() > shut + 50 and split.sizes()[1] > 0,
+                f"the camera's settings open over its view ({shut} -> "
+                f"{fold.height()} px, view {split.sizes()[1]} px)")
+        fold.set_open(False)
+    finally:
+        win.hide()
 
 
 def check_matplotlib_stays_lazy(r: Report, win) -> None:
@@ -638,7 +684,7 @@ def _part_hotload() -> int:
     try:
         check_matplotlib_stays_lazy(r, win)
         check_always_on(r, win)
-        check_panel_windows(r, win)
+        check_folds(r, win)
         check_add_remove(r, win)
         check_empty_set(r, win)
         check_order(r, win)
@@ -646,7 +692,7 @@ def _part_hotload() -> int:
         check_sidebar_follows(r, win)
         check_sidebar_cards(r, win)
         check_theme_toggle_survives(r, win)
-        check_central_pane(r, win)
+        check_dock_layout(r, win)
         check_recording_refused(r, win)
         check_signal_offers(r, win)
         check_devices_monitor(r, win)

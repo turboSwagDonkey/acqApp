@@ -5,8 +5,6 @@ MockDmdController: renders patterns in memory, no hardware.
 """
 from __future__ import annotations
 
-import threading
-import time
 from dataclasses import dataclass
 from functools import lru_cache
 from operator import attrgetter
@@ -103,14 +101,7 @@ def subsample_frame(frame: np.ndarray, n: int) -> np.ndarray:
 
 @dataclass
 class DmdSettings:
-    pattern_path:  Path | None = None   # .png / .bmp to upload
-    on_time_ms:    float       = 100.0  # illumination on-time per pattern (ms)
-    # The panel always sets True (hold one image until Stop). The cycling
-    # path (`on_time_ms`, `n_repeats`) is code/test-only, kept for the ALP
-    # timing rules it encodes.
-    static_hold:   bool        = True
-    trigger_mode:  str         = "Internal"   # Internal | External | Software
-    n_repeats:     int         = 0      # 0 = loop forever
+    pattern_path:  Path | None = None   # .png / .bmp to upload; held until stopped
     # ── geometry: how the pattern lands on the panel ──
     scale_pct:     float       = 100.0  # per cent of the source image's size
     rotation_deg:  float       = 0.0    # clockwise-positive
@@ -257,7 +248,7 @@ class DmdController(_Base):
         """Project a device-sized frame as-is, skipping `build_frame` (the
         sweep measures that geometry). Settings are untouched."""
         self._hold_raw(frame, self.resolution)
-        self._dev.project(self._pattern, illumination_us=None, loop=True)
+        self._dev.project(self._pattern)
         self._running = True
         self._frame(FRAME_START)
 
@@ -271,28 +262,10 @@ class DmdController(_Base):
             print("[DMD] display: frame is entirely dark — check scale, "
                   "offset and invert")
 
-        if self._s.static_hold:
-            illum, loop, repeats = None, True, 0
-        else:
-            illum = int(round(self._s.on_time_ms * 1000.0))
-            if illum > alp.MAX_PICTURE_US:
-                print(f"[DMD] on-time {self._s.on_time_ms:g} ms exceeds the "
-                      f"ALP's {alp.MAX_PICTURE_US / 1000:g} ms limit — "
-                      f"clamped. Use static hold for a longer exposure.")
-                illum = alp.MAX_PICTURE_US
-            repeats = max(0, int(self._s.n_repeats))
-            loop = repeats == 0
-
-        self._dev.project(self._pattern, illumination_us=illum,
-                          loop=loop, repeats=repeats)
+        self._dev.project(self._pattern)
         self._running = True
         self._frame(FRAME_START)
-        if self._s.static_hold:
-            how = "static hold"
-        else:
-            how = (f"{illum / 1000:g} ms on-time, "
-                   + ("looping" if loop else f"{repeats} repeats"))
-        print(f"[DMD] projecting — {how}, {self.on_pixels} mirrors on")
+        print(f"[DMD] projecting — {self.on_pixels} mirrors on")
 
     def stop(self) -> None:
         if not self._running:
@@ -311,7 +284,6 @@ class MockDmdController(_Base):
 
     def __init__(self, settings: DmdSettings | None = None):
         super().__init__(settings)
-        self._thread: threading.Thread | None = None
         if self._s.pattern_path or self._s.display_mode != MODE_PATTERN:
             self.load_pattern(self._s.pattern_path)     # as the real one does
 
@@ -373,28 +345,10 @@ class MockDmdController(_Base):
             return
         self._running = True
         self._frame(FRAME_START)
-        if self._s.static_hold:
-            return
-
-        on_time = max(0.001, self._s.on_time_ms / 1000.0)
-
-        def _loop():
-            idx = 1
-            while self._running:
-                time.sleep(on_time)
-                if self._running:
-                    self._frame(idx)
-                    idx += 1
-
-        self._thread = threading.Thread(target=_loop, daemon=True)
-        self._thread.start()
 
     def stop(self) -> None:
         was_running = self._running
         self._running = False
-        if self._thread:
-            self._thread.join(timeout=1.0)
-            self._thread = None
         if was_running:
             self._frame(FRAME_STOP)
 

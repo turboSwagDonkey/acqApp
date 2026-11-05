@@ -189,8 +189,7 @@ def _part_dmd() -> int:
     Image.fromarray(src, mode="L").save(pat)
 
     FakeALP4.instances.clear()
-    s = DmdSettings(pattern_path=pat, on_time_ms=250.0, static_hold=False,
-                    n_repeats=0, scale_pct=100.0)
+    s = DmdSettings(pattern_path=pat, scale_pct=100.0)
     c = DmdController(s)
     dev = FakeALP4.instances[0]
     r.check(dev.names() == ["Initialize"], f"opening initialises the ALP and "
@@ -217,10 +216,12 @@ def _part_dmd() -> int:
     r.check(dev.last("SeqControl")[1:] == (2104, 2106),
             f"binary uninterrupted mode is set, so a held pattern does not "
             f"blank between pictures (got {dev.last('SeqControl')[1:]})")
-    r.check(dev.last("SetTiming")[1] == 250_000,
-            f"on-time reaches the device in microseconds "
-            f"(got {dev.last('SetTiming')[1]})")
-    r.check(dev.last("Run")[1] is True, "0 repeats means loop")
+    r.check(dev.last("SetTiming")[1] is None and dev.last("Run")[1] is True,
+            f"a pattern is held: device-default timing, looping "
+            f"(got illumination={dev.last('SetTiming')[1]}, "
+            f"loop={dev.last('Run')[1]})")
+    r.check(not any(c[0] == "SeqControl" and c[1] == 2100 for c in dev.calls),
+            "…with no repeat count sent")
     r.check(events == [FRAME_START],
             f"display logs one event to /dmd (got {events})")
 
@@ -232,32 +233,6 @@ def _part_dmd() -> int:
     events.clear()
     c.stop()
     r.check(events == [], "a second stop is a no-op, not a second event")
-
-    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=True))
-    c.display()
-    r.check(dev.last("SetTiming")[1] is None and dev.last("Run")[1] is True,
-            f"static hold leaves the timing at the device default and loops "
-            f"(got illumination={dev.last('SetTiming')[1]}, "
-            f"loop={dev.last('Run')[1]})")
-    c.stop()
-
-    # The cycling path below: the panel never offers it, and the dataclass
-    # default follows the panel, so static_hold=False is explicit.
-    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
-                                 on_time_ms=20.0, n_repeats=3))
-    c.display()
-    r.check(dev.last("Run")[1] is False, "a repeat count stops looping")
-    r.check(("SeqControl", 2100, 3) in dev.calls,
-            f"…and is sent as ALP_SEQ_REPEAT (calls {dev.calls[-4:]})")
-    c.stop()
-
-    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
-                                 on_time_ms=30_000.0))
-    c.display()
-    r.check(dev.last("SetTiming")[1] == alp.MAX_PICTURE_US,
-            f"an on-time past the ALP's limit is clamped, not passed through "
-            f"(got {dev.last('SetTiming')[1]})")
-    c.stop()
 
     # Unrebuilt, Display would project the old alignment under the new panel.
     c.apply_settings(DmdSettings(pattern_path=pat, scale_pct=50.0))
@@ -281,7 +256,7 @@ def _part_dmd() -> int:
     c.close()
 
     # ══ the mock agrees about the /dmd stream ═════════════════════════════════
-    m = MockDmdController(DmdSettings(pattern_path=pat, static_hold=True))
+    m = MockDmdController(DmdSettings(pattern_path=pat))
     m.load_pattern(pat)
     mev: list[int] = []
     m.set_sink(mev.append)
@@ -493,10 +468,10 @@ def check_light_switch(r) -> None:
     lit = lambda: bool(dmd.controller._running)             # noqa: E731
     msg = lambda: win.statusBar().currentMessage()          # noqa: E731
 
-    card = win._page_actions["dmd"].card
+    card = win._folds["dmd"].card
     r.check(btn is not None and card.isAncestorOf(btn)
             and "dmd" not in win._status_widgets,
-            "the DMD's switch sits on its sidebar card, not the status bar")
+            "the DMD's switch sits on its card, not the status bar")
     clipped = []
     keep = btn.text()
     for text in ("DMD OFF", "● DMD ON"):
@@ -606,9 +581,8 @@ def check_light_switch(r) -> None:
         r.check(not btn.isChecked() and not lit() and "ALP gone" in msg()
                 and "forced off" in msg(),
                 f"a failing Display from the switch ends dark and says so ({msg()!r})")
-        panel.display_requested.emit()
         dmd.on_trigger(dmd.key, 0.0)
-        r.check(not lit(), "…as do the tab's Display and a trigger")
+        r.check(not lit(), "…as does a trigger")
         try:
             dmd.display()
             raised = False
@@ -625,7 +599,7 @@ def check_light_switch(r) -> None:
         r.check(False, f"fixture: module unload refused ({e})")
     else:
         pump(app, 0.05)
-        r.check("dmd" not in win._cards,
+        r.check("dmd" not in win._folds and "dmd" not in win._docks,
                 "unloading the DMD module removes its card and switch")
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()

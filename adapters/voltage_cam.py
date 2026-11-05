@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import QWidget
 
 from acqApp import config
 from acqApp.acq.devices import CameraWorker
-from acqApp.adapters.base import (DISP_DS, PLOT_HISTORY, ModuleAdapter,
-                                 _image_view, _plot, led_controller)
+from acqApp.adapters.base import (DISP_DS, ModuleAdapter, _image_view,
+                                 led_controller)
 from acqApp.devices.stage.axes_overlay import AxesOverlay
 from acqApp.devices.voltage_cam.acquisition import MockCameraWorker, OrcaFireWorker
 from acqApp.devices.voltage_cam.led import LedController, MockLedController
@@ -57,16 +57,12 @@ class RunningMean:
 class VoltageCamModule(ModuleAdapter):
     key = "voltage_cam"
     tab_label = "Voltage cam (primary)"
-    plot_label = "ΔF/F"
-    central_title = "Voltage camera — primary"
+    own_dock = True
 
     worker: CameraWorker | None
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        self._curve = None
-        self._y: list[float] = []
-        self._f0: float | None = None
         self._auto_levels = True
         self._last_frame = None         # full-res, for the DMD's ROI editor
         # Fixed at build_session: the panel may already name next session's preset.
@@ -126,12 +122,6 @@ class VoltageCamModule(ModuleAdapter):
         cfg = self.panel.get_config()
         self._auto_levels = cfg.auto_levels
         self._preview_buf = RunningMean(cfg.preview_avg)
-        # At startup the central view is built first; on a hot-load, this is.
-        # Whichever runs second applies the saved view prefs.
-        if self._hist is not None:
-            self._hist.setVisible(cfg.show_lut)
-        if self._chk_auto_lut is not None:
-            self._chk_auto_lut.setChecked(cfg.auto_levels)
         for sig in (self.panel.target_hz_changed, self.panel.resolution_changed,
                     self.panel.binning_changed, self.panel.trigger_changed):
             sig.connect(self._push_rate)
@@ -171,20 +161,15 @@ class VoltageCamModule(ModuleAdapter):
     def _on_preview_avg(self, n: int) -> None:
         self._preview_buf = RunningMean(n)
 
-    def build_plot(self) -> QWidget:
-        pw, self._curve = _plot("ΔF/F", "ΔF/F", "%", "Frame", self.key)
-        return pw
-
-    def central_widget(self) -> QWidget:
+    def view_widget(self) -> QWidget:
         self._img, hist, chk_auto, gv, vb, row, self._rec_dot = _image_view()
         self._axes_overlay = AxesOverlay(vb)
         self._hist = hist
         self._chk_auto_lut = chk_auto
         self._chk_auto_lut.toggled.connect(self._sync_auto_from_lut)
-        if self.panel is not None:          # hot-load; see build_panel
-            cfg = self.panel.get_config()
-            self._hist.setVisible(cfg.show_lut)
-            self._chk_auto_lut.setChecked(cfg.auto_levels)
+        cfg = self.panel.get_config()
+        self._hist.setVisible(cfg.show_lut)
+        self._chk_auto_lut.setChecked(cfg.auto_levels)
         self.win.register_pg_view(gv)
         self.win.register_pg_view(hist)
         return row
@@ -314,8 +299,6 @@ class VoltageCamModule(ModuleAdapter):
                     f"camera dropped {skipped} frames — reading too slowly"))
             worker.timing_update.connect(self.panel.set_measured_rate)
         self.panel.set_running(True)
-        self._y.clear()
-        self._f0 = None
         self._reset_levels()
         self._preview_buf.clear()
 
@@ -349,14 +332,6 @@ class VoltageCamModule(ModuleAdapter):
         stage = self.win.stage_target()
         self._axes_overlay.update(
             stage.camera_axes() if stage is not None else None, disp.shape)
-
-        mean = float(small.mean())
-        if self._f0 is None and mean != 0:
-            self._f0 = mean
-        df = (mean - self._f0) / self._f0 * 100 if self._f0 else 0.0
-        self._y.append(df)
-        del self._y[:-PLOT_HISTORY]
-        self._curve.setData(self._y)
 
     # ── recording ──
     def attach_sink(self, rec) -> None:

@@ -136,7 +136,7 @@ class PupilTrackWorker(PullWorker):
         self._fit_sink = sink
 
     def take_tracked(self) -> list[tuple[float, bool]]:
-        """Drained, so the plot gets one point per frame; NaN = no fit."""
+        """Drained, one pair per frame; NaN = no fit."""
         with self._lock:
             out = list(self._radii)
             self._radii.clear()

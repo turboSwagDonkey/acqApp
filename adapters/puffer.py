@@ -44,7 +44,7 @@ class PufferModule(ModuleAdapter):
                            else PufferController(s))
 
     def _on_settings(self, s) -> None:
-        config.save_settings(self.key, asdict(s))
+        config.save_settings(self.key, asdict(s), keep=("channel",))
         if self.controller is not None:
             self.controller.apply_settings(s)
 

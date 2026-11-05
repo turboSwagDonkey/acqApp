@@ -70,55 +70,58 @@ def _drive(p: SettingsPanel) -> None:
     """Every handler a button or shortcut can reach."""
     p._jog("x", -1)
     p._jog("y", +1)
-    p._goto("x")
-    p._go_zero()
-    p._stop("x")
+    p.goto_fov(_fov(0.0, 0.0))
     p._stop_all()
+
+
+def _fov(x_um: float, y_um: float):
+    from types import SimpleNamespace
+    return SimpleNamespace(name="test_fov", x_um=x_um, y_um=y_um, z_um=None,
+                           path=None)
 
 
 def check_healthy(r: Report) -> None:
     WARNINGS.clear()
     c = FakeCtrl()
     p = _panel(c)
+    r.check(p._axis_widgets["x"]["step"] is p._axis_widgets["y"]["step"],
+            "X and Y share one step")
     p._axis_widgets["x"]["step"].setValue(12.5)
-    p._axis_widgets["y"]["step"].setValue(4.0)
-    # Same target as current, so the confirm dialog is not involved here.
-    p.set_readout(p._axis_widgets["x"]["goto"].value(), 0.0)
+    # The FOV is where the stage is, so the confirm dialog is not involved.
+    p.set_readout(0.0, 0.0)
     _drive(p)
 
     names = [n for n, _ in c.calls]
-    for want in ("jog_xy_um", "move_to_um", "go_to_center", "stop",
-                 "stop_all"):
+    for want in ("jog_xy_um", "move_to_um", "stop_all"):
         r.check(want in names, f"{want} reaches the controller")
 
     jogs = [a for n, a in c.calls if n == "jog_xy_um"]
-    r.check(jogs == [(-12.5, 0.0), (0.0, 4.0)],
-            f"jog carries axis, sign and that axis's step (got {jogs})")
+    r.check(jogs == [(-12.5, 0.0), (0.0, 12.5)],
+            f"jog carries axis, sign and the step (got {jogs})")
     r.check(not WARNINGS, f"a healthy controller warns about nothing "
                           f"({len(WARNINGS)} warnings)")
 
 
 def check_confirm_threshold(r: Report) -> None:
-    """A long move asks first — the guard against a typo'd absolute target."""
+    """A long Go to FOV asks first — the guard against the wrong FOV."""
     global _ANSWER
     ASKED.clear()
     c = FakeCtrl()
     p = _panel(c)
-    target = p._axis_widgets["x"]["goto"].value()
 
-    p.set_readout(target, 0.0)
-    p._goto("x")
+    p.set_readout(0.0, 0.0)
+    p.goto_fov(_fov(0.0, 0.0))
     r.check(not ASKED, "a zero-length move asks nothing")
-    r.check([n for n, _ in c.calls] == ["move_to_um"], "and still moves")
+    r.check([n for n, _ in c.calls] == ["move_to_um"] * 2, "and still moves")
 
-    p.set_readout(target + 10 * p._s.confirm_move_um, 0.0)
+    p.set_readout(10 * p._s.confirm_move_um, 0.0)
     _ANSWER = QMessageBox.StandardButton.No
     try:
-        p._goto("x")
+        p.goto_fov(_fov(0.0, 0.0))
     finally:
         _ANSWER = QMessageBox.StandardButton.Yes
     r.check(len(ASKED) == 1, "a move past confirm_move_um asks first")
-    r.check([n for n, _ in c.calls] == ["move_to_um"],
+    r.check([n for n, _ in c.calls] == ["move_to_um"] * 2,
             "answering No does not move")
 
 
@@ -127,24 +130,23 @@ def check_dead_link(r: Report) -> None:
     WARNINGS.clear()
     c = FakeCtrl(boom=True)
     p = _panel(c)
-    p.set_readout(p._axis_widgets["x"]["goto"].value(), 0.0)
+    p.set_readout(0.0, 0.0)
     try:
         _drive(p)
         r.check(True, "no handler lets an exception escape into the Qt slot")
     except Exception as e:                       # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} escaped a handler: {e}")
 
-    r.check(len(c.calls) >= 6,
+    r.check(len(c.calls) >= 4,
             f"every command was still attempted ({len(c.calls)})")
-    r.check(len(WARNINGS) >= 5,
+    r.check(len(WARNINGS) >= 4,
             f"each failure is reported, not swallowed ({len(WARNINGS)})")
     r.check(any("STOP ALL" in w for w in WARNINGS),
             "the panic path reports by name")
 
-    # Control: the pre-2026-08-13 bodies on the same controller. If these stop
+    # Control: the pre-2026-08-13 body on the same controller. If it stops
     # raising, the guards above are no longer what is being tested.
-    for label, body in (("_stop", lambda: c.stop("x")),
-                        ("_stop_all", lambda: c.stop_all())):
+    for label, body in (("_stop_all", lambda: c.stop_all()),):
         try:
             body()
         except RuntimeError:
@@ -158,7 +160,7 @@ def check_unbound(r: Report) -> None:
     """No controller at all is a silent no-op, not an AttributeError."""
     WARNINGS.clear()
     p = _panel(None)
-    p.set_readout(p._axis_widgets["x"]["goto"].value(), 0.0)
+    p.set_readout(0.0, 0.0)
     try:
         _drive(p)
         r.check(True, "an unbound panel ignores every command")
@@ -168,15 +170,21 @@ def check_unbound(r: Report) -> None:
 
 
 def check_frame_gating(r: Report) -> None:
-    """Absolute go-to is meaningless without a frame; jog is not."""
+    """Absolute moves are meaningless without a frame; jog is not."""
+    S = stage_settings
     c = FakeCtrl()
-    p = _panel(c)
+    axes = [S.StageAxis(i, n, 2.0, slope=1.0, offset=0.0)
+            for i, n in ((0, "X"), (1, "Y"))]
+    for ax in axes:
+        ax.apply_updates(ax.center_updates(5000))
+    p = SettingsPanel(S.StageSettings(x=axes[0], y=axes[1]))
+    p.bind_controller(c)
+    r.check(p._btn_goto_fov.isEnabled(), "control: framed, Go to FOV is on")
     for ax in (p._s.x, p._s.y):
-        ax.ref_counts = None
+        ax.slope = None
     p._update_frame_status()
-    r.check(not p._btn_go_zero.isEnabled(), "no frame -> Go to 0,0 disabled")
-    r.check(not p._axis_widgets["x"]["goto"].isEnabled(),
-            "no frame -> the absolute target is disabled")
+    r.check(not p._btn_goto_fov.isEnabled() and not p._map._draggable,
+            "no frame -> Go to FOV and the map drag are off")
     r.check(p._axis_widgets["x"]["buttons"][0].isEnabled(),
             "no frame -> jog stays available (the control)")
 
@@ -347,9 +355,25 @@ def check_map_mouse(r: Report) -> None:
     r.check(len(got) == 2 and got[0][0] > 0 and got[0][1] > 0,
             f"dragging right/up from the dot emits +X/+Y µm ({got[:1]})")
     (x0, _), (_, y1) = p._s.x.soft_limits_um(), p._s.y.soft_limits_um()
-    r.check(len(got) == 2 and got[1] == (x0, y1),
-            f"a drag off the map is clamped to the soft limits ({got[-1:]})")
-    r.check(not m.dragging, "release ends the mouse drag")
+    r.check(len(got) == 2 and x0 <= got[1][0] < -350.0
+            and 350.0 < got[1][1] <= y1,
+            f"a drag off the map goes past the window, within the soft "
+            f"limits ({got[-1:]})")
+    r.check(not m.dragging and m._held_view is None,
+            "release ends the mouse drag, and the map may rescale again")
+    m.set_position(-1000.0, 1000.0)
+    r.check(m._view()[0] == p._s.x.travel_limits_um(),
+            "…zooming out once the stage is beyond the window")
+    p._s.x.soft_min, p._s.x.soft_max = sorted((p._s.x.um_to_counts(-300.0),
+                                               p._s.x.um_to_counts(300.0)))
+    m.set_position(0.0, 0.0)
+    got.clear()
+    QTest.mousePress(m, left, pos=dot)
+    QTest.mouseMove(m, QPoint(-500, -500))
+    QTest.mouseRelease(m, left, pos=QPoint(-500, -500))
+    r.check(got and abs(got[-1][0] + 300.0) < 0.01,      # via whole counts
+            f"control: soft limits narrower than the drag still clamp it "
+            f"({got[-1:]})")
 
 
 def check_fovs_on_map(r: Report) -> None:
@@ -536,11 +560,12 @@ def check_measure_gating(r: Report) -> None:
 
 
 def check_window(r: Report) -> None:
-    """Home (0,0) set: motion and the map confined to ±350 µm of it, the
-    window dashed; the Origin box's toggle releases it; setting 0,0 re-ties."""
+    """Home (0,0) set: the map shows ±350 µm of it with the window dashed,
+    zooming out when the stage is beyond; motion is never confined to it.
+    Set home here sets it, after asking, without moving the stage."""
+    global _ANSWER
     from types import SimpleNamespace
 
-    from acqApp.devices.stage.panel import CalibrationDialog
     S = stage_settings
 
     def homed(i: int, name: str) -> S.StageAxis:
@@ -551,44 +576,43 @@ def check_window(r: Report) -> None:
     ctrl = FakeCtrl()
     p = SettingsPanel(S.StageSettings(x=homed(0, "X"), y=homed(1, "Y")))
     p.bind_controller(ctrl)
-    goto = p._axis_widgets["x"]["goto"]
-    r.check(p._s.x.window_um == S.WINDOW_RANGE_UM
-            and (goto.minimum(), goto.maximum()) == (-350.0, 350.0),
-            f"home set: X/Y confined to ±350 µm, Go to ranged to match "
-            f"({goto.minimum()}, {goto.maximum()})")
-    r.check(p._s.x.view_limits_um() == (-350.0, 350.0),
-            "…and the map shows that range")
     p._map.resize(400, 400)
     p._map.set_fovs([("near_fov", 100.0, -50.0)])
+    p.set_readout(10.0, 10.0)
+    r.check(p._map._view() == ((-350.0, 350.0), (-350.0, 350.0)),
+            "home set, stage inside: the map shows ±350 µm of home")
     p._map.grab()                                   # window + labels paint
+    p.set_readout(1000.0, 0.0)
+    r.check(p._map._view()[0] == p._s.x.travel_limits_um(),
+            "the stage beyond the window: the map zooms out to the travel")
 
     WARNINGS.clear()
     ctrl.calls.clear()
+    p.set_readout(0.0, 0.0)
     p.goto_fov(SimpleNamespace(name="far_fov", x_um=1000.0, y_um=0.0,
                                z_um=None, path=None))
-    r.check(not ctrl.calls and WARNINGS and "Limit to window" in WARNINGS[-1],
-            f"an FOV beyond the window is refused, not clamped short "
-            f"({WARNINGS[-1:] or 'no warning'})")
+    r.check(any(n == "move_to_um" for n, *_ in ctrl.calls) and not WARNINGS,
+            f"an FOV beyond the window is reached, not refused "
+            f"({ctrl.calls}, {WARNINGS})")
 
-    dlg = CalibrationDialog(ctrl, p._s, p)
-    dlg.changed.connect(p._on_calibration_changed)
-    r.check(dlg._chk_window.isChecked(), "the Origin box's toggle starts on")
-    dlg._chk_window.setChecked(False)
-    r.check(p._s.x.window_um is None and goto.maximum() > 12000
-            and p.settings.window_limit is False
-            and p._s.x.view_limits_um() == p._s.x.travel_limits_um(),
-            "unticked: full travel back, for motion, Go to and the map")
-    dlg._set_zero_here()
-    r.check(dlg._chk_window.isChecked() and p._s.x.window_um == S.WINDOW_RANGE_UM
-            and ("set_center_here", ()) in ctrl.calls,
-            "setting 0,0 (home) re-confines to the window")
-    dlg.reject()
+    ctrl.calls.clear()
+    ASKED.clear()
+    _ANSWER = QMessageBox.StandardButton.No
+    p._set_home_here()
+    r.check(ASKED and not ctrl.calls,
+            "Set home here asks first; No changes nothing")
+    _ANSWER = QMessageBox.StandardButton.Yes
+    p._set_home_here()
+    r.check(("set_center_here", ()) in [(n, a) for n, a, *_ in ctrl.calls]
+            and not any(n.startswith(("move", "jog")) for n, *_ in ctrl.calls),
+            f"…Yes sets home here, without moving the stage ({ctrl.calls})")
 
 
 def check_window_edges(r: Report) -> None:
-    """Motion that starts at or past the window's edge: a drag from outside
-    would jump to it at full speed; a FOV saved on the edge reads back a
-    count's rounding past it; an axes nudge there would be cut short."""
+    """Motion that starts at or past the soft limits' edge (narrowed here to
+    ±350 µm, as a hand-edited config could): a drag from outside would jump
+    to it at full speed; a FOV saved on the edge reads back a count's
+    rounding past it; an axes nudge there would be cut short."""
     from types import SimpleNamespace
 
     from PyQt6.QtWidgets import QInputDialog
@@ -598,26 +622,28 @@ def check_window_edges(r: Report) -> None:
     def homed(i: int, name: str) -> S.StageAxis:
         ax = S.StageAxis(i, name, 2.0, slope=1.0, offset=0.0)
         ax.apply_updates(ax.center_updates(5000))
+        ax.soft_min, ax.soft_max = sorted((ax.um_to_counts(-350.0),
+                                           ax.um_to_counts(350.0)))
         return ax
 
     ctrl = FakeCtrl()
     p = SettingsPanel(S.StageSettings(x=homed(0, "X"), y=homed(1, "Y")))
     p.bind_controller(ctrl)
     WARNINGS.clear()
-    p.set_readout(1000.0, 0.0)                    # reached with the window off
+    p.set_readout(1000.0, 0.0)                    # before the limits narrowed
     p._on_drag_moved(300.0, 0.0)
     _tick(p, 0.1)
     r.check(not [c for c in ctrl.calls if c[0] == "move_to_um"]
             and p._drag_cmd is None and WARNINGS
             and "outside its allowed range" in WARNINGS[-1],
-            f"a drag from outside the window refuses instead of jumping "
-            f"650 µm to its edge ({ctrl.calls}, {WARNINGS[-1:]})")
+            f"a drag from outside the soft limits refuses instead of jumping "
+            f"650 µm to their edge ({ctrl.calls}, {WARNINGS[-1:]})")
     p.set_readout(100.0, 0.0)
     WARNINGS.clear()
     p._on_drag_moved(300.0, 0.0)
     _tick(p, 0.1)
     r.check(not WARNINGS and [c for c in ctrl.calls if c[0] == "move_to_um"],
-            "control: the same drag from inside the window goes")
+            "control: the same drag from inside the limits goes")
     p._end_drag()
 
     ctrl.calls.clear()
@@ -625,7 +651,7 @@ def check_window_edges(r: Report) -> None:
     p.goto_fov(SimpleNamespace(name="edge_fov", x_um=350.01, y_um=0.0,
                                z_um=None, path=None))
     r.check(("move_to_um", ("x", 350.01)) in ctrl.calls,
-            f"a FOV saved on the window's edge can be gone to ({ctrl.calls})")
+            f"a FOV saved on the limits' edge can be gone to ({ctrl.calls})")
     p._active_fov = None
 
     p.set_camera_source(lambda: np.zeros((8, 8), np.float32), lambda: 1)
@@ -648,14 +674,14 @@ def check_window_edges(r: Report) -> None:
     r.check(p._map._pos is None and p._last_map_xy is None,
             "the poll gone: the dot leaves the map, so no drag can grab it")
 
-    # Stale _last_xy (0,0) would make a Go to 0 look like no move at all.
+    # Stale _last_xy (0,0) would make a FOV at 0,0 look like no move at all.
     ASKED.clear()
     WARNINGS.clear()
     ctrl.calls.clear()
-    p._axis_widgets["x"]["goto"].setValue(0.0)
-    p._goto("x")
+    p.goto_fov(_fov(0.0, 0.0))
+    p._active_fov = None
     r.check(ASKED and "unknown" in ASKED[-1],
-            f"position unknown: Go to always asks ({ASKED[-1:]})")
+            f"position unknown: Go to FOV always asks ({ASKED[-1:]})")
     p._on_drag_moved(100.0, 0.0)
     r.check(p._drag_cmd is None and WARNINGS and "unknown" in WARNINGS[-1],
             f"…a map drag refuses ({WARNINGS[-1:]})")
@@ -674,31 +700,30 @@ def check_window_edges(r: Report) -> None:
 
 
 def check_window_toggle_persists(r: Report) -> None:
-    """Unticking Limit to window survives a restart (the adapter's save and
-    load), and a hand-edited non-bool falls back to on."""
+    """A config saved while "Limit to window" existed still loads, and the
+    card shows home and rotation rather than repeating the readout."""
     from types import SimpleNamespace
 
     from acqApp import config
     from acqApp.adapters.stage import StageModule
-    S = stage_settings
 
+    config.save_settings("stage", {"window_limit": True,
+                                   "frame_rotation_deg": 12.5})
     win = SimpleNamespace(status=lambda _m: None)
     m = StageModule(win)
-    m.build_panel()
-    m.panel._s.window_limit = False
-    m.panel._on_calibration_changed()              # as the Origin box's toggle
-    r.check(config.load_settings("stage").get("window_limit") is False,
-            "unticking is saved")
-    again = StageModule(win)
-    again.build_panel()
-    r.check(again.panel._s.window_limit is False
-            and again.panel._s.x.window_um is None,
-            "…and restored unticked on the next start")
-    config.save_settings("stage", {"window_limit": "no"})
-    third = StageModule(win)
-    third.build_panel()
-    r.check(third.panel._s.x.window_um == S.WINDOW_RANGE_UM,
-            "a non-bool saved value leaves the window on (the safe default)")
+    try:
+        m.build_panel()
+        r.check(True, "an old window_limit key loads without complaint")
+    except Exception as e:                       # noqa: BLE001 — that IS the bug
+        r.check(False, f"{type(e).__name__} loading an old window_limit: {e}")
+        return
+    home, detail = m._mini_text()
+    s = m.panel.settings
+    want = "home set" if s.x.origin_set and s.y.origin_set else "home not set"
+    r.check(home == want and "rotation 12.5°" in detail
+            and "X " not in home,
+            f"the card says home and rotation, not X/Y/Z ({home!r}, "
+            f"{detail!r})")
 
 
 def check_poll_failure_clears_position(r: Report) -> None:
@@ -739,6 +764,48 @@ def check_poll_failure_clears_position(r: Report) -> None:
         m.close_controller()
 
 
+def check_no_arrow_keys(r: Report) -> None:
+    """Keyboard jogging is gone: an arrow key on the page moves nothing."""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+    c = FakeCtrl()
+    p = _panel(c)
+    for key in (Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
+        p.view.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key.value,
+                                       Qt.KeyboardModifier.NoModifier))
+    r.check(not c.calls, f"arrow keys and PgUp move nothing ({c.calls})")
+
+
+def check_esc_when_hidden(r: Report) -> None:
+    """Esc = STOP ALL must work with the stage page out of sight (a hidden
+    widget's shortcut never fires), and leave with the page."""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QApplication, QLineEdit, QVBoxLayout, QWidget
+    c = FakeCtrl()
+    p = _panel(c)
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    edit = QLineEdit()
+    lay.addWidget(edit)
+    lay.addWidget(p.view)
+    host.show()
+    host.activateWindow()
+    QApplication.processEvents()
+    p.view.hide()
+    edit.setFocus()
+    QTest.keyClick(edit, Qt.Key.Key_Escape)
+    stops = lambda: [n for n, _ in c.calls].count("stop_all")    # noqa: E731
+    r.check(stops() == 1, f"Esc stops all with the page hidden ({stops()})")
+
+    p.view.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    QTest.keyClick(edit, Qt.Key.Key_Escape)
+    r.check(stops() == 1, "…and the shortcut goes with the page")
+    host.close()
+
+
 def main() -> int:
     r = Report("stage-panel")
     isolate_user_state()
@@ -766,6 +833,8 @@ def main() -> int:
     check_window_edges(r)
     check_window_toggle_persists(r)
     check_poll_failure_clears_position(r)
+    check_no_arrow_keys(r)
+    check_esc_when_hidden(r)
     check_real_config_untouched(r)
 
     after = _REAL_CONFIG.stat().st_mtime if _REAL_CONFIG.exists() else None

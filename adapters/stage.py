@@ -18,6 +18,7 @@ from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.acq.devices import ModuleHost
 from acqApp.devices.stage.acquisition import StagePollWorker
+from acqApp.devices.stage.cam_axes import screen_angle
 from acqApp.devices.stage.control import MockStageController, StageController
 from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
 from acqApp.devices.stage.settings import load_settings as load_stage_settings
@@ -43,12 +44,15 @@ def _cam_axes_or_none(raw) -> tuple[float, float, float, float] | None:
 class StageModule(ModuleAdapter):
     key = "stage"
     tab_label = "Stage"
+    own_dock = True
     _move_issued_at = float("-inf")
 
     # Only what the panel owns; calibration stays in the shared config
     # (nested StageAxis objects don't fit this flat JSON).
     _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg", "drag_speed_um_s",
-                   "cam_axes", "window_limit")
+                   "cam_axes")
+    # No widget: edited in acqapp_local.json, read at launch.
+    _FILE_KEYS = ("port", "poll_hz")
 
     def __init__(self, win: ModuleHost) -> None:
         super().__init__(win)
@@ -63,15 +67,20 @@ class StageModule(ModuleAdapter):
         return MiniText(self._mini_text)
 
     def _mini_text(self) -> tuple[str, str]:
-        if self.controller is None:
-            return "not connected", ""
-        pos = self._pos
-        if pos is None:
-            return "…", ""
-        z = f"Z {pos[2]:.1f} µm" if len(pos) > 2 else "µm"
-        fov = self.active_fov_name()
-        return (f"X {pos[0]:.1f}   Y {pos[1]:.1f}",
-                z + (f"  ·  FOV {fov}" if fov else ""))
+        """Home set or not, and how jogs are turned to the camera: what the
+        page's readout doesn't already say."""
+        if self.panel is None:
+            return "", ""
+        s = self.panel.settings
+        home = ("home set" if s.x.origin_set and s.y.origin_set
+                else "home not set")
+        axes = self.panel.cam_axes
+        if axes is not None:
+            turn = f"camera axes: +X {screen_angle(axes[0], axes[1]):.0f}°"
+        else:
+            turn = f"rotation {s.frame_rotation_deg:g}°"
+        return home, turn + ("" if self.controller is not None
+                             else "  ·  not connected")
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -97,8 +106,6 @@ class StageModule(ModuleAdapter):
             if speed > 0:
                 s.drag_speed_um_s = speed
         s.cam_axes = _cam_axes_or_none(saved.get("cam_axes"))
-        if isinstance(saved.get("window_limit"), bool):
-            s.window_limit = saved["window_limit"]
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)
@@ -107,9 +114,13 @@ class StageModule(ModuleAdapter):
             lambda: self.win.camera_binning(CAMERA_KEY) or 1)
         return self.panel
 
+    def view_widget(self) -> QWidget:
+        return self.panel.view
+
     def _save(self, s) -> None:
         config.save_settings(self.key,
-                             {k: getattr(s, k) for k in self._PANEL_KEYS})
+                             {k: getattr(s, k) for k in self._PANEL_KEYS},
+                             keep=self._FILE_KEYS)
 
     def probe_kwargs(self) -> dict[str, Any]:
         try:
@@ -124,7 +135,8 @@ class StageModule(ModuleAdapter):
         try:
             ctrl.connect()
         except Exception as e:
-            self.win.status(f"stage: could not connect ({e})")
+            self.win.status(f"stage: could not connect on {s.port} ({e}); "
+                            "the port is set in acqapp_local.json")
             return
         self.win.status(f"stage: connected ({ctrl.backend_kind})")
         self.controller = ctrl
@@ -176,8 +188,9 @@ class StageModule(ModuleAdapter):
         if not self.panel.connected:
             QMessageBox.information(
                 self.panel, "Stage not connected",
-                "The stage isn't connected — check the port on the Stage "
-                "tab and that the hardware is powered on.")
+                "The stage isn't connected: check that it's powered on and "
+                f"that \"port\" ({self.panel.settings.port}) under stage in "
+                "acqapp_local.json is its serial port, then restart.")
             return
         if not self.panel.position_known:
             QMessageBox.information(

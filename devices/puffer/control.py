@@ -1,5 +1,5 @@
 """Air puffer: a TTL pulse on an NI DAQ digital line (PufferController), its
-mock, and the settings panel (channel, duration, test fire, schedule)."""
+mock, and the settings panel (duration, test fire, schedule)."""
 
 from __future__ import annotations
 import time
@@ -9,28 +9,18 @@ from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
-from acqApp import config, style
+from acqApp import style
 from acqApp.console import short_error
-from acqApp.widgets import ROW_GAP, button_row, compact, spin
+from acqApp.widgets import ROW_GAP, button_row, spin
 
 
 @dataclass
 class PufferSettings:
     channel:     str   = "Dev3/port0/line7"    # rig-dev3, operator-confirmed
     duration_s:  float = 0.100
-
-
-def free_do_lines(current: str) -> list[str]:
-    """This rig's port0 lines, less those another device claims in rigs.json
-    (two tasks can't own one physical line), `current` first."""
-    taken = {config.rig_channel(k) for k in config.rig_profile()
-             .get("channels", {}) if k != "puffer"}
-    lines = [f"{config.rig_device()}/port0/line{i}" for i in range(8)]
-    head = [current] if current else []
-    return head + [c for c in lines if c not in taken and c != current]
 
 
 class PufferController(QObject):
@@ -188,26 +178,17 @@ class SettingsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ── Connection + default duration ──────────────────────────────────
+        # ── Default duration (the DO line is acqapp_local.json's, or
+        # rigs.json's, read at launch) ──────────────────────────────────────
         grp = QGroupBox("Puffer settings")
         lay = QFormLayout(grp)
         lay.setSpacing(4)
-
-        self._cmb_chan = compact(QComboBox())
-        self._cmb_chan.setEditable(True)
-        self._cmb_chan.addItems(free_do_lines(self._s.channel))
-        self._cmb_chan.setCurrentText(self._s.channel)
-        lay.addRow("DO channel:", self._cmb_chan)
 
         self._spn_dur = spin(0.010, 5.0, self._s.duration_s,
                              decimals=3, step=0.010, suffix=" s")
         lay.addRow("Duration:", self._spn_dur)
 
-        # Without these the controller keeps the settings it started with.
-        self._typing = False
-        self._cmb_chan.lineEdit().textEdited.connect(self._on_channel_typed)
-        self._cmb_chan.currentTextChanged.connect(self._on_channel_changed)
-        self._cmb_chan.lineEdit().editingFinished.connect(self._on_channel_done)
+        # Without this the controller keeps the duration it started with.
         self._spn_dur.valueChanged.connect(self._emit)
 
         btn_test = QPushButton("Test puff")
@@ -226,9 +207,6 @@ class SettingsPanel(QWidget):
         row.addWidget(QLabel("Puff at t ="))
         self._spn_at = spin(0.0, 86_400.0, 5.0, decimals=1, suffix=" s")
         row.addWidget(self._spn_at)
-        btn_add = QPushButton("Schedule")
-        btn_add.clicked.connect(self._schedule)
-        row.addWidget(btn_add)
         row.addStretch()
         sl.addLayout(row)
 
@@ -236,28 +214,16 @@ class SettingsPanel(QWidget):
         self._lst_sched.setMaximumHeight(90)
         sl.addWidget(self._lst_sched)
 
+        btn_add = QPushButton("Schedule")
+        btn_add.clicked.connect(self._schedule)
         btn_clear = QPushButton("Clear all")
         btn_clear.clicked.connect(self._clear_schedule)
-        sl.addLayout(button_row(right=(btn_clear,)))
+        sl.addLayout(button_row(btn_add, right=(btn_clear,)))
         root.addWidget(sgrp)
         root.addStretch()
 
     def _emit(self, *_a) -> None:
         self.settings_changed.emit(self.settings)
-
-    # Each applied channel closes and reopens the DAQ task, and every
-    # keystroke changes the combo's text: while typing, wait for Enter or
-    # focus-out (`textEdited` comes before `currentTextChanged`).
-    def _on_channel_typed(self, _text: str) -> None:
-        self._typing = True
-
-    def _on_channel_changed(self, _text: str) -> None:
-        if not self._typing:
-            self._emit()
-
-    def _on_channel_done(self) -> None:
-        self._typing = False
-        self._emit()
 
     def _on_test_clicked(self) -> None:
         """Confirm before a manual puff. Scheduled puffs are their own
@@ -265,7 +231,7 @@ class SettingsPanel(QWidget):
         dur = self._spn_dur.value()
         if QMessageBox.question(
             self, "Test puff",
-            f"Fire a {dur:.3f} s puff now on {self._cmb_chan.currentText()}?"
+            f"Fire a {dur:.3f} s puff now on {self._s.channel}?"
         ) != QMessageBox.StandardButton.Yes:
             return
         self.test_requested.emit()
@@ -282,6 +248,6 @@ class SettingsPanel(QWidget):
     @property
     def settings(self) -> PufferSettings:
         return PufferSettings(
-            channel=self._cmb_chan.currentText(),
+            channel=self._s.channel,
             duration_s=self._spn_dur.value(),
         )

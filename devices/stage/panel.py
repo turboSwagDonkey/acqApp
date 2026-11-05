@@ -4,40 +4,25 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox,
+    QBoxLayout, QDialog, QGridLayout, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout,
     QWidget,
 )
 
 from acqApp import style
-from acqApp.widgets import (button_row, collapsible, compact, pairs_grid,
-                            sections_help, spin)
+from acqApp.widgets import button_row, pairs_grid, spin
 from acqApp.acq.worker import PullWorker
 from acqApp.devices.stage import fov_store
 from acqApp.devices.stage.axes_measure import AxesMeasurement
 from acqApp.devices.stage.cam_axes import camera_jog, describe
 from acqApp.devices.stage.control import step_toward
-from acqApp.devices.stage.map_widget import StageMap, ZGauge
-from acqApp.devices.stage.settings import (_BAD, _C_CUR, _C_FOV,
-                                   _C_ORIGIN, _C_SOFT, WINDOW_DIAMETER_UM,
+from acqApp.devices.stage.map_widget import StageMap
+from acqApp.devices.stage.settings import (_BAD, WINDOW_DIAMETER_UM,
                                    WINDOW_RANGE_UM, StageSettings,
                                    config_path, load_settings)
-
-
-def _available_ports(current: str) -> list[str]:
-    """Present serial ports, `current` first even if it's unplugged."""
-    ports = []
-    try:
-        from serial.tools import list_ports
-        ports = [p.device for p in list_ports.comports()]
-    except Exception:                       # noqa: BLE001 — a combo box isn't worth a crash
-        pass
-    ordered = [current] if current else []
-    ordered += [p for p in sorted(ports) if p != current]
-    return ordered
 
 
 class _FrameWorker(PullWorker):
@@ -82,30 +67,6 @@ class CalibrationDialog(QDialog):
         self._lbl_status = QLabel("—")
         self._lbl_status.setWordWrap(True)
         lay.addWidget(self._lbl_status)
-
-        zero = QGroupBox("Origin (0,0) = home, the window's centre")
-        zl = QVBoxLayout(zero)
-        self._btn_set_zero = QPushButton("Set 0,0 = center (here)")
-        self._btn_set_zero.setToolTip(
-            "Declare the CURRENT position as 0,0 (home: the centre of the "
-            "imaging window) and put soft limits at ±½ inch around it. "
-            "Doesn't move the stage — centre it first.")
-        self._btn_set_zero.clicked.connect(self._set_zero_here)
-        zl.addWidget(self._btn_set_zero)
-        self._chk_window = QCheckBox(
-            f"Limit to window (±{WINDOW_RANGE_UM:g} µm around 0,0)")
-        self._chk_window.setChecked(self._s.window_limit)
-        self._chk_window.setToolTip(
-            f"X/Y moves stay within ±{WINDOW_RANGE_UM:g} µm of 0,0 and the map "
-            f"zooms to that range, with the {WINDOW_DIAMETER_UM:g} µm window "
-            f"dashed. acqApp only: the shared config keeps its ±½-inch soft "
-            f"limits. Untick to reach the full travel; setting 0,0 ticks it.")
-        self._chk_window.toggled.connect(self._on_window_toggled)
-        zl.addWidget(self._chk_window)
-        zl.addWidget(self._hint(
-            "Centre the stage yourself first — this doesn't move it. "
-            "Saved to the config; survives restarts."))
-        lay.addWidget(zero)
 
         frame = QGroupBox("Coordinate frame")
         fl = QVBoxLayout(frame)
@@ -193,7 +154,8 @@ class CalibrationDialog(QDialog):
             f"{self._s.y.ref_counts:.0f} counts. Invalid from the moment a "
             "hard limit is hit.",
             f"No valid frame for {', '.join(missing)}. Absolute go-to is "
-            "disabled; jog still works. Re-establish the frame, then set 0,0.")
+            "disabled; jog still works. Re-establish the frame, then Set "
+            "home.")
         if self._lbl_status_z is not None:
             z = self._s.z
             self._show(
@@ -205,40 +167,12 @@ class CalibrationDialog(QDialog):
 
     def _busy(self, on: bool) -> None:
         # Close too: closing mid-move orphans the worker.
-        for b in (self._btn_set_zero, self._btn_reframe, self._btn_set_zero_z,
+        for b in (self._btn_reframe, self._btn_set_zero_z,
                   self._btn_reframe_z, self._btn_close):
             if b is not None:
                 b.setEnabled(not on)
 
     # ── actions ─────────────────────────────────────────────────────────────
-    def _set_zero_here(self) -> None:
-        if self._ctrl is None:
-            return
-        if QMessageBox.question(
-            self, "Set 0,0 = center",
-            "Set the CURRENT position as 0,0 (home: the window's centre)?\n\n"
-            "Centre the stage first — this does NOT move it. Soft limits will be "
-            f"set to ±½ inch around this point, and X/Y limited to "
-            f"±{WINDOW_RANGE_UM:g} µm of it."
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            self._ctrl.set_center_here()
-        except Exception as e:
-            QMessageBox.warning(self, "Stage", f"Could not set origin: {e}")
-            return
-        self._lbl_progress.setText(
-            f"0,0 set here; X/Y limited to ±{WINDOW_RANGE_UM:g} µm of it.")
-        self._update_status()
-        if self._chk_window.isChecked():
-            self.changed.emit()
-        else:
-            self._chk_window.setChecked(True)   # -> _on_window_toggled -> changed
-
-    def _on_window_toggled(self, on: bool) -> None:
-        self._s.window_limit = on
-        self.changed.emit()
-
     def _reestablish_frame(self) -> None:
         if self._ctrl is None or self._worker is not None:
             return
@@ -413,6 +347,68 @@ class CalibrationDialog(QDialog):
             super().closeEvent(event)
 
 
+class _MapAndPad(QBoxLayout):
+    """The square map with the jog pad beside it or under it, whichever
+    leaves the map bigger, packed together in the middle of the space."""
+
+    def __init__(self, map_: QWidget, pad: QWidget) -> None:
+        super().__init__(QBoxLayout.Direction.TopToBottom)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(10)
+        self._map, self._pad = map_, pad
+        self.addWidget(map_, 1)
+        self.addWidget(pad, 0)
+
+    def setGeometry(self, r: QRect) -> None:
+        pad, gap = self._pad.sizeHint(), self.spacing()
+        beside_side = min(r.width() - pad.width() - gap, r.height())
+        under_side = min(r.width(), r.height() - pad.height() - gap)
+        beside = beside_side > under_side
+        want = (QBoxLayout.Direction.LeftToRight if beside
+                else QBoxLayout.Direction.TopToBottom)
+        if self.direction() != want:
+            self.setDirection(want)     # for the size hints
+        super().setGeometry(r)
+        side = max(self._map.minimumWidth(), beside_side if beside else under_side)
+        if beside:
+            w, h = side + gap + pad.width(), side
+        else:
+            w, h = side, side + gap + pad.height()
+        x = r.x() + max(0, (r.width() - w) // 2)
+        y = r.y() + max(0, (r.height() - h) // 2)
+        self._map.setGeometry(QRect(x, y, side, side))
+        if beside:
+            self._pad.setGeometry(QRect(x + side + gap,
+                                        y + (side - pad.height()) // 2,
+                                        pad.width(), pad.height()))
+        else:
+            self._pad.setGeometry(QRect(x + (side - pad.width()) // 2,
+                                        y + side + gap,
+                                        pad.width(), pad.height()))
+
+
+class _StageView(QWidget):
+    """The stage's always-shown page. Owns Esc = STOP ALL, hung on its
+    top-level window when first shown: a shortcut whose widget is hidden
+    never fires, and this page can be tabbed out of sight."""
+
+    def __init__(self, on_esc) -> None:
+        super().__init__()
+        self._on_esc = on_esc
+        self._esc: QShortcut | None = None
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._esc is None:
+            esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self.window())
+            esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            esc.activated.connect(self._on_esc)
+            # Unhooked at once: a second page's Esc would make it ambiguous.
+            self.destroyed.connect(
+                lambda: (esc.setKey(QKeySequence()), esc.deleteLater()))
+            self._esc = esc
+
+
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)   # emits StageSettings
     # The adapter handles it: only it can reach the camera frame.
@@ -425,7 +421,6 @@ class SettingsPanel(QWidget):
         self._last_xy = (0.0, 0.0)
         self._last_z = 0.0      # only meaningful with a Z axis
         self._last_map_xy: tuple[float, float] | None = None
-        self._last_gauge_z: float | None = None
         # The FOV last gone to, until the stage drifts off it.
         self._active_fov = None
         self._axis_widgets: dict[str, dict] = {}
@@ -442,12 +437,17 @@ class SettingsPanel(QWidget):
         # Set by the adapter: () -> newest camera frame, () -> its binning.
         self._grab_frame = lambda: None
         self._frame_binning = lambda: 1
-        self._apply_window()                    # before the go-to ranges are built
         self._build()
         self.refresh_fovs()
         self._set_cam_axes(self._cam_axes, save=False)
 
     def _build(self) -> None:
+        """Two widgets: `self.view`, the always-shown page (position, map,
+        jog pad, go-to, STOP ALL), and this panel, the setup behind it."""
+        self.view = _StageView(self._stop_all)
+        vroot = QVBoxLayout(self.view)
+        vroot.setContentsMargins(4, 4, 4, 4)
+        vroot.setSpacing(6)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
@@ -455,9 +455,8 @@ class SettingsPanel(QWidget):
         # X, Y (and Z) share one row, each wide enough for its longest value
         # so the row doesn't jitter as they change.
         pos_row = QHBoxLayout()
-        # Left margin = a group box's, so the readout lines up with the rows below.
-        pos_row.setContentsMargins(10, 6, 10, 0)
-        pos_row.setSpacing(6)
+        pos_row.setContentsMargins(0, 0, 0, 0)
+        pos_row.setSpacing(4)
         # A stylesheet, not setFont: the app's stylesheet would override it.
         big = QFont(self.font())
         big.setPixelSize(17)
@@ -467,13 +466,11 @@ class SettingsPanel(QWidget):
         def _readout(name: str) -> QLabel:
             lbl = QLabel("—")
             lbl.setStyleSheet("font-size: 17px; font-weight: bold;")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             lbl.setMinimumWidth(big_w)
             cap = QLabel(name)
             cap.setStyleSheet("color:#9aa0a6;")
             pos_row.addWidget(cap)
             pos_row.addWidget(lbl)
-            pos_row.addSpacing(10)
             return lbl
 
         self._lbl_x = _readout(self._s.x.name)
@@ -485,25 +482,16 @@ class SettingsPanel(QWidget):
         unit.setStyleSheet("color:#9aa0a6;")
         pos_row.addWidget(unit)
         pos_row.addStretch()
-        root.addLayout(pos_row)
+        vroot.addLayout(pos_row)
 
-        self._lbl_frame = QLabel("—")
+        # Shown only when absolute moves are off.
+        self._lbl_frame = QLabel()
         self._lbl_frame.setWordWrap(True)
-        self._lbl_frame.setContentsMargins(10, 0, 10, 2)
-        root.addWidget(self._lbl_frame)
+        self._lbl_frame.setStyleSheet(f"color: {_BAD};")
+        vroot.addWidget(self._lbl_frame)
 
-        # ── Setup (port, poll, camera axes, calibration), folded below ──────
-        self._cmb_port = compact(QComboBox())
-        self._cmb_port.setEditable(True)
-        # Only ports that exist now: Windows renumbers them freely.
-        self._cmb_port.addItems(_available_ports(self._s.port))
-        self._cmb_port.setCurrentText(self._s.port)
-        self._cmb_port.setToolTip("The stage controller's serial port.")
-
-        self._spn_rate = spin(0.5, 50.0, self._s.poll_hz, decimals=2,
-                              suffix=" Hz",
-                              tooltip="How often the stage position is read.")
-
+        # ── Setup (camera axes, calibration; port and poll rate are
+        # acqapp_local.json's): this panel ───────────────────────────────────
         self._spn_rotation = spin(
             -180.0, 180.0, self._s.frame_rotation_deg, decimals=1, suffix=" °",
             tooltip=self._ROTATION_TIP)
@@ -512,16 +500,13 @@ class SettingsPanel(QWidget):
             tooltip="Top speed when dragging the blue dot on the map. The "
                     "stage follows the drag no faster than this.")
 
-        self._cmb_port.currentTextChanged.connect(self._emit_settings)
-        self._spn_rate.valueChanged.connect(self._emit_settings)
         self._spn_rotation.valueChanged.connect(self._emit_settings)
         self._spn_drag.valueChanged.connect(self._emit_settings)
 
         # Measured stage -> camera axes: jogs, the map and the camera's arrows.
-        axes_row = QHBoxLayout()
-        axes_row.setContentsMargins(0, 0, 0, 0)
         self._lbl_axes = QLabel()
         self._lbl_axes.setStyleSheet("font-size: 10px;")
+        self._lbl_axes.setWordWrap(True)        # measuring progress is long
         self._btn_measure_axes = QPushButton("Measure…")
         self._btn_measure_axes.setToolTip(
             "MOTION: nudges the stage +X, back, +Y, back (one step each) and "
@@ -534,98 +519,23 @@ class SettingsPanel(QWidget):
         self._btn_clear_axes.setToolTip(
             "Forget the measured axes: back to Frame rotation.")
         self._btn_clear_axes.clicked.connect(lambda: self._set_cam_axes(None))
-        axes_row.addWidget(self._lbl_axes, 1)
-        axes_row.addWidget(self._btn_measure_axes)
-        axes_row.addWidget(self._btn_clear_axes)
 
-        # ── Travel map (+ Z gauge, beside it) ────────────────────────────────
-        map_grp = QGroupBox("Position in travel")
-        outer = QHBoxLayout(map_grp)
-        outer.setSpacing(12)
-        ml = QVBoxLayout()
+        # ── Travel map (X/Y; Z is the readout's) ─────────────────────────────
         self._map = StageMap()
         self._map.set_axes(self._s.x, self._s.y, self._s.invert_y)
         self._map.drag_moved.connect(self._on_drag_moved)
-        ml.addWidget(self._map)
-        legend = QLabel(
-            f'<span style="color:{_C_CUR}">●</span> position &nbsp; '
-            f'<span style="color:{_C_ORIGIN}">✚</span> 0,0 &nbsp; '
-            f'<span style="color:{_C_ORIGIN}">◌</span> window &nbsp; '
-            f'<span style="color:{_C_SOFT}">▭</span> limits &nbsp; '
-            f'<span style="color:{_C_FOV}">□</span> saved FOV')
-        legend.setStyleSheet("font-size: 10px;")
-        ml.addWidget(legend)
-        outer.addLayout(ml)
 
-        # Z gets its own gauge beside the map, sharing the map's legend colours.
-        self._z_gauge: ZGauge | None = None
-        if self._s.has_z:
-            zcol = QVBoxLayout()
-            self._z_gauge = ZGauge()
-            self._z_gauge.set_axis(self._s.z)
-            zcol.addWidget(self._z_gauge, 1)
-            zcap = QLabel(self._s.z.name)
-            zcap.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            zcap.setStyleSheet("font-size: 10px; color:#9aa0a6;")
-            zcap.setFixedWidth(int(2 * self._z_gauge.BAR_CENTER_X))  # centred under the bar
-            zcol.addWidget(zcap)
-            outer.addLayout(zcol)
-        outer.addStretch(1)         # map and gauge stay together, at the left
-        root.addWidget(map_grp, 1)
+        # ── Motion (enabled only while connected) ────────────────────────────
+        self._pad = self._build_pad()
+        vroot.addLayout(_MapAndPad(self._map, self._pad), 1)
 
-        # ── Motion controls (enabled only while connected) ──────────────────
-        self._motion = QGroupBox("Move")
-        mv = QVBoxLayout(self._motion)
+        self._motion = QWidget()
+        mv = QHBoxLayout(self._motion)
+        mv.setContentsMargins(0, 0, 0, 0)
         mv.setSpacing(6)
-        grid = QGridLayout()
-        grid.setSpacing(3)
-        mv.addLayout(grid)
-        center = Qt.AlignmentFlag.AlignHCenter
-        grid.addWidget(QLabel("Step µm"), 0, 2, alignment=center)
-        grid.addWidget(QLabel("Go to"), 0, 4, alignment=center)
-        def _btn(text: str, width: int, row: int, col: int, slot) -> QPushButton:
-            b = QPushButton(text)
-            b.setMaximumWidth(width)
-            b.clicked.connect(slot)
-            grid.addWidget(b, row, col)
-            return b
 
-        axis_rows = [("x", self._s.x), ("y", self._s.y)]
-        if self._s.has_z:
-            axis_rows.append(("z", self._s.z))
-        for r, (key, ax) in enumerate(axis_rows, start=1):
-            grid.addWidget(QLabel(ax.name), r, 0)
-            btn_minus = _btn("−", 28, r, 1, lambda _, k=key: self._jog(k, -1))
-
-            spn_step = spin(0.1, 5000.0, ax.step_um, decimals=1)
-            spn_step.setMaximumWidth(70)
-            grid.addWidget(spn_step, r, 2)
-
-            btn_plus = _btn("+", 28, r, 3, lambda _, k=key: self._jog(k, +1))
-
-            # No starting value: the operator types the destination.
-            spn_goto = spin(*ax.soft_limits_um(), decimals=1, suffix=" µm")
-            spn_goto.setMaximumWidth(90)
-            grid.addWidget(spn_goto, r, 4)
-
-            btn_go = _btn("Go", 34, r, 5, lambda _, k=key: self._goto(k))
-            btn_stop = _btn("Stop", 44, r, 6, lambda _, k=key: self._stop(k))
-
-            spn_step.setToolTip(f"How far one {ax.name} jog click moves.")
-            btn_minus.setToolTip(f"Jog {ax.name} down by one Step.")
-            btn_plus.setToolTip(f"Jog {ax.name} up by one Step.")
-            spn_goto.setToolTip(f"Where {ax.name} goes when you press Go.")
-            btn_go.setToolTip(f"Move {ax.name} to the Go to position.")
-            btn_stop.setToolTip(f"Stop {ax.name} now.")
-            self._axis_widgets[key] = {
-                "step": spn_step, "goto": spn_goto,
-                "buttons": [btn_minus, btn_plus, btn_go, btn_stop],
-            }
-        # Spare width goes to an empty last column, keeping the rows left.
-        grid.setColumnStretch(7, 1)
-
-        # Saved FOVs (named position + snapshot, reused from routines) + 0,0.
-        self._btn_save_fov = QPushButton("Save current as FOV…")
+        # Saved FOVs (named position + snapshot, reused from routines).
+        self._btn_save_fov = QPushButton("Save FOV…")
         self._btn_save_fov.setToolTip(
             "Name the current position and save it, with a camera snapshot, "
             "so it can be reached again from here or from a routine step.")
@@ -633,55 +543,105 @@ class SettingsPanel(QWidget):
         self._btn_goto_fov = QPushButton("Go to FOV…")
         self._btn_goto_fov.setToolTip("Pick a saved FOV and move there.")
         self._btn_goto_fov.clicked.connect(self._pick_and_goto_fov)
-        self._btn_go_zero = QPushButton("Go to 0,0")
-        self._btn_go_zero.setToolTip("Absolute move of both axes to the "
-                                     "calibrated origin (the true zero).")
-        self._btn_go_zero.clicked.connect(self._go_zero)
-        # In the grid, spanning its columns, so the row's edges match the axes'.
-        fr = len(axis_rows) + 2
-        grid.setRowMinimumHeight(fr - 1, 4)
-        grid.addWidget(self._btn_save_fov, fr, 0, 1, 3)
-        grid.addWidget(self._btn_goto_fov, fr, 3, 1, 2)
-        grid.addWidget(self._btn_go_zero, fr, 5, 1, 2)
-        root.addWidget(self._motion)
-        sections_help(self._motion, keep=True)
+        for b in (self._btn_save_fov, self._btn_goto_fov):
+            b.setStyleSheet(style.solid_btn("stage"))
+            mv.addWidget(b)
 
-        # Outside the motion group: that is disabled during a frame run, and
-        # a disabled parent's children can't be clicked.
-        self._btn_stop_all = QPushButton("STOP ALL  (Esc)")
+        # Beside the motion widget, not in it: that is disabled during a frame
+        # run, and a disabled parent's children can't be clicked.
+        self._btn_stop_all = QPushButton("STOP ALL (Esc)")
         self._btn_stop_all.setStyleSheet(style.solid_btn("puffer"))
         self._btn_stop_all.clicked.connect(self._stop_all)
-        root.addWidget(self._btn_stop_all)
+        act_row = QHBoxLayout()
+        act_row.setSpacing(6)
+        act_row.addWidget(self._motion, 2)
+        act_row.addWidget(self._btn_stop_all, 1)
+        vroot.addLayout(act_row)
 
-        # ── Advanced (folded): setup and calibration ────────────────────────
+        # ── Setup ────────────────────────────────────────────────────────────
+        self._btn_home = QPushButton("Set home here")
+        self._btn_home.setStyleSheet(style.solid_btn("stage"))
+        self._btn_home.setToolTip(
+            "Declare the CURRENT position as home (0,0), the centre of the "
+            f"imaging window: the map draws the {WINDOW_DIAMETER_UM:g} µm "
+            f"window around it and shows ±{WINDOW_RANGE_UM:g} µm. Doesn't "
+            "move the stage, and doesn't limit where it can go.")
+        self._btn_home.clicked.connect(self._set_home_here)
         self._btn_calibrate = QPushButton("Calibrate…")
         self._btn_calibrate.setToolTip(
-            "Set the true zero and re-establish the coordinate frame. Rarely "
-            "needed; one of these drives the stage into its hard limits.")
+            "Re-establish the coordinate frame (X/Y, and Z's zero). Rarely "
+            "needed; it drives the stage into its hard limits.")
         self._btn_calibrate.clicked.connect(self._open_calibration)
 
-        adv = QGroupBox("Advanced")
-        adv.setObjectName("advanced")       # style.accent_panel: underline when folded
-        al = QFormLayout(adv)
-        al.setSpacing(4)
-        al.setContentsMargins(8, 4, 8, 4)
-        al.addRow(pairs_grid(
-            ("Port:", self._cmb_port, "Poll rate:", self._spn_rate),
-            ("Frame rotation:", self._spn_rotation,
-             "Drag speed ≤", self._spn_drag)))
-        al.addRow("Camera axes:", axes_row)
-        al.addRow(button_row(self._btn_calibrate))
-        root.addWidget(adv)
-        sections_help(adv, keep=True)
-        collapsible(adv, expanded=False)
-
-        # Esc = STOP ALL, anywhere in the app.
-        self._esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        self._esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._esc.activated.connect(self._stop_all)
+        # Frame first (home, calibration, how the camera sits), then motion
+        # feel; jog steps share the last line. Narrow: it folds under the map.
+        steps = tuple(x for pair in self._steps for x in pair)
+        measure = QHBoxLayout()
+        measure.setSpacing(6)
+        measure.addWidget(self._btn_measure_axes)
+        measure.addWidget(self._btn_clear_axes)
+        root.addLayout(button_row(self._btn_home, self._btn_calibrate))
+        root.addLayout(pairs_grid(
+            ("Camera axes:", self._lbl_axes, None, measure),
+            ("Frame rotation:", self._spn_rotation),
+            ("Drag speed ≤", self._spn_drag),
+            steps, gap=12))
+        root.addStretch()
 
         self._set_controls_enabled(False)
         self._update_frame_status()
+
+    def _build_pad(self) -> QWidget:
+        """Jog arrows (X/Y in a cross, Z beside); their (label, step) pairs
+        go to `self._steps`, for the settings. Registers each axis's step and
+        jog buttons."""
+        def _arrow(text: str, key: str, sign: int, tip: str) -> QPushButton:
+            b = QPushButton(text)
+            b.setFixedSize(34, 28)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False: self._jog(key, sign))
+            return b
+
+        x, y = self._s.x.name, self._s.y.name
+        left = _arrow("←", "x", -1, f"Jog {x}−")
+        right = _arrow("→", "x", +1, f"Jog {x}+")
+        up = _arrow("↑", "y", +1, f"Jog {y}+")
+        down = _arrow("↓", "y", -1, f"Jog {y}−")
+        cross = QGridLayout()
+        cross.setSpacing(2)
+        cross.addWidget(up, 0, 1)
+        cross.addWidget(left, 1, 0)
+        cross.addWidget(down, 1, 1)
+        cross.addWidget(right, 1, 2)
+
+        spn_xy = spin(0.1, 5000.0, self._s.x.step_um, decimals=1, suffix=" µm",
+                      tooltip="How far one X/Y jog moves.")
+        steps = [("Step XY:", spn_xy)]
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addLayout(cross)
+        self._axis_widgets["x"] = {"step": spn_xy, "buttons": [left, right]}
+        self._axis_widgets["y"] = {"step": spn_xy, "buttons": [down, up]}
+        if self._s.has_z:
+            z = self._s.z.name
+            z_up = _arrow(f"{z}▲", "z", +1, f"Jog {z}+")
+            z_down = _arrow(f"{z}▼", "z", -1, f"Jog {z}−")
+            zcol = QVBoxLayout()
+            zcol.setSpacing(2)
+            zcol.addWidget(z_up)
+            zcol.addWidget(z_down)
+            row.addLayout(zcol)
+            spn_z = spin(0.1, 5000.0, self._s.z.step_um, decimals=1,
+                         suffix=" µm", tooltip=f"How far one {z} jog moves.")
+            steps.append((f"Step {z}:", spn_z))
+            self._axis_widgets["z"] = {"step": spn_z, "buttons": [z_down, z_up]}
+        self._steps = steps
+
+        pad = QWidget()
+        pad.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        return pad
 
     # ── binding to a live controller ────────────────────────────────────────
     def bind_controller(self, controller) -> None:
@@ -701,15 +661,15 @@ class SettingsPanel(QWidget):
         the map, so no drag starts from a stale position."""
         self._end_drag()
         self._map.clear_position()
-        if self._z_gauge is not None:
-            self._z_gauge.clear_position()
         # Else a reconnect at the same spot never redraws the cleared dot.
-        self._last_map_xy = self._last_gauge_z = None
+        self._last_map_xy = None
 
     def _set_controls_enabled(self, on: bool) -> None:
         self._motion.setEnabled(on)      # Z and the FOV buttons ride along
+        self._pad.setEnabled(on)
         self._btn_stop_all.setEnabled(on)
         self._btn_calibrate.setEnabled(on)
+        self._btn_home.setEnabled(on)
 
     # ── calibration dialog ──────────────────────────────────────────────────
     def _open_calibration(self) -> None:
@@ -722,40 +682,38 @@ class SettingsPanel(QWidget):
         self._cal_dialog = None
         self._on_calibration_changed()
 
-    def _apply_window(self) -> None:
-        """Push the Limit-to-window choice onto the live X/Y axes, which the
-        controller shares: every clamp and the map read it from there."""
-        w = WINDOW_RANGE_UM if self._s.window_limit else None
-        self._s.x.window_um = self._s.y.window_um = w
+    def _set_home_here(self) -> None:
+        """Declare the current X/Y as home (0,0), the window's centre. Never
+        moves the stage."""
+        if self._ctrl is None:
+            return
+        if QMessageBox.question(
+            self, "Set home",
+            "Set the CURRENT position as home (0,0), the centre of the "
+            "imaging window?\n\nCentre the stage first: this does NOT move "
+            "it. Soft limits are set to ±½ inch around this point."
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if self._call("Could not set home", lambda c: c.set_center_here()):
+            self._on_calibration_changed()
 
     def _on_calibration_changed(self) -> None:
         """Calibration was rewritten (or a frame run started/ended) — re-sync."""
-        self._apply_window()
         self._apply_gating()
-        self._refresh_goto_ranges()
         self._map.update()
-        if self._z_gauge is not None:
-            self._z_gauge.update()          # origin/soft-limits may have moved
         self.settings_changed.emit(self.settings)
 
     # ── frame status ────────────────────────────────────────────────────────
     def _update_frame_status(self) -> None:
-        """Show whether absolute go-to can be trusted, and gate the buttons."""
+        """Show whether absolute moves (map drag, Go to FOV) can be trusted,
+        and gate them; jogs are relative and stay."""
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
         ok = not missing
-        if ok:
-            self._lbl_frame.setText("Frame OK — absolute go-to calibrated.")
-            self._lbl_frame.setStyleSheet("color: gray; font-size: 10px;")
-        else:
-            self._lbl_frame.setText(
-                f"No valid frame for {', '.join(missing)} — absolute go-to "
-                "disabled. Jog still works. Use Advanced ▸ Calibrate…")
-            self._lbl_frame.setStyleSheet(f"color: {_BAD}; font-size: 10px;")
-        self._btn_go_zero.setEnabled(ok)
-        for key, w in self._axis_widgets.items():
-            ax_ok = ok if key in ("x", "y") else self._axis(key).has_frame
-            w["goto"].setEnabled(ax_ok)
-            w["buttons"][2].setEnabled(ax_ok)   # the "Go" button
+        self._lbl_frame.setText(
+            f"No frame for {', '.join(missing)}: only jogs work. "
+            "Settings ▸ Calibrate…")
+        self._lbl_frame.setVisible(not ok)
+        self._btn_goto_fov.setEnabled(ok)
         self._sync_drag(ok)
 
     def _motion_busy(self) -> bool:
@@ -767,6 +725,7 @@ class SettingsPanel(QWidget):
         # No competing motion while something else is driving the stage.
         free = self._ctrl is not None and not self._motion_busy()
         self._motion.setEnabled(free)
+        self._pad.setEnabled(free)
         self._update_frame_status()
 
     def _sync_drag(self, frame_ok: bool) -> None:
@@ -782,13 +741,6 @@ class SettingsPanel(QWidget):
         self._btn_clear_axes.setEnabled(self._cam_axes is not None
                                         and not measuring)
 
-    def _axis(self, key: str):
-        if key == "x":
-            return self._s.x
-        if key == "y":
-            return self._s.y
-        return self._s.z
-
     # A position clamped to an edge reads back a count's rounding past it.
     _EDGE_TOL_UM = 0.5
 
@@ -802,12 +754,6 @@ class SettingsPanel(QWidget):
                 if not ax.soft_limits_um()[0] - tol <= v
                 <= ax.soft_limits_um()[1] + tol]
 
-    def _refresh_goto_ranges(self) -> None:
-        """Re-range the go-to spin boxes after the soft limits move."""
-        for key, w in self._axis_widgets.items():
-            lo, hi = self._axis(key).soft_limits_um()
-            w["goto"].setRange(lo, hi)
-
     def _call(self, what: str, fn) -> bool:
         """Run `fn(controller)` if connected, reporting failure in one place —
         the shape every motion command shares."""
@@ -820,12 +766,8 @@ class SettingsPanel(QWidget):
             return False
         return True
 
-    # Every other motion command ends a map drag, or its next tick would undo it.
-    def _go_zero(self) -> None:
-        self._end_drag()
-        self._call("Move failed", lambda c: c.go_to_center())
-
     # ── motion handlers ─────────────────────────────────────────────────────
+    # Every other motion command ends a map drag, or its next tick would undo it.
     def _jog(self, key: str, direction: int) -> None:
         self._end_drag()
         d = direction * self._axis_widgets[key]["step"].value()
@@ -834,31 +776,6 @@ class SettingsPanel(QWidget):
             return
         dx, dy = camera_jog(key, d, self._spn_rotation.value(), self._cam_axes)
         self._call("Jog failed", lambda c: c.jog_xy_um(dx, dy))
-
-    def _goto(self, key: str) -> None:
-        if self._ctrl is None:
-            return
-        self._end_drag()
-        target = self._axis_widgets[key]["goto"].value()
-        if key == "x":
-            cur = self._last_xy[0]
-        elif key == "y":
-            cur = self._last_xy[1]
-        else:
-            cur = self._last_z
-        thresh = self._s.confirm_move_z_um if key == "z" else self._s.confirm_move_um
-        name = self._axis(key).name
-        if not self.position_known:
-            ask = f"{self._POSITION_UNKNOWN} Move {name} to {target:.0f} µm anyway?"
-        elif abs(target - cur) > thresh:
-            ask = (f"Move {name} from {cur:.0f} to {target:.0f} µm "
-                   f"({abs(target - cur):.0f} µm)?")
-        else:
-            ask = ""
-        if ask and QMessageBox.question(self, "Confirm move", ask) \
-                != QMessageBox.StandardButton.Yes:
-            return
-        self._call("Move failed", lambda c: c.move_to_um(key, target))
 
     def _pick_and_goto_fov(self) -> None:
         from acqApp.devices.stage.fov_picker import FovPicker
@@ -875,11 +792,9 @@ class SettingsPanel(QWidget):
         # A clamped move would land short of it and still call it "active".
         out = self._outside_range(fov.x_um, fov.y_um)
         if out:
-            why = (f" — beyond ±{WINDOW_RANGE_UM:g} µm of 0,0; untick Calibrate… "
-                   f"▸ Limit to window to reach it" if self._s.window_limit else "")
             QMessageBox.warning(
                 self, "Stage", f'FOV "{fov.name}" is outside the allowed '
-                f"{'/'.join(out)} range{why}.")
+                f"{'/'.join(out)} range.")
             return
         cur_x, cur_y = self._last_xy
         dist_xy = max(abs(fov.x_um - cur_x), abs(fov.y_um - cur_y))
@@ -938,7 +853,8 @@ class SettingsPanel(QWidget):
                 QMessageBox.warning(
                     self, "Stage", f"{'/'.join(out)} is outside its allowed "
                     f"range, so dragging would jump to the range's edge. Use "
-                    f"Go to, or untick Calibrate… ▸ Limit to window.")
+                    f"Go to, or untick Settings ▸ Calibrate… ▸ Limit to "
+                    f"window.")
                 return
         self._drag_target = (x_um, y_um)
         self._map.set_target(self._drag_target)
@@ -984,11 +900,6 @@ class SettingsPanel(QWidget):
 
     # The panic path (Esc, app-wide), so guarded hardest: a dead link is exactly
     # when it's pressed, and an escaping slot exception aborts the process.
-    def _stop(self, key: str) -> None:
-        self._end_drag()
-        self._cancel_axes_run()
-        self._call("Stop failed", lambda c: c.stop(key))
-
     def _stop_all(self) -> None:
         self._end_drag()
         self._cancel_axes_run()
@@ -1124,16 +1035,11 @@ class SettingsPanel(QWidget):
             self._active_fov = None
             self.refresh_fovs()
         self._last_xy = (x_um, y_um)
-        self._lbl_x.setText(f"{x_um:8.1f}")
-        self._lbl_y.setText(f"{y_um:8.1f}")
+        self._lbl_x.setText(f"{x_um:.1f}")
+        self._lbl_y.setText(f"{y_um:.1f}")
         if z_um is not None and self._lbl_z is not None:
             self._last_z = z_um
-            self._lbl_z.setText(f"{z_um:8.1f}")
-            if (self._z_gauge is not None
-                    and (self._last_gauge_z is None
-                        or abs(z_um - self._last_gauge_z) >= self._MAP_EPS_UM)):
-                self._last_gauge_z = z_um
-                self._z_gauge.set_position(z_um)
+            self._lbl_z.setText(f"{z_um:.1f}")
         last = self._last_map_xy
         if (last is None or abs(x_um - last[0]) >= self._MAP_EPS_UM
                 or abs(y_um - last[1]) >= self._MAP_EPS_UM):
@@ -1166,9 +1072,9 @@ class SettingsPanel(QWidget):
     def settings(self) -> StageSettings:
         s = self._s
         return StageSettings(
-            port=self._cmb_port.currentText(),
+            port=s.port,
             controller=s.controller,
-            poll_hz=self._spn_rate.value(),
+            poll_hz=s.poll_hz,
             confirm_move_um=s.confirm_move_um,
             confirm_move_z_um=s.confirm_move_z_um,
             margin_um=s.margin_um,
@@ -1176,6 +1082,5 @@ class SettingsPanel(QWidget):
             frame_rotation_deg=self._spn_rotation.value(),
             drag_speed_um_s=self._spn_drag.value(),
             cam_axes=self._cam_axes,
-            window_limit=s.window_limit,
             x=s.x, y=s.y, z=s.z,
         )

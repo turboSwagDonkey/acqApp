@@ -226,7 +226,8 @@ def pairs_grid(*rows, per_row: int | None = None,
         if lw:
             g.setColumnMinimumWidth(3 * k, lw)
         bw = max((x.sizeHint().width() for x in c["btn"]), default=0)
-        iw = max((x.sizeHint().width() for x in c["inp"]), default=0)
+        iw = max((min(x.sizeHint().width(), x.maximumWidth())
+                  for x in c["inp"]), default=0)
         if c["inp"]:
             iw = max(iw, bw - lw - sp)
             for x in c["inp"]:

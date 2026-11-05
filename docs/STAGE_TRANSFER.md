@@ -71,7 +71,7 @@ poll worker with no error at all:
   substring of `"…COM10&COM"`.
 
 Note also that the port lives in **three** places, and the panel's saved value
-wins: `acqapp_local.json` (`settings.stage.port`, written by the panel) overrides
+wins: `acqapp_local.json` (`settings.stage.port`, hand-edited; no widget) overrides
 `stage_config.json`. Changing only the latter looks like it does nothing.
 
 The rest of this document describes the **MCM6101** hardware and its

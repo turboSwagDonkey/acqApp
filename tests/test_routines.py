@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
 from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
@@ -18,8 +19,8 @@ from _harness import (Report, isolate_user_state, make_window, pump, qt_app,
 from acqApp.routines.engine import (Phase, RoutineEngine, RoutineError,
                                     RoutineHooks)
 from acqApp.routines.settings import (KINDS, UNITS, Group, Recording,
-                                      RigLimits, Routine, Step, play_order,
-                                      recording_run_ids, validate)
+                                      RigLimits, Routine, Step, expand,
+                                      play_order, recording_run_ids, validate)
 from acqApp.routines.timeline import _group_spans, _layout, _recording_runs
 
 
@@ -1767,20 +1768,21 @@ def check_migration(r: Report) -> None:
     step into the atomic steps it implied, and remaps old Group ranges onto
     the expanded indices."""
 
-    # a) a move+length composite -> a move step, then a record step.
+    # a) a move+length composite -> move, record -> one FOV step.
     old_move = {"steps": [{"x_um": 10.0, "y_um": 20.0, "fov": "f1",
                           "settle_s": 0.4, "length": 50, "unit": "frames"}]}
     rm = Routine.from_dict(old_move)
-    r.check(len(rm.steps) == 2 and rm.steps[0].kind == "move"
+    r.check(len(rm.steps) == 1 and rm.steps[0].kind == "fov"
             and rm.steps[0].x_um == 10.0 and rm.steps[0].y_um == 20.0
             and rm.steps[0].fov == "f1" and rm.steps[0].settle_s == 0.4,
-            f"the move half keeps its target, FOV name and settle "
-            f"({rm.steps[0]})")
-    r.check(rm.steps[1].kind == "record" and rm.steps[1].length == 50
-            and rm.steps[1].unit == "frames",
-            f"…followed by a record step with the old length/unit ({rm.steps[1]})")
-    r.check(rm.recordings == [Recording(start=1, end=1)],
-            "…the old wait is now a Record step — an old step always captured")
+            f"the move keeps its target, FOV name and settle, as an FOV step "
+            f"({rm.steps})")
+    r.check(rm.steps[0].length == 50 and rm.steps[0].unit == "frames"
+            and not rm.steps[0].pattern,
+            f"…capturing the old length/unit, unlit ({rm.steps[0]})")
+    eng, _rows = expand(rm)
+    r.check(eng.recordings == [Recording(start=1, end=1)],
+            "…which still runs as a Record — an old step always captured")
 
     # b) a pattern-only composite -> a display step, then a record step.
     old_pat = {"steps": [{"pattern": "p.png", "length": 10, "unit": "seconds"}]}
@@ -1825,14 +1827,16 @@ def check_migration(r: Report) -> None:
         "groups": [{"start": 1, "end": 2, "repeats": 2}],
     }
     rg = Routine.from_dict(old_grouped)
-    r.check(len(rg.steps) == 5,
-            f"three old steps expand to five new ones ({len(rg.steps)})")
-    r.check(len(rg.groups) == 1 and rg.groups[0].start == 2
-            and rg.groups[0].end == 4 and rg.groups[0].repeats == 2,
-            f"the group's OLD range (steps 1-2) remaps to the NEW steps "
-            f"those old positions became (2-4) ({rg.groups[0]})")
-    r.check(len(rg.recordings) == 3,
-            "each old step's wait is its own Record step")
+    r.check([s.kind for s in rg.steps] == ["fov", "display", "record",
+                                            "record"],
+            f"three old steps -> move+record folded to an FOV step, then "
+            f"display, record, record ({[s.kind for s in rg.steps]})")
+    r.check(len(rg.groups) == 1 and rg.groups[0].start == 1
+            and rg.groups[0].end == 3 and rg.groups[0].repeats == 2,
+            f"the group's OLD range (steps 1-2) remaps to the steps those old "
+            f"positions became (1-3) ({rg.groups[0]})")
+    r.check(len(expand(rg)[0].recordings) == 3,
+            "each old step's wait still runs as its own Record step")
 
     # A file with no "kind" anywhere must not raise, whatever it contains.
     try:
@@ -1841,6 +1845,84 @@ def check_migration(r: Report) -> None:
                      "not raise")
     except Exception as e:                       # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} escaped a malformed blob: {e}")
+
+
+def check_fov_step(r: Report, tmp: Path) -> None:
+    """An FOV step runs as move, show its ROI set, capture, light off, wait;
+    a Trigger before one waits after its move; rows map back for the table."""
+    roi = tmp / "a.roi.json"
+    roi.write_text("{}")
+    fov = Step(kind="fov", fov="a_fov", x_um=1.0, y_um=2.0, settle_s=0.3,
+               pattern=str(roi), length=200, unit="frames", wait_s=5.0)
+    eng, rows = expand(Routine(steps=[fov]))
+    r.check([(s.kind, s.pattern) for s in eng.steps]
+            == [("move", ""), ("display", str(roi)), ("record", ""),
+                ("display", ""), ("wait", "")],
+            f"FOV step -> move, show ROI, record, light off, wait "
+            f"({[s.kind for s in eng.steps]})")
+    r.check(eng.steps[0].settle_s == 0.3 and eng.steps[2].length == 200
+            and eng.steps[4].length == 5.0 and eng.steps[4].unit == "seconds",
+            "…with its settle, capture and wait (in seconds)")
+    r.check(rows == [0] * 5, f"…every part maps to its row ({rows})")
+
+    unlit = replace(fov, pattern="", wait_s=0.0)
+    r.check([s.kind for s in expand(Routine(steps=[unlit]))[0].steps]
+            == ["move", "record"],
+            "control: no ROI set and no wait -> no light and no wait steps")
+
+    trig = Routine(steps=[Step(kind="trigger"), fov, Step(kind="puff")],
+                   groups=[Group(start=0, end=1, repeats=3)])
+    eng, rows = expand(trig)
+    r.check([s.kind for s in eng.steps]
+            == ["move", "display", "trigger", "record", "display", "wait",
+                "puff"],
+            f"a Trigger before an FOV step waits after the move, right before "
+            f"the capture ({[s.kind for s in eng.steps]})")
+    r.check(rows == [1, 1, 0, 1, 1, 1, 2],
+            f"…its wait maps to the Trigger's row ({rows})")
+    r.check([(g.start, g.end, g.repeats) for g in eng.groups] == [(0, 5, 3)],
+            f"…and the group covers the whole folded block ({eng.groups})")
+    split = replace(trig, groups=[Group(start=1, end=1, repeats=2)])
+    r.check([s.kind for s in expand(split)[0].steps][:2] == ["trigger", "move"],
+            "control: a group starting at the FOV step keeps the Trigger "
+            "outside it")
+
+    rig = RigLimits(x_um=(-10, 10), y_um=(-10, 10), has_stage=True,
+                    has_dmd=True, has_frames=True)
+    far = replace(fov, x_um=99.0)
+    probs = validate(Routine(steps=[Step(kind="puff"), far]),
+                     replace(rig, has_puffer=True))
+    r.check(any(p.startswith("step 2: x = 99") for p in probs),
+            f"a problem in an FOV step's move names its table row ({probs})")
+    r.check(any("FOV step has no position" in p for p in
+                validate(Routine(steps=[replace(fov, x_um=None, y_um=None)]),
+                         rig)),
+            "an FOV step with no position is refused")
+
+    legacy = Routine.from_dict({"steps": [
+        {"kind": "move", "x_um": 1.0, "fov": "a_fov"},
+        {"kind": "display", "pattern": str(roi)},
+        {"kind": "record", "length": 3, "unit": "seconds"},
+        {"kind": "display", "pattern": ""},
+        {"kind": "wait", "length": 4, "unit": "seconds"},
+        {"kind": "puff"}]})
+    r.check([s.kind for s in legacy.steps] == ["fov", "puff"]
+            and legacy.steps[0].pattern == str(roi)
+            and legacy.steps[0].wait_s == 4,
+            f"an older move/show/record/off/wait run loads as one FOV step "
+            f"({[s.kind for s in legacy.steps]})")
+    kept = Routine.from_dict({
+        "steps": [{"kind": "move", "x_um": 1.0},
+                  {"kind": "record", "length": 3}],
+        "groups": [{"start": 1, "end": 1, "repeats": 2}]})
+    r.check([s.kind for s in kept.steps] == ["move", "record"],
+            "control: a group edge inside the run keeps the steps apart")
+    back = Routine.from_dict(Routine(steps=[fov], capture_length=7,
+                                     capture_unit="seconds",
+                                     wait_s=2.5).to_dict())
+    r.check(back.steps == [fov] and (back.capture_length, back.capture_unit,
+                                     back.wait_s) == (7, "seconds", 2.5),
+            "FOV steps and the general capture/wait survive save and load")
 
 
 # ── estimate, panel, table, and the whole app ─────────────────────────────────
@@ -2033,9 +2115,9 @@ def _menu_texts(tbl, row: int, span: tuple[int, int] | None = None) -> list[str]
 
 
 def check_step_table(r: Report, app, tmp: Path) -> None:
-    """The step table edits through widgets, gated by the row's Kind: a column
+    """The step table edits through widgets, gated by the row's kind: a column
     the kind doesn't use renders "—" and refuses editing. The value lives in
-    the cell's data; the text only renders it."""
+    the cell's data; the text only renders it. A row's kind is fixed."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
 
@@ -2050,38 +2132,40 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     tbl = panel._tbl
     col = {f: i for i, f in enumerate(FIELDS)}
 
+    def become(row: int, **kw) -> None:
+        """Replace step `row` in place (kinds aren't edited in the table)."""
+        routine.steps[row] = replace(routine.steps[row], **kw)
+        panel._reload_table()
+
     edits: list = []
     panel.settings_changed.connect(edits.append)
 
-    from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QStyleOptionViewItem
+    from PyQt6.QtWidgets import QDoubleSpinBox, QStyleOptionViewItem
 
     def editor(row: int, field: str):
         c = col[field]
         return tbl.itemDelegateForColumn(c).createEditor(
             tbl, QStyleOptionViewItem(), tbl.model().index(row, c))
 
-    ed = editor(0, "kind")
-    r.check(isinstance(ed, QComboBox),
-            f"the Kind cell opens a drop-down ({type(ed).__name__})")
-    r.check(tuple(ed.itemData(i) for i in range(ed.count())) == KINDS,
-            f"…offering exactly settings.KINDS ({KINDS}) — so the table "
-            f"cannot drift from what validate() dispatches on")
-    r.check(tuple(ed.itemText(i) for i in range(ed.count()))
-            == tuple(KIND_LABELS[k] for k in KINDS),
-            "…labelled with KIND_LABELS, not the raw kind strings")
-
-    ed = editor(0, "unit")
-    r.check(isinstance(ed, QComboBox),
-            f"the Unit cell opens a drop-down ({type(ed).__name__})")
-    r.check(tuple(ed.itemData(i) for i in range(ed.count())) == UNITS,
-            f"…offering exactly settings.UNITS ({UNITS})")
+    r.check(tbl.itemDelegateForColumn(col["kind"]) is None
+            and not (tbl.item(0, col["kind"]).flags()
+                     & Qt.ItemFlag.ItemIsEditable),
+            "the Kind cell is fixed: no drop-down")
+    r.check(tbl.item(0, col["kind"]).text() == KIND_LABELS["wait"],
+            "…labelled with KIND_LABELS, not the raw kind string")
+    r.check(set(KINDS) <= set(KIND_LABELS),
+            "every kind the operator can add has a label")
     ed = editor(0, "settle_s")
     r.check(isinstance(ed, QDoubleSpinBox) and ed.suffix() == " s",
             f"the Settle delegate opens a spin box in seconds regardless of "
             f"the row's kind — editability is a separate gate "
             f"({type(ed).__name__})")
+    r.check(isinstance(editor(0, "capture"), QDoubleSpinBox)
+            and isinstance(editor(0, "wait"), QDoubleSpinBox),
+            "Capture and Wait open spin boxes")
     # The step's name lives on the row header.
-    r.check("comment" not in col, "no Comment column")
+    r.check("comment" not in col and "unit" not in col,
+            "no Comment column, and no per-row Unit: the routine has one")
 
     from PyQt6.QtWidgets import QInputDialog
 
@@ -2099,88 +2183,82 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     routine.steps[0].label = "one"     # restore for what follows below
     tbl._paint_numbers()
 
-    # ── kind-gating: Length/Unit are Wait-only, Settle is Move-only ──
-    r.check(bool(tbl.item(0, col["length"]).flags() & Qt.ItemFlag.ItemIsEditable),
-            "Length is editable on a Wait row")
+    # ── kind-gating: a Wait row has only Wait; Settle is FOV/Move only ──
+    r.check(bool(tbl.item(0, col["wait"]).flags() & Qt.ItemFlag.ItemIsEditable),
+            "Wait is editable on a Wait row")
     r.check(not (tbl.item(0, col["settle_s"]).flags() & Qt.ItemFlag.ItemIsEditable),
             "…and Settle is NOT, on the same row")
-    r.check(tbl.item(0, col["length"]).text() == "100",
-            f"Length renders the value on a Wait row "
-            f"({tbl.item(0, col['length']).text()!r})")
-    r.check(tbl.item(0, col["settle_s"]).text() == "—",
-            "Settle renders as a dash on a row that does not use it")
+    r.check(tbl.item(0, col["wait"]).text() == "100 fr",
+            f"Wait renders the value with its unit on a Wait row "
+            f"({tbl.item(0, col['wait']).text()!r})")
+    r.check(tbl.item(0, col["settle_s"]).text() == "—"
+            and tbl.item(0, col["capture"]).text() == "—",
+            "Settle and Capture render as a dash on a row that does not use "
+            "them")
 
-    tbl.item(0, col["kind"]).setData(VALUE, "move")
-    r.check(routine.steps[0].kind == "move", "the Kind cell sets the kind")
-    r.check(not (tbl.item(0, col["length"]).flags() & Qt.ItemFlag.ItemIsEditable)
-            and tbl.item(0, col["length"]).text() == "—",
-            "…and Length stops being editable now the row is a Move")
-    r.check(bool(tbl.item(0, col["settle_s"]).flags() & Qt.ItemFlag.ItemIsEditable),
-            "…while Settle becomes editable")
+    become(0, kind="fov", x_um=None, length=100, unit="frames", wait_s=0.0)
+    r.check(bool(tbl.item(0, col["settle_s"]).flags() & Qt.ItemFlag.ItemIsEditable)
+            and bool(tbl.item(0, col["capture"]).flags()
+                     & Qt.ItemFlag.ItemIsEditable),
+            "an FOV row edits Settle and Capture")
     r.check(tbl.item(0, col["settle_s"]).text()
-            == f"{routine.steps[0].settle_s:g} s",
-            "…and renders the settle value")
+            == f"{routine.steps[0].settle_s:g} s"
+            and tbl.item(0, col["wait"]).text() == "0 s",
+            "…rendering the settle, and its own wait in seconds")
 
-    # ── Details: Move is (x, y) together, one place not two cells ──
-    routine.steps[0].x_um, routine.steps[0].y_um = 250.0, None
-    panel._reload_table()
-    r.check(tbl.item(0, col["details"]).text() == f"(250 um, {NO_CHANGE})",
-            f"Move's Details renders both axes as one pair "
-            f"({tbl.item(0, col['details']).text()!r})")
-    r.check(tbl.item(0, col["details"]).data(VALUE) == (250.0, None, None),
+    # ── FOV: the position is one place, not three cells ──
+    become(0, x_um=250.0, y_um=None)
+    r.check(tbl.item(0, col["fov"]).text() == f"(250 um, {NO_CHANGE})",
+            f"FOV renders both axes as one pair "
+            f"({tbl.item(0, col['fov']).text()!r})")
+    r.check(tbl.item(0, col["fov"]).data(VALUE) == (250.0, None, None),
             "…and the triple is the value of record, not just the text")
-    r.check(not (tbl.item(0, col["details"]).flags() & Qt.ItemFlag.ItemIsEditable),
+    r.check(not (tbl.item(0, col["fov"]).flags() & Qt.ItemFlag.ItemIsEditable),
             "…and is not typed into")
-
-    routine.steps[0].x_um, routine.steps[0].y_um = 111.0, 222.0
-    routine.steps[0].fov = "window1"
-    panel._reload_table()
-    r.check(tbl.item(0, col["details"]).text() == "window1 (111 um, 222 um)",
-            f"the FOV's name goes in FRONT of the coordinates "
-            f"({tbl.item(0, col['details']).text()!r})")
-
-    routine.steps[0].z_um = 333.0
-    panel._reload_table()
-    r.check(tbl.item(0, col["details"]).text()
-            == "window1 (111 um, 222 um, 333 um)",
-            f"a step with a Z target renders all three axes "
-            f"({tbl.item(0, col['details']).text()!r})")
-    r.check(tbl.item(0, col["details"]).data(VALUE) == (111.0, 222.0, 333.0),
-            "…and the value of record carries Z too")
-    routine.steps[0].z_um = None
-    panel._reload_table()
-
-    routine.steps[0].x_um, routine.steps[0].fov = 999.0, ""
-    panel._reload_table()
-    r.check(tbl.item(0, col["details"]).text() == "(999 um, 222 um)",
-            "a typed position drops the FOV name off the whole cell")
+    become(0, x_um=111.0, y_um=222.0, z_um=333.0, fov="window1")
+    r.check(tbl.item(0, col["fov"]).text() == "window1",
+            f"a saved FOV shows by name ({tbl.item(0, col['fov']).text()!r})")
+    r.check(tbl.item(0, col["fov"]).data(VALUE) == (111.0, 222.0, 333.0)
+            and "333 um" in tbl.item(0, col["fov"]).toolTip(),
+            "…its value and tooltip carrying all three axes")
+    become(0, z_um=None)
 
     # The real handlers would open blocking dialogs offscreen; disconnect them.
-    tbl.position_requested.disconnect(panel._set_position)
-    tbl.pattern_requested.disconnect(panel._pick_pattern)
+    handlers = ((tbl.position_requested, panel._set_position),
+                (tbl.pattern_requested, panel._pick_pattern),
+                (tbl.fov_requested, panel._pick_fov),
+                (tbl.roi_requested, panel._pick_roi))
     opened: list = []
+    for sig, slot in handlers:
+        sig.disconnect(slot)
     tbl.position_requested.connect(lambda: opened.append("position"))
     tbl.pattern_requested.connect(lambda: opened.append("pattern"))
+    tbl.fov_requested.connect(lambda: opened.append("fov"))
+    tbl.roi_requested.connect(lambda: opened.append("roi"))
     try:
-        tbl.item(0, col["kind"]).setData(VALUE, "move")
-        tbl._on_double_click(0, col["details"])
-        r.check(opened == ["position"],
-                f"double-click on a Move row's Details asks for a position "
-                f"({opened})")
+        tbl._on_double_click(0, col["fov"])
+        tbl._on_double_click(0, col["roi"])
+        r.check(opened == ["fov", "roi"],
+                f"an FOV row's FOV and ROI cells ask for a saved FOV and an "
+                f"ROI set ({opened})")
         opened.clear()
-        tbl.item(1, col["kind"]).setData(VALUE, "display")
-        tbl._on_double_click(1, col["details"])
-        r.check(opened == ["pattern"],
-                f"…and a Display row's Details asks for a pattern ({opened})")
+        become(1, kind="move")
+        tbl._on_double_click(1, col["fov"])
+        become(1, kind="display")
+        tbl._on_double_click(1, col["roi"])
+        r.check(opened == ["position", "pattern"],
+                f"…an older Move asks for a position, a Display for a "
+                f"pattern ({opened})")
         opened.clear()
-        tbl.item(1, col["kind"]).setData(VALUE, "wait")
-        tbl._on_double_click(1, col["details"])
+        become(1, kind="wait")
+        tbl._on_double_click(1, col["fov"])
+        tbl._on_double_click(1, col["roi"])
         r.check(opened == [],
-                "…and a Wait row's Details has no dialog to ask for at all")
+                "…and a Wait row has no dialog to ask for at all")
     finally:
-        tbl.position_requested.connect(panel._set_position)
-        tbl.pattern_requested.connect(panel._pick_pattern)
-    tbl.item(1, col["kind"]).setData(VALUE, "display")   # restore for below
+        for sig, slot in handlers:
+            sig.disconnect()
+            sig.connect(slot)
 
     # QDialog.exec stays patched: restoring it makes every later QDialog
     # .exec() raise TypeError for the rest of the process (a PyQt6/sip quirk),
@@ -2188,49 +2266,48 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     from PyQt6.QtWidgets import QDialog
 
     QDialog.exec = lambda self: False
-    before = (routine.steps[0].x_um, routine.steps[0].y_um)
-    tbl.item(0, col["kind"]).setData(VALUE, "move")
-    tbl._on_double_click(0, col["details"])
-    r.check((routine.steps[0].x_um, routine.steps[0].y_um) == before,
-            "the position dialog, reached for real through the signal, "
-            "changes nothing when cancelled")
-
-    routine.steps[0].x_um, routine.steps[0].y_um = 400.0, 50.0
-    panel._reload_table()
-    tbl.setCurrentCell(0, col["details"])
+    become(1, kind="move", x_um=400.0, y_um=50.0)
+    tbl.select_row(1)
+    panel._set_position()
+    r.check((routine.steps[1].x_um, routine.steps[1].y_um) == (400.0, 50.0),
+            "the position dialog, reached for real, changes nothing when "
+            "cancelled")
+    tbl.setCurrentCell(1, col["fov"])
     QTest.keyClick(tbl, Qt.Key.Key_Delete)
-    r.check(routine.steps[0].x_um is None and routine.steps[0].y_um is None
-            and routine.steps[0].z_um is None,
-            "Delete on Move's Details clears every axis, not one at a time")
-    tbl.item(1, col["kind"]).setData(VALUE, "wait")
+    r.check((routine.steps[1].x_um, routine.steps[1].y_um) == (400.0, 50.0),
+            "control: Delete on FOV does nothing — a position is replaced, "
+            "not emptied")
+
+    become(1, kind="wait", length=2.0, unit="seconds")
     before_len = routine.steps[1].length
-    tbl.setCurrentCell(1, col["length"])
+    tbl.setCurrentCell(1, col["wait"])
     QTest.keyClick(tbl, Qt.Key.Key_Delete)
     r.check(routine.steps[1].length == before_len,
             f"control: Delete on a cell that must hold a number does "
             f"nothing ({routine.steps[1].length})")
     try:
-        tbl.clear_cell(1, "details")
-        r.check(True, "control: clearing Details on a Wait row is a silent "
+        tbl.clear_cell(1, "roi")
+        r.check(True, "control: clearing ROI on a Wait row is a silent "
                      "no-op, not a crash")
     except Exception as e:                       # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} escaped clearing a Wait row's "
-                      f"Details: {e}")
+                      f"ROI: {e}")
 
-    tbl.item(1, col["unit"]).setData(VALUE, "frames")
-    tbl.item(1, col["length"]).setData(VALUE, 100.4)
-    r.check(routine.steps[1].length == 100,
-            f"a fractional length on a frames step is rounded "
-            f"({routine.steps[1].length})")
-    r.check(not [p for p in validate(routine, RigLimits(has_frames=True,
-                                                       has_dmd=True))
+    tbl.item(0, col["capture"]).setData(VALUE, 100.4)
+    r.check(routine.steps[0].length == 100,
+            f"a fractional capture on a frames step is rounded "
+            f"({routine.steps[0].length})")
+    r.check(not [p for p in validate(routine, RigLimits(
+                has_frames=True, has_dmd=True, has_stage=True,
+                x_um=(-1e4, 1e4), y_um=(-1e4, 1e4)))
                 if "whole number" in p],
             "…so the routine validates instead of being refused at Start")
-    tbl.item(1, col["unit"]).setData(VALUE, "seconds")
-    tbl.item(1, col["length"]).setData(VALUE, 2.5)
-    r.check(routine.steps[1].length == 2.5,
-            f"control: a seconds step keeps its fraction ({routine.steps[1].length})")
-    tbl.item(1, col["kind"]).setData(VALUE, "wait")   # back to a plain wait
+    routine.steps[0].unit = "seconds"
+    tbl.item(0, col["capture"]).setData(VALUE, 2.5)
+    r.check(routine.steps[0].length == 2.5,
+            f"control: a seconds capture keeps its fraction "
+            f"({routine.steps[0].length})")
+    become(0, kind="wait", label="one", length=100, unit="frames")
 
     panel._tbl.select_row(0)
     panel._move_down()
@@ -2242,23 +2319,21 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     r.check([x.label for x in routine.steps] == ["one", "two"],
             "…and back up again")
 
-    tbl.item(0, col["kind"]).setData(VALUE, "display")
-    routine.steps[0].pattern = r"C:\patterns\grid.png"
-    panel._reload_table()
-    r.check(tbl.item(0, col["details"]).text() == "grid.png",
-            f"the Details cell shows the file's name "
-            f"({tbl.item(0, col['details']).text()!r})")
-    r.check(not (tbl.item(0, col["details"]).flags()
+    become(0, kind="display", pattern=r"C:\patterns\grid.png")
+    r.check(tbl.item(0, col["roi"]).text() == "grid.png",
+            f"the ROI cell shows the file's name "
+            f"({tbl.item(0, col['roi']).text()!r})")
+    r.check(not (tbl.item(0, col["roi"]).flags()
                 & Qt.ItemFlag.ItemIsEditable),
             "…and is not typed into")
     panel._tbl.select_row(0)
-    panel._tbl.setCurrentCell(0, col["details"])
+    panel._tbl.setCurrentCell(0, col["roi"])
     panel._clear_pattern()
     r.check(routine.steps[0].pattern == "" and
-            tbl.item(0, col["details"]).text() == "stop displaying",
-            "clearing the pattern reads as 'stop displaying', not a blank "
-            "cell")
-    r.check(tbl.item(0, col["details"]).icon().isNull(),
+            tbl.item(0, col["roi"]).text() == "stop displaying",
+            "clearing an older Display's pattern reads as 'stop displaying', "
+            "not a blank cell")
+    r.check(tbl.item(0, col["roi"]).icon().isNull(),
             "…and the thumbnail clears with it")
 
     from PyQt6.QtGui import QPixmap
@@ -2267,7 +2342,7 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     QPixmap(8, 8).save(str(real_pattern), "PNG")
     routine.steps[0].pattern = str(real_pattern)
     panel._reload_table()
-    r.check(not tbl.item(0, col["details"]).icon().isNull(),
+    r.check(not tbl.item(0, col["roi"]).icon().isNull(),
             "a step with a real pattern image shows a thumbnail")
 
     from acqApp.devices.dmd import roi_store
@@ -2277,9 +2352,9 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
     roi_path = roi_store.save("some_set", roi_set)
     routine.steps[0].pattern = str(roi_path)
     panel._reload_table()
-    r.check(tbl.item(0, col["details"]).text() == "ROI: some_set",
-            f"an ROI set still names itself ({tbl.item(0, col['details']).text()!r})")
-    r.check(not tbl.item(0, col["details"]).icon().isNull(),
+    r.check(tbl.item(0, col["roi"]).text() == "some_set",
+            f"an ROI set names itself ({tbl.item(0, col['roi']).text()!r})")
+    r.check(not tbl.item(0, col["roi"]).icon().isNull(),
             "…and shows a thumbnail of its shapes")
 
     empty_path = tmp / "empty_set.roi.json"
@@ -2287,7 +2362,7 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
         json.dumps({"name": "empty_set", "rois": []}), encoding="utf-8")
     routine.steps[0].pattern = str(empty_path)
     panel._reload_table()
-    r.check(tbl.item(0, col["details"]).icon().isNull(),
+    r.check(tbl.item(0, col["roi"]).icon().isNull(),
             "control: an ROI set with nothing in it gets no thumbnail")
     corrupt_path = tmp / "corrupt_set.roi.json"
     corrupt_path.write_text("{not json", encoding="utf-8")
@@ -2318,24 +2393,31 @@ def check_step_table(r: Report, app, tmp: Path) -> None:
             "…and nothing is bold once it is over")
 
     # ── the right-click menu is gated by the row's kind ──
-    tbl.item(0, col["kind"]).setData(VALUE, "move")
+    become(0, kind="fov", pattern="")
+    texts = _menu_texts(tbl, 0)
+    r.check(any("Change FOV" in t for t in texts)
+            and any("Set ROI" in t for t in texts)
+            and any("No light" in t for t in texts),
+            f"an FOV row offers FOV, ROI set and No light ({texts})")
+
+    become(0, kind="move")
     texts = _menu_texts(tbl, 0)
     r.check(any("Set position" in t for t in texts)
             and any("Fill Stage" in t for t in texts)
             and not any("pattern" in t.lower() for t in texts),
-            f"a Move row offers position/FOV actions, not pattern ones "
+            f"an older Move row offers position/FOV actions, not pattern ones "
             f"({texts})")
 
-    tbl.item(0, col["kind"]).setData(VALUE, "display")
+    become(0, kind="display")
     texts = _menu_texts(tbl, 0)
     r.check(any("Set pattern" in t for t in texts)
             and any("Set ROI" in t for t in texts)
             and not any("position" in t.lower() for t in texts)
             and not any("FOV" in t for t in texts),
-            f"a Display row offers pattern/ROI actions, not position ones "
-            f"({texts})")
+            f"an older Display row offers pattern/ROI actions, not position "
+            f"ones ({texts})")
 
-    tbl.item(0, col["kind"]).setData(VALUE, "wait")
+    become(0, kind="wait")
     texts = _menu_texts(tbl, 0)
     r.check(not any("pattern" in t.lower() or "position" in t.lower()
                    or "fov" in t.lower() for t in texts),
@@ -2710,15 +2792,13 @@ def check_panel_tracker(r: Report, app) -> None:
                                                                "start_trigger"),
             "the manual/TTL choice is gone — every routine arms on Start")
 
-    # ── the +Step kind picker ──
-    r.check(panel._cmb_new_kind.currentData() == "wait",
-            "…+Step defaults to appending a Wait step")
-    panel._cmb_new_kind.setCurrentIndex(KINDS.index("move"))
+    # ── Other ▸ Wait / Puff / Trigger ──
     n_before = len(routine.steps)
-    panel._add_step()
+    panel._add_step("puff")
     r.check(len(routine.steps) == n_before + 1
-            and routine.steps[-1].kind == "move",
-            f"+Step appends a step of whatever kind is picked ({routine.steps[-1].kind!r})")
+            and routine.steps[-1].kind == "puff",
+            f"Other ▸ appends a step of the picked kind "
+            f"({routine.steps[-1].kind!r})")
     # Not list.pop(): that leaves the selection dangling, and the
     # _del_step() calls below would silently no-op.
     panel._del_step()
@@ -2932,8 +3012,8 @@ def check_app(r: Report, app, tmp) -> None:
     r.check(adapter._routine is not panel._r
             and len(adapter._routine.steps) == len(panel._r.steps),
             "the engine runs a copy of the protocol, not the panel's object")
-    r.check(not panel._protocol.isEnabled(),
-            "…and the whole Protocol box (templates, ±Step, groups) is locked")
+    r.check(not panel._protocol.isEnabled() and not panel._setup.isEnabled(),
+            "…and every protocol edit (templates, ±Step, groups) is locked")
 
     for _ in range(200):
         win._display_tick()
@@ -2941,7 +3021,8 @@ def check_app(r: Report, app, tmp) -> None:
         if eng0.phase == Phase.DONE:
             break
     adapter.update_display()
-    r.check(panel._protocol.isEnabled(), "…unlocked again once it is done")
+    r.check(panel._protocol.isEnabled() and panel._setup.isEnabled(),
+            "…unlocked again once it is done")
 
     phase, runs, filed, steps_done = (eng0.phase, list(eng0.runs),
                                       adapter._filed, eng0.steps_done())
@@ -3086,7 +3167,7 @@ def check_file_rolling(r: Report, app, tmp) -> None:
     adapter._show_save_location()
     shown = panel._lbl_saved.toolTip()
     r.check(shown.startswith("Saves under: ") and str(out) in shown
-            and "roll" in shown and panel._lbl_saved.isVisibleTo(panel),
+            and "roll" in shown and panel._lbl_saved.isVisibleTo(panel.view),
             f"the Run box says where files are saved ({shown!r})")
 
     win.close()
@@ -3300,26 +3381,26 @@ def check_step_edits_keep_groups(r: Report, app) -> None:
             f"removing a group's steps shrinks it, then drops it ({spans()})")
 
     tbl = panel._tbl
-    routine.steps[0].length, routine.steps[0].unit = 2.6, "seconds"
+    panel._cmb_unit.setCurrentText("seconds")
+    routine.steps[0] = Step(kind="fov", x_um=1.0, length=2.6, unit="seconds")
     tbl.reload()
-    tbl.item(0, FIELDS.index("unit")).setData(VALUE, "frames")
+    panel._cmb_unit.setCurrentText("frames")
     r.check(routine.steps[0].unit == "frames" and routine.steps[0].length == 3,
-            f"switching a step to frames rounds its length "
+            f"switching the routine to frames rounds an FOV step's capture "
             f"({routine.steps[0].length!r})")
 
     routine.steps[1] = Step(kind="move", fov="A_fov", x_um=10.0)
     try:
         tbl.reload()
-        tip = tbl.item(1, FIELDS.index("details")).toolTip()
+        tip = tbl.item(1, FIELDS.index("fov")).toolTip()
         r.check("A_fov" in tip and "NA" in tip,
                 f"a FOV-named Move with an axis left alone renders ({tip!r})")
     except Exception as e:                       # noqa: BLE001 — that IS the bug
         r.check(False, f"{type(e).__name__} rendering a FOV-named Move: {e}")
 
-    tbl.item(2, FIELDS.index("kind")).setData(VALUE, "record")
-    head = tbl.verticalHeaderItem(2).text()
-    r.check(routine.steps[2].kind == "record" and "⏺" in head,
-            f"a step made a Record gets the Record badge at once ({head!r})")
+    head = tbl.verticalHeaderItem(0).text()
+    r.check("⏺" in head,
+            f"an FOV step records, so it carries the Record badge ({head!r})")
 
     said: list[str] = []
     panel.status_message.connect(said.append)
@@ -3348,6 +3429,7 @@ def _part_routines() -> int:
     try:
         check_validation(r, tmp)
         check_migration(r)
+        check_fov_step(r, tmp)
         check_units(r)
         check_order(r, tmp)
         check_move_timeout(r)
@@ -3585,136 +3667,100 @@ def _pick(panel, row: int, *, fov=None, roi=None) -> tuple[list, list]:
     return said, emitted
 
 
-def check_pair_fov_to_roi(r: Report, fov_a, roi_a: Path, lonely,
-                          orphan) -> None:
-    """A FOV picked for a move step brings its "_roi" partner along."""
+def check_fov_step_pick(r: Report, fov_a, roi_a: Path, orphan) -> None:
+    """+ FOV step: the picked FOV, the general capture/wait, and the FOV's
+    "_roi" partner, or one drawn now, or no light."""
     from acqApp.routines.panel import SettingsPanel
 
-    # ── reuses the segment's first showing display step ──
-    panel = SettingsPanel(Routine(steps=[
-        Step(kind="move"), Step(kind="wait"),
-        Step(kind="display", pattern="old.roi.json"),
-        Step(kind="move"), Step(kind="display", pattern="later.roi.json")]))
+    panel = SettingsPanel(Routine(capture_length=300, capture_unit="frames",
+                                  wait_s=4.0))
     steps = panel.settings.steps
-    said, emitted = _pick(panel, 0, fov=fov_a)
-    r.check((steps[0].x_um, steps[0].y_um, steps[0].z_um, steps[0].fov)
-            == (10.0, 20.0, 5.0, "cellA_fov"),
-            f"the picked move step is filled as before ({steps[0]})")
-    r.check(len(steps) == 5 and steps[2].pattern == str(roi_a),
-            f"…and the segment's display step now shows the paired ROI "
-            f"({steps[2].pattern})")
-    r.check(steps[4].pattern == "later.roi.json",
-            "a display step past the next move is another FOV's, left alone")
-    r.check(said == ['Also set step 3 to ROI "cellA_roi"'],
-            f"the status bar says what else changed ({said})")
-    r.check(len(emitted) == 1 and panel._tbl.rowCount() == 5,
-            f"one persist, one repaint ({len(emitted)})")
+    _FakeFovPicker.fov = fov_a
+    panel._add_fov_step()
+    s = steps[0] if steps else None
+    r.check(s is not None and s.kind == "fov"
+            and (s.x_um, s.y_um, s.z_um, s.fov) == (10.0, 20.0, 5.0,
+                                                    "cellA_fov"),
+            f"+ FOV step adds a step at the picked FOV ({s})")
+    r.check(s is not None and (s.length, s.unit, s.wait_s) == (300, "frames",
+                                                              4.0),
+            "…capturing and waiting as the general settings say")
+    r.check(s is not None and s.pattern == str(roi_a),
+            f"…showing the FOV's paired ROI set ({s and s.pattern})")
 
-    # ── no showing display step: insert one, groups follow ──
+    _FakeFovPicker.fov = None
+    panel._add_fov_step()
+    r.check(len(steps) == 1, "control: cancelling the FOV picker adds nothing")
+
+    drawn: list = []
+    panel.draw_roi = lambda fov: drawn.append(fov.name) or roi_a
+    from PyQt6.QtWidgets import QMessageBox
+    real_q = QMessageBox.question
+    QMessageBox.question = staticmethod(
+        lambda *_a, **_k: QMessageBox.StandardButton.Yes)
+    try:
+        said, _ = _pick(panel, 0, fov=orphan)
+        r.check(drawn == ["ghost_fov"] and steps[0].pattern == str(roi_a),
+                f"an FOV with no ROI set offers to draw one, and the step "
+                f"shows what was drawn ({drawn})")
+        panel.draw_roi = lambda fov: None
+        said, _ = _pick(panel, 0, fov=orphan)
+        r.check(steps[0].pattern == "" and said and "without light" in said[0],
+                f"…none drawn: the step captures unlit, and says so ({said})")
+    finally:
+        QMessageBox.question = real_q
+
+    # General edits: matching steps follow, hand-edited ones keep theirs.
     panel = SettingsPanel(Routine(
-        steps=[Step(kind="move"), Step(kind="display", pattern=""),
-               Step(kind="wait"), Step(kind="move"),
-               Step(kind="display", pattern="x.roi.json")],
-        groups=[Group(0, 1, 2), Group(3, 4, 2), Group(1, 2, 3)]))
-    routine = panel.settings
-    said, emitted = _pick(panel, 0, fov=fov_a)
-    kinds = [(s.kind, s.pattern) for s in routine.steps]
-    r.check(kinds == [("move", ""), ("display", str(roi_a)), ("display", ""),
-                      ("wait", ""), ("move", ""), ("display", "x.roi.json")],
-            f"a 'stop displaying' step is never turned into a show; a display "
-            f"step is inserted right after the move instead ({kinds})")
-    spans = [(g.start, g.end) for g in routine.groups]
-    r.check(spans == [(0, 2), (4, 5), (2, 3)],
-            f"the move's group takes the new step in, later groups shift "
-            f"({spans})")
-    r.check(said == ['Added step 2: show ROI "cellA_roi"'] and len(emitted) == 1
-            and panel._tbl.rowCount() == 6,
-            f"…said once, persisted once ({said}, {len(emitted)})")
-
-    # ── the next move step bounds the search ──
-    panel = SettingsPanel(Routine(steps=[
-        Step(kind="move"), Step(kind="move"),
-        Step(kind="display", pattern="b.roi.json")]))
-    routine = panel.settings
-    _pick(panel, 0, fov=fov_a)
-    r.check([s.pattern for s in routine.steps]
-            == ["", str(roi_a), "", "b.roi.json"],
-            "a display step after the next move isn't this FOV's")
-
-    # ── controls: no partner, nothing else moves ──
-    for fov, why in ((lonely, "a FOV without the _fov suffix"),
-                     (orphan, "a _fov FOV with no saved _roi")):
-        panel = SettingsPanel(Routine(steps=[
-            Step(kind="move"), Step(kind="display", pattern="keep.roi.json")]))
-        routine = panel.settings
-        said, emitted = _pick(panel, 0, fov=fov)
-        r.check(routine.steps[0].fov == fov.name and len(routine.steps) == 2
-                and routine.steps[1].pattern == "keep.roi.json" and not said
-                and len(emitted) == 1,
-                f"control: {why} fills its move step and nothing else ({said})")
-
-
-def check_pair_roi_to_fov(r: Report, fov_a, roi_a: Path, plain: Path) -> None:
-    """An ROI set picked for a display step brings its "_fov" partner along."""
-    from acqApp.routines.panel import SettingsPanel
-
-    # ── fills the nearest earlier move, past a "stop displaying" ──
-    panel = SettingsPanel(Routine(steps=[
-        Step(kind="move", x_um=1.0), Step(kind="display", pattern=""),
-        Step(kind="wait"), Step(kind="display", pattern="old.roi.json")]))
+        steps=[Step(kind="fov", x_um=1.0, length=100, unit="frames",
+                    wait_s=2.0),
+               Step(kind="fov", x_um=2.0, length=55, unit="frames",
+                    wait_s=9.0),
+               Step(kind="wait", length=3.0, unit="seconds")],
+        capture_length=100, capture_unit="frames", wait_s=2.0))
     steps = panel.settings.steps
-    said, emitted = _pick(panel, 3, roi=roi_a)
-    r.check(steps[3].pattern == str(roi_a),
-            "the picked display step shows the picked set, as before")
-    r.check(len(steps) == 4 and (steps[0].x_um, steps[0].y_um, steps[0].z_um,
-                                 steps[0].fov) == (10.0, 20.0, 5.0, "cellA_fov"),
-            f"…and the segment's move step goes to the paired FOV ({steps[0]})")
-    r.check(said == ['Also set step 1 to FOV "cellA_fov"'] and len(emitted) == 1,
-            f"the status bar says so, persisted once ({said})")
+    panel._spn_capture.setValue(250)
+    panel._spn_wait.setValue(6.0)
+    panel._on_general_changed()
+    r.check((steps[0].length, steps[0].wait_s) == (250, 6.0)
+            and (steps[1].length, steps[1].wait_s) == (55, 9.0)
+            and steps[2].length == 3.0,
+            f"a general change moves steps still on the old value only "
+            f"({[(x.length, x.wait_s) for x in steps]})")
+    panel._cmb_unit.setCurrentText("seconds")
+    r.check(all(x.unit == "seconds" for x in steps[:2])
+            and steps[0].length == 250 and steps[1].length == 55,
+            "a unit change moves every FOV step's unit, never its number")
 
-    # ── another ROI's segment in between: insert a move, groups follow ──
-    panel = SettingsPanel(Routine(
-        steps=[Step(kind="move", x_um=1.0, y_um=1.0, fov="other"),
-               Step(kind="display", pattern="b.roi.json"), Step(kind="wait"),
-               Step(kind="display", pattern="old.roi.json"),
-               Step(kind="wait")],
-        groups=[Group(0, 1, 2), Group(2, 3, 2), Group(3, 3, 2),
-                Group(4, 4, 2)]))
-    routine = panel.settings
-    said, emitted = _pick(panel, 3, roi=roi_a)
-    kinds = [s.kind for s in routine.steps]
-    r.check(kinds == ["move", "display", "wait", "move", "display", "wait"]
-            and routine.steps[3].fov == "cellA_fov"
-            and routine.steps[3].x_um == 10.0
-            and routine.steps[4].pattern == str(roi_a),
-            f"a showing display step in between stops the search: a move to "
-            f"the FOV is inserted just before the picked step ({kinds})")
-    r.check(routine.steps[0].fov == "other" and routine.steps[0].x_um == 1.0,
-            "control: the other ROI's move step is left alone")
-    spans = [(g.start, g.end) for g in routine.groups]
-    r.check(spans == [(0, 1), (2, 4), (3, 4), (5, 5)],
-            f"groups holding the display step grow, later ones shift, earlier "
-            f"ones stay ({spans})")
-    r.check(said == ['Added step 4: move to FOV "cellA_fov"']
-            and len(emitted) == 1 and panel._tbl.rowCount() == 6,
-            f"…said once, persisted once ({said})")
+    panel._add_step("wait")
+    r.check(steps[-1].kind == "wait" and steps[-1].length == 6.0
+            and steps[-1].unit == "seconds",
+            "Other ▸ Wait lasts the general wait")
 
-    # ── nothing earlier at all: insert at the top ──
-    panel = SettingsPanel(Routine(steps=[Step(kind="display", pattern="")]))
-    routine = panel.settings
-    _pick(panel, 0, roi=roi_a)
-    r.check([s.kind for s in routine.steps] == ["move", "display"]
-            and routine.steps[0].fov == "cellA_fov",
-            "a display step with no move before it gets one inserted")
 
-    # ── control: a set without the _roi suffix pairs with nothing ──
-    panel = SettingsPanel(Routine(steps=[Step(kind="move"),
-                                         Step(kind="display")]))
-    routine = panel.settings
-    said, _ = _pick(panel, 1, roi=plain)
-    r.check(routine.steps[1].pattern == str(plain) and len(routine.steps) == 2
-            and routine.steps[0].fov == "" and not said,
-            f"control: an unpaired ROI set changes only its own step ({said})")
+def check_fov_step_table(r: Report, roi_a: Path) -> None:
+    """The table shows an FOV step's columns; Delete in ROI means no light."""
+    from acqApp.routines.table import FIELDS, VALUE, StepTable
+
+    steps = [Step(kind="fov", fov="cellA_fov", x_um=1.0, pattern=str(roi_a),
+                  length=200, unit="frames", wait_s=3.0),
+             Step(kind="puff")]
+    tbl = StepTable(steps)
+    text = {f: tbl.item(0, FIELDS.index(f)).text() for f in FIELDS}
+    r.check(text["fov"] == "cellA_fov" and text["roi"] == "cellA_roi"
+            and text["capture"] == "200 fr" and text["wait"] == "3 s",
+            f"an FOV step's row: FOV, ROI, capture (with its unit), wait "
+            f"({text})")
+    r.check(all(tbl.item(1, FIELDS.index(f)).text() == "—"
+                for f in ("fov", "roi", "capture", "wait", "settle_s")),
+            "a Puff row has nothing to set")
+    item = tbl.item(0, FIELDS.index("wait"))
+    item.setData(VALUE, 7.5)
+    r.check(steps[0].wait_s == 7.5, "editing Wait sets the step's own wait")
+    tbl.clear_cell(0, "roi")
+    r.check(steps[0].pattern == "" and
+            tbl.item(0, FIELDS.index("roi")).text() == "no light",
+            "clearing ROI leaves the step unlit")
 
 
 def _part_pairing() -> int:
@@ -3734,12 +3780,10 @@ def _part_pairing() -> int:
         fov_a = fov_store.load(fov_store.save("cellA_fov", 10.0, 20.0, 5.0))
         roi_a = roi_store.save("cellA_roi", rois)
         roi_store.save("cellB_roi", rois)
-        lonely = fov_store.load(fov_store.save("cellA", 1.0, 2.0))
         orphan = fov_store.load(fov_store.save("ghost_fov", 3.0, 4.0))
-        plain = roi_store.save("cellA", rois)
 
-        check_pair_fov_to_roi(r, fov_a, roi_a, lonely, orphan)
-        check_pair_roi_to_fov(r, fov_a, roi_a, plain)
+        check_fov_step_pick(r, fov_a, roi_a, orphan)
+        check_fov_step_table(r, roi_a)
         app.processEvents()
     finally:
         shutil.rmtree(state, ignore_errors=True)

@@ -100,8 +100,22 @@ def accent_panel(key: str) -> str:
 
 
 def dock_accent(key: str) -> str:
+    """A dock's title bar: a bold, tinted band in its accent."""
+    q = QColor(HEX[key])
+    return (
+        "QDockWidget{font-weight:bold}"
+        f"QDockWidget::title{{background:rgba({q.red()},{q.green()},{q.blue()},70);"
+        f"border:1px solid {q.name()};border-bottom:2px solid {q.name()};"
+        "border-top-left-radius:4px;border-top-right-radius:4px;padding:4px}"
+    )
+
+
+def zone(key: str) -> str:
+    """A dock's body, framed in its accent under the title band: each region
+    reads as one block."""
     c = HEX[key]
-    return f"QDockWidget::title{{border-bottom:2px solid {c};padding:4px}}"
+    return (f"QFrame#zone{{border:1px solid {c};border-top:none;"
+            "border-bottom-left-radius:4px;border-bottom-right-radius:4px}")
 
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
@@ -128,6 +142,9 @@ QTabBar::tab      {{ padding: 4px 12px; }}
 QTabBar::tab:selected {{ font-weight: bold; }}
 
 QStatusBar {{ font-size: 8pt; color: {t['status']}; }}
+
+/* The gaps between docks: wide enough to read as borders, and to grab. */
+QMainWindow::separator {{ width: 8px; height: 8px; }}
 """
 
 

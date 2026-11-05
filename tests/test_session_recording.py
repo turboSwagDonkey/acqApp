@@ -25,7 +25,7 @@ PUPIL_FIT_STREAMS = ["pupil_x", "pupil_y", "pupil_major", "pupil_minor",
 PUPIL_THRESHOLD = 57                    # not the default, so a stuck one shows
 
 CONFIG_ATTRS = ["created", "emulated", "modules", "mouse_id", "cam_exposure_us",
-                "wheel_rate_hz", "pupil_rate_hz", "stage_port", "dmd_on_time_ms",
+                "wheel_rate_hz", "pupil_rate_hz", "stage_port", "dmd_device",
                 "puffer_channel", "puffer_duration_s",
                 # The threshold SETS the radius; without it no reproduction.
                 "pupil_track_threshold", "pupil_track_model"]
@@ -55,6 +55,8 @@ def _part_session() -> int:
 
     enabled = set(config.MODULES)
     r.note(f"modules: {sorted(enabled)}")
+    # The DO line has no widget: acqapp_local.json's, read at launch.
+    config.save_settings("puffer", {"channel": TEST_CHANNEL})
     win = make_window(enabled)
     mod = {m.key: m for m in win._modules}
 
@@ -111,17 +113,19 @@ def _part_session() -> int:
     pupil_panel.tracking._spn_thr.setValue(PUPIL_THRESHOLD)
     r.check(mod["pupil_cam"].panel.settings.track, "pupil tracking is on")
 
-    r.check(len(mod["voltage_cam"]._y) > 0, "voltage-cam ΔF/F reached the plot")
+    r.check(mod["voltage_cam"]._img.image is not None,
+            "voltage-cam frames reached the preview")
     r.check(mod["wheel"]._readout_text is not None, "wheel speed reached the readout")
     r.check(mod["pupil_cam"]._img.image is not None,
             "pupil frames reached the preview")
 
     # ── Puffer: the panel must actually drive the controller ─────────────────
     puffer = mod["puffer"].controller
-    mod["puffer"].panel._cmb_chan.setCurrentText(TEST_CHANNEL)
     mod["puffer"].panel._spn_dur.setValue(TEST_DURATION)
     r.check(puffer.settings.channel == TEST_CHANNEL,
-            "puffer channel edit reached the controller")
+            "the config file's puffer channel reached the controller")
+    r.check(config.load_settings("puffer").get("channel") == TEST_CHANNEL,
+            "a duration edit left the file's channel alone")
     r.check(abs(puffer.settings.duration_s - TEST_DURATION) < 1e-9,
             "puffer duration edit reached the controller")
     fired: list[float] = []
@@ -174,9 +178,7 @@ def _part_session() -> int:
     r.check(not mod["voltage_cam"].controller.is_on,
             "primary LED followed Live view off again")
 
-    # Opened, as only a window that was shown saves its geometry.
-    win._panel_windows["saving"].show()
-    pump(app, 0.05)
+    win._folds["saving"].set_open(True)     # a fold remembers its state
     win.close()
     pump(app, 0.2)
     # Written, not just substituted: proves the substitute is on the real path.
@@ -187,14 +189,14 @@ def _part_session() -> int:
             "QSettings substitution is in place")
     # Each writing module binds its own QSettings; one bound before the patch
     # writes the operator's registry, invisibly to any check on `main`.
-    import acqApp.dialogs
     import acqApp.main
+    import acqApp.sidebar
     import acqApp.widgets
-    for mod in (acqApp.main, acqApp.dialogs, acqApp.widgets):
+    for mod in (acqApp.main, acqApp.sidebar, acqApp.widgets):
         r.check(getattr(mod, "QSettings", MemorySettings) is MemorySettings,
                 f"{mod.__name__} uses the substituted QSettings")
-    r.check("panelGeometry/saving" in MemorySettings.store,
-            "settings-window geometry written to the substitute too")
+    r.check("fold/saving" in MemorySettings.store,
+            "fold state written to the substitute too")
 
     # ── Verify the file ──────────────────────────────────────────────────────
     r.note(f"file: {path.name}  (drops while recording: {drops})")
@@ -251,7 +253,7 @@ def _part_session() -> int:
         ("wheel_rate_hz",            NUM,   "number"),
         ("wheel_volts_per_rev",      NUM,   "number"),
         ("recorder_dropped_samples", NUM,   "number"),
-        ("dmd_static_hold",          BOOL,  "bool"),
+        ("dmd_invert",               BOOL,  "bool"),
         ("emulated",                 BOOL,  "bool"),
         ("cam_preset",               (str,), "string"),
     ):

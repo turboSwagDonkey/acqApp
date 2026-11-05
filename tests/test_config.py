@@ -343,50 +343,31 @@ def check_puffer_closes_on_error(r: Report) -> None:
     ctl._task = None
 
 
-def check_puffer_typing(r: Report) -> None:
-    """Typing a channel must not apply (close and reopen the DAQ task) once
-    per keystroke; Enter or focus-out applies it."""
-    app = qt_app()          # held: a collected QApplication aborts the process
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
-    from acqApp.devices.puffer.control import SettingsPanel
-
-    p = SettingsPanel(PufferSettings())
-    got: list[str] = []
-    p.settings_changed.connect(lambda s: got.append(s.channel))
-    p._cmb_chan.setCurrentText("Dev3/port0/line1")
-    r.check(got == ["Dev3/port0/line1"],
-            f"a programmatic change applies at once ({got})")
-    got.clear()
-    le = p._cmb_chan.lineEdit()
-    le.selectAll()
-    QTest.keyClicks(le, "Dev3/port0/line3")
-    r.check(not got, f"typing applies nothing until it is done ({got})")
-    QTest.keyClick(le, Qt.Key.Key_Return)
-    r.check(got and set(got) == {"Dev3/port0/line3"},
-            f"Enter applies the finished channel, and only it ({got})")
-    del app
-
-
-def check_puffer_lines(r: Report, tmp: Path) -> None:
-    """The puffer's line list never offers a line another device claims —
-    on rig-dev2 the primary LED is line7, the puffer's Dev3 default."""
-    from acqApp.devices.puffer.control import free_do_lines
-    _write(tmp, {"full": FULL}, active="full")
-    got = free_do_lines("Dev3/port0/line7")
-    r.check(got[0] == "Dev3/port0/line7" and len(got) == 7
-            and "Dev3/port0/line2" not in got,
-            f"the current line first; the primary LED's line2 left out ({got})")
-    led_on_7 = {"ni_device": "Dev2",
-                "channels": {"primary_led": "port0/line7"}}
-    _write(tmp, {"dev2": led_on_7}, active="dev2")
-    got = free_do_lines("")
-    r.check("Dev2/port0/line7" not in got and "Dev2/port0/line0" in got
-            and all(c.startswith("Dev2/") for c in got),
-            f"lines follow the rig's NI device, minus its LED's line ({got})")
+def check_file_only_keys(r: Report, tmp: Path) -> None:
+    """Ports, DAQ lines and poll rates have no widget: a hand edit to the
+    file survives the running app saving that module's other settings."""
     _write(tmp, {}, active=None)
-    r.check(len(free_do_lines("")) == 8,
-            "control: no rig profile, nothing claimed, all eight offered")
+    config.save_settings("wheel", {"channel": "Dev3/ai5", "rate": 50.0})
+    # The app's stale in-memory values, plus a real panel edit.
+    config.save_settings("wheel", {"channel": "Dev3/ai2", "rate": 100.0,
+                                   "wheel_dia_mm": 9.0},
+                         keep=("channel", "rate"))
+    got = config.load_settings("wheel")
+    r.check(got == {"channel": "Dev3/ai5", "rate": 50.0, "wheel_dia_mm": 9.0},
+            f"the file's channel and rate win; the panel's edit lands ({got})")
+    config.save_settings("puffer", {"channel": "Dev3/port0/line7",
+                                    "duration_s": 0.1}, keep=("channel",))
+    got = config.load_settings("puffer")
+    r.check(got.get("channel") == "Dev3/port0/line7",
+            f"control: a key not yet in the file is written, to edit ({got})")
+    app = qt_app()          # held: a collected QApplication aborts the process
+    from PyQt6.QtWidgets import QComboBox
+    from acqApp.devices.puffer.control import SettingsPanel as PufferPanel
+    from acqApp.devices.wheel.panel import SettingsPanel as WheelPanel
+    for panel in (WheelPanel(), PufferPanel(PufferSettings())):
+        r.check(not panel.findChildren(QComboBox),
+                f"{type(panel).__module__}: no channel combo left")
+    del app
 
 
 def _part_rigs() -> int:
@@ -405,8 +386,7 @@ def _part_rigs() -> int:
         check_no_profile_is_unchanged(r, tmp)
         check_puffer_skips_daq(r)
         check_puffer_closes_on_error(r)
-        check_puffer_typing(r)
-        check_puffer_lines(r, tmp)
+        check_file_only_keys(r, tmp)
     finally:
         config._RIGS_PATH, config._CONFIG_PATH = saved
         shutil.rmtree(tmp, ignore_errors=True)
@@ -613,20 +593,12 @@ EDITS = [
      lambda p: p.settings.volts_per_rev,        3.210),
     ("wheel",       "diameter",  lambda p: p._spn_dia.setValue(123.0),
      lambda p: p.settings.wheel_dia_mm,         123.0),
-    ("wheel",       "rate",      lambda p: p._spn_rate.setValue(200.0),
-     lambda p: p.settings.rate,                 200.0),
-    ("puffer",      "channel",   lambda p: p._cmb_chan.setCurrentText("Dev3/port0/line1"),
-     lambda p: p.settings.channel,              "Dev3/port0/line1"),
     ("puffer",      "duration",  lambda p: p._spn_dur.setValue(0.321),
      lambda p: p.settings.duration_s,           0.321),
-    ("stage",       "port",      lambda p: p._cmb_port.setCurrentText("COM9"),
-     lambda p: p.settings.port,                 "COM9"),
-    ("stage",       "poll rate", lambda p: p._spn_rate.setValue(7.0),
-     lambda p: p.settings.poll_hz,              7.0),
     ("stage",       "frame rotation", lambda p: p._spn_rotation.setValue(45.0),
      lambda p: p.settings.frame_rotation_deg,   45.0),
-    ("dmd",         "trigger",   lambda p: p._cmb_trig.setCurrentText("Software"),
-     lambda p: p.settings.trigger_mode,         "Software"),
+    ("dmd",         "sub-sampling", lambda p: p.set_sub_sampling(3),
+     lambda p: p.settings.sub_sampling,         3),
     # Registration to the optics: at the wrong scale/rotation a session
     # cannot be located in the field of view afterwards.
     ("dmd",         "scale",     lambda p: p._spn_scale.setValue(132.4),
@@ -660,82 +632,35 @@ def same(a, b) -> bool:
     return a == b
 
 
-def check_unshown_keeps_geometry(r: Report, app) -> None:
-    """Exit saves every panel window's geometry; one not opened this session
-    must keep the size the operator gave it last time, not Qt's default."""
-    from acqApp.dialogs import PanelWindow
-    from PyQt6.QtWidgets import QWidget as _Blank
-
-    def throwaway() -> PanelWindow:
-        return PanelWindow(_Blank(), "test", "sync")
-
-    seed = throwaway()
-    seed.show()
-    pump(app, 0.05)
-    seed.resize(523, 317)
-    pump(app, 0.05)
-    seed.close()                        # saves 523x317
-    throwaway().save_geometry()         # never shown: the app-exit path
-    again = throwaway()
-    again.show()
-    pump(app, 0.1)
-    r.check((again.width(), again.height()) == (523, 317),
-            f"a window never opened this session leaves its saved geometry "
-            f"alone ({again.width()}x{again.height()})")
-    again.close()
-
-    # A window with its own size (the routines page) is guarded the same way.
-    seed = PanelWindow(_Blank(), "test", "sync", size=(500, 400))
-    seed.show()
-    pump(app, 0.05)
-    seed.resize(60, 50)
-    pump(app, 0.05)
-    tiny_geom = seed.saveGeometry()
-    seed.close()
-    sized = PanelWindow(_Blank(), "test", "sync", size=(500, 400))
-    sized._saved_geom = tiny_geom
-    sized.show()
-    pump(app, 0.1)
-    floor = PanelWindow._MIN_DEFAULT
-    r.check(sized.width() >= floor[0] // 2 and sized.height() >= floor[1] // 2,
-            f"a sized window doesn't trust an implausibly tiny saved geometry "
-            f"either ({sized.width()}x{sized.height()})")
-    sized.close()
-
-
 def _part_settings() -> int:
     r = Report("settings")
     tmp = isolate_user_state()
 
     sys.argv = ["main.py", "--mock"]
     app = qt_app()
-    import acqApp.main as M
 
     enabled = set(config.MODULES)
 
     # ── first launch: edit every panel ───────────────────────────────────────
     win = make_window(enabled)
 
-    # Edited below while never shown: a lazily-built window would leave the
+    # Edited below while folded: a lazily-built panel would leave the
     # controllers unconfigured.
-    wins = win._panel_windows
+    folds = {k: f for k, f in win._folds.items() if f.body is not None}
     # A module with no panel at all (the mirror's switch) gets only a card.
     panelled = {m.key for m in win._modules if m.panel is not None}
-    r.check(set(wins) == panelled | {"saving"},
-            f"a settings window per panel, plus Save's ({sorted(wins)})")
-    r.check(all(w.isWindow() and not isinstance(w, M.QDockWidget)
-                for w in wins.values()),
-            "…each a top-level window, not a dock widget")
-    r.check(not any(w.isVisible() for w in wins.values()),
-            "…and all start hidden")
+    r.check(set(folds) == panelled | {"saving"},
+            f"a settings fold per panel, plus Save's ({sorted(folds)})")
+    r.check(all(f.window() is win for f in folds.values()),
+            "…each inside the main window, none a window of its own")
     r.check("mirror" not in panelled and "mirror" in {m.key for m in win._modules},
-            "control: the mirror is loaded, just without a window")
+            "control: the mirror is loaded, just without a panel")
     mirror = next(m for m in win._modules if m.key == "mirror")
     sw = mirror.switch
-    card = win._cards.get("mirror")
+    card = win._folds.get("mirror")
     r.check(sw is not None and card is not None and card.card.isAncestorOf(sw)
-            and "mirror" not in win._page_actions,
-            "the mirror's switch sits on a sidebar card that opens no page")
+            and card.body is None,
+            "the mirror's switch sits on a card that folds nothing")
     start = mirror.settings.state
     sw.click()
     flipped = mirror.settings.state
@@ -744,130 +669,40 @@ def _part_settings() -> int:
             and mirror.metadata()["mirror_initial_state"] == start,
             f"a click flips the logged state and a second flips it back "
             f"({start} -> {flipped} -> {mirror.settings.state})")
-    r.check(set(win._page_actions) == panelled | {"saving"},
-            f"a sidebar card per window (got {sorted(win._page_actions)})")
-    wheel = wins["wheel"]
-    win._page_actions["wheel"].trigger()
-    pump(app, 0.2)
-    r.check(wheel.isVisible(), "a sidebar card opens its module's window")
-    r.check(win._page_actions["wheel"].isChecked()
-            and not any(a.isChecked() for k, a in win._page_actions.items()
-                        if k != "wheel"),
-            "…and lights only that card")
-    win._page_actions["puffer"].trigger()
-    pump(app, 0.2)
-    r.check(wins["puffer"].isVisible() and wheel.isVisible(),
-            "a second card opens a second window beside the first")
-    wins["puffer"].close()
-    pump(app, 0.1)
-
-    # The Devices monitor is lit while open too.
-    r.check(not win._devices_action.isChecked(),
-            "the Devices item starts unlit")
-    win._devices_action.trigger()
-    pump(app, 0.1)
-    r.check(win._devices_action.isChecked() and win._devices_dialog.isVisible(),
-            "opening it lights the sidebar item")
-    win._devices_dialog.close()
-    pump(app, 0.1)
-    r.check(not win._devices_action.isChecked(),
-            "…and closing it with the window's own Close button un-lights it, "
-            "the same way a panel window's own X does (_on_panel_window)")
-
-    # On default_size(): the window manager has the last word on the shown one.
-    want  = wheel.default_size()
-    from PyQt6.QtGui import QGuiApplication
-    avail = QGuiApplication.primaryScreen().availableGeometry()
-    r.info(f"wheel opens at {want.width()}x{want.height()} "
-           f"(screen {avail.width()}x{avail.height()})")
-    r.check(want.width() >= min(wheel._panel.sizeHint().width(),
-                                int(avail.width() * 0.9)),
-            "default size covers its panel without scrolling")
-    r.check(want.width() <= avail.width() and want.height() <= avail.height(),
-            "…and still fits on the screen it opens on")
-
-    # An insane SAVED size (interrupted write, unplugged monitor) must not win
-    # forever; restoreGeometry() can succeed on one. Throwaway windows.
-    from PyQt6.QtCore import QByteArray, QSize
-    from PyQt6.QtWidgets import QWidget as _Blank
-
-    from acqApp.dialogs import PanelWindow, _looks_sane
-    floor = PanelWindow._MIN_DEFAULT
-
-    def throwaway() -> PanelWindow:
-        # "sync" has an accent but no panel, so no real window's key is used.
-        return PanelWindow(_Blank(), "test", "sync")
-
-    r.check(not _looks_sane(QSize(50, 40), floor),
-            "control: _looks_sane flags a tiny size")
-    r.check(_looks_sane(QSize(*floor), floor),
-            "control: _looks_sane accepts a floor-sized window")
-
-    bad = throwaway()
-    bad._saved_geom = QByteArray(b"not a real geometry blob")
-    bad.show()
-    pump(app, 0.1)
-    r.check(bad.width() >= floor[0] // 2 and bad.height() >= floor[1] // 2,
-            f"a corrupt saved geometry falls back to the computed default, "
-            f"not whatever a failed restore leaves behind "
-            f"({bad.width()}x{bad.height()})")
-    bad.close()
-
-    # A validly-encoded tiny geometry: restoreGeometry() succeeds on it.
-    seed = throwaway()
-    seed.show()
-    pump(app, 0.05)
-    seed.resize(60, 50)
-    pump(app, 0.05)
-    tiny_geom = seed.saveGeometry()
-    seed.close()
-
-    tiny = throwaway()
-    tiny._saved_geom = tiny_geom
-    tiny.show()
-    pump(app, 0.1)
-    r.check(tiny.width() >= floor[0] // 2 and tiny.height() >= floor[1] // 2,
-            f"a validly-restored but implausibly tiny geometry is overridden "
-            f"too, not trusted just because restoreGeometry() succeeded "
-            f"({tiny.width()}x{tiny.height()})")
-    tiny.close()
-    check_unshown_keeps_geometry(r, app)
-
-    win._page_actions["wheel"].trigger()
-    pump(app, 0.2)
-    r.check(not wheel.isVisible()
-            and not win._page_actions["wheel"].isChecked(),
-            "clicking the open card again shuts its window")
-
-    win._page_actions["wheel"].trigger()
-    pump(app, 0.2)
-    wheel.close()                     # the title-bar ✕ / Esc path
-    pump(app, 0.2)
-    r.check(not wheel.isVisible(), "closing the window hides it")
-    r.check(not any(a.isChecked() for a in win._page_actions.values()),
-            "…and un-lights its card, so the next click re-opens it")
+    wheel, puffer = folds["wheel"], folds["puffer"]
+    r.check(not wheel.is_open() and not puffer.is_open(),
+            "General's sections start folded")
+    wheel.set_open(True)
+    r.check(wheel.body.isVisibleTo(wheel) and wheel.card.property("open"),
+            "opening one shows its panel and lights its card")
+    puffer.set_open(True)
+    r.check(wheel.is_open() and puffer.is_open(),
+            "a second opens beside the first")
+    wheel.set_open(False)
+    puffer.set_open(False)
 
     panels = {m.key: m.panel for m in win._modules}
 
-    # ── every settings box folds away, and stays folded ──────────────────────
-    # Applied by PanelWindow, so checked across every window.
+    # ── a card folds; the boxes inside it don't, bar Advanced ────────────────
     from PyQt6.QtWidgets import QGroupBox, QWidget as _QW
     from acqApp import widgets as W
-    tabs = {k: w._panel.findChildren(QGroupBox) for k, w in wins.items()}
-    flat = [b for v in tabs.values() for b in v]
-    r.check(len(flat) >= 10,
-            f"{len(flat)} group boxes across {len(tabs)} windows")
-    r.check(all(b.isCheckable() for b in flat),
-            "every settings box has a fold toggle in its title")
-    # An arrow, not a tick box: a tick reads as "enable this section".
-    r.check(all(b.title().startswith((W.OPEN, W.SHUT)) for b in flat),
-            "…drawn as a ▾/▸ dropdown arrow")
+    flat = [b for f in folds.values() for b in f.body.findChildren(QGroupBox)]
+    adv = [b for b in flat if b.objectName() == "advanced"]
+    plain = [b for b in flat if b.objectName() != "advanced"]
+    r.check(len(plain) >= 10,
+            f"{len(plain)} group boxes across {len(folds)} panels")
+    r.check(not any(b.isCheckable() for b in plain),
+            "no box inside a card folds: opening the card shows all of it")
+    r.check(len(adv) >= 2 and all(b.isCheckable() and not b.isChecked()
+                                  for b in adv),
+            f"…except the {len(adv)} Advanced boxes, which start folded")
 
-    def find(title):
-        return next(b for b in flat if getattr(b, "_base_title", "") == title)
-
+    # `collapsible` itself (Advanced, the pupil review), on a real box.
     p = panels["pupil_cam"]
-    box = find("Reflections")
+    box = W.collapsible(next(b for b in plain if b.title() == "Reflections"))
+    # An arrow, not a tick box: a tick reads as "enable this section".
+    r.check(box.title().startswith((W.OPEN, W.SHUT)),
+            f"a folding box is drawn with a ▾/▸ arrow ({box.title()!r})")
     box.setChecked(False); box.setChecked(True); box.setChecked(False)
     r.check(box.title().count(W.SHUT) == 1 and "Reflections" in box.title(),
             f"control: toggling three times leaves one arrow ({box.title()!r})")
@@ -894,8 +729,6 @@ def _part_settings() -> int:
                  p.tracking._spn_cr_ring, p.tracking._spn_cr_reach)),
             "…while the rest of the box comes back")
 
-    box.setChecked(False)       # left folded, read back after the restart below
-    pump(app, 0.05)
     for key, label, setter, reader, expected in EDITS:
         setter(panels[key])
         r.check(same(reader(panels[key]), expected),
@@ -922,10 +755,9 @@ def _part_settings() -> int:
 
     # Axis calibration belongs to the shared stage_control config.
     r.check(set(saved.get("stage", {})) == {"port", "poll_hz", "frame_rotation_deg",
-                                            "drag_speed_um_s", "cam_axes",
-                                            "window_limit"},
+                                            "drag_speed_um_s", "cam_axes"},
             f"stage section is port/poll_hz/frame_rotation_deg/drag_speed_um_s/"
-            f"cam_axes/window_limit only — Z's "
+            f"cam_axes only — Z's "
             f"calibration lives in the shared stage_control config, not here "
             f"(got {sorted(saved.get('stage', {}))})")
     # Scoped to the two sections that own an LED.
@@ -994,18 +826,11 @@ def _part_settings() -> int:
     r.check(not panels2["pupil_cam"]._chk_led.isChecked(),
             "the LED came back OFF, not restored on")
 
-    flat2 = [b for w in win2._panel_windows.values()
-             for b in w._panel.findChildren(QGroupBox)]
-    r.check(all(b.title().startswith((W.OPEN, W.SHUT)) for b in flat2),
-            "…and the arrows are there on the rebuilt window too")
-    def find2(title):
-        return next(b for b in flat2
-                    if getattr(b, "_base_title", "") == title)
-
-    r.check(not find2("Reflections").isChecked(),
-            "a folded settings box comes back folded")
-    r.check(find2("Camera").isChecked(),
-            "control: a box that was left open comes back open")
+    flat2 = [b for f in win2._folds.values() if f.body is not None
+             for b in f.body.findChildren(QGroupBox)]
+    r.check(not any(b.isCheckable() for b in flat2
+                    if b.objectName() != "advanced"),
+            "…and the rebuilt window's boxes don't fold either")
 
     win2._btn_run.setChecked(True)
     r.check(win2._sync.running, "session starts with the restored settings")

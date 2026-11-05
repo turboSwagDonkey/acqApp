@@ -18,13 +18,13 @@ flowchart TD
     routines["routines/<br/><i>run a protocol step by step</i>"]
     saving["saving/<br/><i>where the file goes</i>"]
     acq["acq/<br/><i>clock · recorder · ring · writer · protocols</i>"]
-    dialogs["dialogs.py<br/><i>module picker · device monitor</i>"]
+    dialogs["dialogs.py<br/><i>module picker + device status</i>"]
     probe["probe.py<br/><i>is a device present?</i>"]
     config["config.py"]
     style["style.py"]
     console["console.py"]
     widgets["widgets.py<br/><i>shared panel widgets</i>"]
-    sidebar["sidebar.py<br/><i>module cards</i>"]
+    sidebar["sidebar.py<br/><i>module cards · folds</i>"]
     run_pupil_review["run_pupil_review.py<br/><i>pupil review tool, alone</i>"]
 
     main --> adapters
@@ -56,12 +56,11 @@ flowchart TD
     adapters --> console
     saving --> widgets
     dialogs --> probe
-    dialogs --> style
-    dialogs --> widgets
     widgets --> style
     main --> sidebar
     adapters --> sidebar
     sidebar --> style
+    sidebar --> widgets
     probe --> devices
     probe --> config
     run_pupil_review --> console
@@ -224,7 +223,7 @@ devices/                one package per instrument
                         session/archive rotation (no Qt)
     map_widget.py       XY travel map (saved FOVs labelled; turned to the camera
                         once measured; dot drag emits a target, the panel
-                        moves speed-capped) + Z gauge
+                        moves speed-capped)
     mcm301_driver.py    MCM301 driver (the current rig); wraps the vendor DLL
     mcm301_sdk/
       README.md         the vendored MCM301Lib_x64.dll (+ Thorlabs EULA): why
@@ -345,12 +344,14 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
   test_vis_stim.py            trial expansion, geometry, the tick-driven state machine
-main.py                 the shell: window chrome, docks, theme, session start/stop,
-                        the venv bootstrap. Holds no per-instrument logic.
+main.py                 the shell: one window of docks (General over stage |
+                        camera over routines | DMD over pupil cam), theme,
+                        session start/stop, the venv bootstrap. No
+                        per-instrument logic.
 config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
-dialogs.py              module picker (startup + sidebar), device monitor,
-                        a settings window per panel (PanelWindow)
+dialogs.py              module picker (startup + General); from General it also
+                        shows whether each device is detected
 run_pupil_review.py     launcher for the pupil review tool alone: makes its own venv,
                         fetches EyeLoop, runs from this checkout (stdlib only)
 requirements-pupil.txt  the pupil tool's few dependencies (no DAQ/camera/DMD)
@@ -360,8 +361,8 @@ rigs.json               per-rig hardware profiles (NI device, DAQ channels,
                         what is fitted) — tracked; acqapp_local.json's "rig"
                         key names which one THIS machine is
 probe.py                presence checks; enumeration only, never opens a device
-sidebar.py              the sidebar's module cards: accent header + live mini
-                        view (`ModuleAdapter.mini_view`); right-click opens
+sidebar.py              module cards: accent header + live mini view (the
+                        adapter's mini_view), its panel folded under it (Fold)
 style.py                the theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here — gitignored, private repo
@@ -387,6 +388,8 @@ showed up as a `KeyError` at build time. Then a new file in `adapters/`, a
 package in `devices/`, and an entry in the tree above.
 
 Two optional declarations on the adapter, both read by the shell and neither
-naming a module in `main.py`: **`window_size`** opens its panel's window at a
-set size instead of fitted to the panel, and **`config.ALWAYS_ON`** keeps it
-out of the module picker. `routines` sets both.
+naming a module in `main.py`: **`own_dock`** gives it a dock of its own (its
+settings folded under its `view_widget()`) instead of a General section, and
+**`config.ALWAYS_ON`** keeps it out of the module picker. `routines` sets both.
+Its dock's default place is `_SLOTS` in `main.py`; unlisted, it joins the right
+column.

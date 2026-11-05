@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QPushButton, QToolButton, QVBoxLayout, QWidget,
 )
 
 from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
@@ -61,10 +61,10 @@ class SavePanel(QWidget):
         self._ed_folder = QLineEdit(self._cfg.folder)
         self._ed_folder.editingFinished.connect(self._on_edited)
         self._ed_folder.setToolTip("Where each session's folder is made.")
-        btn_browse = QPushButton("Browse…")
+        btn_browse = QToolButton(text="Browse…")
         btn_browse.setToolTip("Pick the folder.")
         btn_browse.clicked.connect(self._on_browse)
-        btn_open = QPushButton("Open")
+        btn_open = QToolButton(text="Open")
         btn_open.setToolTip("Open this folder in Explorer")
         btn_open.clicked.connect(self._on_open)
         folder_row = QHBoxLayout()
@@ -294,7 +294,9 @@ class SavePanel(QWidget):
         # The path a recording now would really get, `_001` included.
         plain = self.resolve_dir()
         unique = self.resolve_dir(unique=True)
-        self._lbl_preview.setText(str(unique))
+        # Zero-width breaks: a path has no spaces to wrap a narrow column at.
+        self._lbl_preview.setText(
+            str(unique).replace("\\", "\\​").replace("_", "_​"))
         tips = []
         if self._active_fov:
             tips.append(f'Ends in "{self._active_fov}": the FOV the stage is at.')

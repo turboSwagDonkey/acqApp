@@ -287,12 +287,15 @@ def load_settings(module: str) -> dict:
     return {}
 
 
-def save_settings(module: str, values: dict) -> None:
+def save_settings(module: str, values: dict, keep: tuple[str, ...] = ()) -> None:
+    """`keep`: keys edited only in this file; what's on disk wins over `values`,
+    so a hand edit made while the app runs isn't overwritten."""
     cfg = load_config()
     section = cfg.get("settings")
     if not isinstance(section, dict):
         section = {}
-    section[module] = dict(values)
+    old = section.get(module) if isinstance(section.get(module), dict) else {}
+    section[module] = {**values, **{k: old[k] for k in keep if k in old}}
     cfg["settings"] = section
     save_config(cfg)
 

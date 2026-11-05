@@ -1,8 +1,10 @@
 """The step list as a table of typed editors.
 
 Cells a row's kind doesn't use show "—" and refuse edits. Each value lives in
-`UserRole`; the text is a rendering. Details is set through dialogs, not
-typed: Move shows (x, y[, z]) or a saved FOV's name, Display a thumbnail.
+`UserRole`; the text is a rendering. FOV and ROI are set through dialogs, not
+typed: FOV shows a saved FOV's name or (x, y[, z]), ROI a thumbnail. A
+step's kind is fixed once added. Capture shows its unit, which the panel's
+general setting sets.
 
 Reordering (drag, Ctrl+Up/Down) goes through `move_row`, and does NOT rewrite
 Group ranges. Selection is contiguous because a Group is a range. The table
@@ -16,12 +18,11 @@ import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QDrag, QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDoubleSpinBox, QHeaderView, QInputDialog,
+    QAbstractItemView, QDoubleSpinBox, QHeaderView, QInputDialog,
     QMenu, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
 )
 
-from acqApp.routines.settings import (KINDS, TIMED_KINDS, UNITS, Group, Step,
-                                      pattern_label)
+from acqApp.routines.settings import Group, Step, pattern_label
 
 _THUMB = QSize(28, 28)
 
@@ -36,62 +37,39 @@ _BOTH_TINT = QColor((GROUP_TINT.red() + REC_TINT.red()) // 2,
 VALUE = Qt.ItemDataRole.UserRole
 
 KIND_LABELS: dict[str, str] = {
-    "move": "Move", "display": "Display", "wait": "Wait", "record": "Record",
-    "puff": "Puff", "trigger": "Trigger",
+    "fov": "FOV", "wait": "Wait", "puff": "Puff", "trigger": "Trigger",
+    # Atomic: older protocols, and the timeline's parts of an FOV step.
+    "move": "Move", "display": "Display", "record": "Record",
 }
 
-# (title, field, tooltip). "details" depends on kind; see `_paint_details`.
+# (title, field, tooltip).
 COLS = (
-    ("Kind",    "kind",  "What this step does: Move the stage, start "
-                         "Displaying a pattern, Wait, Record, Puff, or wait "
-                         "for an external Trigger on the camera's line."),
-    ("Details", "details", "Move: where to send the stage, as (X, Y, Z). "
-                         "Double-click, or right-click -> Set position…, to "
-                         "type numbers; Delete clears every axis back to "
-                         "\"NA\". Filled from a saved FOV, the cell "
-                         "names it in front of the numbers instead.\nDisplay: the "
-                         "DMD pattern, shown as a thumbnail once one is set. "
-                         "Double-click to choose one, Delete to stop "
-                         "displaying."),
-    ("Length",  "length", "How long to wait or record (Wait and Record "
-                          "steps only)."),
-    ("Unit",    "unit",   "Frames or seconds — never converted between "
-                         "them, so a step means what it says (Wait and "
-                         "Record steps only)."),
+    ("Kind",    "kind",  "FOV: move there, show its ROI set, capture, light "
+                         "off, wait. Wait, Puff, or wait for an external "
+                         "Trigger on the camera's line (before an FOV step, "
+                         "its capture starts on the edge)."),
+    ("FOV",     "fov",   "Where the stage goes: a saved FOV, or (X, Y, Z). "
+                         "Double-click to pick another."),
+    ("ROI",     "roi",   "The DMD ROI set shown while capturing. "
+                         "Double-click to choose one, Delete for no light."),
+    ("Capture", "capture", "How long to record, in the routine's capture "
+                           "unit."),
+    ("Wait",    "wait",  "Unlit pause after the capture (a Wait step: its "
+                         "length)."),
     ("Settle",  "settle_s", "Wait this long after the stage arrives, before "
-                         "the step ends (Move steps only)."),
+                         "the light and capture."),
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
 NO_CHANGE = "NA"        # an axis a Move leaves alone
 RUNNING = "▶"           # row header of the step the engine is on
+RECORDS = ("fov", "record")
 
-# Fields only meaningful for one kind — "—" and non-editable on any other row.
-_KIND_OF_FIELD = {"length": TIMED_KINDS, "unit": TIMED_KINDS,
-                  "settle_s": ("move",)}
-
-
-class _ChoiceDelegate(QStyledItemDelegate):
-    """A cell with a fixed vocabulary. `choices` is ((label, value), …)."""
-
-    def __init__(self, choices, parent=None) -> None:
-        super().__init__(parent)
-        self._choices = tuple(choices)
-
-    def createEditor(self, parent, _opt, _index):
-        cb = QComboBox(parent)
-        for label, value in self._choices:
-            cb.addItem(label, value)
-        return cb
-
-    def setEditorData(self, editor, index) -> None:
-        i = editor.findData(index.data(VALUE))
-        editor.setCurrentIndex(max(0, i))
-        editor.showPopup()          # one click to the list, not two
-
-    def setModelData(self, editor, model, index) -> None:
-        # Value only; the table renders the text, so one edit is one change.
-        model.setData(index, editor.currentData(), VALUE)
+# The kinds each field means something for — "—" and non-editable otherwise.
+_KIND_OF_FIELD = {"fov": ("fov", "move"), "roi": ("fov", "display"),
+                  "capture": RECORDS, "wait": ("fov", "wait"),
+                  "settle_s": ("fov", "move")}
+_DIALOG_FIELDS = ("fov", "roi")         # set by the panel's dialogs
 
 
 class _NumberDelegate(QStyledItemDelegate):
@@ -157,25 +135,22 @@ class StepTable(QTableWidget):
         self.verticalHeader().setSectionsMovable(False)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(FIELDS.index("details"),
-                                    QHeaderView.ResizeMode.Stretch)
+        for f in _DIALOG_FIELDS:
+            header.setSectionResizeMode(FIELDS.index(f),
+                                        QHeaderView.ResizeMode.Stretch)
         self.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
             | QAbstractItemView.EditTrigger.AnyKeyPressed)
 
-        # Details has no delegate: it's set through dialogs.
+        # FOV and ROI have no delegate: they're set through dialogs.
         self.setItemDelegateForColumn(
-            FIELDS.index("kind"),
-            _ChoiceDelegate(tuple((KIND_LABELS[k], k) for k in KINDS),
-                            parent=self))
-        self.setItemDelegateForColumn(
-            FIELDS.index("length"),
+            FIELDS.index("capture"),
             _NumberDelegate(0.01, 1e6, 2, "", 10.0, parent=self))
         self.setItemDelegateForColumn(
-            FIELDS.index("unit"),
-            _ChoiceDelegate(tuple((u, u) for u in UNITS), parent=self))
+            FIELDS.index("wait"),
+            _NumberDelegate(0.0, 1e5, 2, "", 1.0, parent=self))
         self.setItemDelegateForColumn(
             FIELDS.index("settle_s"),
             _NumberDelegate(0.0, 120.0, 2, " s", 0.05, parent=self))
@@ -222,7 +197,7 @@ class StepTable(QTableWidget):
         return None
 
     def _recording_at(self, row: int) -> Step | None:
-        if 0 <= row < len(self._steps) and self._steps[row].kind == "record":
+        if 0 <= row < len(self._steps) and self._steps[row].kind in RECORDS:
             return self._steps[row]
         return None
 
@@ -261,54 +236,67 @@ class StepTable(QTableWidget):
             if item is None:
                 item = QTableWidgetItem()
                 self.setItem(row, col, item)
+            active = s.kind in _KIND_OF_FIELD.get(field, ())
+            item.setIcon(QIcon())
+            item.setToolTip("")
             if field == "kind":
                 item.setData(VALUE, s.kind)
                 item.setText(KIND_LABELS.get(s.kind, s.kind))
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-            elif field == "details":
-                self._paint_details(item, s)
+                self._set_editable(item, False)
+                if s.kind == "trigger":
+                    item.setToolTip(
+                        "Holds until an external edge on the camera's trigger "
+                        "line. Right before an FOV step, it waits after that "
+                        "step's move, so the capture starts on the edge.")
+            elif field == "fov":
+                self._paint_fov(item, s, active)
+            elif field == "roi":
+                self._paint_roi(item, s, active)
             else:
-                active = s.kind in _KIND_OF_FIELD[field]
-                value = getattr(s, field)
+                value = self._value(s, field)
+                # An FOV step's own wait is always seconds.
+                unit = (s.unit if field == "capture" or s.kind == "wait"
+                        else "seconds")
                 item.setData(VALUE, value)
-                item.setText(_render(field, value) if active else "—")
+                item.setText(_render(field, value, unit) if active else "—")
                 self._set_editable(item, active)
             item.setBackground(tint)
 
-    def _paint_details(self, item: QTableWidgetItem, s: Step) -> None:
+    @staticmethod
+    def _value(s: Step, field: str) -> float:
+        if field == "capture" or (field == "wait" and s.kind == "wait"):
+            return s.length
+        return s.wait_s if field == "wait" else getattr(s, field)
+
+    @staticmethod
+    def _paint_fov(item: QTableWidgetItem, s: Step, active: bool) -> None:
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        if s.kind == "move":
-            item.setData(VALUE, (s.x_um, s.y_um, s.z_um))
-            item.setIcon(QIcon())
-            item.setText(_xyz_text(s.x_um, s.y_um, s.z_um, s.fov))
-            # An axis can be None beside a FOV name (a migrated step).
-            item.setToolTip(
-                f"{_xyz_text(s.x_um, s.y_um, s.z_um, '')} — from saved FOV "
-                f"{s.fov!r}. Double-click to type new numbers, which "
-                f"detaches the name." if s.fov else
-                "Double-click to set a position, or right-click -> Fill "
-                "from FOV…")
-        elif s.kind == "display":
-            item.setData(VALUE, s.pattern)
-            item.setToolTip(s.pattern or "no pattern set — double-click to "
-                                        "choose one.")
-            item.setIcon(_pattern_icon(s.pattern))
-            item.setText(pattern_label(s.pattern) if s.pattern
-                        else "stop displaying")
-        elif s.kind == "trigger":
+        if not active:
             item.setData(VALUE, None)
-            item.setIcon(QIcon())
-            item.setText("wait for camera trigger")
-            item.setToolTip(
-                "Holds here until an external edge arrives on the camera's "
-                "trigger line. Nothing to set — the length of what follows is "
-                "what decides how long the recording lasts.\nPut the "
-                "Record step AFTER this one, so the file starts on the edge.")
-        else:
-            item.setData(VALUE, None)
-            item.setIcon(QIcon())
             item.setText("—")
-            item.setToolTip("")
+            return
+        item.setData(VALUE, (s.x_um, s.y_um, s.z_um))
+        item.setText(s.fov or _xyz_text(s.x_um, s.y_um, s.z_um, ""))
+        # An axis can be None beside a FOV name (a migrated step).
+        item.setToolTip(
+            f"{_xyz_text(s.x_um, s.y_um, s.z_um, '')} — saved FOV {s.fov!r}. "
+            f"Double-click to pick another." if s.fov else
+            "Double-click to pick a saved FOV.")
+
+    @staticmethod
+    def _paint_roi(item: QTableWidgetItem, s: Step, active: bool) -> None:
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if not active:
+            item.setData(VALUE, None)
+            item.setText("—")
+            return
+        item.setData(VALUE, s.pattern)
+        item.setToolTip(s.pattern or "No light — double-click to choose an "
+                                     "ROI set.")
+        item.setIcon(_pattern_icon(s.pattern))
+        item.setText(pattern_label(s.pattern).removeprefix("ROI: ")
+                     if s.pattern else
+                     "no light" if s.kind == "fov" else "stop displaying")
 
     @staticmethod
     def _set_editable(item: QTableWidgetItem, active: bool) -> None:
@@ -343,44 +331,34 @@ class StepTable(QTableWidget):
             return
         s = self._steps[row]
         field = FIELDS[col]
-        if field == "kind":
-            value = item.data(VALUE)
-            if value in KINDS:
-                s.kind = value
-        elif field == "details":
-            return                          # only a dialog sets this
-        elif field in _KIND_OF_FIELD:
-            if s.kind not in _KIND_OF_FIELD[field]:
-                return                      # cell wasn't editable; ignore
-            value = item.data(VALUE)
-            # Round frames here rather than have validate() refuse them, on
-            # either edit that can leave a fraction of a frame.
-            if field == "unit":
-                s.unit = value if value in UNITS else s.unit
-                if s.unit == "frames":
-                    s.length = round(s.length)
-            elif field == "length":
-                s.length = (round(float(value)) if s.unit == "frames"
-                            else float(value))
-            elif field == "settle_s":
-                s.settle_s = float(value)
-        # A kind change can add or drop the row header's Record badge.
-        self._repaint((row,), numbers=field == "kind")
+        if field in ("kind", *_DIALOG_FIELDS):
+            return                          # fixed, or only a dialog sets it
+        if s.kind not in _KIND_OF_FIELD[field]:
+            return                          # cell wasn't editable; ignore
+        value = float(item.data(VALUE))
+        if field == "capture" or (field == "wait" and s.kind == "wait"):
+            # Round frames here rather than have validate() refuse them.
+            s.length = round(value) if s.unit == "frames" else value
+        elif field == "wait":
+            s.wait_s = value
+        elif field == "settle_s":
+            s.settle_s = value
+        self._repaint((row,))
         self.changed.emit()
 
     def _on_double_click(self, row: int, col: int) -> None:
-        if FIELDS[col] != "details":
-            return
-        kind = self._steps[row].kind
-        if kind not in ("move", "display"):
+        field, kind = FIELDS[col], self._steps[row].kind
+        if field not in _DIALOG_FIELDS or kind not in _KIND_OF_FIELD[field]:
             return
         self.select_row(row)
-        if kind == "move":
-            self.position_requested.emit()
+        if field == "fov":
+            (self.fov_requested if kind == "fov"
+             else self.position_requested).emit()
         else:
-            self.pattern_requested.emit()
+            (self.roi_requested if kind == "fov"
+             else self.pattern_requested).emit()
 
-    _CLEARABLE = ("details",)       # Delete is the only way to empty it
+    _CLEARABLE = ("roi",)           # Delete is the only way to empty it
 
     def keyPressEvent(self, ev) -> None:
         if (ev.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -399,12 +377,11 @@ class StepTable(QTableWidget):
         if not (0 <= row < len(self._steps)):
             return
         s = self._steps[row]
-        if field == "details":
-            if s.kind == "move":
-                s.x_um = s.y_um = s.z_um = None
-                s.fov = ""       # no longer a full pair, so no longer that spot
-            elif s.kind == "display":
-                s.pattern = ""
+        if field == "roi" and s.kind in _KIND_OF_FIELD["roi"]:
+            s.pattern = ""
+        elif field == "fov" and s.kind == "move":
+            s.x_um = s.y_um = s.z_um = None
+            s.fov = ""       # no longer a full pair, so no longer that spot
         self._repaint_row(row)
         self.changed.emit()
 
@@ -504,7 +481,16 @@ class StepTable(QTableWidget):
             act.triggered.connect(self.duplicate_requested.emit)
             act = menu.addAction("Remove step")
             act.triggered.connect(self.remove_requested.emit)
-            if kind == "display":
+            if kind == "fov":
+                menu.addSeparator()
+                act = menu.addAction("Change FOV…")
+                act.triggered.connect(self.fov_requested.emit)
+                act = menu.addAction("Set ROI set…")
+                act.triggered.connect(self.roi_requested.emit)
+                act = menu.addAction("No light")
+                act.setEnabled(bool(self._steps[row].pattern))
+                act.triggered.connect(self.clear_pattern_requested.emit)
+            elif kind == "display":
                 menu.addSeparator()
                 act = menu.addAction("Set pattern…")
                 act.triggered.connect(self.pattern_requested.emit)
@@ -593,9 +579,9 @@ def _roi_icon(path: str) -> QIcon:
     return QIcon(QPixmap.fromImage(img.copy()))
 
 
-def _render(field: str, value) -> str:
-    if field == "length":
-        return f"{value:g}"
-    if field == "settle_s":
+def _render(field: str, value, unit: str) -> str:
+    if field in ("capture", "wait") and unit == "frames":
+        return f"{value:g} fr"
+    if field in ("capture", "wait", "settle_s"):
         return f"{value:g} s"
     return str(value)

@@ -619,34 +619,6 @@ def _part_track() -> int:
     r.check(npoints(mod._fit_curve) == 0,
             "a frame with no fit clears the outline rather than leaving a stale one")
 
-    # ── 8b. blink runs are shaded on the radius plot ──────────────────────────
-    blink = [False, False, True, True, True, False, False, True, False]
-    mod._trace = [(0.0, b) for b in blink]
-    mod._update_blink_overlay()
-    r.check(sum(reg.isVisible() for reg in mod._blink_regions) == 2,
-            f"two separate runs of True become two shaded regions "
-            f"({sum(reg.isVisible() for reg in mod._blink_regions)})")
-    spans = sorted(reg.getRegion() for reg in mod._blink_regions if reg.isVisible())
-    r.check(abs(spans[0][0] - 1.5) < 1e-9 and abs(spans[0][1] - 4.5) < 1e-9,
-            f"the first run (indices 2-4) spans (1.5, 4.5) ({spans[0]})")
-    r.check(abs(spans[1][0] - 6.5) < 1e-9 and abs(spans[1][1] - 7.5) < 1e-9,
-            f"the second, one-frame run (index 7) spans (6.5, 7.5) ({spans[1]})")
-
-    pool_after_two = len(mod._blink_regions)
-    mod._trace = [(0.0, False) for _ in mod._trace]      # the blink passes
-    mod._update_blink_overlay()
-    r.check(all(not reg.isVisible() for reg in mod._blink_regions),
-            "no runs left: every region is hidden")
-    r.check(len(mod._blink_regions) == pool_after_two,
-            "…but the pool is kept, not torn down and rebuilt next time")
-
-    mod._trace = [(0.0, True)] * 5
-    mod._update_blink_overlay()
-    r.check(len(mod._blink_regions) == pool_after_two,
-            "one run reuses a pooled region rather than growing the pool")
-    r.check(sum(reg.isVisible() for reg in mod._blink_regions) == 1,
-            "…and exactly one of them is shown")
-
     # ── 9. pins go on and come off, on the preview ───────────────────────────
     win._btn_run.setChecked(True)
     mod._last_frame = None                  # so the wait proves a new frame
@@ -1267,7 +1239,7 @@ def _part_help() -> int:
     from acqApp.devices.pupil_cam.review_dialog import PupilReviewDialog
 
     panel = SettingsPanel(PupilSettings())
-    W.collapsible_groups(panel, "help-test")        # as dialogs.py does
+    W.collapsible_groups(panel, "help-test")        # as the pupil review does
     panel.resize(380, 1200)
     panel.show()
     pump(app, 0.05)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QSignalBlocker, QTimer
-from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
 from acqApp import config, style
 from acqApp.acq.devices import ProjectorController
@@ -17,7 +17,6 @@ from acqApp.devices.dmd.control import (MODE_PATTERN, MODE_ROI, DmdController,
                                         DmdSettings, MockDmdController)
 from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
-from acqApp.sidebar import MiniPattern
 
 # The standalone dmdGUI_project app's alignment keys -> DmdSettings attribute.
 _SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
@@ -42,6 +41,7 @@ def _shared_alignment() -> dict[str, float]:
 class DmdModule(ModuleAdapter):
     key = "dmd"
     tab_label = "DMD"
+    own_dock = True
 
     controller: ProjectorController | None
 
@@ -95,7 +95,7 @@ class DmdModule(ModuleAdapter):
         c = style.HEX["dmd"]
         b.setStyleSheet(
             style.toggle_btn("dmd")
-            + f"QPushButton{{font-weight:bold;padding:4px 8px}}"
+            + f"QPushButton{{font-weight:bold;padding:1px 8px}}"
               f"QPushButton:checked{{background:{c};color:white;"
               f"border:1px solid {c}}}")
         b.setToolTip(
@@ -108,12 +108,14 @@ class DmdModule(ModuleAdapter):
                          and self.controller.projecting)
 
         box = QWidget()
-        lay = QVBoxLayout(box)
+        lay = QHBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
-        lay.addWidget(MiniPattern(self.key, self._mini_state))
+        lay.addStretch(1)
         lay.addWidget(b)
         return box
+
+    def view_widget(self) -> QWidget:
+        return self.panel.view
 
     def _show_light(self, lit: bool) -> None:
         """Make the button say what the projector is doing; never re-triggers it."""
@@ -165,21 +167,11 @@ class DmdModule(ModuleAdapter):
         self.win.status(f"DMD on: {name}"
                         + (" (nothing was selected)" if fallback else ""))
 
-    def _mini_state(self):
-        """The uploaded frame, the selection's name, and whether it is lit."""
-        c = self.controller
-        name = self.panel.display_name if self.panel is not None else ""
-        # The mock uploads a placeholder for "nothing selected".
-        frame = c.frame if (c is not None and name) else None
-        return frame, name, bool(c is not None and c.projecting)
-
     def build_panel(self) -> QWidget:
         self.panel = DmdPanel(self._settings())
         # Via the adapter: the controller is rebuilt on every Emulate toggle.
         g = self._guard
         self.panel.load_requested.connect(lambda p: g("load", self.load, p))
-        self.panel.display_requested.connect(lambda: g("display", self.display))
-        self.panel.stop_requested.connect(lambda: g("stop", self.stop_display))
         self.panel.settings_changed.connect(
             lambda s: g("settings save", self._save, s, dark=False))
         self.panel.rois_edit_requested.connect(lambda: g("ROI editor", self.edit_rois))
@@ -268,13 +260,15 @@ class DmdModule(ModuleAdapter):
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
     # ── photostimulation ROIs ──
-    def _frame_geometry(self, frame) -> tuple[tuple[float, float], float]:
+    def _frame_geometry(self, frame, preset_key: str | None = None
+                        ) -> tuple[tuple[float, float], float]:
         """-> (offset, scale) mapping `frame`'s px onto full-sensor px, from
         the preset it was CAPTURED under (the combo may already name the next
-        one): its (hpos, vpos) and its binning."""
+        one; a saved snapshot names its own): its (hpos, vpos) and binning."""
         from acqApp.devices.voltage_cam.presets import PRESETS
 
-        preset = PRESETS.get(self.win.latest_frame_preset("voltage_cam"))
+        preset = PRESETS.get(preset_key
+                             or self.win.latest_frame_preset("voltage_cam"))
         if preset is None:
             return (0.0, 0.0), 1.0
         return (preset.hpos, preset.vpos), preset.hsize / frame.shape[1]
@@ -284,7 +278,7 @@ class DmdModule(ModuleAdapter):
         f = self.win.latest_frame("voltage_cam")
         return None if f is None else (f, *self._frame_geometry(f))
 
-    def _editor(self, frame):
+    def _editor(self, frame, preset_key: str | None = None):
         """A `RoiEditor` showing `frame`, mapped onto the calibration (which
         is in full-sensor px)."""
         from acqApp.devices.dmd.roi_panel import RoiEditor
@@ -293,7 +287,7 @@ class DmdModule(ModuleAdapter):
         calib, why = self._calibration()
         if why:
             self.win.status(why)
-        offset, scale = self._frame_geometry(frame)
+        offset, scale = self._frame_geometry(frame, preset_key)
         ed = RoiEditor(calib, offset=offset, sensor=(SENSOR_W, SENSOR_H),
                        scale=scale)
         ed.set_image(frame)
@@ -372,6 +366,27 @@ class DmdModule(ModuleAdapter):
         dlg.exec()
         if dlg.path is not None:        # the panel shows what was saved
             self.panel.set_roi_pattern(name, roi_store.load(dlg.path).to_list())
+        return dlg.path
+
+    def draw_rois_on_snapshot(self, name: str, image_path, preset_key,
+                              parent=None):
+        """`PairRoiDialog` on a saved FOV's snapshot, the stage elsewhere: no
+        live view and no light. -> the saved ROI set's path, or None."""
+        import numpy as np
+        from PIL import Image
+
+        from acqApp.devices.dmd.pair_dialog import PairRoiDialog
+
+        if self.panel is None or not image_path:
+            return None
+        try:
+            frame = np.asarray(Image.open(image_path).convert("L"))
+        except OSError:
+            return None
+        dlg = PairRoiDialog(self._editor(frame, preset_key), name,
+                            live_source=None, illuminate=None,
+                            parent=parent or self.panel)
+        dlg.exec()
         return dlg.path
 
     def _calibration(self):
@@ -503,10 +518,6 @@ class DmdModule(ModuleAdapter):
         c = self.controller
         w, h = c.resolution if c is not None else (0, 0)
         return {
-            "dmd_on_time_ms":  s.on_time_ms,
-            "dmd_static_hold": s.static_hold,
-            "dmd_trigger":     s.trigger_mode,
-            "dmd_repeats":     s.n_repeats,
             "dmd_device":      c.device_name if c is not None else "none",
             "dmd_width":       w,
             "dmd_height":      h,

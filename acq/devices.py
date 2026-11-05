@@ -199,8 +199,6 @@ class ModuleHost(Protocol):
         `Recorder.offered()`, which DCAM's own writes never reach."""
 
     def status(self, message: str) -> None: ...
-    def add_dock(self, title: str, widget: Any, area: Any,
-                 accent: str = "sync") -> Any: ...
 
     def register_pg_view(self, view: Any) -> None:
         """So the theme toggle can recolour it."""

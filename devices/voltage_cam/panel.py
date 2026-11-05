@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import (button_row, check, compact, hrow, pairs_grid,
+from acqApp.widgets import (button_row, check, compact, pairs_grid,
                             pill, sections_help, spin)
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
@@ -148,17 +148,25 @@ class SettingsPanel(QWidget):
                     "1 = off. The recorded file still gets every raw frame.")
         self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
 
-        # Same shape as the pupil panel: a line per theme, aligned columns.
-        lay.addRow(pairs_grid(("Resolution:", self._cmb_preset),
-                              ("Save as:", self._cmb_format)))
+        # Long names clip in the box rather than widen the dock; the list
+        # still shows them whole. Before the grid, which sizes from these.
+        cap = self.fontMetrics().horizontalAdvance("0" * 24) + 30
+        for c in (self._cmb_preset, self._cmb_format, self._cmb_binning,
+                  self._cmb_trigger):
+            c.setMaximumWidth(min(c.maximumWidth(), cap))
+            c.view().setMinimumWidth(c.view().sizeHintForColumn(0) + 24)
+        # Switches first, then one narrow column of inputs.
+        lay.addRow(button_row(self._chk_lut, self._chk_auto))
         lay.addRow(pairs_grid(
-            ("Binning:", self._cmb_binning,
-             "Capture rate:", self._spn_target_hz),
-            ("Trigger:", self._cmb_trigger, "Frames per edge:", self._spn_burst)))
+            ("Resolution:", self._cmb_preset),
+            ("Save as:", self._cmb_format),
+            ("Binning:", self._cmb_binning),
+            ("Trigger:", self._cmb_trigger),
+            ("Capture rate:", self._spn_target_hz),
+            ("Frames per edge:", self._spn_burst),
+            ("Preview avg:", self._spn_preview_avg)))
         lay.addRow(self._lbl_rate)
         lay.addRow(self._lbl_rec)
-        lay.addRow(button_row(self._chk_lut, self._chk_auto, None,
-                              hrow("Preview average:", self._spn_preview_avg)))
 
         led = QGroupBox("Illumination")
         ll = QVBoxLayout(led)

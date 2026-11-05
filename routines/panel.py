@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 from PyQt6.QtCore import QSignalBlocker, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QListWidget, QMenu, QMessageBox, QProgressBar, QPushButton, QVBoxLayout,
+    QWidget,
 )
 
 from acqApp import style
@@ -24,7 +26,7 @@ from acqApp.widgets import ElidedLabel, button_row, compact, spin
 from acqApp.routines import pairs, templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
-from acqApp.routines.settings import KINDS, Group, Routine, Step
+from acqApp.routines.settings import KINDS, UNITS, Group, Routine, Step
 from acqApp.routines.table import KIND_LABELS, NO_CHANGE, StepTable
 
 
@@ -55,6 +57,8 @@ class SettingsPanel(QWidget):
         self._hz: float | None = None         # frame rate the estimate uses
         self._painted_pct: int | None = None
         self._painted_note: str | None = None
+        # FOV -> the ROI set drawn for it, or None; set by whoever owns a DMD.
+        self.draw_roi: Callable[[SavedFov], Path | None] | None = None
         self._build()
         self.refresh_templates()
         self._reload_table()
@@ -73,34 +77,45 @@ class SettingsPanel(QWidget):
         return out
 
     def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-
-        grp = self._protocol = QGroupBox("Protocol")
-        lay = QVBoxLayout(grp)
+        """`self.view`, the always-shown page (the steps and Run), and this
+        panel, the setup behind it (templates, name, repeat groups)."""
+        self.view = QWidget()
+        vroot = QVBoxLayout(self.view)
+        vroot.setContentsMargins(4, 4, 4, 4)
+        vroot.setSpacing(6)
+        # Every protocol edit; locked while a routine runs.
+        self._protocol = QWidget()
+        lay = QVBoxLayout(self._protocol)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
 
-        self._cmb_tpl = compact(QComboBox())
-        self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces step list below.")
-        lay.addLayout(button_row(
-            QLabel("Template:"), self._cmb_tpl,
-            right=self._make_buttons((
-                ("Load", self._on_load_template,
-                 "Replace protocol below with selected template."),
-                ("Save as…", self._on_save_template,
-                 "Save protocol below as template, under chosen name."),
-                ("Delete", self._on_delete_template,
-                 "Delete selected template. Protocol below is untouched.")))))
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self._setup = QWidget()
+        setup = QVBoxLayout(self._setup)
+        setup.setContentsMargins(0, 0, 0, 0)
+        setup.setSpacing(6)
+        root.addWidget(self._setup)
 
-        form = QFormLayout()
-        form.setSpacing(4)
-        self._txt_name = compact(QLineEdit(self._r.name), chars=24)
-        form.addRow("Name:", self._txt_name)
+        self._cmb_tpl = compact(QComboBox())
+        self._cmb_tpl.setToolTip("Saved protocols. Loading one replaces the steps.")
         # Long template names must not set the panel's width.
         self._cmb_tpl.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._cmb_tpl.setMinimumContentsLength(16)
-        lay.addLayout(form)
+        self._txt_name = compact(QLineEdit(self._r.name), chars=24)
+        form = QFormLayout()
+        form.setSpacing(4)
+        form.addRow("Template:", button_row(
+            self._cmb_tpl, *self._make_buttons((
+                ("Load", self._on_load_template,
+                 "Replace the steps with the selected template."),
+                ("Save as…", self._on_save_template,
+                 "Save the steps as a template, under a chosen name."),
+                ("Delete", self._on_delete_template,
+                 "Delete the selected template. The steps are untouched.")))))
+        form.addRow("Name:", self._txt_name)
+        setup.addLayout(form)
 
         self._tbl = StepTable(self._r.steps)
         self._tbl.setMinimumHeight(160)
@@ -114,23 +129,35 @@ class SettingsPanel(QWidget):
         self._tbl.clear_pattern_requested.connect(self._clear_pattern)
         self._tbl.group_requested.connect(self._group_selected)
         self._tbl.itemSelectionChanged.connect(self._on_selection_changed)
+        # ── what a new FOV step starts with ──────────────────────────────
+        r = self._r
+        self._spn_capture = spin(0.01, 1e6, r.capture_length, decimals=2,
+                                 step=10.0, track=False,
+                                 tooltip="How long each FOV step records.")
+        self._cmb_unit = compact(QComboBox())
+        self._cmb_unit.addItems(UNITS)
+        self._cmb_unit.setCurrentText(r.capture_unit)
+        self._cmb_unit.setToolTip("Frames or seconds, never converted between "
+                                  "them, so a capture means what it says.")
+        self._spn_wait = spin(0.0, 1e5, r.wait_s, decimals=1, suffix=" s",
+                              track=False,
+                              tooltip="Unlit pause after each FOV step's "
+                                      "capture.")
+        self._general = (r.capture_length, r.capture_unit, r.wait_s)
+        for w in (self._spn_capture, self._spn_wait):
+            w.editingFinished.connect(self._on_general_changed)
+        self._cmb_unit.currentTextChanged.connect(self._on_general_changed)
+        lay.addLayout(button_row(QLabel("Capture:"), self._spn_capture,
+                                 self._cmb_unit, None, QLabel("Wait after:"),
+                                 self._spn_wait))
         lay.addWidget(self._tbl, 1)
 
         # Per-step actions live on the table's right-click menu.
-        self._cmb_new_kind = compact(QComboBox())
-        for kind in KINDS:
-            self._cmb_new_kind.addItem(KIND_LABELS[kind], kind)
-        self._cmb_new_kind.setCurrentIndex(KINDS.index("wait"))
-        self._cmb_new_kind.setToolTip(
-            "What kind of step + Step appends. Follows the selected row, so "
-            "adding several of the same kind in a row doesn't need "
-            "reselecting it each time — still yours to override.")
-        add, add_pair, up, down, timeline = self._make_buttons((
-            ("+ Step", self._add_step, "Append a step of the chosen kind."),
-            ("+ Trigger→Record", self._add_trigger_record_pair,
-             "Append a Trigger step followed by a Record step — the "
-             "\"one recording per edge\" pattern, built in the order it has "
-             "to run in rather than by hand."),
+        add, other, up, down, timeline = self._make_buttons((
+            ("+ FOV step…", self._add_fov_step,
+             "Pick a saved FOV: move there, show its ROI set, capture, light "
+             "off, wait."),
+            ("Other ▾", lambda: None, "Add a Wait, Puff or Trigger step."),
             ("↑", self._move_up,
              "Move the selected step earlier. Dragging the row and "
              "Ctrl+Up do the same."),
@@ -140,11 +167,16 @@ class SettingsPanel(QWidget):
             ("Timeline…", self._show_timeline,
              "See one cycle drawn to scale — repeat groups as a bracket, "
              "Record steps as separate bars (one per repeat, never merged).")))
-        btns = button_row(QLabel("+ Step:"), self._cmb_new_kind, add, add_pair,
-                          None, up, down, right=(timeline,))
-        hint = QLabel("Right-click a step for Duplicate, Remove, Pattern, "
-                      "ROI set, Position, and Group selected. Add a Record "
-                      "step to record.")
+        add.setStyleSheet(style.solid_btn("routines"))
+        menu = QMenu(other)
+        for kind in KINDS[1:]:
+            menu.addAction(KIND_LABELS[kind],
+                           lambda k=kind: self._add_step(k))
+        other.setMenu(menu)
+        btns = button_row(add, other, None, up, down, right=(timeline,))
+        hint = QLabel("Right-click a step for more.")
+        hint.setToolTip("Duplicate, Remove, Change FOV, ROI set, No light and "
+                        "Group selected.")
         hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
         hint.setWordWrap(True)
         lay.addLayout(btns)
@@ -168,7 +200,7 @@ class SettingsPanel(QWidget):
         self._btn_g_add = QPushButton("Group selected")
         self._btn_g_add.setEnabled(False)
         self._btn_g_add.setToolTip("Group the steps selected in the table "
-                                   "above to repeat × times.")
+                                   "to repeat × times.")
         self._btn_g_add.clicked.connect(self._group_selected)
         grow.addWidget(self._btn_g_add)
         gl.addLayout(grow)
@@ -183,13 +215,13 @@ class SettingsPanel(QWidget):
         btn_g_del = QPushButton("Remove selected")
         btn_g_del.clicked.connect(self._del_group)
         gl.addLayout(button_row(btn_g_del))
-        lay.addWidget(ggrp)
+        setup.addWidget(ggrp)
 
         self._lbl_summary = QLabel()
         self._lbl_summary.setWordWrap(True)
         self._lbl_summary.setStyleSheet("color:#9aa0a6;")
         lay.addWidget(self._lbl_summary)
-        root.addWidget(grp, 1)
+        vroot.addWidget(self._protocol, 1)
 
         # ── running ──────────────────────────────────────────────────────────
         rgrp = QGroupBox("Run")
@@ -204,12 +236,12 @@ class SettingsPanel(QWidget):
             "steps, each one waits for its own edge, from trial 1; without, "
             "the routine is ARMED and step 1 begins on the first triggered "
             "frame.\nThe recording and the camera stop when the routine "
-            "ends or is aborted.")
+            "ends or is aborted.\nA routine moves the stage and projects "
+            "light on its own; it is never remembered as running.")
         self._btn_start.clicked.connect(self.start_requested)
-        rlay.addWidget(self._btn_start)
 
         self._btn_pause = QPushButton("Pause")
-        self._btn_resume = QPushButton("Resume (repeats the step)")
+        self._btn_resume = QPushButton("Resume")
         self._btn_skip = QPushButton("Skip step")
         self._btn_abort = QPushButton("Abort")
         for b, sig, tip in (
@@ -225,8 +257,9 @@ class SettingsPanel(QWidget):
                  "the recording stops with it.")):
             b.setToolTip(tip)
             b.clicked.connect(sig)
-        rlay.addLayout(button_row(self._btn_pause, self._btn_resume,
-                                  self._btn_skip, right=(self._btn_abort,)))
+        rlay.addLayout(button_row(self._btn_start, self._btn_pause,
+                                  self._btn_resume, self._btn_skip,
+                                  right=(self._btn_abort,)))
 
         self._lbl_state = QLabel("—")
         f = self._lbl_state.font()
@@ -250,18 +283,12 @@ class SettingsPanel(QWidget):
         self._lbl_eta.hide()
         rlay.addWidget(self._lbl_eta)
 
-        note = QLabel("A routine moves the stage and projects light on its own. "
-                      "Start opens the recording it needs; it is never "
-                      "remembered as running.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#9aa0a6;")
-        rlay.addWidget(note)
-
         self._lbl_saved = ElidedLabel()
         self._lbl_saved.setStyleSheet("color:#9aa0a6; font-size:10px;")
         self._lbl_saved.hide()
         rlay.addWidget(self._lbl_saved)
-        root.addWidget(rgrp)
+        vroot.addWidget(rgrp)
+        root.addStretch(1)
 
         self._txt_name.editingFinished.connect(self._emit)
 
@@ -284,16 +311,6 @@ class SettingsPanel(QWidget):
         self._btn_g_add.setEnabled(span is not None)
         self._lbl_g_selection.setText(
             selected or "Select 2+ steps in the table to group them")
-        self._sync_new_kind_to_selection()
-
-    def _sync_new_kind_to_selection(self) -> None:
-        """"+ Step" defaults to the selected row's kind."""
-        row = self._tbl.selected_row()
-        if row < 0 or row >= len(self._r.steps):
-            return
-        i = self._cmb_new_kind.findData(self._r.steps[row].kind)
-        if i >= 0:
-            self._cmb_new_kind.setCurrentIndex(i)
 
     def _group_selected(self) -> None:
         span = self._tbl.selected_range()
@@ -333,16 +350,51 @@ class SettingsPanel(QWidget):
         self._tbl.select_row(select)
         self._emit()
 
-    def _add_step(self) -> None:
-        kind = self._cmb_new_kind.currentData() or "wait"
-        self._r.steps.append(Step(kind=kind))
-        self._list_edited(len(self._r.steps) - 1)
+    def _add_step(self, kind: str) -> None:
+        """A Wait lasts the general wait (1 s if that's none)."""
+        r = self._r
+        step = Step(kind=kind)
+        if kind == "wait":
+            step.length, step.unit = r.wait_s or 1.0, "seconds"
+        r.steps.append(step)
+        self._list_edited(len(r.steps) - 1)
 
-    def _add_trigger_record_pair(self) -> None:
-        """[trigger, record 2 s]: one recording per edge, in the right order."""
-        self._r.steps.append(Step(kind="trigger"))
-        self._r.steps.append(Step(kind="record", length=2.0, unit="seconds"))
-        self._list_edited(len(self._r.steps) - 1)
+    def _add_fov_step(self) -> None:
+        """Pick a saved FOV -> a new FOV step with the general capture/wait
+        and the FOV's ROI set (drawn now if it has none)."""
+        r = self._r
+        r.steps.append(Step(kind="fov", length=r.capture_length,
+                            unit=r.capture_unit, wait_s=r.wait_s))
+        row = len(r.steps) - 1
+        if not self._pick_fov_for(row):
+            del r.steps[row]
+
+    def _on_general_changed(self, *_a) -> None:
+        """Steps still on the old general value follow; hand-edited ones keep
+        theirs. A unit change moves every FOV step: one unit per routine."""
+        r = self._r
+        old_len, old_unit, old_wait = self._general
+        r.capture_length = self._spn_capture.value()
+        r.capture_unit = self._cmb_unit.currentText()
+        r.wait_s = self._spn_wait.value()
+        if r.capture_unit == "frames":
+            r.capture_length = round(r.capture_length)
+        new = (r.capture_length, r.capture_unit, r.wait_s)
+        if new == self._general:
+            return
+        self._general = new
+        for s in r.steps:
+            if s.kind != "fov":
+                continue
+            if s.length == old_len and s.unit == old_unit:
+                s.length = r.capture_length
+            s.unit = r.capture_unit
+            if s.unit == "frames":
+                s.length = round(s.length)
+            if s.wait_s == old_wait:
+                s.wait_s = r.wait_s
+        self._reload_table()
+        self._emit()
 
     def _dup_step(self) -> None:
         row = self._selected()
@@ -399,9 +451,6 @@ class SettingsPanel(QWidget):
         dlg = RoiSetPicker(self)
         if dlg.exec() and dlg.path is not None:
             self._r.steps[row].pattern = str(dlg.path)
-            fov = pairs.fov_for_roi(dlg.path)
-            if fov is not None:
-                self.status_message.emit(self._pair_fov_before(row, fov))
             self._reload_table()
             self._emit()
 
@@ -452,22 +501,41 @@ class SettingsPanel(QWidget):
     def _pick_fov(self) -> None:
         self._pick_fov_for(self._selected())
 
-    def _pick_fov_for(self, row: int) -> None:
+    def _pick_fov_for(self, row: int) -> bool:
+        """Pick a saved FOV for step `row`; an FOV step takes its ROI set too.
+        -> whether one was picked."""
         if not (0 <= row < len(self._r.steps)):
-            return
+            return False
         from acqApp.devices.stage.fov_picker import FovPicker
 
         dlg = FovPicker(self)
         dlg.exec()
         fov = dlg.fov
-        if fov is not None:
-            self._fill_from_fov(self._r.steps[row], fov)
-            roi = pairs.roi_for_fov(fov)
-            if roi is not None:
+        if fov is None:
+            return False
+        step = self._r.steps[row]
+        self._fill_from_fov(step, fov)
+        if step.kind == "fov":
+            roi = pairs.roi_for_fov(fov) or self._draw_roi(fov)
+            step.pattern = str(roi) if roi is not None else ""
+            if roi is None:
                 self.status_message.emit(
-                    self._pair_roi_after(row, roi, pairs.roi_name(fov.name)))
-            self._reload_table()
-            self._emit()
+                    f'FOV "{fov.name}" has no ROI set: step {row + 1} '
+                    f"captures without light")
+        self._list_edited(row)
+        return True
+
+    def _draw_roi(self, fov: SavedFov) -> Path | None:
+        """Offer to draw `fov`'s ROI set now, on its snapshot."""
+        if self.draw_roi is None:
+            return None
+        ask = QMessageBox.question(
+            self, "No ROI set",
+            f'FOV "{fov.name}" has no ROI set yet. Draw one on its snapshot '
+            f"now?\n(No: this step captures without light.)")
+        if ask != QMessageBox.StandardButton.Yes:
+            return None
+        return self.draw_roi(fov)
 
     @staticmethod
     def _fill_from_fov(step: Step, fov: SavedFov) -> None:
@@ -496,42 +564,11 @@ class SettingsPanel(QWidget):
                 g.end -= 1
         self._r.groups[:] = [g for g in self._r.groups if g.start <= g.end]
 
-    def _pair_roi_after(self, row: int, roi: Path, name: str) -> str:
-        """Show `roi` in move `row`'s segment -> a status line. Reuses the
-        segment's first showing display step; a "stop displaying" stays one."""
-        steps = self._r.steps
-        for i in range(row + 1, len(steps)):
-            s = steps[i]
-            if s.kind == "move":
-                break
-            if s.kind == "display" and s.pattern:
-                s.pattern = str(roi)
-                return f'Also set step {i + 1} to ROI "{name}"'
-        self._insert_step(row + 1, Step(kind="display", pattern=str(roi)),
-                          owner=row)
-        return f'Added step {row + 2}: show ROI "{name}"'
-
-    def _pair_fov_before(self, row: int, fov: SavedFov) -> str:
-        """Move to `fov` before display `row` -> a status line. Stops at an
-        earlier showing display step: that move belongs to another ROI."""
-        steps = self._r.steps
-        for i in range(row - 1, -1, -1):
-            s = steps[i]
-            if s.kind == "move":
-                self._fill_from_fov(s, fov)
-                return f'Also set step {i + 1} to FOV "{fov.name}"'
-            if s.kind == "display" and s.pattern:
-                break
-        move = Step(kind="move")
-        self._fill_from_fov(move, fov)
-        self._insert_step(row, move, owner=row)
-        return f'Added step {row + 1}: move to FOV "{fov.name}"'
-
     def _clear_pattern(self) -> None:
-        """Back to "stop displaying" (cancelling the file dialog doesn't)."""
+        """Back to no light (cancelling the file dialog doesn't)."""
         row = self._selected()
         if row >= 0 and self._r.steps[row].pattern:
-            self._tbl.clear_cell(row, "details")
+            self._tbl.clear_cell(row, "roi")
 
     def _refresh_summary(self) -> None:
         """One line: how long this is, and whether any of it emits light."""
@@ -543,9 +580,9 @@ class SettingsPanel(QWidget):
         bits = [f"{r.total_steps()} run(s): {len(r.steps)} step(s)"
                 + (f" x {r.cycles} cycles" if r.cycles > 1 else "")
                 + (f", {len(r.groups)} repeat group(s)" if r.groups else "")]
-        bits.append(est.text() + (f" (at {est.hz:g} Hz)" if est.hz and
-                                  any(x.unit == "frames" for x in r.steps)
-                                  else ""))
+        bits.append(est.text() + (f" (at {est.hz:g} Hz)" if est.hz and any(
+            x.unit == "frames" and x.kind in ("fov", "wait", "record")
+            for x in r.steps) else ""))
         if est.moves:
             bits.append("moves the stage")
         if est.lit:
@@ -611,6 +648,7 @@ class SettingsPanel(QWidget):
             self._btn_abort.setEnabled(held)
             # Every edit, not just the table's: templates, ±Step, groups.
             self._protocol.setEnabled(not held)
+            self._setup.setEnabled(not held)
             self._lbl_state.setStyleSheet(
                 "color:#d08770;" if paused else
                 f"color:{style.HEX['routines']};" if active else "")
@@ -691,6 +729,12 @@ class SettingsPanel(QWidget):
             self._r.steps[:] = r.steps
             self._r.groups[:] = r.groups
             self._txt_name.setText(self._r.name)
+            self._r.capture_length, self._r.capture_unit, self._r.wait_s = \
+                self._general = (r.capture_length, r.capture_unit, r.wait_s)
+            with QSignalBlocker(self._cmb_unit):
+                self._cmb_unit.setCurrentText(r.capture_unit)
+            self._spn_capture.setValue(r.capture_length)
+            self._spn_wait.setValue(r.wait_s)
         finally:
             self._loading = False
         self._reload_table()
