@@ -2694,7 +2694,7 @@ def check_roi_store_corrupt(r) -> None:
     real_text, real_save = RP.QInputDialog.getText, RP.roi_store.save
     RP.QInputDialog.getText = staticmethod(lambda *a, **k: ("set", True))
 
-    def bad_save(*_a):
+    def bad_save(*_a, **_k):
         raise PermissionError("read-only")
     RP.roi_store.save = bad_save
     try:
@@ -2843,6 +2843,7 @@ def _part_pair() -> int:
                 "…and Routines draws their thumbnail")
 
     # ── the whole flow, from the Stage tab's button ─────────────────────────
+    from PyQt6.QtGui import QPixmap
     from PyQt6.QtWidgets import QInputDialog
 
     from acqApp.devices.stage import fov_store
@@ -2860,6 +2861,7 @@ def _part_pair() -> int:
 
     def fake_exec(self):
         seen.append(self.windowTitle())
+        seen.append(self._ed._btn_save.isHidden())
         self._ed._add(RectRoi(x=100, y=80, w=40, h=20))
         self._ed.set_tool("free")
         self._ed._on_free([(150, 20), (200, 25), (210, 70), (160, 60), (150, 20)])
@@ -2876,11 +2878,38 @@ def _part_pair() -> int:
     fovs = fov_store.list_session()
     r.check([f.name for f in fovs] == ["cellA_fov"],
             f"the FOV is saved as <name>_fov ({[f.name for f in fovs]})")
-    r.check(seen == ["DMD ROIs for cellA_roi"],
-            f"…and the ROI prompt follows at once ({seen})")
+    r.check(seen == ["DMD ROIs for cellA_roi", True],
+            f"…and the ROI prompt follows at once, with no second name "
+            f"prompt (the editor's own Save… hidden) ({seen})")
     roi = pairs.roi_for_fov(fovs[0]) if fovs else None
     r.check(roi is not None and roi_store.load_named(roi)[0] == "cellA_roi",
             f"…saved as <name>_roi, found from the FOV ({roi})")
+    png = roi_store.image_for(roi) if roi is not None else None
+    r.check(png is not None and png.is_file()
+            and not QPixmap(str(png)).isNull(),
+            f"…with its snapshot + shapes image beside it ({png})")
+
+    # Right-click on the map square -> the viewer shows that image.
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QLabel, QMenu
+    real_menu_exec = QMenu.exec
+    QMenu.exec = lambda self, *a: self.actions()[-1].trigger()
+    shown: list = []
+    real_preview = stage.preview_fov
+    stage.panel.fov_preview_requested.disconnect()
+    stage.panel.fov_preview_requested.connect(
+        lambda f: shown.append(real_preview(f)))
+    try:
+        stage.panel._on_fov_menu(0, stage.panel.mapToGlobal(QPoint(0, 0)))
+    finally:
+        QMenu.exec = real_menu_exec
+    dlg = shown[0] if shown else None
+    r.check(dlg is not None and dlg.has_image
+            and "as drawn on the snapshot" in " ".join(
+                lb.text() for lb in dlg.findChildren(QLabel)),
+            "right-click on the FOV opens its snapshot + ROIs")
+    if dlg is not None:
+        dlg.close()
     r.check(dmd.panel.mode == "roi" and len(dmd.panel.settings.rois) == 2,
             "the DMD tab adopts the saved set")
     adopted = RoiSet.from_list(list(dmd.panel.settings.rois))
@@ -2933,7 +2962,7 @@ def check_pair_faults(r: Report) -> None:
 
     real_save = PD.roi_store.save
 
-    def bad_save(*_a):
+    def bad_save(*_a, **_k):
         raise PermissionError("read-only")
     PD.roi_store.save = bad_save
     try:

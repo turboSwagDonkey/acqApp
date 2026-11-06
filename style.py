@@ -10,10 +10,10 @@ HEX = {
     "puffer":      "#dd4444",   # red
     "stage":       "#1aa3b8",   # teal
     "dmd":         "#d6459b",   # magenta
-    "vis_stim":    "#22c7d6",   # cyan
-    "mirror":      "#ff4fa3",   # pink
-    "routines":    "#6f7bf7",   # indigo
-    "sync":        "#8844cc",   # purple (session-wide controls)
+    "vis_stim":    "#7cab2b",   # lime (cyan sat beside stage's teal)
+    "mirror":      "#8796ad",   # steel, General's family (pink sat beside dmd)
+    "routines":    "#9b5de5",   # violet (indigo sat beside voltage_cam's blue)
+    "sync":        "#6c7a8e",   # slate: session-wide controls, no device's hue
     "saving":      "#c9a227",   # gold
 }
 

@@ -869,7 +869,7 @@ class MainWindow(QMainWindow):
                 self.splitDockWidget(upper, lower, Qt.Orientation.Vertical)
         for d in (general, *self._docks.values()):
             d.show()
-        widths = [420, 700, 480][:len(stacks)]
+        widths = [370, 750, 480][:len(stacks)]  # narrow left: the stage map fills it
         self.resizeDocks([s[0] for s in stacks], widths,
                          Qt.Orientation.Horizontal)
         for stack in stacks:

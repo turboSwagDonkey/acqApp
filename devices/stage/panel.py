@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetrics, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QBoxLayout, QDialog, QGridLayout, QGroupBox,
-    QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout,
+    QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
+    QSizePolicy, QVBoxLayout,
     QWidget,
 )
 
@@ -359,6 +360,13 @@ class _MapAndPad(QBoxLayout):
         self.addWidget(map_, 1)
         self.addWidget(pad, 0)
 
+    def minimumSize(self) -> QSize:
+        # The pad-under arrangement's: QBoxLayout would report the current
+        # direction's, and beside would pin the column at map + pad wide.
+        m, pad = self._map.minimumSize(), self._pad.sizeHint()
+        return QSize(max(m.width(), pad.width()),
+                     m.height() + self.spacing() + pad.height())
+
     def setGeometry(self, r: QRect) -> None:
         pad, gap = self._pad.sizeHint(), self.spacing()
         beside_side = min(r.width() - pad.width() - gap, r.height())
@@ -413,6 +421,8 @@ class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)   # emits StageSettings
     # The adapter handles it: only it can reach the camera frame.
     save_fov_requested = pyqtSignal()
+    # A SavedFov, right-clicked on the map; the adapter finds its ROI set.
+    fov_preview_requested = pyqtSignal(object)
 
     def __init__(self, settings: StageSettings | None = None, parent=None):
         super().__init__(parent)
@@ -423,6 +433,7 @@ class SettingsPanel(QWidget):
         self._last_map_xy: tuple[float, float] | None = None
         # The FOV last gone to, until the stage drifts off it.
         self._active_fov = None
+        self._map_fovs: list[fov_store.SavedFov] = []   # index-aligned with the map's
         self._axis_widgets: dict[str, dict] = {}
         self._cal_dialog: CalibrationDialog | None = None
         # Map drag: the commanded point chases the dragged target, capped.
@@ -452,25 +463,26 @@ class SettingsPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
 
         # ── Live readout + frame status, the panel's headline ───────────────
-        # X, Y (and Z) share one row, each wide enough for its longest value
-        # so the row doesn't jitter as they change.
+        # X, Y (and Z) split one row equally, not by their text: no jitter.
         pos_row = QHBoxLayout()
         pos_row.setContentsMargins(0, 0, 0, 0)
         pos_row.setSpacing(4)
         # A stylesheet, not setFont: the app's stylesheet would override it.
         big = QFont(self.font())
-        big.setPixelSize(17)
+        big.setPixelSize(16)
         big.setBold(True)
-        big_w = QFontMetrics(big).horizontalAdvance("-00000.0") + 4
+        big_w = QFontMetrics(big).horizontalAdvance("-0000.0") + 4
 
         def _readout(name: str) -> QLabel:
             lbl = QLabel("—")
-            lbl.setStyleSheet("font-size: 17px; font-weight: bold;")
+            lbl.setStyleSheet("font-size: 16px; font-weight: bold;")
             lbl.setMinimumWidth(big_w)
+            lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
+                              QSizePolicy.Policy.Preferred)
             cap = QLabel(name)
             cap.setStyleSheet("color:#9aa0a6;")
             pos_row.addWidget(cap)
-            pos_row.addWidget(lbl)
+            pos_row.addWidget(lbl, 1)
             return lbl
 
         self._lbl_x = _readout(self._s.x.name)
@@ -481,7 +493,6 @@ class SettingsPanel(QWidget):
         unit = QLabel("µm")
         unit.setStyleSheet("color:#9aa0a6;")
         pos_row.addWidget(unit)
-        pos_row.addStretch()
         vroot.addLayout(pos_row)
 
         # Shown only when absolute moves are off.
@@ -524,6 +535,7 @@ class SettingsPanel(QWidget):
         self._map = StageMap()
         self._map.set_axes(self._s.x, self._s.y, self._s.invert_y)
         self._map.drag_moved.connect(self._on_drag_moved)
+        self._map.fov_menu_requested.connect(self._on_fov_menu)
 
         # ── Motion (enabled only while connected) ────────────────────────────
         self._pad = self._build_pad()
@@ -585,7 +597,7 @@ class SettingsPanel(QWidget):
             ("Camera axes:", self._lbl_axes, None, measure),
             ("Frame rotation:", self._spn_rotation),
             ("Drag speed ≤", self._spn_drag),
-            steps, gap=12))
+            steps, per_row=1, gap=12))     # one per line: the column stays narrow
         root.addStretch()
 
         self._set_controls_enabled(False)
@@ -607,31 +619,27 @@ class SettingsPanel(QWidget):
         right = _arrow("→", "x", +1, f"Jog {x}+")
         up = _arrow("↑", "y", +1, f"Jog {y}+")
         down = _arrow("↓", "y", -1, f"Jog {y}−")
-        cross = QGridLayout()
-        cross.setSpacing(2)
-        cross.addWidget(up, 0, 1)
-        cross.addWidget(left, 1, 0)
-        cross.addWidget(down, 1, 1)
-        cross.addWidget(right, 1, 2)
+        # One grid, so Z's two rows line up with the cross's.
+        grid = QGridLayout()
+        grid.setSpacing(2)
+        grid.addWidget(up, 0, 1)
+        grid.addWidget(left, 1, 0)
+        grid.addWidget(down, 1, 1)
+        grid.addWidget(right, 1, 2)
 
         spn_xy = spin(0.1, 5000.0, self._s.x.step_um, decimals=1, suffix=" µm",
                       tooltip="How far one X/Y jog moves.")
         steps = [("Step XY:", spn_xy)]
 
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        row.addLayout(cross)
         self._axis_widgets["x"] = {"step": spn_xy, "buttons": [left, right]}
         self._axis_widgets["y"] = {"step": spn_xy, "buttons": [down, up]}
         if self._s.has_z:
             z = self._s.z.name
             z_up = _arrow(f"{z}▲", "z", +1, f"Jog {z}+")
             z_down = _arrow(f"{z}▼", "z", -1, f"Jog {z}−")
-            zcol = QVBoxLayout()
-            zcol.setSpacing(2)
-            zcol.addWidget(z_up)
-            zcol.addWidget(z_down)
-            row.addLayout(zcol)
+            grid.setColumnMinimumWidth(3, 8)    # the gap between X/Y and Z
+            grid.addWidget(z_up, 0, 4)
+            grid.addWidget(z_down, 1, 4)
             spn_z = spin(0.1, 5000.0, self._s.z.step_um, decimals=1,
                          suffix=" µm", tooltip=f"How far one {z} jog moves.")
             steps.append((f"Step {z}:", spn_z))
@@ -639,8 +647,8 @@ class SettingsPanel(QWidget):
         self._steps = steps
 
         pad = QWidget()
-        pad.setLayout(row)
-        row.setContentsMargins(0, 0, 0, 0)
+        pad.setLayout(grid)
+        grid.setContentsMargins(0, 0, 0, 0)
         return pad
 
     # ── binding to a live controller ────────────────────────────────────────
@@ -1013,8 +1021,17 @@ class SettingsPanel(QWidget):
         act = self._active_fov
         if act is not None and all(f.path != act.path for f in fovs):
             fovs.append(act)
+        self._map_fovs = fovs
         self._map.set_fovs([(f.name, f.x_um, f.y_um) for f in fovs],
                            act.name if act is not None else "")
+
+    def _on_fov_menu(self, i: int, pos) -> None:
+        fov = self._map_fovs[i]     # set with the map's list: always in range
+        menu = QMenu(self)
+        menu.addSection(fov.name)
+        menu.addAction("Show snapshot + ROIs…").triggered.connect(
+            lambda: self.fov_preview_requested.emit(fov))
+        menu.exec(pos)
 
     # ── live readout from the poll worker ───────────────────────────────────
     # Below this a move is invisible on the map; skip the repaint.

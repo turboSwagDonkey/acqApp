@@ -219,6 +219,8 @@ devices/                one package per instrument
     driver.py           MCM6101 APT/serial driver; copy of stage_control's
     fov_picker.py       dialog to choose a saved FOV bookmark: session list +
                         Browse, thumbnails — devices/dmd/roi_picker.py's shape
+    fov_preview.py      map right-click viewer: a saved FOV's ROI image
+                        (snapshot + shapes) or bare snapshot
     fov_store.py        save/load named FOV bookmarks (position + snapshot);
                         session/archive rotation (no Qt)
     map_widget.py       XY travel map (saved FOVs labelled; turned to the camera

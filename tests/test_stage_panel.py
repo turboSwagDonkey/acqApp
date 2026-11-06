@@ -472,7 +472,7 @@ def check_save_fov_disk_error(r: Report) -> None:
                             refresh_fovs=lambda: None)
     win = SimpleNamespace(pattern_target=lambda: None,
                           camera_preset=lambda _k: None,
-                          status=lambda _m: None)
+                          status=lambda _m: None, latest_frame=lambda _k: None)
     fake = SimpleNamespace(panel=panel, win=win, _snapshot_png=lambda: None)
     WARNINGS.clear()
     saved = fov_store.save, QInputDialog.getText
@@ -582,6 +582,12 @@ def check_window(r: Report) -> None:
     r.check(p._map._view() == ((-350.0, 350.0), (-350.0, 350.0)),
             "home set, stage inside: the map shows ±350 µm of home")
     p._map.grab()                                   # window + labels paint
+    from PyQt6.QtCore import QPointF
+    xf = p._map._frame()
+    sq = xf.to_px(100.0, -50.0)
+    r.check(p._map.fov_at(sq + QPointF(3, 3)) == 0
+            and p._map.fov_at(xf.to_px(-300.0, 300.0)) is None,
+            "a right-click finds the FOV square under it, and only there")
     p.set_readout(1000.0, 0.0)
     r.check(p._map._view()[0] == p._s.x.travel_limits_um(),
             "the stage beyond the window: the map zooms out to the travel")

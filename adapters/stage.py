@@ -109,6 +109,7 @@ class StageModule(ModuleAdapter):
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)
+        self.panel.fov_preview_requested.connect(self.preview_fov)
         self.panel.set_camera_source(
             lambda: self.win.latest_frame(CAMERA_KEY),
             lambda: self.win.camera_binning(CAMERA_KEY) or 1)
@@ -200,9 +201,13 @@ class StageModule(ModuleAdapter):
             return
         x_um, y_um, z_um = self.panel.current_position
         dmd = self.win.pattern_target()
-        prompt = (f"Name (saved as <name>{pairs.FOV_SUFFIX}, its DMD ROI set "
-                  f"as <name>{pairs.ROI_SUFFIX}):" if dmd is not None
-                  else f"Name (saved as <name>{pairs.FOV_SUFFIX}):")
+        prompt = f"FOV name (saved as <name>{pairs.FOV_SUFFIX}):"
+        if dmd is not None and self.win.latest_frame(CAMERA_KEY) is None:
+            prompt += ("\n\nNo voltage-cam frame yet, so no snapshot and no "
+                       "DMD ROIs: Cancel, start Live, then Save FOV again.")
+        elif dmd is not None:
+            prompt += (f"\nNext you draw its DMD ROIs; they take the same "
+                       f"name (<name>{pairs.ROI_SUFFIX}).")
         base, ok = QInputDialog.getText(self.panel, "Save FOV", prompt)
         base = pairs.base_name(base)
         if not ok or not base:
@@ -219,12 +224,51 @@ class StageModule(ModuleAdapter):
         self.panel.refresh_fovs()
         self.win.status(f'Saved FOV "{name}" at {x_um:.0f}, {y_um:.0f} µm '
                         f"({path.name})")
-        if dmd is None or self.win.latest_frame(CAMERA_KEY) is None:
+        if dmd is None:
+            return
+        if self.win.latest_frame(CAMERA_KEY) is None:
+            self.win.status(f'Saved FOV "{name}" without DMD ROIs: no '
+                            "voltage-cam frame yet (start Live first)")
             return
         roi_path = dmd.draw_paired_rois(pairs.roi_name(base))
         if roi_path is not None:
             self.win.status(f'Saved FOV "{name}" with its DMD ROI set '
                             f'"{pairs.roi_name(base)}"')
+
+    def preview_fov(self, fov):
+        """Non-modal look at `fov`: its paired ROI set's saved image (the
+        snapshot with the shapes), else the bare snapshot -> the dialog."""
+        from PyQt6.QtCore import Qt
+
+        from acqApp.devices.dmd import roi_store
+        from acqApp.devices.stage.fov_preview import FovPreview
+        from acqApp.routines import pairs
+
+        z = f", z {fov.z_um:.0f}" if fov.z_um is not None else ""
+        lines = [f"{fov.x_um:.0f}, {fov.y_um:.0f}{z} µm · saved "
+                 f"{fov.saved_at.replace('T', ' ')}"]
+        image = None
+        roi = pairs.roi_for_fov(fov)
+        if roi is None:
+            lines.append("No DMD ROI set paired with it: the snapshot alone.")
+        else:
+            try:
+                roi_name, rois = roi_store.load_named(roi)
+                what = f'DMD ROI set "{roi_name}" ({len(rois)} ROIs)'
+            except (OSError, ValueError):   # a slot: escaping would abort the app
+                what = f"DMD ROI set {roi.name} (unreadable)"
+            png = roi_store.image_for(roi)
+            if png.is_file():
+                image = png
+                lines.append(f"{what}, as drawn on the snapshot.")
+            else:
+                lines.append(f"{what} was saved before ROI images were kept: "
+                             "the snapshot alone, without its shapes.")
+        dlg = FovPreview(fov.name, "\n".join(lines), image or fov.image_path,
+                         parent=self.panel)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
+        return dlg
 
     def _snapshot_png(self) -> bytes | None:
         """The newest camera frame as the preview shows it (downsampled,

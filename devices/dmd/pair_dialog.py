@@ -37,6 +37,7 @@ class PairRoiDialog(QDialog):
         no light (it would land on another field)."""
         super().__init__(parent)
         self._ed = editor
+        editor.hide_save()              # the name is already fixed by the FOV
         self._name = name
         self._snapshot_only = live_source is None
         self._illuminate = illuminate or (lambda _r: None)
@@ -152,7 +153,8 @@ class PairRoiDialog(QDialog):
         if not len(rois):
             return
         try:
-            self.path = roi_store.save(self._name, rois)
+            self.path = roi_store.save(self._name, rois,
+                                       png_bytes=self._ed.render_png())
         except OSError as e:
             self._fail("Could not save", e)
             return

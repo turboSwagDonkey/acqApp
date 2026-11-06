@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
@@ -95,9 +95,11 @@ class StageMap(_TravelWidget):
     `set_fovs()` when the saved FOVs change. While `set_draggable(True)`,
     dragging the position dot emits `drag_moved(x_um, y_um)` (inside the soft
     limits); the owner shows its chase via `set_target()` and ends a drag
-    early with `cancel_drag()`."""
+    early with `cancel_drag()`. Right-clicking a saved FOV's square emits
+    `fov_menu_requested(index into set_fovs' list, global pos)`."""
 
     drag_moved = pyqtSignal(float, float)
+    fov_menu_requested = pyqtSignal(int, QPoint)
 
     _MARGIN_LEFT   = 1
     _MARGIN_RIGHT  = 1
@@ -109,7 +111,8 @@ class StageMap(_TravelWidget):
                f'<span style="color:{_C_ORIGIN}">✚</span> 0,0 &nbsp; '
                f'<span style="color:{_C_ORIGIN}">◌</span> window &nbsp; '
                f'<span style="color:{_C_SOFT}">▭</span> limits &nbsp; '
-               f'<span style="color:{_C_FOV}">□</span> saved FOV<br>')
+               f'<span style="color:{_C_FOV}">□</span> saved FOV '
+               "(right-click: its snapshot + ROIs)<br>")
     _TIP = _LEGEND + (
         "Drag the blue dot to move the stage (speed-capped; Esc stops). With "
         "measured camera axes the map is turned to match the camera.")
@@ -187,6 +190,27 @@ class StageMap(_TravelWidget):
             if (c.x() - pt.x()) ** 2 + (c.y() - pt.y()) ** 2 <= self._GRAB_PX ** 2:
                 return True
         return False
+
+    def fov_at(self, pt: QPointF) -> int | None:
+        """Index of the nearest FOV square within grab range of `pt`."""
+        xf = self._frame()
+        if xf is None:
+            return None
+        best, best_d2 = None, self._GRAB_PX ** 2
+        for i, (_name, x_um, y_um) in enumerate(self._fovs):
+            c = xf.to_px(x_um, y_um)
+            d2 = (c.x() - pt.x()) ** 2 + (c.y() - pt.y()) ** 2
+            if d2 <= best_d2:
+                best, best_d2 = i, d2
+        return best
+
+    def contextMenuEvent(self, event) -> None:
+        i = self.fov_at(QPointF(event.pos()))
+        if i is None:
+            super().contextMenuEvent(event)
+            return
+        self.fov_menu_requested.emit(i, event.globalPos())
+        event.accept()
 
     def _emit_drag(self, pt: QPointF) -> None:
         xf = self._frame()

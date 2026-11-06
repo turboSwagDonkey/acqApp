@@ -9,7 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.graphicsItems.ROI import Handle
-from PyQt6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, pyqtSignal
+from PyQt6.QtCore import (QBuffer, QIODevice, QPointF, QRectF, QSignalBlocker,
+                          Qt, pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QCursor, QKeySequence, QPainter,
                          QPainterPath, QPen, QPixmap, QPolygonF, QShortcut)
 from PyQt6.QtWidgets import (
@@ -380,15 +381,15 @@ class RoiEditor(QWidget):
             b.clicked.connect(slot)
             bar.addWidget(b)
         bar.addStretch()
-        btn_save = QPushButton("Save…")
-        btn_save.setToolTip(
+        self._btn_save = QPushButton("Save…")
+        self._btn_save.setToolTip(
             "Save this set under a name, into this session's quick list.")
-        btn_save.clicked.connect(self._on_save_roi)
+        self._btn_save.clicked.connect(self._on_save_roi)
         btn_load = QPushButton("Load…")
         btn_load.setToolTip(
             "Load a set saved this session, or Browse older ones.")
         btn_load.clicked.connect(self._on_load_roi)
-        bar.addWidget(btn_save)
+        bar.addWidget(self._btn_save)
         bar.addWidget(btn_load)
         root.addLayout(bar)
 
@@ -427,6 +428,37 @@ class RoiEditor(QWidget):
         self._views.addWidget(widget)
         self._views.setStretchFactor(0, 3)
         self._views.setStretchFactor(self._views.count() - 1, 2)
+
+    def hide_save(self) -> None:
+        """For a host whose own Save names the set (the FOV pair dialog)."""
+        self._btn_save.hide()
+
+    def render_png(self) -> bytes | None:
+        """The drawing view framed on the whole snapshot, shapes and all, as
+        PNG bytes (None before an image). Drawn as a record: no handles, no
+        selection highlight. The user's zoom and selection are restored."""
+        if self._image is None:
+            return None
+        h, w = self._image.shape[:2]
+        was = self._vb.viewRange()
+        pens = [it.pen for it in self._items]
+        handles = [hd for it in self._items for hd in it.getHandles()]
+        for it in self._items:
+            it.setPen(_ROI_PEN)
+        for hd in handles:
+            hd.hide()
+        self._vb.setRange(rect=QRectF(0.0, 0.0, w * self._scale,
+                                      h * self._scale), padding=0.0)
+        pix = self._gv.grab()
+        self._vb.setRange(xRange=was[0], yRange=was[1], padding=0.0)
+        for hd in handles:
+            hd.show()
+        for it, pen in zip(self._items, pens):
+            it.setPen(pen)
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        pix.save(buf, "PNG")
+        return bytes(buf.data())
 
     @property
     def can_project(self) -> bool:
@@ -558,7 +590,8 @@ class RoiEditor(QWidget):
         if not ok or not name.strip():
             return
         try:
-            path = roi_store.save(name.strip(), self._set)
+            path = roi_store.save(name.strip(), self._set,
+                                  png_bytes=self.render_png())
         except OSError as e:
             self._status.setText(f"Could not save ({type(e).__name__}: {e})")
             return
