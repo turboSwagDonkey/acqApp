@@ -544,8 +544,8 @@ def check(label: str, *, checked: bool = False, tip: str = "") -> QCheckBox:
 
 def pill(label: str, key: str, *, checked: bool = False,
          tip: str = "") -> QPushButton:
-    """An on/off option as a rounded accent toggle (`style.toggle_btn`): pale
-    off, full accent on. Same isChecked/setChecked/toggled as a QCheckBox.
+    """An on/off option as a rounded accent toggle (`style.toggle_btn`): an
+    outline off, full accent on. Same isChecked/setChecked/toggled as a QCheckBox.
     Sparingly: only for the controls that matter (see `check`)."""
     b = QPushButton(label)
     b.setCheckable(True)

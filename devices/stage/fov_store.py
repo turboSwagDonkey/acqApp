@@ -1,18 +1,16 @@
 """Named FOV bookmarks: a stage position plus an optional camera snapshot
 (sibling PNG). No Qt; the picker is `fov_picker.py`.
-
-Same `session/`/`archive/` split and per-process rotation as
-`devices/dmd/roi_store.py` (see its docstring for why); the PNG rotates with
-its JSON.
+`fov_library/session/` and `archive/`, rotated as `named_store.py` says.
 """
 from __future__ import annotations
 
 import json
 import math
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
+
+from acqApp import named_store
 
 _ROOT = Path(__file__).resolve().parents[2] / "fov_library"
 SESSION_DIR = _ROOT / "session"
@@ -25,25 +23,14 @@ _rotated = False
 
 
 def _img_for(path: Path) -> Path:
-    return path.with_name(path.name[:-len(SUFFIX)] + IMG_SUFFIX)
+    return named_store.sibling(path, SUFFIX, IMG_SUFFIX)
 
 
 def _rotate_once() -> None:
     global _rotated
-    if _rotated:
-        return
-    _rotated = True
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    for p in SESSION_DIR.glob(f"*{SUFFIX}"):
-        dest = ARCHIVE_DIR / p.name
-        if dest.exists():           # same name from an earlier run — keep both
-            stem = p.name[:-len(SUFFIX)]
-            dest = ARCHIVE_DIR / f"{stem}_{datetime.now():%Y%m%d_%H%M%S}{SUFFIX}"
-        img = _img_for(p)
-        shutil.move(str(p), str(dest))
-        if img.exists():
-            shutil.move(str(img), str(_img_for(dest)))
+    if not _rotated:
+        _rotated = True
+        named_store.rotate(SESSION_DIR, ARCHIVE_DIR, SUFFIX, IMG_SUFFIX)
 
 
 class SavedFov(NamedTuple):
@@ -61,13 +48,7 @@ def save(name: str, x_um: float, y_um: float, z_um: float | None = None,
         camera_preset: str | None = None, png_bytes: bytes | None = None) -> Path:
     """Write a named FOV (+ PNG) into the session folder -> its JSON path."""
     _rotate_once()
-    stem = "".join(c if c.isalnum() or c in "-_ " else "_"
-                   for c in name).strip() or "fov"
-    path = SESSION_DIR / f"{stem}{SUFFIX}"
-    n = 1
-    while path.exists():
-        n += 1
-        path = SESSION_DIR / f"{stem}_{n}{SUFFIX}"
+    path = named_store.fresh_path(SESSION_DIR, name, SUFFIX, "fov")
     if png_bytes is not None:
         _img_for(path).write_bytes(png_bytes)
     payload = {"name": name,

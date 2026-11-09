@@ -287,8 +287,6 @@ class PupilCamModule(ModuleAdapter):
         if s is not None:
             hist.setVisible(s.show_lut)
             self._chk_auto_lut.setChecked(s.auto_levels)
-        self.win.register_pg_view(hist)
-        self.win.register_pg_view(gv)
 
         self._limit_curve = pg.PlotCurveItem(
             pen=pg.mkPen("#00e5ff", width=2, style=Qt.PenStyle.DashLine))

@@ -214,6 +214,24 @@ class RoutinesModule(ModuleAdapter):
     def _save(self, routine: Routine) -> None:
         config.save_settings(self.key, {"routine": routine.to_dict()})
 
+    def add_fov_step(self, fov_path: Path, roi: Path) -> None:
+        """A just-saved FOV + ROI set becomes a step, except under a routine:
+        it holds the protocol locked."""
+        from acqApp.devices.stage import fov_store
+
+        if self._engine is not None and self._engine.running:
+            self._status(f"{fov_path.name} saved, but not added as a step: a "
+                         f"routine is running")
+            return
+        try:
+            fov = fov_store.load(fov_path)
+        except (OSError, ValueError, TypeError) as e:
+            self._status(f"could not add {fov_path.name} as a step ({e})")
+            return
+        row = self.panel.add_fov_step(fov, roi)
+        self._status(f'FOV "{fov.name}" and its ROI set added as routine step '
+                     f"{row + 1}")
+
     def _draw_roi(self, fov) -> Path | None:
         """An FOV step's missing ROI set, drawn on the FOV's snapshot (needs
         the DMD for its calibration)."""
@@ -467,6 +485,7 @@ class RoutinesModule(ModuleAdapter):
 
     def _close_own_recording(self) -> None:
         """Stop recording and capture at the routine's end."""
+        self._doom_unused_prepared()
         junk = self._take_doomed()
         bad = self._bad_file()
         self.win.set_routine_save_context(None, None)
@@ -585,6 +604,7 @@ class RoutinesModule(ModuleAdapter):
         the edge's first frame lands in the new file. Raises to pause."""
         if self.win.dcimg_frames(FRAME_STREAM) is None:
             return
+        self._doom_unused_prepared()
         if self.win.arm_camera_with_next_file(FRAME_STREAM) is not True:
             raise RuntimeError("the camera could not be armed with the next "
                                "file")
@@ -687,8 +707,14 @@ class RoutinesModule(ModuleAdapter):
             self._discard(junk, bad)
         return ok
 
+    def _doom_unused_prepared(self) -> None:
+        """A file opened for an edge that never came (paused at the trigger,
+        then Resume or Abort) is as empty as Start's travel-only one."""
+        if self._prepared is not None:
+            self._prepared, self._doomed = None, self.win.recording_path()
+
     def _take_doomed(self) -> Path | None:
-        """Start's travel-only file, unless it caught frames after all."""
+        """A file doomed as empty, unless it caught frames after all."""
         junk, self._doomed = self._doomed, None
         if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
             return None
@@ -744,8 +770,8 @@ class RoutinesModule(ModuleAdapter):
 
     def _delete_junk(self, path: Path, tries: int) -> None:
         if delete_recording(path):
-            self._status(f"deleted {path.name} — stage travel before the "
-                         f"first trigger, no frames")
+            self._status(f"deleted {path.name} — opened before a trigger that "
+                         f"never came, no frames")
         elif tries > 1:
             QTimer.singleShot(JUNK_RETRY_MS,
                               lambda: self._delete_junk(path, tries - 1))

@@ -795,7 +795,7 @@ def _part_settings() -> int:
 
     config.open = dying_open
     try:
-        config.save_config({"theme": "light", "settings": {"wiped": True}})
+        config.save_config({"settings": {"wiped": True}})
     finally:
         del config.open
     r.check(cfg_path.read_text(encoding="utf-8") == intact,

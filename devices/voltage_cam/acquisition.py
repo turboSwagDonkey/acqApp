@@ -119,6 +119,7 @@ class OrcaFireWorker(PullWorker):
         self._dcimg_missing = 0
         self._dcimg_t0: float | None = None
         self._dcimg_t1: float | None = None
+        self._dcimg_stop_asked: float | None = None
         self._dcimg_full = False
         self._achievable_hz: float = 0.0
         self._master_pulse = False
@@ -189,6 +190,8 @@ class OrcaFireWorker(PullWorker):
         with self._exp_lock:
             self._rec_want = path
             self._rec_change = True
+            if path is None:
+                self._dcimg_stop_asked = time.perf_counter()
 
     @property
     def dcimg_ready(self) -> bool:
@@ -214,10 +217,12 @@ class OrcaFireWorker(PullWorker):
     @property
     def dcimg_span(self) -> tuple[float, float] | None:
         """(attached_at, closed_at) in perf_counter, the .dcimg's only tie to
-        the shared clock. closed_at is 0.0 while recording."""
+        the shared clock. closed_at is 0.0 while recording. The loop closes
+        the file a moment after Stop, usually after the metadata is written,
+        so until then closed_at is when the close was asked for."""
         if self._dcimg_t0 is None:
             return None
-        return (self._dcimg_t0, self._dcimg_t1 or 0.0)
+        return (self._dcimg_t0, self._dcimg_t1 or self._dcimg_stop_asked or 0.0)
 
     @staticmethod
     def _hit_frame_cap(st_rec, max_frames: int) -> bool:
@@ -272,7 +277,7 @@ class OrcaFireWorker(PullWorker):
         self._close_dcimg()
         if path is not None:            # a failed open must not report the last file
             self._dcimg_total = self._dcimg_missing = 0
-            self._dcimg_t0 = self._dcimg_t1 = None
+            self._dcimg_t0 = self._dcimg_t1 = self._dcimg_stop_asked = None
         t_stop = time.perf_counter()
         try:
             if err is not None:
@@ -524,22 +529,29 @@ class OrcaFireWorker(PullWorker):
 
     # ── per-frame timing ─────────────────────────────────────────────────────
 
+    def _anchor_cam_time(self, infos) -> None:
+        """Tie the camera clock to perf_counter on the batch's newest frame:
+        it was taken just before this read, the oldest a whole batch earlier."""
+        if self._t_offset is not None or not self._use_cam_time or not infos:
+            return
+        newest = next((us for info in reversed(infos)
+                       if (us := getattr(info, "timestamp_us", 0) or 0) > 0), 0)
+        if newest:
+            self._t_offset = time.perf_counter() - newest * 1e-6
+            print(f"[voltage_cam] using the camera's own frame timestamps "
+                  f"(offset {self._t_offset:.3f} s)")
+
     def _frame_time(self, info) -> float | None:
-        """The camera's own stamp, anchored to perf_counter on the first
-        frame; None to stamp on arrival (quantised to the read cadence)."""
+        """The camera's own stamp on perf_counter; None to stamp on arrival
+        (quantised to the read cadence)."""
         if not self._use_cam_time or info is None:
             return None
         us = getattr(info, "timestamp_us", 0) or 0
         if us <= 0:
             self._fallback("camera does not report frame timestamps")
             return None
-        t_cam = us * 1e-6
         now = time.perf_counter()
-        if self._t_offset is None:
-            self._t_offset = now - t_cam
-            print(f"[voltage_cam] using the camera's own frame timestamps "
-                  f"(offset {self._t_offset:.3f} s)")
-        t = t_cam + self._t_offset
+        t = us * 1e-6 + self._t_offset
         if t > now + 1.0:        # acquired after we read it: clock drift/wrap
             self._fallback("camera frame timestamps are inconsistent")
             return None
@@ -555,6 +567,7 @@ class OrcaFireWorker(PullWorker):
         """Feed the sink (frame, acquired_at, index) -> (count, newest)."""
         n, last = 0, None
         n_info = len(infos) if infos is not None else 0
+        self._anchor_cam_time(infos)
         for i, img in enumerate(imgs):
             if img is None:
                 continue

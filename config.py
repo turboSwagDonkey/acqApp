@@ -263,21 +263,6 @@ def save_enabled_modules(enabled: list[str]) -> None:
     save_config(cfg)
 
 
-# ── App-wide preferences ──────────────────────────────────────────────────────
-DEFAULT_THEME = "dark"
-
-
-def get_theme() -> str:
-    t = load_config().get("theme")
-    return t if t in ("dark", "light") else DEFAULT_THEME
-
-
-def set_theme(theme: str) -> None:
-    cfg = load_config()
-    cfg["theme"] = "dark" if theme == "dark" else "light"
-    save_config(cfg)
-
-
 # ── Per-module settings (under "settings") ────────────────────────────────────
 def load_settings(module: str) -> dict:
     """Every key optional; callers validate values."""

@@ -1,18 +1,14 @@
 """Save/load for named ROI sets. No Qt; the picker is `roi_picker.py`.
-
-`rois/session/` holds this run's sets (the quick list); `rois/archive/` holds
-earlier runs' (Browse only). Rotation is per PROCESS — app close has no
-reliable hook (Task Manager, a crash) — so `session/` is archived once, the
-first time this module is touched in a run.
+`rois/session/` and `rois/archive/`, rotated as `named_store.py` says.
 """
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from acqApp import named_store
 from acqApp.devices.dmd.roi import RoiSet
 
 _ROOT = Path(__file__).resolve().parents[2] / "rois"
@@ -27,26 +23,14 @@ _rotated = False
 
 def image_for(path: str | Path) -> Path:
     """Where the set's preview PNG goes (it may not exist)."""
-    path = Path(path)
-    return path.with_name(path.name[:-len(SUFFIX)] + IMG_SUFFIX)
+    return named_store.sibling(Path(path), SUFFIX, IMG_SUFFIX)
 
 
 def _rotate_once() -> None:
     global _rotated
-    if _rotated:
-        return
-    _rotated = True
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    for p in SESSION_DIR.glob(f"*{SUFFIX}"):
-        dest = ARCHIVE_DIR / p.name
-        if dest.exists():           # same name from an earlier run — keep both
-            stem = p.name[:-len(SUFFIX)]
-            dest = ARCHIVE_DIR / f"{stem}_{datetime.now():%Y%m%d_%H%M%S}{SUFFIX}"
-        img = image_for(p)
-        shutil.move(str(p), str(dest))
-        if img.exists():
-            shutil.move(str(img), str(image_for(dest)))
+    if not _rotated:
+        _rotated = True
+        named_store.rotate(SESSION_DIR, ARCHIVE_DIR, SUFFIX, IMG_SUFFIX)
 
 
 class SavedRoiSet(NamedTuple):
@@ -59,13 +43,7 @@ def save(name: str, rois: RoiSet, png_bytes: bytes | None = None) -> Path:
     """Write `rois` (+ preview PNG) into the session folder under `name`
     -> the path used."""
     _rotate_once()
-    stem = "".join(c if c.isalnum() or c in "-_ " else "_"
-                   for c in name).strip() or "roi"
-    path = SESSION_DIR / f"{stem}{SUFFIX}"
-    n = 1
-    while path.exists():
-        n += 1
-        path = SESSION_DIR / f"{stem}_{n}{SUFFIX}"
+    path = named_store.fresh_path(SESSION_DIR, name, SUFFIX, "roi")
     if png_bytes is not None:
         image_for(path).write_bytes(png_bytes)
     payload = {"name": name,

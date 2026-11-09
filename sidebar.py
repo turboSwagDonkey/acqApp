@@ -88,6 +88,8 @@ class MiniText(MiniView):
         self._value.setText(value)
         self._value.setVisible(bool(value))
         self._detail.setText(detail)
+        tone = style.WARN if detail.startswith("⚠") else style.muted()
+        self._detail.setStyleSheet(f"color:{tone}")
         self.setToolTip(" · ".join(t for t in got if t))
 
 

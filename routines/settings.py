@@ -36,6 +36,8 @@ SAVE_MODES: dict[str, str] = {
 # Not a safety limit; catches an obviously wrong entry.
 MAX_SETTLE_S = 120.0
 
+DEFAULT_REPEATS = 5                 # what a new FOV step or repeat group starts at
+
 
 def pattern_label(path: str) -> str:
     """"ROI: <name>" for a saved ROI set, else the file name."""
@@ -62,6 +64,8 @@ class Step:
     unit:     str = "frames"
     # fov: unlit, after the capture
     wait_s:   float = 0.0
+    # fov: runs in a row. 1 here, so a saved routine keeps what it ran.
+    repeats:  int = 1
 
     def describe(self) -> str:
         if self.kind == "fov":
@@ -112,6 +116,14 @@ class Recording:
     end:   int = 0
 
 
+def own_repeats(routine: "Routine", i: int) -> int:
+    """Step `i`'s own run count: an FOV step's, unless a group repeats it."""
+    s = routine.steps[i]
+    if s.kind != "fov" or any(g.start <= i <= g.end for g in routine.groups):
+        return 1
+    return max(1, s.repeats)
+
+
 def play_order(routine: "Routine") -> list[int]:
     """One pass as step indices, each group repeated in place (`cycles`
     repeats the pass). Invalid groups are skipped, not raised on."""
@@ -128,7 +140,7 @@ def play_order(routine: "Routine") -> list[int]:
             i = g.end + 1
             gi += 1
         else:
-            order.append(i)
+            order.extend([i] * own_repeats(routine, i))
             i += 1
     return order
 
@@ -208,8 +220,8 @@ class Routine:
     # clock, or a seconds Wait counts down against a stopped camera.
     wait_for_camera: bool = True
     # What a new FOV step starts with (it keeps its own copy).
-    capture_length: float = 100.0
-    capture_unit:   str = "frames"
+    capture_length: float = 5.0
+    capture_unit:   str = "seconds"
     wait_s:         float = 0.0
 
     @property
@@ -386,6 +398,9 @@ def expand(routine: Routine) -> tuple[Routine, list[int]]:
                     repeats=g.repeats)
               for g in routine.groups
               if g.start in old_to_new and g.end in old_to_new]
+    # An FOV step's whole block, so a Trigger folded into it waits every run.
+    groups += [Group(*old_to_new[row], repeats=own_repeats(routine, row))
+               for row in range(len(steps)) if own_repeats(routine, row) > 1]
     return Routine(name=routine.name, steps=out, groups=groups,
                    cycles=routine.cycles, save_mode=routine.save_mode,
                    wait_for_camera=routine.wait_for_camera,
@@ -424,6 +439,7 @@ def _typed(s: Step) -> Step:
     s.settle_s = _num(s.settle_s, Step.settle_s)
     s.length = _num(s.length, Step.length)
     s.wait_s = _num(s.wait_s, Step.wait_s)
+    s.repeats = max(1, int(_num(s.repeats, Step.repeats)))
     return s
 
 

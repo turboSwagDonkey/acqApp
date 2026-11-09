@@ -63,6 +63,7 @@ flowchart TD
     sidebar --> widgets
     probe --> devices
     probe --> config
+    devices --> named_store
     run_pupil_review --> console
     run_pupil_review --> devices
 ```
@@ -347,7 +348,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_undefined_names.py     every name resolves; catches the moved-code defect
   test_vis_stim.py            trial expansion, geometry, the tick-driven state machine
 main.py                 the shell: one window of docks (General over stage |
-                        camera over routines | DMD over pupil cam), theme,
+                        camera over routines | DMD over pupil cam),
                         session start/stop, the venv bootstrap. No
                         per-instrument logic.
 config.py               settings persistence + the MODULES table
@@ -362,10 +363,12 @@ modes.json              named mode recipes (camera preset/exposure, DMD
 rigs.json               per-rig hardware profiles (NI device, DAQ channels,
                         what is fitted) — tracked; acqapp_local.json's "rig"
                         key names which one THIS machine is
+named_store.py          session/archive rotation + safe file names shared by
+                        fov_store and roi_store (no Qt)
 probe.py                presence checks; enumeration only, never opens a device
 sidebar.py              module cards: accent header + live mini view (the
                         adapter's mini_view), its panel folded under it (Fold)
-style.py                the theme and the per-module HEX colours
+style.py                the dark theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here — gitignored, private repo
 PLAN.md                 the short plan: orientation + next three — private repo

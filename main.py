@@ -2,7 +2,7 @@
 In vivo acquisition suite — entry point.
 
 Owns what is session-wide: the clock, the sync/trigger bus, the recorder, the
-save destination, docks and theme. Each instrument is a `ModuleAdapter` in
+save destination and docks. Each instrument is a `ModuleAdapter` in
 `adapters/`; this window only iterates over them.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py
@@ -21,7 +21,6 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 # A segfault in the DCAM SDK can't be caught; this at least dumps the stacks.
@@ -286,12 +285,6 @@ class MainWindow(QMainWindow):
         self._save_panel: SavePanel | None = None
         self._folds: dict[str, Fold] = {}           # each card, its panel under it
         self._docks: dict[str, QDockWidget] = {}    # the own_dock modules'
-        self._pg_views: list = []      # recoloured on theme change
-        # What each module added to the window, to take back on unload.
-        # register_pg_view doesn't say who's calling, so the window tracks
-        # whose build is running.
-        self._building_key: str | None = None
-        self._module_views: dict[str, list] = {}
         self._status_widgets: dict[str, QWidget] = {}   # beside Record
 
         self._modules = adapters.build_adapters(self, self._enabled)
@@ -417,6 +410,9 @@ class MainWindow(QMainWindow):
 
     def set_camera_burst(self, key: str, n: int) -> bool | None:
         return self._call(key, "set_burst_frames", n)
+
+    def add_routine_fov_step(self, fov: Path, roi: Path) -> None:
+        self._call("routines", "add_fov_step", fov, roi)
 
     def camera_burst_frames(self, key: str) -> int | None:
         return self._call(key, "burst_frames_done")
@@ -565,20 +561,6 @@ class MainWindow(QMainWindow):
         `camera_preset`, which can name a switch not yet in effect."""
         return self._call(key, "last_frame_preset")
 
-    @contextmanager
-    def _attributed_to(self, key: str):
-        """Charge add_dock/register_pg_view calls in this block to `key`."""
-        self._building_key = key
-        try:
-            yield
-        finally:
-            self._building_key = None
-
-    def register_pg_view(self, view) -> None:
-        self._pg_views.append(view)
-        if self._building_key is not None:
-            self._module_views.setdefault(self._building_key, []).append(view)
-
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         if self._save_panel is not None:
             self._save_panel.set_expected_rate(mbps, writer_mbps)
@@ -636,7 +618,8 @@ class MainWindow(QMainWindow):
         host = QWidget()
         lay = QVBoxLayout(host)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(_VScroll(inner), 1)
+        self._general_scroll = _VScroll(inner)
+        lay.addWidget(self._general_scroll, 1)
         lay.addWidget(self._build_controls())
         self._general_dock = self._make_dock(
             "General", host, Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -665,12 +648,6 @@ class MainWindow(QMainWindow):
             "settings as a new (or replacement) entry in modes.json.")
         self._save_mode_action.triggered.connect(self._save_mode_as)
 
-        self._theme_action = QAction("☾", self)
-        self._theme_action.setCheckable(True)
-        self._theme_action.setChecked(config.get_theme() == "dark")
-        self._theme_action.setToolTip("Dark / light theme")
-        self._theme_action.toggled.connect(self._on_theme_toggled)
-
         self._modules_action = QAction("🧩 Modules", self)
         self._modules_action.setToolTip(_MODULES_TIP)
         self._modules_action.triggered.connect(self._open_modules_dialog)
@@ -683,8 +660,8 @@ class MainWindow(QMainWindow):
         self._reset_action.triggered.connect(self._arrange_docks)
 
         row.addStretch()
-        for act in (self._save_mode_action, self._theme_action,
-                    self._modules_action, self._reset_action):
+        for act in (self._save_mode_action, self._modules_action,
+                    self._reset_action):
             b = QToolButton()
             b.setDefaultAction(act)
             row.addWidget(b)
@@ -707,8 +684,7 @@ class MainWindow(QMainWindow):
             if m.panel is not None or mini is not None:
                 self._add_section(m.key, m.tab_label, mini, m.panel)
             return
-        with self._attributed_to(m.key):
-            view = m.view_widget()
+        view = m.view_widget()
         body = _VScroll(m.panel) if m.panel is not None else None
         fold = Fold(m.key, "Settings", mini, body, default_open=view is None)
         self._folds[m.key] = fold
@@ -754,9 +730,11 @@ class MainWindow(QMainWindow):
         self._btn_emulate = QPushButton("Emulate")
         self._btn_emulate.setCheckable(True)
         self._btn_emulate.setChecked(self._emulate)
-        self._btn_emulate.setStyleSheet(style.toggle_btn("wheel"))
+        self._btn_emulate.setStyleSheet(style.quiet_toggle("wheel"))
         self._btn_emulate.setToolTip("Use simulated signals instead of hardware")
         self._btn_emulate.toggled.connect(self._on_emulate_toggled)
+        self._btn_emulate.toggled.connect(self._label_emulate)
+        self._label_emulate(self._emulate)
 
         self._btn_run = QPushButton("Live view")
         self._btn_run.setCheckable(True)
@@ -848,6 +826,9 @@ class MainWindow(QMainWindow):
 
     # ── Dock layout ─────────────────────────────────────────────────────────────
 
+    def _label_emulate(self, on: bool) -> None:
+        self._btn_emulate.setText("EMULATE: no hardware" if on else "Emulate")
+
     def _arrange_docks(self) -> None:
         """The default layout, also Reset layout: a column per `_SLOTS`
         column, its docks stacked by row, General on top of the first."""
@@ -874,9 +855,20 @@ class MainWindow(QMainWindow):
                          Qt.Orientation.Horizontal)
         for stack in stacks:
             if len(stack) == 2:
-                # General's cards are one line each: its column's dock gets more.
-                self.resizeDocks(stack, [2, 3] if stack[0] is general else [3, 2],
+                # General takes only its cards' height: the stage map gets the rest.
+                # resizeDocks treats sizes as ratios, so these must add up.
+                h = self._general_height()
+                self.resizeDocks(stack, ([h, max(1, self.height() - h)]
+                                         if stack[0] is general else [3, 2]),
                                  Qt.Orientation.Vertical)
+
+    def _general_height(self) -> int:
+        """The dock's hint with the scroll area's stock ~24 lines swapped for
+        what it holds."""
+        scroll = self._general_scroll
+        return (self._general_dock.sizeHint().height()
+                - scroll.sizeHint().height()
+                + scroll.widget().sizeHint().height())
 
     def _dock_beside(self, key: str) -> None:
         """A dock loaded mid-session: under a docked neighbour in its column
@@ -905,22 +897,6 @@ class MainWindow(QMainWindow):
     def _save_layout(self) -> None:
         QSettings("acqApp", "acqApp").setValue(
             "dockState", self.saveState(_LAYOUT_VERSION))
-
-    # ── Theme ───────────────────────────────────────────────────────────────────
-
-    def _on_theme_toggled(self, dark: bool) -> None:
-        theme = "dark" if dark else "light"
-        config.set_theme(theme)
-        style.apply_theme(QApplication.instance(), theme)
-        # setConfigOption only reaches new views.
-        bg = style.plot_colors(theme)[0]
-        for v in self._pg_views:
-            try:
-                v.setBackground(bg)
-            except Exception:
-                pass
-        for key, fold in self._folds.items():   # the cards' muted text is per theme
-            fold.card.set_mini(self._mini(key))
 
     # ── Device connection monitor ────────────────────────────────────────────────
 
@@ -1086,9 +1062,6 @@ class MainWindow(QMainWindow):
             self._sections.removeWidget(fold)
             fold.setParent(None)
             fold.deleteLater()
-        for view in self._module_views.pop(key, []):
-            if view in self._pg_views:
-                self._pg_views.remove(view)
         self._remove_status_widget(key)
 
         self._modules.remove(m)
@@ -1352,7 +1325,7 @@ def main() -> None:
     ap.parse_args()
 
     app = QApplication(sys.argv)
-    style.apply_theme(app, config.get_theme())
+    style.apply_theme(app)
 
     dlg = ModuleSelectDialog(config.load_enabled_modules())
     if dlg.exec() != QDialog.DialogCode.Accepted:

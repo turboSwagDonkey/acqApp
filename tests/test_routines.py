@@ -1427,12 +1427,134 @@ def check_prepared_adapter(r: Report) -> None:
     r.check(a._pending_roll_run is None and a._prepared is None,
             "the recording's begin finds its file already open - no 2nd roll")
 
+    # Paused at the trigger, resumed: the same run asks for a file again.
     calls.clear()
+    win.recording_path = lambda: "unused.dcimg"
+    discarded: list = []
+    a._discard = lambda junk, bad: discarded.append(junk)
+    a._prepare_recording(run)
+    a._prepare_recording(run)
+    r.check(discarded == [None, "unused.dcimg"] and a._doomed is None,
+            f"resuming at a trigger deletes the empty file its edge never "
+            f"filled ({discarded})")
+
+    discarded.clear()
+    win.dcimg_frames = lambda key: 12
+    a._prepare_recording(run)
+    r.check(discarded == [None], f"control: a file that caught frames stays "
+                                 f"({discarded})")
+    win.dcimg_frames = lambda key: 0
+
+    # ...or aborted there.
+    discarded.clear()
+    win.set_recording = win.set_live = lambda on: None
+    a._bad_file = lambda: None
+    a._flush_pending_edge = lambda: None
+    a._close_own_recording()
+    r.check(discarded == ["unused.dcimg"] and a._prepared is None,
+            f"aborting at a trigger deletes its empty file too ({discarded})")
+
+    calls.clear()
+    a._prepared = None
     win.dcimg_frames = lambda key: None
     a._armed_with_file = False
     a._prepare_recording(run)
     r.check(calls == [] and a._prepared is None,
             "control: no .dcimg open -> nothing prepared, the old path runs")
+
+
+def check_burst_limit(r: Report) -> None:
+    """Over the camera's limit a routine is refused, not clamped by the
+    panel's spin box into shorter bursts than the steps say."""
+    from acqApp.adapters.routines import RoutinesModule
+
+    class Past(Exception):
+        pass
+
+    def past_the_checks(_on):
+        raise Past
+
+    def start(length: int) -> tuple[list, bool]:
+        shown: list = []
+        a = RoutinesModule.__new__(RoutinesModule)
+        a.panel = SimpleNamespace(
+            settings=Routine(steps=[Step(kind="trigger"),
+                                    Step(kind="record", length=length,
+                                         unit="frames")]),
+            show_problems=shown.extend)
+        a.win = SimpleNamespace(frame_rate_hz=lambda: 1000.0,
+                                routine_arming_trigger=past_the_checks)
+        a._rig = lambda: FULL_RIG
+        a._status = lambda m: None
+        try:
+            a._start()
+        except Past:
+            return shown, True
+        return shown, False
+
+    shown, went_on = start(70000)
+    r.check(not went_on and any("holds at most" in p for p in shown),
+            f"a 70000-frame burst is refused ({shown})")
+    shown, went_on = start(65534)
+    r.check(went_on, f"control: the largest legal burst is accepted ({shown})")
+
+
+def check_step_repeats(r: Report, app) -> None:
+    """The Repeats column: an FOV step's own run count, 5 for a new one."""
+    from acqApp.routines.panel import SettingsPanel
+    from acqApp.routines.settings import play_order
+    from acqApp.routines.table import FIELDS, VALUE
+
+    fov = Step(kind="fov", fov="a", x_um=1.0, y_um=2.0, length=2,
+               unit="seconds", repeats=3)
+    eng = expand(Routine(steps=[fov, Step(kind="puff")]))[0]
+    r.check([(g.start, g.end, g.repeats) for g in eng.groups] == [(0, 1, 3)],
+            f"Repeats becomes a group over the whole FOV block ({eng.groups})")
+    r.check(len(play_order(eng)) == 7,
+            f"…so the engine runs it 3 times ({play_order(eng)})")
+    r.check(Routine(steps=[fov]).total_steps() == 3,
+            "the panel's run count includes it")
+
+    eng = expand(Routine(steps=[Step(kind="trigger"), fov]))[0]
+    trig = [s.kind for s in eng.steps].index("trigger")
+    r.check([(g.start, g.end) for g in eng.groups] == [(0, len(eng.steps) - 1)]
+            and trig > 0,
+            "a Trigger folded into the step waits for an edge on every run")
+
+    grouped = Routine(steps=[fov, replace(fov)],
+                      groups=[Group(start=0, end=1, repeats=2)])
+    r.check(len(play_order(grouped)) == 4 and len(expand(grouped)[0].groups) == 1,
+            "inside a repeat group, the group alone sets the count")
+    r.check(expand(Routine(steps=[replace(fov, repeats=1)]))[0].groups == [],
+            "control: Repeats of 1 adds no group")
+
+    old = Routine.from_dict({"steps": [{"kind": "fov", "x_um": 1.0}]})
+    r.check(old.steps[0].repeats == 1,
+            "a routine saved before the column keeps running once")
+    back = Routine.from_dict(Routine(steps=[fov]).to_dict())
+    r.check(back.steps[0].repeats == 3, "Repeats survives save and load")
+    bad = Routine.from_dict({"steps": [{"kind": "fov", "repeats": "x"}]})
+    r.check(bad.steps[0].repeats == 1, "a hand-edited bad count falls back to 1")
+
+    panel = SettingsPanel(Routine())
+    row = panel.add_fov_step(SimpleNamespace(x_um=1.0, y_um=2.0, z_um=None,
+                                             name="a_fov"), Path("a.roi.json"))
+    col = FIELDS.index("repeats")
+    r.check(panel.settings.steps[row].repeats == 5
+            and panel._tbl.item(row, col).text() == "×5",
+            f"a new FOV step starts at ×5 "
+            f"({panel._tbl.item(row, col).text()!r})")
+    panel._tbl.item(row, col).setData(VALUE, 2.0)
+    r.check(panel.settings.steps[row].repeats == 2
+            and panel._tbl.item(row, col).text() == "×2",
+            "editing the cell sets the step's count")
+    panel._r.groups.append(Group(start=0, end=0, repeats=4))
+    panel._reload_groups()
+    r.check(panel._tbl.item(row, col).text() == "—",
+            "a grouped step's cell gives way to its group")
+    r.check(panel._spn_g_repeats.value() == 5, "new repeat groups start at ×5")
+    panel.deleteLater()
+    pump(app, 0.01)
 
 
 def check_seal_after_burst(r: Report) -> None:
@@ -3449,6 +3571,7 @@ def _part_routines() -> int:
         check_burst_retry(r)
         check_prepare_recording(r)
         check_prepared_adapter(r)
+        check_burst_limit(r)
         check_seal_after_burst(r)
         check_first_trial_kept(r)
         check_edge_log(r)
@@ -3473,6 +3596,7 @@ def _part_routines() -> int:
             check_panel_repaint(r, app)
             check_step_table(r, app, tmp)
             check_group_panel(r, app)
+            check_step_repeats(r, app)
             check_step_edits_keep_groups(r, app)
             check_per_edge_routine_is_buildable(r, app)
             check_move_row_repaint(r)

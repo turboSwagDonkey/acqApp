@@ -7,8 +7,8 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QGridLayout, QHBoxLayout, QLabel,
+                             QVBoxLayout, QWidget)
 
 from acqApp import config, style
 from acqApp.console import short_error
@@ -81,6 +81,13 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     gv.setCentralItem(vb)
     vb.addItem(img)
     rec_dot = RecDot(gv)
+
+    hint = QLabel("Press Live view")
+    hint.setObjectName("idleHint")
+    hint.setStyleSheet(f"color:{style.muted()};font-size:12pt;background:transparent")
+    hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    QGridLayout(gv).addWidget(hint, 0, 0, Qt.AlignmentFlag.AlignCenter)
+    img.sigImageChanged.connect(hint.hide)
 
     chk_auto = QCheckBox("Auto")
     chk_auto.setToolTip("Auto contrast — same control as the settings tab's.")

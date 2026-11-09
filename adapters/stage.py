@@ -234,6 +234,7 @@ class StageModule(ModuleAdapter):
         if roi_path is not None:
             self.win.status(f'Saved FOV "{name}" with its DMD ROI set '
                             f'"{pairs.roi_name(base)}"')
+            self.win.add_routine_fov_step(path, roi_path)
 
     def preview_fov(self, fov):
         """Non-modal look at `fov`: its paired ROI set's saved image (the

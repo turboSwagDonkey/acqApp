@@ -136,8 +136,8 @@ pinned reflections). Each is framed in its accent colour. Drag a dock by its
 title bar to move it beside, above or below another (docks stay in the main
 window, side by side: none floats off, closes or hides behind another as a
 tab); drag the gaps between docks to resize; the layout is remembered, and
-**⟲** (Reset layout, on General's bottom line beside Mode, 💾 Save as preset,
-☾ Theme and 🧩 Modules) puts it back.
+**⟲** (Reset layout, on General's bottom line beside Mode, 💾 Save as preset
+and 🧩 Modules) puts it back.
 
 **Settings** fold under each instrument's card: one line in its accent colour,
 with a live readout. A click on the card opens or shuts them, all of them at
@@ -653,7 +653,7 @@ HDF5 writer that came before is in `archive/hdf5/`.
   two widget builders they share; `adapters/__init__.py` holds the registry and
   the lifecycle table. The adapters never import each other.
 - `main.py` — session-wide shell only: the shared clock, the trigger bus, the
-  recorder, the save destination, the docks and the theme. It iterates over the
+  recorder, the save destination and the docks. It iterates over the
   adapters and holds no per-instrument logic.
 - `console.py` — `enable_safe_console()`, called by **every** runnable entry
   point before its first print. The diagnostic messages use characters ("→",

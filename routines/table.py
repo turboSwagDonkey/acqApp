@@ -58,6 +58,9 @@ COLS = (
                          "length)."),
     ("Settle",  "settle_s", "Wait this long after the stage arrives, before "
                          "the light and capture."),
+    ("Repeats", "repeats", "How many times this FOV step runs in a row. A "
+                           "Trigger right before it waits for an edge every "
+                           "time. In a repeat group, the group sets this."),
 )
 FIELDS = [f for _t, f, _tip in COLS]
 
@@ -68,7 +71,7 @@ RECORDS = ("fov", "record")
 # The kinds each field means something for — "—" and non-editable otherwise.
 _KIND_OF_FIELD = {"fov": ("fov", "move"), "roi": ("fov", "display"),
                   "capture": RECORDS, "wait": ("fov", "wait"),
-                  "settle_s": ("fov", "move")}
+                  "settle_s": ("fov", "move"), "repeats": ("fov",)}
 _DIALOG_FIELDS = ("fov", "roi")         # set by the panel's dialogs
 
 
@@ -135,6 +138,7 @@ class StepTable(QTableWidget):
         self.verticalHeader().setSectionsMovable(False)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setMinimumSectionSize(72)
         for f in _DIALOG_FIELDS:
             header.setSectionResizeMode(FIELDS.index(f),
                                         QHeaderView.ResizeMode.Stretch)
@@ -154,6 +158,9 @@ class StepTable(QTableWidget):
         self.setItemDelegateForColumn(
             FIELDS.index("settle_s"),
             _NumberDelegate(0.0, 120.0, 2, " s", 0.05, parent=self))
+        self.setItemDelegateForColumn(
+            FIELDS.index("repeats"),
+            _NumberDelegate(1, 999, 0, "", 1.0, parent=self))
 
         self.itemChanged.connect(self._on_item_changed)
         self.cellDoubleClicked.connect(self._on_double_click)
@@ -237,6 +244,8 @@ class StepTable(QTableWidget):
                 item = QTableWidgetItem()
                 self.setItem(row, col, item)
             active = s.kind in _KIND_OF_FIELD.get(field, ())
+            if field == "repeats":
+                active = active and self._group_at(row) is None
             item.setIcon(QIcon())
             item.setToolTip("")
             if field == "kind":
@@ -343,6 +352,8 @@ class StepTable(QTableWidget):
             s.wait_s = value
         elif field == "settle_s":
             s.settle_s = value
+        elif field == "repeats":
+            s.repeats = int(value)
         self._repaint((row,))
         self.changed.emit()
 
@@ -580,6 +591,8 @@ def _roi_icon(path: str) -> QIcon:
 
 
 def _render(field: str, value, unit: str) -> str:
+    if field == "repeats":
+        return f"×{value:g}"
     if field in ("capture", "wait") and unit == "frames":
         return f"{value:g} fr"
     if field in ("capture", "wait", "settle_s"):

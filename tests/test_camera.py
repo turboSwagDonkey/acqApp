@@ -315,6 +315,18 @@ def _part_timestamps() -> int:
     r.check(worker.timestamp_source == "camera",
             f"worker reports the camera timebase (got {worker.timestamp_source!r})")
 
+    # A first batch that sat in the ring: its oldest frame is 0.5 s old.
+    late = OrcaFireWorker(0, cfg, cam=FakeCam(cfg.frame_shape))
+    stamps: list[float] = []
+    infos = [FrameInfo(i, i, CAM_EPOCH * 1e6 + i * 1e5, 0, (0, 0), 1)
+             for i in range(6)]
+    t_read = time.perf_counter()
+    late._emit_frames([np.zeros(cfg.frame_shape, dtype=np.uint16)] * 6, infos,
+                      lambda item: stamps.append(item[1]))
+    r.check(abs(stamps[-1] - t_read) < 0.1 and stamps[0] < t_read - 0.4,
+            f"the anchor is the newest frame, so the oldest is stamped in the "
+            f"past ({stamps[0] - t_read:+.3f} s, {stamps[-1] - t_read:+.3f} s)")
+
     ts = np.array([g[0] for g in got])
     idx = np.array([g[1] for g in got])
 
@@ -690,7 +702,7 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
         w = acq.OrcaFireWorker.__new__(acq.OrcaFireWorker)
         w._dcimg = None
         w._dcimg_total = w._dcimg_missing = 0
-        w._dcimg_t0 = w._dcimg_t1 = None
+        w._dcimg_t0 = w._dcimg_t1 = w._dcimg_stop_asked = None
         w._dcimg_full = False
         w._exp_lock = threading.Lock()
         w._rearm_with_file = False
@@ -754,6 +766,15 @@ def check_swap_rearms_in_order(r: Report, tmp: Path) -> None:
             r.check(calls == [("cap", None), "open", "stop-fails", "close"],
                     f"a stop that fails still closes the recorder it opened "
                     f"({calls})")
+
+        # Stop writes the metadata before the loop gets to close the file.
+        w._dcimg_t0, w._dcimg_t1, w._dcimg_stop_asked = 5.0, None, None
+        r.check(w.dcimg_span == (5.0, 0.0), "control: recording has no end yet")
+        w.set_record_file(None)
+        r.check(w.dcimg_span[1] > 0,
+                f"Stop gives an end time before the close runs ({w.dcimg_span})")
+        w._dcimg_t1 = 7.0
+        r.check(w.dcimg_span == (5.0, 7.0), "the real close time wins once run")
 
         # The last file's count, then a new one that can't open.
         w._dcimg_total, w._dcimg_missing, w._dcimg_t0 = 2500, 3, 1.0

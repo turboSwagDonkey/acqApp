@@ -2843,6 +2843,8 @@ def _part_pair() -> int:
                 "…and Routines draws their thumbnail")
 
     # ── the whole flow, from the Stage tab's button ─────────────────────────
+    from types import SimpleNamespace
+
     from PyQt6.QtGui import QPixmap
     from PyQt6.QtWidgets import QInputDialog
 
@@ -2851,9 +2853,10 @@ def _part_pair() -> int:
 
     isolate_user_state()
     sys.argv = ["main.py", "--mock"]
-    win = make_window({"voltage_cam", "dmd", "stage"})
+    win = make_window({"voltage_cam", "dmd", "stage", "routines"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     stage = next(m for m in win._modules if m.key == "stage")
+    routines = next(m for m in win._modules if m.key == "routines")
     win._btn_run.setChecked(True)
     pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
 
@@ -2888,6 +2891,30 @@ def _part_pair() -> int:
     r.check(png is not None and png.is_file()
             and not QPixmap(str(png)).isNull(),
             f"…with its snapshot + shapes image beside it ({png})")
+
+    steps = routines.panel.settings.steps
+    step = steps[-1] if steps else None
+    general = routines.panel.settings
+    r.check(len(steps) == 1 and step.kind == "fov" and step.fov == "cellA_fov"
+            and step.pattern == str(roi) and step.x_um == fovs[0].x_um
+            and (step.length, step.unit, step.wait_s)
+            == (general.capture_length, general.capture_unit, general.wait_s),
+            f"…and the pair is already a routine step, on the general "
+            f"capture/wait ({steps})")
+
+    routines._engine = SimpleNamespace(running=True)
+    routines.add_fov_step(fovs[0].path, roi)
+    routines._engine = None
+    r.check(len(routines.panel.settings.steps) == 1,
+            "control: a running routine's locked protocol takes no new step")
+    PairRoiDialog.exec = lambda self: 0
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("cellB", True))
+    try:
+        stage.save_fov()
+    finally:
+        PairRoiDialog.exec, QInputDialog.getText = real_exec, real_text
+    r.check(len(routines.panel.settings.steps) == 1,
+            "control: an FOV whose ROI drawing was cancelled adds no step")
 
     # Right-click on the map square -> the viewer shows that image.
     from PyQt6.QtCore import QPoint

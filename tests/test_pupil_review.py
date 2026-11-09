@@ -915,9 +915,6 @@ def _part_mode() -> int:
         def on_worker_error(self, _msg) -> None:
             pass
 
-        def register_pg_view(self, _v) -> None:
-            pass
-
         def is_recording(self) -> bool:
             return False
 
@@ -1011,7 +1008,6 @@ def _part_recorded() -> int:
 
         def status(self, msg): self.messages.append(msg)
         def on_worker_error(self, _m): pass
-        def register_pg_view(self, _v): pass
         def is_recording(self): return False
         def recording_path(self): return self.path
 

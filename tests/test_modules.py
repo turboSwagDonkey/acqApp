@@ -49,7 +49,10 @@ def _part_subsets() -> int:
 
             # The Emulate toggle rebuilds the output controllers in place.
             win._btn_emulate.setChecked(False)
+            r.check(win._btn_emulate.text() == "Emulate", f"{label}: quiet off")
             win._btn_emulate.setChecked(True)
+            r.check("no hardware" in win._btn_emulate.text(),
+                    f"{label}: Emulate on says so")
 
             # Every kwarg an adapter offers must be one probe_all accepts, or
             # the Devices window dies with a TypeError for this subset.
@@ -163,12 +166,11 @@ def check_empty_set(r: Report, win) -> None:
             f"only Save's section and the always-on modules' remain ({left})")
     try:
         win._display_tick()
-        win._on_theme_toggled(True)
         ok = True
     except Exception as e:                      # noqa: BLE001
         ok = False
         r.info(f"raised with no modules: {type(e).__name__}: {e}")
-    r.check(ok, "the display tick and theme toggle survive an empty window")
+    r.check(ok, "the display tick survives an empty window")
 
     added, _ = win.set_modules(["voltage_cam", "wheel"])
     r.check(sorted(added) == ["voltage_cam", "wheel"],
@@ -197,7 +199,6 @@ def check_ui_released(r: Report, win) -> None:
     win.set_modules(["voltage_cam", "wheel", "pupil_cam"])
     r.check("pupil_cam" in win._docks and "pupil_cam" in win._folds,
             "control: the pupil camera has a dock and settings while loaded")
-    views_with = len(win._pg_views)
     docks_with = len(win.findChildren(QDockWidget))
 
     win.set_modules(["voltage_cam", "wheel"])
@@ -205,9 +206,6 @@ def check_ui_released(r: Report, win) -> None:
             f"its dock and settings went ({sorted(win._folds)})")
     r.check(len(win.findChildren(QDockWidget)) == docks_with - 1,
             "…off the window, not just out of the dict")
-    r.check(len(win._pg_views) < views_with,
-            f"its pyqtgraph views were unregistered ({len(win._pg_views)} vs "
-            f"{views_with}) — a stale one crashes the theme toggle natively")
 
     section = win._folds["wheel"]
     win.set_modules(["voltage_cam"])
@@ -261,23 +259,6 @@ def check_sidebar_cards(r: Report, win) -> None:
             continue
         r.check(bool(fold.card.findChildren(MiniView)),
                 f"{key}: its card has a live view")
-
-
-def check_theme_toggle_survives(r: Report, win) -> None:
-    """Recolouring walks `_pg_views`; a deleted view there is a native
-    crash."""
-    win.set_modules(["voltage_cam", "wheel"])
-    win.set_modules(["wheel"])              # drops the camera dock's view items
-    try:
-        win._on_theme_toggled(False)
-        win._on_theme_toggled(True)
-        ok = True
-    except Exception as e:                  # noqa: BLE001
-        ok = False
-        r.info(f"theme toggle raised: {type(e).__name__}: {e}")
-    r.check(ok, "the theme still toggles after the camera was unloaded")
-    r.check(all(v is not None for v in win._pg_views),
-            "no dead entries left in _pg_views")
 
 
 def check_recording_refused(r: Report, win) -> None:
@@ -675,6 +656,37 @@ def check_dmd_shared_alignment(r: Report) -> None:
         alp.sibling_config = real
 
 
+def _part_idle_ui() -> int:
+    """What the window says before and around a session."""
+    r = Report("idle-ui")
+    isolate_user_state()
+    sys.argv = ["main.py", "--mock"]
+    app = qt_app()
+    from PyQt6.QtWidgets import QLabel
+
+    win = make_window({"voltage_cam", "stage"})
+    cam = next(m for m in win._modules if m.key == "voltage_cam")
+    hints = win.findChildren(QLabel, "idleHint")
+    r.check(len(hints) == 1 and not hints[0].isHidden(),
+            "an idle camera view says to press Live view")
+
+    cam.panel._spn_target_hz.setValue(100.0)
+    r.check(cam._mini_text()[1].startswith("⚠ only"),
+            f"a rate the writer can't keep shows on the folded row "
+            f"({cam._mini_text()[1]!r})")
+    cam.panel._spn_target_hz.setValue(10.0)
+    r.check("⚠" not in cam._mini_text()[1],
+            f"control: a rate it can keep doesn't ({cam._mini_text()[1]!r})")
+
+    win._btn_run.setChecked(True)
+    r.check(pump_until(app, lambda: hints[0].isHidden()),
+            "the hint goes with the first frame")
+    win._btn_run.setChecked(False)
+    win.close()
+    pump(app, 0.1)
+    return r.finish()
+
+
 def _part_hotload() -> int:
     r = Report("hotload")
     isolate_user_state()
@@ -691,7 +703,6 @@ def _part_hotload() -> int:
         check_ui_released(r, win)
         check_sidebar_follows(r, win)
         check_sidebar_cards(r, win)
-        check_theme_toggle_survives(r, win)
         check_dock_layout(r, win)
         check_recording_refused(r, win)
         check_signal_offers(r, win)
@@ -709,6 +720,7 @@ def _part_hotload() -> int:
 
 PARTS = {
     "subsets": _part_subsets,
+    "idle_ui": _part_idle_ui,
     "hotload": _part_hotload,
 }
 

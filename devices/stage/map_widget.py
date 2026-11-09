@@ -13,11 +13,12 @@ from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
+from acqApp import style
+
 from .settings import _BAD, _C_CUR, _C_FOV, _C_ORIGIN, _C_SOFT, WINDOW_DIAMETER_UM
 
 _TRAVEL_EDGE = QColor("#8a8a8a")
-_TRAVEL_FILL = QColor("#f4f4f4")
-_TEXT        = _TRAVEL_EDGE.darker(160)
+_TEXT       = _TRAVEL_EDGE.darker(160)
 _SOFT_EDGE   = QColor(_C_SOFT)
 _CURRENT     = QColor(_C_CUR)
 _ORIGIN      = QColor(_C_ORIGIN)
@@ -308,7 +309,7 @@ class StageMap(_TravelWidget):
         travel_poly = xf.poly(self._x.travel_limits_um(), self._y.travel_limits_um())
         travel = travel_poly.boundingRect()
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
-        p.setBrush(QBrush(_TRAVEL_FILL))
+        p.setBrush(QBrush(QColor(style.plot_bg())))
         p.drawPolygon(travel_poly)
 
         p.setPen(QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine))
@@ -375,7 +376,7 @@ class StageMap(_TravelWidget):
             f = QFont(font)
             f.setBold(active)
             p.setFont(f)
-            p.setPen(QPen(_FOV.darker(120)))
+            p.setPen(QPen(_FOV.lighter(140)))
             p.drawText(QRectF(left, c.y() - h / 2, w + 6, h), _LEFT_VCENTER, name)
             p.setFont(font)
 

@@ -57,8 +57,9 @@ class SettingsPanel(QWidget):
         self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(start))
         self._cmb_preset.currentIndexChanged.connect(
             lambda i: self.resolution_changed.emit(self._cmb_preset.itemData(i)))
-        self._cmb_preset.setToolTip("Sensor area and the link rate it allows. "
-                                    "Takes effect at the next Start.")
+        self._cmb_preset.setToolTip("Sensor area and the rate it allows, over "
+                                    "USB / CoaXPress. Takes effect at the next "
+                                    "Start.")
 
         self._cmb_binning = compact(QComboBox())
         for b in BINNING_OPTIONS:
@@ -217,11 +218,19 @@ class SettingsPanel(QWidget):
             "color:#c62828; font-weight:bold;" if cfg.rate_unreachable
             else "color:#2e7d32;")
 
+    def _mbps(self, cfg: AcqConfig) -> float:
+        hz = self._measured[0] if self._measured is not None else cfg.rate_hz
+        return cfg.frame_bytes * hz / (1 << 20)
+
+    def writable_fraction(self, cfg: AcqConfig) -> float:
+        """Share of frames the write path keeps up with; 1.0 = all of them."""
+        mbps = self._mbps(cfg)
+        return min(1.0, WRITER_MBPS / mbps) if mbps > 0 else 1.0
+
     def _refresh_recordability(self, cfg: AcqConfig) -> None:
         """`WRITER_MBPS` is the whole write path, not a disk benchmark.
         Binning cuts bytes, not rate, so 2×2 is the lever."""
-        hz = self._measured[0] if self._measured is not None else cfg.rate_hz
-        mbps = cfg.frame_bytes * hz / (1 << 20)
+        mbps = self._mbps(cfg)
         if mbps <= WRITER_MBPS:
             self._lbl_rec.setText(
                 f"{mbps:.0f} MB/s — fits the writer (~{WRITER_MBPS:.0f} MB/s)")

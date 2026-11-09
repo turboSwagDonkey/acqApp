@@ -562,13 +562,10 @@ class SettingsPanel(QWidget):
         # Beside the motion widget, not in it: that is disabled during a frame
         # run, and a disabled parent's children can't be clicked.
         self._btn_stop_all = QPushButton("STOP ALL (Esc)")
-        self._btn_stop_all.setStyleSheet(style.solid_btn("puffer"))
+        self._btn_stop_all.setStyleSheet(style.stop_btn())
         self._btn_stop_all.clicked.connect(self._stop_all)
-        act_row = QHBoxLayout()
-        act_row.setSpacing(6)
-        act_row.addWidget(self._motion, 2)
-        act_row.addWidget(self._btn_stop_all, 1)
-        vroot.addLayout(act_row)
+        vroot.addWidget(self._motion)
+        vroot.addWidget(self._btn_stop_all)
 
         # ── Setup ────────────────────────────────────────────────────────────
         self._btn_home = QPushButton("Set home here")

@@ -26,7 +26,8 @@ from acqApp.widgets import ElidedLabel, button_row, compact, spin
 from acqApp.routines import pairs, templates
 from acqApp.routines.engine import Phase
 from acqApp.routines.estimate import estimate
-from acqApp.routines.settings import KINDS, UNITS, Group, Routine, Step
+from acqApp.routines.settings import (DEFAULT_REPEATS, KINDS, UNITS, Group,
+                                      Routine, Step)
 from acqApp.routines.table import KIND_LABELS, NO_CHANGE, StepTable
 
 
@@ -174,13 +175,13 @@ class SettingsPanel(QWidget):
                            lambda k=kind: self._add_step(k))
         other.setMenu(menu)
         btns = button_row(add, other, None, up, down, right=(timeline,))
-        hint = QLabel("Right-click a step for more.")
-        hint.setToolTip("Duplicate, Remove, Change FOV, ROI set, No light and "
-                        "Group selected.")
-        hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
-        hint.setWordWrap(True)
+        self._lbl_hint = QLabel("Right-click a step for more.")
+        self._lbl_hint.setToolTip("Duplicate, Remove, Change FOV, ROI set, No "
+                                  "light and Group selected.")
+        self._lbl_hint.setStyleSheet("color:#9aa0a6; font-size: 9pt;")
+        self._lbl_hint.setWordWrap(True)
         lay.addLayout(btns)
-        lay.addWidget(hint)
+        lay.addWidget(self._lbl_hint)
 
         # ── repeat groups (a selected range, nested inside cycles) ───────
         ggrp = QGroupBox("Repeat groups")
@@ -194,8 +195,9 @@ class SettingsPanel(QWidget):
         grow.addWidget(self._lbl_g_selection, 1)
         grow.addWidget(QLabel("×"))
         self._spn_g_repeats = spin(
-            2, 999, 2, tooltip="How many times the selected steps repeat "
-                               "before the routine moves on.")
+            2, 999, DEFAULT_REPEATS,
+            tooltip="How many times the selected steps repeat before the "
+                    "routine moves on.")
         grow.addWidget(self._spn_g_repeats)
         self._btn_g_add = QPushButton("Group selected")
         self._btn_g_add.setEnabled(False)
@@ -363,11 +365,25 @@ class SettingsPanel(QWidget):
         """Pick a saved FOV -> a new FOV step with the general capture/wait
         and the FOV's ROI set (drawn now if it has none)."""
         r = self._r
-        r.steps.append(Step(kind="fov", length=r.capture_length,
-                            unit=r.capture_unit, wait_s=r.wait_s))
+        r.steps.append(self._new_fov_step())
         row = len(r.steps) - 1
         if not self._pick_fov_for(row):
             del r.steps[row]
+
+    def add_fov_step(self, fov: SavedFov, roi: Path) -> int:
+        """A new FOV step for a saved FOV and its ROI set -> its row."""
+        step = self._new_fov_step()
+        self._fill_from_fov(step, fov)
+        step.pattern = str(roi)
+        self._r.steps.append(step)
+        row = len(self._r.steps) - 1
+        self._list_edited(row)
+        return row
+
+    def _new_fov_step(self) -> Step:
+        r = self._r
+        return Step(kind="fov", length=r.capture_length, unit=r.capture_unit,
+                    wait_s=r.wait_s, repeats=DEFAULT_REPEATS)
 
     def _on_general_changed(self, *_a) -> None:
         """Steps still on the old general value follow; hand-edited ones keep
@@ -573,8 +589,10 @@ class SettingsPanel(QWidget):
     def _refresh_summary(self) -> None:
         """One line: how long this is, and whether any of it emits light."""
         r = self._r
+        self._lbl_hint.setVisible(bool(r.steps))
         if not r.steps:
-            self._lbl_summary.setText("No steps yet — add one.")
+            self._lbl_summary.setText("No steps yet: save an FOV + ROIs on "
+                                      "Stage, or use + FOV step.")
             return
         est = estimate(r, self._hz)
         bits = [f"{r.total_steps()} run(s): {len(r.steps)} step(s)"

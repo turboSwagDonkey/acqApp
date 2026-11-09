@@ -170,8 +170,6 @@ class VoltageCamModule(ModuleAdapter):
         cfg = self.panel.get_config()
         self._hist.setVisible(cfg.show_lut)
         self._chk_auto_lut.setChecked(cfg.auto_levels)
-        self.win.register_pg_view(gv)
-        self.win.register_pg_view(hist)
         return row
 
     @staticmethod
@@ -211,8 +209,10 @@ class VoltageCamModule(ModuleAdapter):
 
     def _mini_text(self) -> tuple[str, str]:
         cfg = self.panel.get_config()
+        keep = self.panel.writable_fraction(cfg)
+        warn = f"⚠ only {100 * keep:.0f}% of frames writable · " if keep < 1 else ""
         return ("● live" if self.worker is not None else "idle",
-                f"{cfg.preset_key} · {cfg.rate_hz:g} Hz")
+                f"{warn}{cfg.preset_key} · {cfg.rate_hz:g} Hz")
 
     def _on_rate(self, hz: float) -> None:
         if self.worker is not None:

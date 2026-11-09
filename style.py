@@ -1,8 +1,8 @@
-"""Shared colours, theme and QSS. `apply_theme(app, "dark"|"light")` once at
-startup sets the Fusion palette, base stylesheet and pyqtgraph colours."""
+"""Shared colours, the dark theme and QSS. `apply_theme(app)` once at startup
+sets the Fusion palette, base stylesheet and pyqtgraph colours."""
 from PyQt6.QtGui import QColor, QPalette
 
-# ── Per-subsystem accent colors (readable on either theme) ────────────────────
+# ── Per-subsystem accent colors ───────────────────────────────────────────────
 HEX = {
     "voltage_cam": "#4488ff",   # blue
     "pupil_cam":   "#44bb66",   # green
@@ -17,39 +17,42 @@ HEX = {
     "saving":      "#c9a227",   # gold
 }
 
-_THEME = {
-    "light": dict(border="#bbb", pane="#ccc", status="#555", plot_bg="w",       plot_fg="k"),
-    "dark":  dict(border="#454a4e", pane="#3a3e42", status="#9aa0a6", plot_bg="#1b1e20", plot_fg="#c8ccd0"),
-}
-
-_ACTIVE = "dark"                # so panels can ask for neutral tones
+_T = dict(border="#454a4e", pane="#3a3e42", status="#9aa0a6",
+          plot_bg="#1b1e20", plot_fg="#c8ccd0")
 
 WARN = "#cc8866"        # amber: "this won't do what you expect"
 
 
 def muted() -> str:
-    return _THEME[_ACTIVE]["status"]
+    return _T["status"]
 
 
 def line() -> str:
-    return _THEME[_ACTIVE]["border"]
+    return _T["border"]
+
+
+def plot_bg() -> str:
+    return _T["plot_bg"]
 
 
 # ── Reusable QSS snippets ─────────────────────────────────────────────────────
 # Every button style has a :disabled rule: a stylesheet background overrides
 # the palette, so a disabled button would otherwise still look pressable.
 
-def _tint(c: str) -> str:
-    return QColor(c).lighter(185).name()
+def _alpha(c: str, a: int = 40) -> str:
+    """The accent, translucent over whatever is behind it."""
+    q = QColor(c)
+    return f"rgba({q.red()},{q.green()},{q.blue()},{a})"
 
 
 def toggle_btn(key: str) -> str:
-    """Pale accent when off, full accent when checked."""
+    """An accent outline when off, full accent when checked."""
     c = HEX[key]
     return (
         "QPushButton{"
-        f"background:{_tint(c)};color:#333;border:1px solid {c};"
+        f"background:{_alpha(c)};border:1px solid {c};"
         "border-radius:4px;padding:3px 8px}"
+        f"QPushButton:hover{{background:{_alpha(c, 90)}}}"
         f"QPushButton:checked{{background:{c};color:white;font-weight:bold;"
         f"border:1px solid {c}}}"
         "QPushButton:disabled{background:#3a3a3a;color:#777;"
@@ -62,11 +65,25 @@ def record_btn(key: str) -> str:
     c = HEX[key]
     return (
         "QPushButton{"
-        f"background:{_tint(c)};color:#333;border:2px solid {c};"
+        f"background:{_alpha(c)};border:2px solid {c};"
         "border-radius:5px;padding:6px 22px;font-weight:bold;font-size:11pt}"
+        f"QPushButton:hover{{background:{_alpha(c, 90)}}}"
         f"QPushButton:checked{{background:#c62828;color:white;"
         "border:2px solid #ff5252}"
         "QPushButton:disabled{background:#3a3a3a;color:#777;border:2px solid #555}"
+    )
+
+
+def quiet_toggle(key: str) -> str:
+    """Neutral while off; full accent while on, even disabled: a mode that
+    stays on through a session must not grey out then."""
+    c = HEX[key]
+    return (
+        "QPushButton{background:transparent;border:1px solid palette(mid);"
+        "border-radius:4px;padding:3px 8px}"
+        "QPushButton:disabled{color:palette(mid)}"
+        f"QPushButton:checked,QPushButton:checked:disabled{{background:{c};"
+        f"color:white;font-weight:bold;border:1px solid {c}}}"
     )
 
 
@@ -78,8 +95,13 @@ def solid_btn(key: str) -> str:
         "border-radius:4px;padding:3px 8px}"
         f"QPushButton:pressed{{background:{QColor(c).darker(120).name()}}}"
         f"QPushButton:disabled{{background:{QColor(c).darker(260).name()};"
-        f"color:{_THEME['dark']['status']}}}"
+        f"color:{muted()}}}"
     )
+
+
+def stop_btn() -> str:
+    """The emergency control: larger than anything near it."""
+    return solid_btn("puffer") + "QPushButton{font-size:12pt;padding:8px}"
 
 
 def accent_panel(key: str) -> str:
@@ -101,11 +123,11 @@ def accent_panel(key: str) -> str:
 
 def dock_accent(key: str) -> str:
     """A dock's title bar: a bold, tinted band in its accent."""
-    q = QColor(HEX[key])
+    c = HEX[key]
     return (
         "QDockWidget{font-weight:bold}"
-        f"QDockWidget::title{{background:rgba({q.red()},{q.green()},{q.blue()},70);"
-        f"border:1px solid {q.name()};border-bottom:2px solid {q.name()};"
+        f"QDockWidget::title{{background:{_alpha(c, 70)};"
+        f"border:1px solid {c};border-bottom:2px solid {c};"
         "border-top-left-radius:4px;border-top-right-radius:4px;padding:4px}"
     )
 
@@ -170,12 +192,6 @@ def _dark_palette() -> QPalette:
     return p
 
 
-def plot_colors(theme: str) -> tuple[str, str]:
-    """(background, foreground) for pyqtgraph."""
-    t = _THEME.get(theme, _THEME["dark"])
-    return (t["plot_bg"], t["plot_fg"])
-
-
 _MPL_SCAN_DEFERRED = False
 
 
@@ -203,16 +219,12 @@ def _defer_matplotlib_scan() -> None:
         pass
 
 
-def apply_theme(app, theme: str) -> None:
+def apply_theme(app) -> None:
     """Palette + QSS + pyqtgraph. Before building windows/plots."""
     import pyqtgraph as pg
     _defer_matplotlib_scan()
-    global _ACTIVE
-    dark = theme == "dark"
-    _ACTIVE = "dark" if dark else "light"
     app.setStyle("Fusion")
-    app.setPalette(_dark_palette() if dark else app.style().standardPalette())
-    app.setStyleSheet(_qss(_THEME[_ACTIVE]))
-    bg, fg = plot_colors(_ACTIVE)
-    pg.setConfigOption("background", bg)
-    pg.setConfigOption("foreground", fg)
+    app.setPalette(_dark_palette())
+    app.setStyleSheet(_qss(_T))
+    pg.setConfigOption("background", _T["plot_bg"])
+    pg.setConfigOption("foreground", _T["plot_fg"])
