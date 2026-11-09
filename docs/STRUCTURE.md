@@ -45,7 +45,6 @@ flowchart TD
     devices --> acq
     devices --> console
     devices --> style
-    devices --> config
     devices --> widgets
     routines --> style
     routines --> devices
@@ -73,7 +72,6 @@ Edges that look wrong but are deliberate:
 - `widgets → style`: `pill`/`PillGroup` take an accent key, not a colour.
 - `probe → devices`, `probe → config`: the ALP path; the active rig's NI device
   (imported inside the function, so `probe.py` runs as a plain script).
-- `devices → config`: the DMD Calibration dialog seeds from the rig's profile.
 - `routines → devices`: the step pickers open `roi_picker.py` / `fov_picker.py`;
   routines still drives no device itself.
 - `main → devices`: drift, not design (preset/mode lookups bypass `adapters/`);
@@ -140,30 +138,24 @@ devices/                one package per instrument
     _roi_editor.py      script: open roi_panel's editor alone, no rig, no light
     alp.py              all Vialux ALP knowledge, Qt-free; build_frame is the
                         one a mispositioned stimulus would come from
-    calibration.py      DMD↔camera registration: stripes in, transform out —
-                        affine by default, or a full projective homography
-                        (model="homography") for a rig whose camera is tilted
-                        enough that affine measurably mis-registers it. Pure,
-                        so it is testable before any light is emitted
+    calibration.py      DMD↔camera registration (no Qt): the transform, its
+                        persistence, the reticle pose/shapes that set it and
+                        the checkerboard Warp that bends it
     control.py          panel-facing controller + mock twin
-    corner_editor.py    drag the fit's 4 corners onto an all-on frame (live
-                        camera when given a source); Apply refits an exact
-                        homography through them (with_corners) — sweep.py's
-                        post-fit knob and its sweep-free "Manual (live)"
-    pair_dialog.py      after Save FOV: draw its ROI set, Illuminate it on the
-                        live camera, save as <base>_roi; light off on close
+    pair_dialog.py      ROI editor dialogs whose Illuminate re-projects every
+                        edit: Edit ROIs…, and after Save FOV its <base>_roi
+                        set; light off on close
     panel.py
-    reticle_align.py    calibrate by eye: live camera + fixed reticle, the DMD
-                        lights the same shape through a steered pose (centre,
-                        angle, X/Y size); sweep.py's "Align to reticle"
+    reticle_align.py    THE calibration, by eye: live camera + fixed reticle,
+                        the DMD lights the same shape through a steered pose
+                        (centre, angle, X/Y size), then an optional
+                        checkerboard bent by dragging its corners
     roi.py              stimulation ROIs in camera px (no Qt); rect and circle
     roi_live.py         live camera under the ROI editor, ROIs past the capture
                         area outlined amber
     roi_panel.py        draw and edit ROIs over a snapshot
     roi_picker.py        dialog to choose a saved ROI set: session list + Browse
     roi_store.py         save/load named ROI sets; session/archive rotation (no Qt)
-    sweep.py            runs calibration.py against the rig: the fresh-frame
-                        grabber and the dialog that asks before emitting light
   mirror/
     _probe_mirror_state.py  script: one-shot read of chip 7's GR/CAMERA
                         channels (axis 6 — chip N = axis N-1 on this rig)
@@ -331,7 +323,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_config.py              rigs.json, modes.json, settings persistence, mirror default
   test_console_safety.py
   test_device_contracts.py    the Protocols in acq/devices.py, both directions
-  test_dmd.py                 frames/controllers, calibration fit, sweep wiring, ROIs
+  test_dmd.py                 frames/controllers, calibration, reticle wiring, ROIs
   test_encoder.py             position -> speed/distance, hardware-timed reads
   test_modules.py             every module subset; loading/unloading in place
   test_pickers.py             the saved-ROI and saved-FOV pickers

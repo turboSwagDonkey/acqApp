@@ -117,8 +117,7 @@ class StageMap(_TravelWidget):
                "(right-click: its snapshot + ROIs)<br>")
     _TIP = _LEGEND + (
         "Drag the blue dot to move the stage (speed-capped; Esc stops). With "
-        "measured camera axes the map is turned to match the camera: drag "
-        "right and the view moves right.")
+        "measured camera axes the map is turned to match the camera.")
     _TIP_NO_DRAG = _LEGEND + (
         "Dragging needs a connected stage with a valid frame.")
 

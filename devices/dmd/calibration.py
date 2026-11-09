@@ -1,359 +1,22 @@
 """Where the camera's view lands on the DMD.
 
-ROIs are camera px, masks are DMD mirrors; this measures the transform between
-them. A narrow stripe at signed mirror offsets per axis, fit to where each
-lands. Signed offsets carry direction, so a mirror flip can't pass.
-
-Coarse patterns only (rig, 2026-08-24): scattering erases fine structure — a
-70 px stripe pattern modulated 9 % of the frame, Gray codes decoded 0 %.
-
-Patterns go to `AlpDevice.project()` directly, never `build_frame`, whose
-geometry would transform what's being measured.
+ROIs are camera px, masks are DMD mirrors; `DmdCalibration` holds the transform
+between them. It is set by eye (`ReticlePose`, then an optional checkerboard
+`Warp`, `reticle_align.py`): the stripe sweep and corner fits it replaced were
+dropped, since scattering in the sample and relay erases the fine structure
+they need (REFERENCE §5b).
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
 ON, OFF = np.uint8(255), np.uint8(0)
 
-# Below this, the projector doesn't reach the pixel.
-MIN_MODULATION = 0.15
-
-# Offsets from the panel centre, in mirrors. ±500 runs past the y half-extent
-# (384), so a stripe off the panel edge shows as "invisible".
-STRIPE_OFFSETS = tuple(range(-500, 501, 50))
-STRIPE_WIDTH = 0.01      # fraction of the panel
-STRIPE_CROSS = 0.05      # length across the other axis
-
-
-class CalibrationError(RuntimeError):
-    """The sweep couldn't be registered, with a reason worth reading."""
-
-
-# ── patterns ──────────────────────────────────────────────────────────────────
-
-def offset_stripe(width: int, height: int, axis: int, offset: float, *,
-                  thick_frac: float = STRIPE_WIDTH,
-                  cross_frac: float = STRIPE_CROSS) -> np.ndarray:
-    """A stripe `offset` mirrors from the panel centre along `axis`."""
-    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
-    y, x = np.ogrid[:height, :width]
-    half = thick_frac * (width if axis == 0 else height) / 2.0
-    cross = cross_frac * (height if axis == 0 else width) / 2.0
-    if axis == 0:
-        m = (np.abs(x - cx - offset) <= half) & (np.abs(y - cy) <= cross)
-    else:
-        m = (np.abs(y - cy - offset) <= half) & (np.abs(x - cx) <= cross)
-    return np.where(m, ON, OFF)
-
-
-# ── measuring ─────────────────────────────────────────────────────────────────
-
-def modulation(on: np.ndarray, off: np.ndarray) -> np.ndarray:
-    """(on - off) / (on + off): the sample cancels, the projector doesn't."""
-    a = np.asarray(on, dtype=np.float64)
-    b = np.asarray(off, dtype=np.float64)
-    if a.shape != b.shape:
-        raise ValueError(f"pair shapes differ: {a.shape} vs {b.shape}")
-    return (a - b) / np.maximum(a + b, 1e-9)
-
-
-def _touches_edge(mask: np.ndarray) -> bool:
-    return bool(mask[0].any() or mask[-1].any()
-                or mask[:, 0].any() or mask[:, -1].any())
-
-
-def stripe_sweep(project: Callable[[np.ndarray], None],
-                 grab: Callable[[], np.ndarray],
-                 dmd_size: tuple[int, int], *,
-                 offsets=STRIPE_OFFSETS,
-                 min_modulation: float = MIN_MODULATION,
-                 thick_frac: float = STRIPE_WIDTH,
-                 cross_frac: float = STRIPE_CROSS,
-                 log: Callable[[str], None] = print) -> dict:
-    """-> {axis: [(offset, cam_x, cam_y), …]}. Stripes clipped by the frame
-    edge are dropped.
-
-    A stripe, not a growing bar: a centred bar drifted 527 px on the rig as
-    clipping and vignetting ate its sides. `cross_frac` is shrinkable for a
-    steeply tilted camera, whose near end magnifies the stripe off the frame.
-    """
-    w, h = int(dmd_size[0]), int(dmd_size[1])
-    half = (w / 2.0, h / 2.0)
-
-    project(np.full((h, w), OFF, np.uint8))
-    dark = np.asarray(grab(), dtype=np.float64)     # converted once, not per stripe
-
-    out: dict = {0: [], 1: []}
-    for axis in (0, 1):
-        for d in offsets:
-            frac = d / half[axis]
-            project(offset_stripe(w, h, axis, d,
-                                  thick_frac=thick_frac, cross_frac=cross_frac))
-            mod = np.abs(modulation(grab(), dark))
-            m = mod >= min_modulation
-            n = int(m.sum())
-            edge = n > 0 and _touches_edge(m)
-            # Modulation-weighted centroid: a bare-mask one moves with the
-            # threshold as vignetting tips edge pixels in or out.
-            if n:
-                wgt = np.where(m, mod, 0.0)
-                tot = float(wgt.sum())
-                cx = float(wgt.sum(axis=0) @ np.arange(wgt.shape[1])) / tot
-                cy = float(wgt.sum(axis=1) @ np.arange(wgt.shape[0])) / tot
-            else:
-                cx = cy = float("nan")
-            keep = n >= 50 and not edge
-            log(f"[dmd-calib] {'xy'[axis]} {frac:+.2f} ({d:+7.1f} mirrors) -> "
-                + (f"{n:>8d} px at ({cx:7.1f}, {cy:7.1f})" if n
-                   else f"{'invisible':>28}")
-                + ("" if keep else
-                   "   [dropped: " + ("off the frame edge" if edge
-                                      else "too little light") + "]"))
-            if keep:
-                out[axis].append((d, cx, cy))
-    return out
-
-
-def _robust_fit(solve, pts, min_keep: int):
-    """Fit, then ONE rejection pass at 3 sigma, sigma from the MEDIAN error
-    (a gross outlier inflates the rms enough to shelter itself). Not
-    iterated: on clean data a second pass starts rejecting good stripes.
-    -> (solve's result, keep) or (None, keep)."""
-    keep = np.ones(len(pts), bool)
-    out = solve(pts, keep)
-    if out is None:
-        return None, keep
-    sigma = 1.4826 * float(np.median(out[-1]))    # 1.4826: median -> sigma
-    if sigma > 0:
-        wild = out[-1] > 3.0 * sigma
-        if wild.any() and (~wild).sum() >= max(min_keep, len(pts) // 2):
-            refit = solve(pts, ~wild)
-            if refit is not None:
-                out, keep = refit, ~wild
-    return out, keep
-
-
-def fit_axes(seen: dict) -> tuple | None:
-    """-> (centre, vx, vy, rms, n, keep). ONE shared centre: separate
-    per-axis intercepts disagreed by 67 px on the rig, both extrapolated."""
-    pts = [(axis, d, cx, cy) for axis in (0, 1) for d, cx, cy in seen[axis]]
-    if len(seen[0]) < 2 or len(seen[1]) < 2 or len(pts) < 5:
-        return None
-    out, keep = _robust_fit(_solve, pts, 5)
-    if out is None:
-        return None
-    centre, vx, vy, rms, _err = out
-    return centre, vx, vy, rms, int(keep.sum()), keep
-
-
-def _solve(pts, keep):
-    """-> (centre, vx, vy, rms, err over ALL points). Separable: two
-    3-parameter fits, not one 6."""
-    if int(np.sum(keep)) < 5:
-        return None
-    A = np.array([[1.0, d if axis == 0 else 0.0, d if axis == 1 else 0.0]
-                  for axis, d, _cx, _cy in pts])
-    bx = np.array([cx for _a, _d, cx, _cy in pts])
-    by = np.array([cy for _a, _d, _cx, cy in pts])
-    px, *_ = np.linalg.lstsq(A[keep], bx[keep], rcond=None)
-    py, *_ = np.linalg.lstsq(A[keep], by[keep], rcond=None)
-    err = np.hypot(bx - A @ px, by - A @ py)
-    rms = float(np.sqrt(np.mean(err[keep] ** 2)))
-    return (np.array([px[0], py[0]]), np.array([px[1], py[1]]),
-            np.array([px[2], py[2]]), rms, err)
-
-
-def _hold_out(seen: dict, min_per_axis: int):
-    """Remove the middle stripe of each axis -> (trial, held)."""
-    trial = {a: list(seen[a]) for a in (0, 1)}
-    held = []
-    for a in (0, 1):
-        if len(trial[a]) < min_per_axis:
-            return None, None
-        held.append((a, *trial[a].pop(len(trial[a]) // 2)))
-    return trial, held
-
-
-def holdout_error(seen: dict) -> float | None:
-    """Refit without one stripe per axis and predict it — the residual is
-    optimistic by construction. The WORST axis, not the mean."""
-    trial, held = _hold_out(seen, 4)
-    if trial is None:
-        return None
-    out = fit_axes(trial)
-    if out is None:
-        return None
-    centre, vx, vy, _rms, _n, _keep = out
-    errs = []
-    for axis, d, cx, cy in held:
-        pred = centre + d * (vx if axis == 0 else vy)
-        errs.append(float(np.hypot(cx - pred[0], cy - pred[1])))
-    return float(max(errs))
-
-
-def deshear(vx: np.ndarray, vy: np.ndarray,
-            weights: tuple = (1.0, 1.0)) -> tuple:
-    """Force the axes perpendicular, keeping scales and handedness. A relay
-    has no real shear (tilt is keystone, which an affine can't hold), so
-    shear only soaks up error. Rotation estimates are averaged by lever arm:
-    one axis often keeps far fewer stripes."""
-    kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
-    turn = 1.0 if float(vx[0] * vy[1] - vx[1] * vy[0]) >= 0 else -1.0
-    ax = float(np.arctan2(vx[1], vx[0]))
-    ay = float(np.arctan2(vy[1], vy[0])) - turn * np.pi / 2.0
-    wx, wy = float(weights[0]), float(weights[1])
-    if wx <= 0 and wy <= 0:
-        wx = wy = 1.0
-    # Circular mean: the estimates can straddle ±pi.
-    th = float(np.arctan2(wx * np.sin(ax) + wy * np.sin(ay),
-                          wx * np.cos(ax) + wy * np.cos(ay)))
-    return (kx * np.array([np.cos(th), np.sin(th)]),
-            ky * np.array([np.cos(th + turn * np.pi / 2.0),
-                           np.sin(th + turn * np.pi / 2.0)]))
-
-
-# ── full perspective, for a steeply tilted camera ─────────────────────────────
-# The affine above is a relay: rotation, per-axis scale, offset. A tilted
-# camera sees equal DMD steps at unequal image spacing (dim, tiny stripes on
-# one side, frame-clipping ones on the other); only a homography (8 DOF, DLT)
-# describes that.
-
-def _homography_points(seen: dict, w: int, h: int) -> list[tuple]:
-    """(DMD_x, DMD_y, cam_x, cam_y) per stripe; stripes sit on the centrelines."""
-    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    return ([(cx + d, cy, u, v) for d, u, v in seen[0]]
-            + [(cx, cy + d, u, v) for d, u, v in seen[1]])
-
-
-def _dlt(pts: list[tuple]) -> np.ndarray:
-    """Direct linear transform: H is the singular vector of the smallest value."""
-    rows = []
-    for X, Y, u, v in pts:
-        rows.append([-X, -Y, -1.0, 0.0, 0.0, 0.0, u * X, u * Y, u])
-        rows.append([0.0, 0.0, 0.0, -X, -Y, -1.0, v * X, v * Y, v])
-    _, _, Vt = np.linalg.svd(np.asarray(rows, dtype=np.float64))
-    H = Vt[-1].reshape(3, 3)
-    return H / H[2, 2] if abs(H[2, 2]) > 1e-9 else H
-
-
-def _solve_homography(pts: list[tuple], keep: np.ndarray):
-    """-> (H, rms, err over ALL points)."""
-    kept = [p for p, k in zip(pts, keep) if k]
-    if len(kept) < 8:
-        return None
-    H = _dlt(kept)
-    XY = np.array([[X, Y] for X, Y, _u, _v in pts], dtype=np.float64)
-    UV = np.array([[u, v] for _X, _Y, u, v in pts], dtype=np.float64)
-    pred = apply_transform(H, XY)
-    err = np.hypot(*(pred - UV).T)
-    rms = float(np.sqrt(np.mean(err[keep] ** 2))) if keep.any() else float("nan")
-    return H, rms, err
-
-
-def fit_homography(seen: dict, w: int, h: int):
-    """-> (H, rms, n, keep, pts). Needs ≥3 stripes on EACH axis: each axis's
-    points constrain a different part of H, so missing one leaves it
-    undetermined, not just noisy."""
-    if len(seen[0]) < 3 or len(seen[1]) < 3:
-        return None
-    pts = _homography_points(seen, w, h)
-    if len(pts) < 8:
-        return None
-    out, keep = _robust_fit(_solve_homography, pts, 8)
-    if out is None:
-        return None
-    H, rms, _err = out
-    return H, rms, int(keep.sum()), keep, pts
-
-
-def holdout_error_homography(seen: dict, w: int, h: int) -> float | None:
-    trial, held = _hold_out(seen, 5)
-    if trial is None:
-        return None
-    out = fit_homography(trial, w, h)
-    if out is None:
-        return None
-    H, _rms, _n, _keep, _pts = out
-    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    errs = []
-    for axis, d, u, v in held:
-        X, Y = (cx + d, cy) if axis == 0 else (cx, cy + d)
-        pred = apply_transform(H, np.array([[X, Y]], dtype=np.float64))[0]
-        errs.append(float(np.hypot(u - pred[0], v - pred[1])))
-    return float(max(errs))
-
-
-def _calibrate_homography(seen: dict, w: int, h: int, cam_size: tuple[int, int],
-                          log: Callable[[str], None]) -> "DmdCalibration":
-    fit = fit_homography(seen, w, h)
-    if fit is None:
-        raise CalibrationError(
-            f"too few usable stripes to fit a homography — {len(seen[0])} on "
-            f"x and {len(seen[1])} on y, and each axis needs at least 3 (8 "
-            f"total; a homography has more freedom than the affine fit, so it "
-            f"needs more points to pin down). The rest were off the frame or "
-            f"too dim — a smaller cross_frac may keep more of them inside "
-            f"the frame on a steeply tilted rig.")
-    H, rms, n, keep, pts = fit
-    total = len(pts)
-
-    # Scale and rotation vary across the field; report the Jacobian at centre.
-    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    eps = 1.0
-    base = apply_transform(H, np.array([[cx, cy]], dtype=np.float64))[0]
-    dx = apply_transform(H, np.array([[cx + eps, cy]], dtype=np.float64))[0] - base
-    dy = apply_transform(H, np.array([[cx, cy + eps]], dtype=np.float64))[0] - base
-    kx, ky = float(np.hypot(*dx)), float(np.hypot(*dy))
-    ax = float(np.degrees(np.arctan2(dx[1], dx[0])))
-    log(f"[dmd-calib] homography fit: local x {kx:.3f} px/mirror, y {ky:.3f} "
-        f"px/mirror at {ax:+.2f}deg — AT THE PANEL CENTRE ONLY, this model's "
-        f"scale and rotation vary across the field by design")
-    if n < total:
-        log(f"[dmd-calib] {total - n} stripe(s) rejected as outliers "
-            f"(>3x the residual); {n} kept")
-    log(f"[dmd-calib] residual {rms:.2f} px over {n} stripes")
-    hold = holdout_error_homography(seen, w, h)
-    if hold is not None:
-        log(f"[dmd-calib] hold-out error {hold:.2f} px — refitted without a "
-            f"stripe, then asked to predict it. This is the number to trust, "
-            f"not the residual.")
-
-    return _report(DmdCalibration(
-        cam_to_dmd=np.linalg.inv(H), dmd_size=(w, h), cam_size=cam_size,
-        rms_px=rms, n_points=n, holdout_px=float(hold or 0.0),
-        model="homography", stripes=_raw_stripes(seen),
-        created=datetime.now().isoformat(timespec="seconds"),
-        notes=f"full projective fit (8 DOF, for a steeply tilted camera) — "
-              f"local scale near centre {kx:.3f} x {ky:.3f} px/mirror at "
-              f"{ax:+.2f}deg"), log,
-        "for a homography fit too")
-
-
-def _report(c: "DmdCalibration", log: Callable[[str], None],
-            large: str) -> "DmdCalibration":
-    """The closing log lines both models share; `large` explains a big rms."""
-    log(f"[dmd-calib] {c.describe()}")
-    log(f"[dmd-calib] the camera sees mirrors {c.visible_mirrors()}")
-    if c.rms_px > 10.0:
-        log(f"[dmd-calib] WARNING: that residual is large {large} — check the "
-            f"log above for a stripe that was kept but looks out of place.")
-    return c
-
-
-def _raw_stripes(seen: dict) -> list:
-    """The raw measurements, saved with the fit so it can be redone offline
-    rather than by re-projecting onto an animal."""
-    return [[axis, d, px, py] for axis in (0, 1) for d, px, py in seen[axis]]
-
-
-# ── the transform ─────────────────────────────────────────────────────────────
 
 def apply_transform(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """Map (N, 2) points through a 3×3 homogeneous matrix."""
@@ -363,155 +26,192 @@ def apply_transform(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return h[:, :2] / w[:, None]
 
 
-def calibrate(project: Callable[[np.ndarray], None],
-              grab: Callable[[], np.ndarray],
-              dmd_size: tuple[int, int], *,
-              offsets=STRIPE_OFFSETS,
-              allow_shear: bool = False,
-              min_modulation: float = MIN_MODULATION,
-              thick_frac: float = STRIPE_WIDTH,
-              cross_frac: float = STRIPE_CROSS,
-              model: str = "affine",
-              log: Callable[[str], None] = print) -> "DmdCalibration":
-    """Project the stripes, fit, return the registration. Callables, so it's
-    testable against a known transform before any light is emitted.
+def _homog(M: np.ndarray, x, y) -> tuple[np.ndarray, np.ndarray]:
+    """`apply_transform` on broadcastable x and y arrays."""
+    den = M[2, 0] * x + M[2, 1] * y + M[2, 2]
+    den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+    return ((M[0, 0] * x + M[0, 1] * y + M[0, 2]) / den,
+            (M[1, 0] * x + M[1, 1] * y + M[1, 2]) / den)
 
-    "affine": camera close to straight-on. "homography": a tilted camera.
-    The caller owns the actuation — this projects on every offset.
-    """
-    if model not in ("affine", "homography"):
-        raise CalibrationError(f"unknown calibration model {model!r}")
-    w, h = int(dmd_size[0]), int(dmd_size[1])
-    shape: list = []
 
-    def grab_sized() -> np.ndarray:     # keeps the size: no extra exposure for it
-        f = grab()
-        shape[:] = np.shape(f)[:2]
-        return f
+def _is_grid(x, y) -> bool:
+    """x a row and y a column: a separable grid once broadcast."""
+    return (np.ndim(y) == 2 and np.shape(y)[1] == 1
+            and (np.ndim(x) == 1 or (np.ndim(x) == 2 and np.shape(x)[0] == 1)))
 
-    seen = stripe_sweep(project, grab_sized, (w, h), offsets=offsets,
-                        min_modulation=min_modulation,
-                        thick_frac=thick_frac, cross_frac=cross_frac, log=log)
-    cam_size = (int(shape[1]), int(shape[0]))
 
-    if model == "homography":
-        return _calibrate_homography(seen, w, h, cam_size, log=log)
+def _hat(nodes: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """(len(x), len(nodes)) linear-interpolation weights, held at the ends."""
+    i = np.clip(np.searchsorted(nodes, x) - 1, 0, len(nodes) - 2)
+    t = np.clip((x - nodes[i]) / (nodes[i + 1] - nodes[i]), 0.0, 1.0)
+    W = np.zeros((len(x), len(nodes)))
+    r = np.arange(len(x))
+    W[r, i] = 1 - t
+    W[r, i + 1] += t
+    return W
 
-    fit = fit_axes(seen)
-    if fit is None:
-        raise CalibrationError(
-            f"too few usable stripes to fit — {len(seen[0])} on x and "
-            f"{len(seen[1])} on y, and each axis needs at least 2. The rest "
-            f"were off the frame or too dim, so the DMD field and the camera's "
-            f"view barely overlap.")
-    centre, vx, vy, rms, n, keep = fit
 
-    kx, ky = float(np.hypot(*vx)), float(np.hypot(*vy))
-    ax = float(np.degrees(np.arctan2(vx[1], vx[0])))
-    ay = float(np.degrees(np.arctan2(vy[1], vy[0])))
-    gap = abs(ay - ax)
-    gap = min(gap, 360.0 - gap)
-    shear = gap - 90.0
-    log(f"[dmd-calib] x {kx:.3f} px/mirror at {ax:+.2f}deg, "
-        f"y {ky:.3f} at {ay:+.2f}deg")
-    log(f"[dmd-calib] axes {gap:.2f}deg apart -> shear {shear:+.2f}deg"
-        + ("  (kept)" if allow_shear else "  (DISCARDED — see allow_shear)"))
-    if not allow_shear:
-        lever = tuple(float(np.sqrt(sum(d * d for d, _x, _y in seen[a])))
-                      for a in (0, 1))
-        log(f"[dmd-calib] rotation weighted {lever[0]:.0f} : {lever[1]:.0f} "
-            f"(x : y lever arm)")
-        vx, vy = deshear(vx, vy, lever)
-    total = len(seen[0]) + len(seen[1])
-    if n < total:
-        log(f"[dmd-calib] {total - n} stripe(s) rejected as outliers "
-            f"(>3x the residual); {n} kept")
-    log(f"[dmd-calib] residual {rms:.2f} px over {n} stripes; panel centre "
-        f"({centre[0]:.0f}, {centre[1]:.0f})")
-    hold = holdout_error(seen)
-    if hold is not None:
-        log(f"[dmd-calib] hold-out error {hold:.2f} px ({hold / max(kx, ky):.1f} "
-            f"mirrors) — refitted without a stripe, then asked to predict it. "
-            f"This is the number to trust, not the residual.")
+def _every(a: np.ndarray, n: int) -> np.ndarray:
+    """Every `n`th of ascending `a`, always with its last."""
+    k = a[::n]
+    return k if k[-1] == a[-1] else np.append(k, a[-1])
 
-    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    A = np.eye(3)
-    A[:2, 0], A[:2, 1] = vx, vy
-    A[:2, 2] = centre - cx * vx - cy * vy
-    if abs(float(np.linalg.det(A[:2, :2]))) < 1e-9:
-        raise CalibrationError(
-            "the two measured axes came out parallel, so the registration "
-            "cannot be inverted — one of them was not really measured")
 
-    return _report(DmdCalibration(
-        cam_to_dmd=np.linalg.inv(A), dmd_size=(w, h), cam_size=cam_size,
-        rms_px=rms, n_points=n, holdout_px=float(hold or 0.0),
-        model="affine" if allow_shear else "affine-noshear",
-        stripes=_raw_stripes(seen),
-        created=datetime.now().isoformat(timespec="seconds"),
-        notes=f"{kx:.3f} x {ky:.3f} px/mirror, DMD-x {ax:+.2f}deg, measured "
-              f"shear {shear:+.2f}deg "
-              f"({'kept' if allow_shear else 'discarded'}), panel centre "
-              f"({centre[0]:.0f}, {centre[1]:.0f})"), log,
-        "(the stripe centroids are off a straight line, so an affine does "
-        "not describe this relay)")
+@dataclass(eq=False)
+class Warp:
+    """Bends the registration where one matrix can't follow the optics: a
+    camera-px shift set at lattice nodes, bilinear between them and held at
+    the edge value beyond. Camera→DMD becomes M·(p + shift(p)). Immutable:
+    edits return a new Warp, so a calibration's mask cache stays valid."""
+    xs: np.ndarray                    # (nx,) ascending node columns, camera px
+    ys: np.ndarray                    # (ny,) ascending node rows
+    dx: np.ndarray                    # (ny, nx) shift, camera px
+    dy: np.ndarray
+
+    def __post_init__(self) -> None:
+        self.xs = np.asarray(self.xs, dtype=np.float64)
+        self.ys = np.asarray(self.ys, dtype=np.float64)
+        self.dx = np.asarray(self.dx, dtype=np.float64)
+        self.dy = np.asarray(self.dy, dtype=np.float64)
+        if (len(self.xs) < 2 or len(self.ys) < 2
+                or self.dx.shape != (len(self.ys), len(self.xs))
+                or self.dy.shape != self.dx.shape):
+            raise ValueError("a warp needs ≥ 2×2 nodes and one shift per node")
+
+    @classmethod
+    def flat(cls, xs, ys) -> "Warp":
+        shape = (len(ys), len(xs))
+        return cls(xs, ys, np.zeros(shape), np.zeros(shape))
+
+    @property
+    def is_flat(self) -> bool:
+        return not (self.dx.any() or self.dy.any())
+
+    @property
+    def nodes(self) -> np.ndarray:
+        """(ny·nx, 2) node positions, row-major like `dx.flat`."""
+        X, Y = np.meshgrid(self.xs, self.ys)
+        return np.column_stack([X.ravel(), Y.ravel()])
+
+    def moved(self, k: int, dx: float, dy: float) -> "Warp":
+        """Node `k` (row-major) with its shift set to (dx, dy)."""
+        nx, ny = self.dx.copy(), self.dy.copy()
+        nx.flat[k], ny.flat[k] = dx, dy
+        return Warp(self.xs, self.ys, nx, ny)
+
+    def shift(self, x, y) -> tuple[np.ndarray, np.ndarray]:
+        """The shift at broadcastable camera coordinates."""
+        if _is_grid(x, y):      # two small matmuls: per-point was 1.8 s a frame
+            Wx = _hat(self.xs, np.ravel(x).astype(np.float64))
+            Wy = _hat(self.ys, np.ravel(y).astype(np.float64))
+            return Wy @ self.dx @ Wx.T, Wy @ self.dy @ Wx.T
+        x, y = np.broadcast_arrays(np.asarray(x, np.float64),
+                                   np.asarray(y, np.float64))
+        xs, ys = self.xs, self.ys
+        i = np.clip(np.searchsorted(xs, x) - 1, 0, len(xs) - 2)
+        j = np.clip(np.searchsorted(ys, y) - 1, 0, len(ys) - 2)
+        tx = np.clip((x - xs[i]) / (xs[i + 1] - xs[i]), 0.0, 1.0)
+        ty = np.clip((y - ys[j]) / (ys[j + 1] - ys[j]), 0.0, 1.0)
+
+        def lerp(g):
+            return ((1 - ty) * ((1 - tx) * g[j, i] + tx * g[j, i + 1])
+                    + ty * ((1 - tx) * g[j + 1, i] + tx * g[j + 1, i + 1]))
+        return lerp(self.dx), lerp(self.dy)
+
+    def undo(self, u, v, *, tol: float = 0.05, iters: int = 8
+             ) -> tuple[np.ndarray, np.ndarray]:
+        """The p with p + shift(p) = (u, v). Fixed point: converges while a
+        cell's shift changes by less than its size, true of any bend the
+        light could follow."""
+        x, y = u, v
+        for _ in range(iters):
+            sx, sy = self.shift(x, y)
+            nx, ny = u - sx, v - sy
+            done = (np.max(np.abs(nx - x), initial=0.0) < tol
+                    and np.max(np.abs(ny - y), initial=0.0) < tol)
+            x, y = nx, ny
+            if done:
+                break
+        return x, y
+
+    def resampled(self, xs, ys) -> "Warp":
+        """The same bend on another lattice."""
+        X, Y = np.meshgrid(np.asarray(xs, float), np.asarray(ys, float))
+        dx, dy = self.shift(X, Y)
+        return Warp(xs, ys, dx, dy)
+
+    def to_dict(self) -> dict:
+        return {"xs": self.xs.tolist(), "ys": self.ys.tolist(),
+                "dx": self.dx.tolist(), "dy": self.dy.tolist()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Warp":
+        return cls(d["xs"], d["ys"], d["dx"], d["dy"])
 
 
 @dataclass
 class DmdCalibration:
-    """A measured DMD↔camera registration and its provenance."""
+    """A DMD↔camera registration and its provenance."""
     cam_to_dmd: np.ndarray            # 3×3, camera px → DMD mirrors
     dmd_size:   tuple[int, int]       # (width, height) mirrors
     cam_size:   tuple[int, int]       # (width, height) px
-    model:      str = "affine"
-    rms_px:     float = 0.0
-    n_points:   int = 0
-    holdout_px: float = 0.0           # error on a stripe left out of the fit
+    model:      str = "manual-reticle"
     created:    str = ""
     notes:      str = ""
-    stripes:    list = None           # [axis, offset, cam_x, cam_y] raw
-    # (cx, cy, r) camera px: outside it the optics dim the field. Advisory
-    # only (`well_lit`); never clips the projection.
-    vignette:   tuple[float, float, float] | None = None
+    warp:       Warp | None = None    # applied before cam_to_dmd
 
     def __post_init__(self) -> None:
-        if self.stripes is None:
-            self.stripes = []
-        # Safe to cache: every edit (flip, corners) is a new object.
+        # Safe to cache: every edit is a new object.
         self._mask_cache: dict[tuple[int, int], np.ndarray] = {}
 
     @property
     def dmd_to_cam(self) -> np.ndarray:
+        """The matrix part only; `to_cam` includes the warp."""
         return np.linalg.inv(self.cam_to_dmd)
 
-    # ── what the camera can see, and what the DMD can reach ──
-    def visible_mirrors(self) -> tuple[int, int, int, int]:
-        """(x0, y0, x1, y1) of the mirrors inside the camera's view, clipped
-        to the panel."""
-        cw, ch = self.cam_size
-        d = apply_transform(self.cam_to_dmd,
-                            np.array([[0, 0], [cw - 1, 0],
-                                      [cw - 1, ch - 1], [0, ch - 1]], float))
-        w, h = self.dmd_size
-        return (int(max(0, np.floor(d[:, 0].min()))),
-                int(max(0, np.floor(d[:, 1].min()))),
-                int(min(w, np.ceil(d[:, 0].max()))),
-                int(min(h, np.ceil(d[:, 1].max()))))
+    def to_dmd_xy(self, x, y) -> tuple[np.ndarray, np.ndarray]:
+        """Camera px → mirrors, on broadcastable arrays."""
+        if self.warp is not None:
+            sx, sy = self.warp.shift(x, y)
+            x, y = x + sx, y + sy
+        return _homog(np.asarray(self.cam_to_dmd, np.float64), x, y)
 
+    _COARSE = 4                 # mirrors between exact unbends on a big grid
+
+    def to_cam_xy(self, x, y) -> tuple[np.ndarray, np.ndarray]:
+        """Mirrors → camera px, on broadcastable arrays. On a big row × column
+        grid the bend is undone exactly every `_COARSE` mirrors and linear
+        between: 1.6 camera px off at a cell edge under a 60 px bend, a
+        third of a mirror; 316 → 60 ms a panel."""
+        M = np.asarray(self.dmd_to_cam, np.float64)
+        u, v = _homog(M, x, y)
+        if self.warp is None:
+            return u, v
+        if not (_is_grid(x, y) and np.size(x) * np.size(y) > 4096):
+            return self.warp.undo(u, v)
+        xr = np.ravel(x).astype(np.float64)
+        yc = np.ravel(y).astype(np.float64)
+        xk, yk = _every(xr, self._COARSE), _every(yc, self._COARSE)
+        uk, vk = _homog(M, xk[None, :], yk[:, None])
+        pk, qk = self.warp.undo(uk, vk)
+        Wx, Wy = _hat(xk, xr), _hat(yk, yc)
+        return u + Wy @ (pk - uk) @ Wx.T, v + Wy @ (qk - vk) @ Wx.T
+
+    def to_dmd(self, pts: np.ndarray) -> np.ndarray:
+        p = np.atleast_2d(np.asarray(pts, np.float64))
+        return np.column_stack(self.to_dmd_xy(p[:, 0], p[:, 1]))
+
+    def to_cam(self, pts: np.ndarray) -> np.ndarray:
+        p = np.atleast_2d(np.asarray(pts, np.float64))
+        return np.column_stack(self.to_cam_xy(p[:, 0], p[:, 1]))
+
+    # ── what the DMD can reach ──
     def accessible(self, pts: np.ndarray) -> np.ndarray:
         """Which camera points the DMD can illuminate."""
-        d = apply_transform(self.cam_to_dmd, np.atleast_2d(pts))
+        d = self.to_dmd(pts)
         w, h = self.dmd_size
         return ((d[:, 0] >= 0) & (d[:, 0] <= w - 1)
                 & (d[:, 1] >= 0) & (d[:, 1] <= h - 1))
-
-    def well_lit(self, pts: np.ndarray) -> np.ndarray:
-        """Inside the vignette circle; all True if none was marked."""
-        p = np.atleast_2d(pts)
-        if self.vignette is None:
-            return np.ones(p.shape[0], dtype=bool)
-        cx, cy, r = self.vignette
-        return (p[:, 0] - cx) ** 2 + (p[:, 1] - cy) ** 2 <= r * r
 
     _MASK_ROWS = 256            # rows per band; caps the temporaries
 
@@ -523,17 +223,13 @@ class DmdCalibration:
         if hit is not None:
             return hit
 
-        M = np.asarray(self.cam_to_dmd, dtype=np.float64)
         dw, dh = self.dmd_size
         x = np.arange(w, dtype=np.float64)
         out = np.empty((h, w), dtype=bool)
         for y0 in range(0, h, self._MASK_ROWS):
             y = np.arange(y0, min(y0 + self._MASK_ROWS, h),
                           dtype=np.float64)[:, None]
-            den = M[2, 0] * x + M[2, 1] * y + M[2, 2]
-            den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-            dx = (M[0, 0] * x + M[0, 1] * y + M[0, 2]) / den
-            dy = (M[1, 0] * x + M[1, 1] * y + M[1, 2]) / den
+            dx, dy = self.to_dmd_xy(x, y)
             out[y0:y0 + y.shape[0]] = ((dx >= 0) & (dx <= dw - 1)
                                        & (dy >= 0) & (dy <= dh - 1))
         out.flags.writeable = False         # shared
@@ -543,32 +239,39 @@ class DmdCalibration:
     def accessible_corners(self) -> np.ndarray:
         """The panel's four corners in camera px."""
         w, h = self.dmd_size
-        return apply_transform(
-            self.dmd_to_cam,
+        return self.to_cam(
             np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], float))
+
+    def accessible_outline(self, per_side: int = 24) -> np.ndarray:
+        """The panel's closed border in camera px; bent, if warped."""
+        w, h = self.dmd_size
+        t = np.linspace(0.0, 1.0, per_side, endpoint=False)
+        x1, y1 = w - 1.0, h - 1.0
+        edge = np.concatenate([
+            np.column_stack([t * x1, np.zeros_like(t)]),
+            np.column_stack([np.full_like(t, x1), t * y1]),
+            np.column_stack([(1 - t) * x1, np.full_like(t, y1)]),
+            np.column_stack([np.zeros_like(t), (1 - t) * y1]),
+            [[0.0, 0.0]]])
+        return self.to_cam(edge)
 
     # ── persistence ──
     def to_dict(self) -> dict:
         return {"cam_to_dmd": np.asarray(self.cam_to_dmd).tolist(),
                 "dmd_size": list(self.dmd_size), "cam_size": list(self.cam_size),
-                "model": self.model, "rms_px": float(self.rms_px),
-                "n_points": int(self.n_points),
-                "holdout_px": float(self.holdout_px), "created": self.created,
-                "notes": self.notes, "stripes": list(self.stripes or []),
-                "vignette": list(self.vignette) if self.vignette else None}
+                "model": self.model, "created": self.created,
+                "notes": self.notes,
+                "warp": None if self.warp is None else self.warp.to_dict()}
 
     @classmethod
     def from_dict(cls, d: dict) -> "DmdCalibration":
-        vignette = d.get("vignette")
+        """Older files' fit statistics and vignette are ignored."""
+        w = d.get("warp")
         return cls(cam_to_dmd=np.array(d["cam_to_dmd"], float),
                    dmd_size=tuple(d["dmd_size"]), cam_size=tuple(d["cam_size"]),
                    model=d.get("model", "affine"),
-                   rms_px=float(d.get("rms_px", 0.0)),
-                   n_points=int(d.get("n_points", 0)),
-                   holdout_px=float(d.get("holdout_px", 0.0)),
                    created=d.get("created", ""), notes=d.get("notes", ""),
-                   stripes=d.get("stripes") or [],
-                   vignette=tuple(vignette) if vignette else None)
+                   warp=Warp.from_dict(w) if w else None)
 
     def save(self, path: str | Path) -> Path:
         p = Path(path)
@@ -582,79 +285,12 @@ class DmdCalibration:
 
     def describe(self) -> str:
         return (f"DMD {self.dmd_size[0]}x{self.dmd_size[1]} → camera "
-                f"{self.cam_size[0]}x{self.cam_size[1]}, {self.model}, "
-                f"rms {self.rms_px:.2f} px over {self.n_points} points"
-                + (f", hold-out {self.holdout_px:.2f} px"
-                   if self.holdout_px else "")
+                f"{self.cam_size[0]}x{self.cam_size[1]}, {self.model}"
+                + (", bent" if self.warp is not None else "")
                 + (f" ({self.created})" if self.created else ""))
 
 
-def _flipped(calib: DmdCalibration, flip: np.ndarray) -> DmdCalibration:
-    return replace(calib, cam_to_dmd=flip @ np.asarray(calib.cam_to_dmd,
-                                                       dtype=np.float64))
-
-
-def flip_y(calib: DmdCalibration) -> DmdCalibration:
-    """Mirror the projected rows (r -> h-1-r), an operator knob
-    (`DmdSettings.roi_flip_y`). The panel's corners map onto each other, so
-    the field outline and reach don't move; only which mirrors an ROI lights
-    does. Composed onto the matrix so `dmd_to_cam` stays right for free."""
-    h = float(calib.dmd_size[1])
-    return _flipped(calib, np.array([[1.0, 0.0, 0.0], [0.0, -1.0, h - 1.0],
-                                     [0.0, 0.0, 1.0]]))
-
-
-def flip_x(calib: DmdCalibration) -> DmdCalibration:
-    """`flip_y` for columns."""
-    w = float(calib.dmd_size[0])
-    return _flipped(calib, np.array([[-1.0, 0.0, w - 1.0], [0.0, 1.0, 0.0],
-                                     [0.0, 0.0, 1.0]]))
-
-
-def with_corners(calib: DmdCalibration, corners_cam) -> DmdCalibration:
-    """Replace the fit so the panel corners land exactly on `corners_cam`
-    (order of `accessible_corners()`): an operator's manual correction. Four
-    points determine a homography exactly, so the residuals are zeroed."""
-    w, h = calib.dmd_size
-    dmd_pts = ((0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1))
-    cam_pts = np.asarray(corners_cam, dtype=np.float64)
-    if cam_pts.shape != (4, 2):
-        raise ValueError(f"need 4 (x, y) camera points, got {cam_pts.shape}")
-    pts = [(float(X), float(Y), float(u), float(v))
-          for (X, Y), (u, v) in zip(dmd_pts, cam_pts)]
-    H = _dlt(pts)
-    # inv() only raises on EXACT singularity; near-collinear corners come back
-    # "invertible" at cond ~1e15 (a sane rectangle is ~1e3).
-    if np.linalg.cond(H) > 1e8:
-        raise CalibrationError(
-            "the four corners don't determine a valid registration — they're "
-            "too close to collinear. Drag them further apart.")
-    cam_to_dmd = np.linalg.inv(H)
-    model = calib.model if calib.model.endswith("+corners") else f"{calib.model}+corners"
-    notes = (calib.notes + " — corners manually adjusted" if calib.notes
-             else "corners manually adjusted")
-    return replace(calib, cam_to_dmd=cam_to_dmd, model=model, rms_px=0.0,
-                   holdout_px=0.0, notes=notes,
-                   created=datetime.now().isoformat(timespec="seconds"))
-
-
-def manual_seed(dmd_size: tuple[int, int], cam_size: tuple[int, int],
-                frac: float = 0.6) -> DmdCalibration:
-    """A starting point for dragging corners when no sweep exists: the panel
-    drawn as a centred `frac`-wide rectangle in the camera frame, panel aspect."""
-    dw, dh = dmd_size
-    cw, ch = cam_size
-    hw = frac * cw / 2.0
-    hh = min(hw * dh / dw, frac * ch / 2.0)
-    hw = hh * dw / dh
-    cx, cy = (cw - 1) / 2.0, (ch - 1) / 2.0
-    blank = DmdCalibration(cam_to_dmd=np.eye(3), dmd_size=dmd_size,
-                           cam_size=cam_size, model="manual")
-    return with_corners(blank, [(cx - hw, cy - hh), (cx + hw, cy - hh),
-                                (cx + hw, cy + hh), (cx - hw, cy + hh)])
-
-
-# ── manual reticle alignment ──────────────────────────────────────────────────
+# ── reticle alignment ─────────────────────────────────────────────────────────
 # The DMD lights a reticle shape (camera px) through the operator's guess; once
 # the light sits on the reticle drawn over the live camera, the guess is right.
 RETICLE_KINDS = ("centre", "angle", "size")
@@ -685,8 +321,19 @@ class ReticlePose:
         return M
 
     @classmethod
+    def centred(cls, dmd_size: tuple[int, int], cam_size: tuple[int, int],
+                frac: float = 0.6) -> "ReticlePose":
+        """A first guess: the panel upright and centred, `frac` of the camera
+        frame at most on either side."""
+        dw, dh = dmd_size
+        cw, ch = cam_size
+        s = max(dw / (frac * cw), dh / (frac * ch))
+        return cls((dw - 1) / 2.0, (dh - 1) / 2.0, 0.0, s, s)
+
+    @classmethod
     def from_calibration(cls, calib: DmdCalibration) -> "ReticlePose":
-        """The nearest pose to a fit; shear and perspective are dropped."""
+        """The nearest pose to a calibration's matrix: shear and perspective
+        (an older fitted file's) are dropped, and its `warp` is not read."""
         M = np.asarray(calib.cam_to_dmd, dtype=np.float64)
         c = _cam_centre(calib.cam_size)
         cx, cy = apply_transform(M, c[None])[0]
@@ -698,12 +345,19 @@ class ReticlePose:
                    float(np.hypot(A[0, 0], A[1, 0])), float(abs(y)), bool(y < 0))
 
     def to_calibration(self, dmd_size: tuple[int, int],
-                       cam_size: tuple[int, int]) -> DmdCalibration:
+                       cam_size: tuple[int, int],
+                       warp: Warp | None = None) -> DmdCalibration:
+        """A flat `warp` is dropped."""
+        if warp is not None and warp.is_flat:
+            warp = None
+        bend = ("" if warp is None else
+                f"; bent at {len(warp.xs)}×{len(warp.ys)} checkerboard nodes")
         return DmdCalibration(
             cam_to_dmd=self.matrix(cam_size), dmd_size=tuple(dmd_size),
             cam_size=tuple(cam_size), model="manual-reticle",
             created=datetime.now().isoformat(timespec="seconds"),
-            notes=f"aligned by eye to the camera reticle: {self}")
+            notes=f"aligned by eye to the camera reticle: {self}{bend}",
+            warp=warp)
 
 
 def _cam_centre(cam_size) -> np.ndarray:
@@ -763,13 +417,34 @@ def reticle_frame(kind: str, pose: ReticlePose, dmd_size: tuple[int, int],
     return np.where(lit, ON, OFF)
 
 
-def with_vignette(calib: DmdCalibration, cx: float, cy: float,
-                  r: float) -> DmdCalibration:
-    """Record the operator-drawn vignette circle (advisory; see `well_lit`)."""
-    if r <= 0:
-        raise ValueError(f"vignette radius must be positive, got {r!r}")
-    return replace(calib, vignette=(float(cx), float(cy), float(r)))
+# ── bending ───────────────────────────────────────────────────────────────────
+# After the pose, a checkerboard over the reticle box shows what one matrix
+# can't: shear, keystone and lens bend. Its square corners are the `Warp` nodes.
+CHECKER_COLS = 6
 
 
-def without_vignette(calib: DmdCalibration) -> DmdCalibration:
-    return replace(calib, vignette=None)
+def checker_lattice(cam_size: tuple[int, int], cols: int = CHECKER_COLS, *,
+                    box_frac: float = RETICLE_BOX
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """The board's square corners (xs, ys) in camera px: `cols` squares
+    across the reticle box, as many rows as keeps them near square."""
+    d = _reticle_dims(cam_size, box_frac)
+    rows = max(1, round(cols * d["bh"] / d["bw"]))
+    c = _cam_centre(cam_size)
+    return (np.linspace(c[0] - d["bw"], c[0] + d["bw"], cols + 1),
+            np.linspace(c[1] - d["bh"], c[1] + d["bh"], rows + 1))
+
+
+def checker_frame(calib: DmdCalibration, xs: np.ndarray,
+                  ys: np.ndarray) -> np.ndarray:
+    """The DMD frame that lights a checkerboard with square corners at
+    `xs` × `ys` (camera px, ascending), if `calib` is right; dark off the
+    board. Asks each mirror where it lands, as `RoiSet.dmd_frame` does."""
+    w, h = calib.dmd_size
+    u, v = calib.to_cam_xy(np.arange(w, dtype=np.float64)[None, :],
+                           np.arange(h, dtype=np.float64)[:, None])
+    i = np.searchsorted(xs, u, side="right") - 1
+    j = np.searchsorted(ys, v, side="right") - 1
+    lit = ((i >= 0) & (i < len(xs) - 1) & (j >= 0) & (j < len(ys) - 1)
+           & ((i + j) % 2 == 0))
+    return np.where(lit, ON, OFF)

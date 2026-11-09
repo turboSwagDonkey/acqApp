@@ -61,7 +61,7 @@ Thumbs.db
 /docs/REFERENCE.md
 /docs/RIG.md
 
-# --- Rig-local leftovers: calibration sweep outputs, backups ---
+# --- Rig-local leftovers: saved DMD calibrations, backups ---
 /dmd_calib_*.json
 *.bak
 /.claude/settings.local.json
@@ -69,6 +69,7 @@ Thumbs.db
 /.claude/hooks/
 # The rig's active DMD calibration (dmd_calibration setting): rig-local.
 /newCal.json
+/dmdCalManual.json
 
 # run_pupil_review.py's private environment
 /.venv-pupil/

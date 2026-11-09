@@ -18,7 +18,7 @@ from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.acq.devices import ModuleHost
 from acqApp.devices.stage.acquisition import StagePollWorker
-from acqApp.devices.stage.cam_axes import screen_angle
+from acqApp.devices.stage.cam_axes import screen_angle, view_dir
 from acqApp.devices.stage.control import MockStageController, StageController
 from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
 from acqApp.devices.stage.settings import load_settings as load_stage_settings
@@ -76,7 +76,7 @@ class StageModule(ModuleAdapter):
                 else "home not set")
         axes = self.panel.cam_axes
         if axes is not None:
-            turn = f"camera axes: +X {screen_angle(axes[0], axes[1]):.0f}°"
+            turn = f"camera axes: +X {screen_angle(*view_dir(axes)[:2]):.0f}°"
         else:
             turn = f"rotation {s.frame_rotation_deg:g}°"
         return home, turn + ("" if self.controller is not None

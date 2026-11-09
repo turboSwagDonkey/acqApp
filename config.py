@@ -174,7 +174,7 @@ _CHANNEL_SPACES = ("port", "line", "ai", "ao", "ctr", "PFI", "di", "do")
 
 def load_rigs() -> dict:
     """Named rig -> profile, sanitized like modes; every surviving profile
-    has all four keys."""
+    has all three keys."""
     rigs = {}
     for name, profile in _load_json(_RIGS_PATH).items():
         if not isinstance(name, str) or not isinstance(profile, dict):
@@ -182,9 +182,6 @@ def load_rigs() -> dict:
         device = profile.get("ni_device")
         channels = profile.get("channels")
         hardware = profile.get("hardware")
-        dmd_cal = profile.get("dmd_calibration")
-        model = dmd_cal.get("model") if isinstance(dmd_cal, dict) else None
-        cross_frac = dmd_cal.get("cross_frac") if isinstance(dmd_cal, dict) else None
         rigs[name] = {
             "ni_device": device if isinstance(device, str) and device
                          else DEFAULT_NI_DEVICE,
@@ -195,13 +192,6 @@ def load_rigs() -> dict:
             "hardware": {k: v for k, v in hardware.items()
                          if isinstance(k, str) and isinstance(v, bool)}
                         if isinstance(hardware, dict) else {},
-            # None = the module default.
-            "dmd_calibration": {
-                "model": model if model in ("affine", "homography") else None,
-                "cross_frac": float(cross_frac)
-                             if _is_num(cross_frac) and 0.0 < cross_frac <= 1.0
-                             else None,
-            },
         }
     return rigs
 
@@ -235,13 +225,6 @@ def rig_has(key: str) -> bool:
     """Unset means fitted. Only an explicit False skips the DAQ open."""
     fitted = rig_profile().get("hardware", {}).get(key)
     return fitted if isinstance(fitted, bool) else True
-
-
-def rig_dmd_calibration() -> dict:
-    """{"model", "cross_frac"} seeding the calibration dialog; cross_frac
-    None = calibration.py's default."""
-    d = rig_profile().get("dmd_calibration", {})
-    return {"model": d.get("model") or "affine", "cross_frac": d.get("cross_frac")}
 
 
 def order_modules(keys) -> list[str]:

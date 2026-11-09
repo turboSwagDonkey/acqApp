@@ -1142,7 +1142,7 @@ def check_burst(r: Report) -> None:
 def check_burst_retry(r: Report) -> None:
     """A short burst (rig, 2026-09-30: an edge during the camera's restart
     gave 2491/2500) is marked and retried on the next edge, not paused on;
-    the LED is lit from the trigger's arm, so the burst's first frame is."""
+    the LED and ROIs are lit before the edge, so the burst's first frame is."""
     from acqApp.routines.engine import MAX_BURST_RETRIES
 
     N, HZ = 80, 100.0
@@ -1173,7 +1173,7 @@ def check_burst_retry(r: Report) -> None:
             if eng.phase == Phase.WAITING and rig.gated:
                 rig.fire_trigger()
                 edge["t"], edge["n"] = rig.t, edge["n"] + 1
-                lit_at_edge.append(rig.led_on)
+                lit_at_edge.append((rig.led_on, rig.lit))
             rig.advance()
             eng.tick()
         return eng, rig, lit_at_edge
@@ -1188,8 +1188,9 @@ def check_burst_retry(r: Report) -> None:
     r.check(eng.steps_done() == 5,
             f"...and the retried trigger isn't counted twice "
             f"({eng.steps_done()})")
-    r.check(lit == [True, True, True],
-            f"the LED is already on at every edge ({lit})")
+    r.check(lit == [(True, True)] * 3,
+            f"the LED and ROIs are already on at every edge, retry and repeat "
+            f"included: no dark first frames ({lit})")
 
     eng, rig, _ = run(short=set(range(1, MAX_BURST_RETRIES + 2)))
     r.check(eng.phase == Phase.PAUSED
@@ -1200,7 +1201,7 @@ def check_burst_retry(r: Report) -> None:
     r.check(not rig.led_on and not rig.lit,
             "the pause puts out the LED and the DMD")
     eng.resume()
-    r.check(rig.lit and eng.phase == Phase.WAITING,
+    r.check(rig.lit and rig.led_on and eng.phase == Phase.WAITING,
             "resume re-lights what the Display step left on (rig: FOV3 T19-"
             "T50 recorded dark after a resume)")
 
@@ -1544,6 +1545,32 @@ def check_step_repeats(r: Report, app) -> None:
             and panel._tbl.item(row, col).text() == "×5",
             f"a new FOV step starts at ×5 "
             f"({panel._tbl.item(row, col).text()!r})")
+    made = panel.settings.steps[row]
+    r.check(made.trigger, "an FOV step made from a saved FOV has a trigger")
+    r.check(panel._tbl.item(row, FIELDS.index("kind")).text() == "FOV + Trigger",
+            "…and the table says so")
+    kinds = [s.kind for s in expand(Routine(steps=[made]))[0].steps]
+    r.check(kinds == ["move", "display", "trigger", "record", "display"],
+            f"…waiting after the move, right before the capture ({kinds})")
+    eng = expand(Routine(steps=[replace(made, repeats=3)]))[0]
+    r.check([(g.start, g.end, g.repeats) for g in eng.groups]
+            == [(0, len(eng.steps) - 1, 3)],
+            "…inside the repeated block, so every run waits for its own edge")
+    both = expand(Routine(steps=[Step(kind="trigger"), made]))[0]
+    r.check(sum(s.kind == "trigger" for s in both.steps) == 1,
+            "a Trigger row right before one doesn't add a second wait")
+    r.check(Routine.from_dict(Routine(steps=[made]).to_dict()).steps[0].trigger,
+            "the built-in trigger survives save and load")
+    r.check(not old.steps[0].trigger,
+            "control: a routine saved before it runs without waiting")
+    bad = Routine.from_dict({"steps": [{"kind": "fov", "trigger": "x"}]})
+    r.check(bad.steps[0].trigger is False,
+            "a hand-edited bad value falls back to no trigger")
+    problems = validate(Routine(steps=[made]), RigLimits(has_stage=True,
+                                                         x_um=(0.0, 9.0),
+                                                         y_um=(0.0, 9.0)))
+    r.check(any("trigger" in p for p in problems),
+            f"validate refuses it with no camera ({problems})")
     panel._tbl.item(row, col).setData(VALUE, 2.0)
     r.check(panel.settings.steps[row].repeats == 2
             and panel._tbl.item(row, col).text() == "×2",
@@ -3811,6 +3838,7 @@ def check_fov_step_pick(r: Report, fov_a, roi_a: Path, orphan) -> None:
             "…capturing and waiting as the general settings say")
     r.check(s is not None and s.pattern == str(roi_a),
             f"…showing the FOV's paired ROI set ({s and s.pattern})")
+    r.check(s is not None and s.trigger, "…and waiting for its trigger")
 
     _FakeFovPicker.fov = None
     panel._add_fov_step()

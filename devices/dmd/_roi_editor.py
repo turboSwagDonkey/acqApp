@@ -36,14 +36,15 @@ def stand_in_calibration(cam_size, dmd_size):
     only so the field outline has something to draw."""
     from dataclasses import replace
 
-    from acqApp.devices.dmd.calibration import manual_seed
-    return replace(manual_seed(dmd_size, cam_size), notes="STAND-IN")
+    from acqApp.devices.dmd.calibration import ReticlePose
+    return replace(ReticlePose.centred(dmd_size, cam_size).to_calibration(
+        dmd_size, cam_size), notes="STAND-IN")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image", help=".npy or .csv camera snapshot to draw on")
-    ap.add_argument("--calib", help="DmdCalibration JSON from a sweep")
+    ap.add_argument("--calib", help="a saved DmdCalibration JSON")
     args = ap.parse_args()
 
     if args.image:

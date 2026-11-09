@@ -1,4 +1,4 @@
-"""DMD: frame building and controllers, calibration fit, the sweep wiring, ROIs.
+"""DMD: frame building and controllers, calibration, reticle wiring, ROIs.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\test_dmd.py [-q] [--part NAME]
 """
@@ -14,16 +14,9 @@ from pathlib import Path
 import numpy as np
 from _harness import (Report, block_real_devices, isolate_user_state,
                       make_window, pump, pump_until, qt_app, run_parts)
-from acqApp.devices.dmd.calibration import (ON, STRIPE_OFFSETS,
-                                            CalibrationError, DmdCalibration,
-                                            apply_transform, calibrate,
-                                            deshear, fit_axes, flip_x, flip_y,
-                                            holdout_error, offset_stripe,
-                                            stripe_sweep, with_corners,
-                                            with_vignette, without_vignette)
+from acqApp.devices.dmd.calibration import ON, DmdCalibration, apply_transform
 from acqApp.devices.dmd.roi import (CircleRoi, PolyRoi, RectRoi, RoiSet,
                                     roi_from_dict, simplify_polygon)
-from acqApp.devices.dmd.sweep import FreshGrabber, sweep_exposures
 
 
 # ═══ dmd ════════════════════════════════════════════════════════════════
@@ -660,11 +653,6 @@ def check_sub_sampling(r) -> None:
 DW, DH = 256, 192          # a small DMD
 CW, CH = 320, 240          # the "ORCA"
 
-# Not calibration.py's STRIPE_WIDTH/STRIPE_CROSS: those are tuned per rig, and
-# the synthetic camera below was sized against these.
-TEST_THICK_FRAC = 0.025
-TEST_CROSS_FRAC = 0.25
-
 
 def true_transform() -> np.ndarray:
     """DMD → camera: scale, a 7° rotation and an offset."""
@@ -688,133 +676,13 @@ def footprint(pattern: np.ndarray, M: np.ndarray) -> np.ndarray:
     return lit.reshape(CH, CW)
 
 
-def make_camera(M, rng, *, vignette=True):
-    """A camera that images `pattern` through `M`, vignetted and noisy."""
-    yy, xx = np.mgrid[:CH, :CW].astype(np.float64)
-    v = (0.25 + 0.75 * np.exp(-(((xx - CW * 0.35) ** 2 + (yy - CH * 0.45) ** 2)
-                                / (2 * (0.45 * CW) ** 2)))
-         if vignette else np.ones((CH, CW)))
-    base = 300.0 * v
-
-    def image(pattern):
-        img = base * np.where(footprint(pattern, M), 3.0, 1.0)
-        return img + rng.normal(0, 4.0, img.shape)
-    return image
-
-
-def run(image, dmd_size=(DW, DH), **kw):
-    """Drive `calibrate` against a synthetic camera."""
-    held = {"f": np.zeros((DH, DW), np.uint8)}
-    kw.setdefault("thick_frac", TEST_THICK_FRAC)
-    kw.setdefault("cross_frac", TEST_CROSS_FRAC)
-    return calibrate(lambda f: held.__setitem__("f", f),
-                     lambda: image(held["f"]), dmd_size,
-                     log=lambda _s: None, **kw)
-
-
 def _part_calib() -> int:
     r = Report("dmd-calib")
-    rng = np.random.default_rng(7)
     M = true_transform()
+    c = DmdCalibration(cam_to_dmd=np.linalg.inv(M), dmd_size=(DW, DH),
+                       cam_size=(CW, CH))
 
-    # ── 1. the stripe ────────────────────────────────────────────────────────
-    s = offset_stripe(DW, DH, 0, 40.0)
-    r.check(s.shape == (DH, DW) and s.dtype == np.uint8
-            and set(np.unique(s)) <= {0, 255},
-            f"a stripe is a device-sized binary frame {s.shape}")
-    box = np.nonzero(s.any(axis=0))[0]
-    r.check(abs((box.mean()) - ((DW - 1) / 2 + 40.0)) < 1.0,
-            f"…centred on its offset (at x={box.mean():.1f}, "
-            f"want {(DW - 1) / 2 + 40.0:.1f})")
-    r.check(len(box) <= 0.08 * DW,
-            f"…and narrow: {len(box)} of {DW} columns. Fine patterns do not "
-            f"survive this relay, so nothing here may project one")
-
-    # ── 2. the fit recovers the transform ────────────────────────────────────
-    c = run(make_camera(M, rng))
-    r.check(c.rms_px < 2.0,
-            f"the stripe centroids fall on a straight line "
-            f"(rms {c.rms_px:.2f} px over {c.n_points} stripes)")
-    pts = np.array([[DW / 2, DH / 2], [DW / 4, DH / 4],
-                    [3 * DW / 4, 2 * DH / 3]], float)
-    err = float(np.abs(apply_transform(np.linalg.inv(c.cam_to_dmd), pts)
-                       - apply_transform(M, pts)).max())
-    r.check(err < 4.0,
-            f"…and it agrees with the transform we projected through "
-            f"(max {err:.2f} px)")
-    r.check(c.dmd_size == (DW, DH) and c.cam_size == (CW, CH),
-            f"…recording both sizes it was measured at {c.dmd_size} -> "
-            f"{c.cam_size}")
-
-    # A mirrored registration aims every ROI wrongly while looking well
-    # fitted; the signed offsets are what tell the two apart.
-    flip = np.array([[-1.05, 0.10, 300.0], [0.08, 1.02, 22.0], [0.0, 0.0, 1.0]])
-    cf = run(make_camera(flip, rng))
-    errf = float(np.abs(apply_transform(np.linalg.inv(cf.cam_to_dmd), pts)
-                        - apply_transform(flip, pts)).max())
-    r.check(errf < 4.0, f"a mirrored relay is recovered mirrored ({errf:.2f} px)")
-    d = (apply_transform(flip, np.array([[DW - 1, DH / 2]], float))
-         - apply_transform(flip, np.array([[0, DH / 2]], float)))[0]
-    r.check(d[0] < 0,
-            f"control: that transform really does run DMD +x towards camera -x "
-            f"({d[0]:+.0f} px), so a sign error would have been caught")
-
-    # ── 2b. the manual Y-flip (DmdSettings.roi_flip_y) mirrors DMD rows only ──
-    cf = flip_y(c)
-    r.check(cf.dmd_size == c.dmd_size and cf.cam_size == c.cam_size,
-            "flip_y keeps both recorded sizes — only the mapping's sense "
-            "changes")
-    probe = np.array([[10.0, 20.0], [DW - 5.0, DH - 5.0], [DW / 2, DH / 4]])
-    mirrored = probe.copy()
-    mirrored[:, 1] = (DH - 1) - probe[:, 1]
-    got = apply_transform(cf.dmd_to_cam, probe)
-    want = apply_transform(c.dmd_to_cam, mirrored)
-    r.check(float(np.abs(got - want).max()) < 1e-6,
-            "flip_y(calib) at DMD row y lands where calib itself lands at "
-            "row (h-1-y)")
-    r.check(float(np.abs(flip_y(cf).cam_to_dmd - c.cam_to_dmd).max()) < 1e-9,
-            "control: flipping twice is the identity — a pure mirror, not a "
-            "shift hiding as one")
-
-    # ── 2c. flip_x is flip_y's twin, across columns instead of rows ─────────
-    cx = flip_x(c)
-    r.check(cx.dmd_size == c.dmd_size and cx.cam_size == c.cam_size,
-            "flip_x keeps both recorded sizes too")
-    mirrored_x = probe.copy()
-    mirrored_x[:, 0] = (DW - 1) - probe[:, 0]
-    got_x = apply_transform(cx.dmd_to_cam, probe)
-    want_x = apply_transform(c.dmd_to_cam, mirrored_x)
-    r.check(float(np.abs(got_x - want_x).max()) < 1e-6,
-            "flip_x(calib) at DMD column x lands where calib itself lands at "
-            "column (w-1-x)")
-    r.check(float(np.abs(flip_x(cx).cam_to_dmd - c.cam_to_dmd).max()) < 1e-9,
-            "control: flipping X twice is the identity too")
-    r.check(float(np.abs(flip_x(cf).cam_to_dmd
-                        - flip_y(cx).cam_to_dmd).max()) < 1e-9,
-            "flip_x and flip_y commute — each mirrors its own axis "
-            "independently of the other")
-
-    # Vignetting ate the previous method.
-    c_flat = run(make_camera(M, rng, vignette=False))
-    moved = float(np.abs(c.cam_to_dmd - c_flat.cam_to_dmd).max())
-    r.check(moved < 0.05,
-            f"control: vignetting barely moves the fit ({moved:.4f} in the "
-            f"matrix) — a stripe's centroid is local")
-
-    # ── 3. where the camera's view lands on the panel ────────────────────────
-    x0, y0, x1, y1 = c.visible_mirrors()
-    want = apply_transform(np.linalg.inv(M),
-                           np.array([[0, 0], [CW - 1, 0], [CW - 1, CH - 1],
-                                     [0, CH - 1]], float))
-    r.check(abs(x0 - max(0, want[:, 0].min())) < 6
-            and abs(x1 - min(DW, want[:, 0].max())) < 6,
-            f"the camera sees mirrors x {x0}..{x1}, against a true "
-            f"{max(0, want[:, 0].min()):.0f}..{min(DW, want[:, 0].max()):.0f}")
-    r.check(0 <= x0 < x1 <= DW and 0 <= y0 < y1 <= DH,
-            f"…clipped to the panel ({x0}, {y0}, {x1}, {y1}), so it is the "
-            f"usable region and not an extrapolation")
-
-    # ── 4. ROI → mask, the thing the transform is for ────────────────────────
+    # ── ROI → mask, the thing the transform is for ──
     rs = RoiSet()
     rs.add(RectRoi(x=180.0, y=130.0, w=60.0, h=40.0))
     roi = rs.mask((CH, CW))
@@ -829,375 +697,35 @@ def _part_calib() -> int:
             f"projected, the mask lands on the ROI ({100 * hit:.0f}% covered, "
             f"{100 * spill:.0f}% spill)")
     # Or the check above would pass on any mask at all.
-    bad = DmdCalibration(cam_to_dmd=c.cam_to_dmd.copy(), dmd_size=c.dmd_size,
-                         cam_size=c.cam_size)
     off = c.dmd_to_cam.copy()
     off[0, 2] += 40.0
-    bad.cam_to_dmd = np.linalg.inv(off)
+    bad = DmdCalibration(cam_to_dmd=np.linalg.inv(off), dmd_size=c.dmd_size,
+                         cam_size=c.cam_size)
     hit_bad = (footprint(rs.dmd_frame(bad), M) & roi).sum() / max(1, roi.sum())
     r.check(hit_bad < 0.6,
             f"control: a 40 px error in the transform misses "
             f"({100 * hit_bad:.0f}% covered)")
 
-    # ── 4b. knowing when not to trust it ─────────────────────────────────────
-    # >= 0: a clean synthetic fit can average its noise to (near) exact.
-    r.check(0 <= c.holdout_px < 4.0,
-            f"a stripe left OUT of the fit is predicted to {c.holdout_px:.2f} px")
-    # The residual is optimistic by construction; hold-out must not be it.
-    r.check(c.holdout_px != c.rms_px,
-            f"…and it is a different number from the residual "
-            f"({c.holdout_px:.2f} vs {c.rms_px:.2f})")
-    # A wandering stripe the fit absorbs must still show in the hold-out.
-    good = {0: [(d, 100 + 2 * d, 50.0) for d in (-80, -40, 0, 40, 80)],
-            1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
-    clean = holdout_error(good)
-    bent = dict(good)
-    bent[0] = [(d, 100 + 2 * d + (25 if d == 0 else 0), 50.0)
-               for d in (-80, -40, 0, 40, 80)]
-    r.check(clean is not None and clean < 0.01,
-            f"control: a perfectly linear sweep holds out to {clean:.3f} px")
-    r.check(holdout_error(bent) > 20,
-            f"…and one stripe 25 px off its line shows as "
-            f"{holdout_error(bent):.0f} px of hold-out error (the WORST axis, "
-            f"since averaging it against a good axis would hide it)")
-
-    wild = {0: [(d, 100 + 2 * d + (300 if d == 40 else 0), 50.0)
-                for d in (-80, -40, 0, 40, 80)],
-            1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
-    out = fit_axes(wild)
-    r.check(out is not None and out[4] == 9,
-            f"a 300 px outlier is rejected, leaving {out[4]} of 10 stripes")
-    r.check(out[3] < 1.0,
-            f"…so the residual reflects the good stripes ({out[3]:.2f} px)")
-    # Rejection must not keep trimming until it "fits".
-    noisy = {0: [(d, 100 + 2 * d + (3 if i % 2 else -3), 50.0)
-                 for i, d in enumerate((-80, -40, 0, 40, 80))],
-             1: [(d, 100.0, 50 + 2 * d) for d in (-80, -40, 0, 40, 80)]}
-    r.check(fit_axes(noisy)[4] == 10,
-            "control: ordinary scatter is kept — the worst of a good set is "
-            "not an outlier")
-
-    # ── 5. refusing to guess ─────────────────────────────────────────────────
-    try:
-        run(lambda _p: np.full((CH, CW), 50.0))
-        r.check(False, "a dark rig raises rather than fitting noise")
-    except CalibrationError as e:
-        r.check("usable stripe" in str(e),
-                f"a dark rig raises, naming the axis and the count "
-                f"({str(e)[:46]}…)")
-    r.check(fit_axes({0: [(0.0, 1.0, 2.0)], 1: [(0.0, 1.0, 2.0)]}) is None,
-            "one stripe per axis is refused — a fit with no residual cannot be "
-            "judged")
-
-    r.check(c.model == "affine-noshear" and "shear" in c.notes,
-            f"shear is off by default and the measured value is kept in the "
-            f"notes ({c.model})")
-    A = c.dmd_to_cam[:2, :2]
-    gap = abs(np.degrees(np.arctan2(A[1, 1], A[0, 1]))
-              - np.degrees(np.arctan2(A[1, 0], A[0, 0])))
-    gap = min(gap, 360 - gap)
-    r.check(abs(gap - 90.0) < 0.01,
-            f"…so the two axes come out exactly perpendicular ({gap:.3f}deg)")
-    withshear = run(make_camera(M, rng), allow_shear=True)
-    r.check(withshear.model == "affine",
-            "…and allow_shear=True keeps it, for a relay where it is real")
-    vx = np.array([3.0, 1.0])
-    vy = np.array([-0.6, 2.0])
-    ox, oy = deshear(vx, vy)
-    r.check(abs(np.hypot(*ox) - np.hypot(*vx)) < 1e-9
-            and abs(np.hypot(*oy) - np.hypot(*vy)) < 1e-9,
-            "deshear keeps each axis's measured scale")
-    r.check(abs(float(ox @ oy)) < 1e-9,
-            "…makes them perpendicular")
-    r.check(np.sign(vx[0] * vy[1] - vx[1] * vy[0])
-            == np.sign(ox[0] * oy[1] - ox[1] * oy[0]),
-            "…and preserves handedness, so it cannot mirror the registration")
-
-    # n_points is after outlier rejection, hence >=.
-    r.check(len(c.stripes) >= c.n_points and len(c.stripes[0]) == 4,
-            f"the {len(c.stripes)} raw stripe measurements are stored "
-            f"[axis, offset, cam_x, cam_y] ({c.n_points} kept after outlier "
-            f"rejection)")
-
-    # Off-frame stripes are dropped: the rig's DMD field is ~1.9x the camera's.
-    seen = stripe_sweep(lambda _f: None, lambda: np.full((CH, CW), 50.0),
-                        (DW, DH), log=lambda _s: None)
-    r.check(seen[0] == [] and seen[1] == [],
-            "an invisible stripe is dropped rather than contributing a NaN")
-
-    big = np.array([[6.0, 0.0, -700.0], [0.0, 6.0, -500.0], [0.0, 0.0, 1.0]])
-    img = make_camera(big, rng)
-    held = {"f": np.zeros((DH, DW), np.uint8)}
-    seen = stripe_sweep(lambda f: held.__setitem__("f", f),
-                        lambda: img(held["f"]), (DW, DH), log=lambda _s: None,
-                        thick_frac=TEST_THICK_FRAC, cross_frac=TEST_CROSS_FRAC)
-    kept = len(seen[0]) + len(seen[1])
-    r.check(kept < 2 * len(STRIPE_OFFSETS),
-            f"…and with the field {big[0, 0]:.0f}x the panel, only {kept} of "
-            f"{2 * len(STRIPE_OFFSETS)} stripes stay on the frame")
-
-    # ── 6b. a rig too tilted for affine — the homography model ───────────────
-    # Real perspective (bottom row not [0, 0, 1]): scale varies across the
-    # panel, which no affine fit can represent.
-    tilt = np.array([[1.3, 0.05, 40.0], [0.02, 1.1, 20.0],
-                     [0.0015, 0.0005, 1.0]])
-    d0 = 0.0015 * (DW - 1) + 0.0005 * (DH - 1) + 1.0
-    r.check(d0 > 0.0 and (0.0005 * (DH - 1) + 1.0) > 0.0,
-            "control: the synthetic tilt's denominator stays positive across "
-            "the whole panel, so it is a well-posed homography, not one with "
-            "a vanishing line crossing the DMD")
-    img_tilt = make_camera(tilt, rng, vignette=False)
-    probe = np.array([[DW / 4, DH / 4], [3 * DW / 4, DH / 4],
-                      [DW / 4, 3 * DH / 4], [3 * DW / 4, 3 * DH / 4]], float)
-
-    # Otherwise "homography does better" would prove nothing.
-    c_aff = run(img_tilt, model="affine")
-    err_aff = float(np.abs(apply_transform(np.linalg.inv(c_aff.cam_to_dmd), probe)
-                           - apply_transform(tilt, probe)).max())
-    r.check(err_aff > 5.0,
-            f"control: an affine fit measurably mis-registers real "
-            f"perspective ({err_aff:.2f} px)")
-
-    c_h = run(img_tilt, model="homography")
-    r.check(c_h.model == "homography", "the result records which model fit it")
-    err_h = float(np.abs(apply_transform(np.linalg.inv(c_h.cam_to_dmd), probe)
-                         - apply_transform(tilt, probe)).max())
-    r.check(err_h < 2.0,
-            f"…while the homography fit recovers it (max {err_h:.2f} px, vs "
-            f"{err_aff:.2f} px for the affine control on the same data)")
-    r.check(c_h.holdout_px >= 0.0, "hold-out error is computed for this model too")
-
-    # 8 DOF, not 6: three offsets are too few.
-    try:
-        run(img_tilt, model="homography", offsets=(-100, 0, 100))
-        r.check(False, "too few points for a homography should raise")
-    except CalibrationError as e:
-        r.check("homography" in str(e),
-                f"…naming the model that needed more of them ({str(e)[:50]}…)")
-
-    try:
-        run(img_tilt, model="projective")
-        r.check(False, "an unrecognized model name should raise")
-    except CalibrationError as e:
-        r.check("projective" in str(e), f"…naming the bad value ({e})")
-
-    wide = offset_stripe(DW, DH, 0, 40.0, cross_frac=0.25)
-    narrow = offset_stripe(DW, DH, 0, 40.0, cross_frac=0.05)
-    r.check(0 < int(narrow.sum()) < int(wide.sum()),
-            f"a smaller cross_frac makes a smaller stripe ({int(narrow.sum())} "
-            f"vs {int(wide.sum())} lit px), which is what keeps a magnified "
-            f"footprint from clipping the frame edge on a tilted rig")
-
-    # ── 6. it round-trips through JSON ───────────────────────────────────────
+    # ── it round-trips through JSON ──
     p = Path(tempfile.mkdtemp()) / "calib.json"
     c.save(p)
     back = DmdCalibration.load(p)
     r.check(np.allclose(back.cam_to_dmd, c.cam_to_dmd)
-            and back.dmd_size == c.dmd_size and back.rms_px == c.rms_px
-            and back.stripes == c.stripes,
-            "a calibration survives save/load with its provenance and its "
-            "raw stripes")
-    r.check(back.vignette is None,
-            "…and a calibration with no vignette marked stays that way")
-
-    # ── 7. manual corner adjustment (with_corners) ───────────────────────────
-    # Only the sizes need be right: with_corners replaces the mapping outright.
-    wrong = DmdCalibration(
-        cam_to_dmd=np.linalg.inv(np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
-                                           [0.0, 0.0, 1.0]])),
-        dmd_size=(DW, DH), cam_size=(CW, CH), model="affine-noshear",
-        notes="a starting point with the wrong scale entirely")
-    dmd_corners = np.array([[0, 0], [DW - 1, 0], [DW - 1, DH - 1],
-                            [0, DH - 1]], float)
-    true_cam_corners = apply_transform(M, dmd_corners)
-    fixed = with_corners(wrong, true_cam_corners)
-    r.check(np.allclose(fixed.accessible_corners(), true_cam_corners, atol=1e-6),
-            "with_corners lands the panel's own corners exactly on the ones "
-            "handed to it")
-    probe2 = np.array([[DW / 2, DH / 2], [DW / 3, 2 * DH / 3]], float)
-    err2 = float(np.abs(apply_transform(fixed.dmd_to_cam, probe2)
-                        - apply_transform(M, probe2)).max())
-    r.check(err2 < 1e-4,
-            f"…and since the true relay IS affine (a homography's special "
-            f"case), the 4 corners alone reconstruct it everywhere else too "
-            f"(max {err2:.2e} px)")
-    r.check(fixed.rms_px == 0.0 and fixed.holdout_px == 0.0,
-            "an exact 4-point fit has no residual left to report")
-    r.check(fixed.model == "affine-noshear+corners"
-            and "corners manually adjusted" in fixed.notes,
-            f"the correction is recorded, not silent ({fixed.model!r})")
-    twice = with_corners(fixed, true_cam_corners)
-    r.check(twice.model == "affine-noshear+corners",
-            f"…and adjusting twice doesn't pile up the same tag "
-            f"({twice.model!r})")
-    r.check(fixed.dmd_size == wrong.dmd_size and fixed.cam_size == wrong.cam_size,
-            "the sizes travel through unchanged — only the mapping is replaced")
-
-    try:
-        with_corners(wrong, np.array([[0, 0], [10, 0.001], [20, 0.002],
-                                      [30, 0.003]], float))
-        r.check(False, "near-collinear corners are refused")
-    except CalibrationError as e:
-        r.check("collinear" in str(e), f"…naming why ({e})")
-
-    # ── 8. marking the optical vignette (with_vignette / well_lit) ──────────
-    r.check(np.all(fixed.well_lit(probe2)),
-            "well_lit says everything is fine when no vignette was ever marked")
-    vig = with_vignette(fixed, 100.0, 80.0, 50.0)
-    r.check(vig.vignette == (100.0, 80.0, 50.0),
-            f"with_vignette records the circle as given ({vig.vignette})")
-    r.check(np.array_equal(vig.cam_to_dmd, fixed.cam_to_dmd),
-            "…and touches nothing about the geometric mapping — vignette and "
-            "registration are independent corrections")
-    inside = np.array([[100.0, 80.0], [130.0, 80.0]])       # centre, +30 (< r)
-    outside = np.array([[100.0, 200.0], [400.0, 400.0]])    # well past r=50
-    r.check(bool(vig.well_lit(inside).all()) and not vig.well_lit(outside).any(),
-            "well_lit tells inside the marked circle from outside it")
-    r.check(vig.well_lit(np.array([[150.0, 80.0]]))[0]
-            and not vig.well_lit(np.array([[150.01, 80.0]]))[0],
-            "…right at the boundary (r=50 from (100, 80))")
-    back_vig = without_vignette(vig)
-    r.check(back_vig.vignette is None and np.all(back_vig.well_lit(outside)),
-            "without_vignette un-marks it — the points outside the old "
-            "circle read as fine again")
-    try:
-        with_vignette(fixed, 0.0, 0.0, 0.0)
-        r.check(False, "a non-positive radius is refused")
-    except ValueError as e:
-        r.check("radius" in str(e), f"…naming why ({e})")
-
-    p2 = Path(tempfile.mkdtemp()) / "calib_vig.json"
-    vig.save(p2)
-    back2 = DmdCalibration.load(p2)
-    r.check(back2.vignette == vig.vignette,
-            "a marked vignette survives save/load too")
-
+            and back.dmd_size == c.dmd_size and back.cam_size == c.cam_size
+            and back.model == c.model,
+            "a calibration survives save/load")
+    old = c.to_dict() | {"model": "affine-noshear+corners", "rms_px": 0.4,
+                         "stripes": [[0, 0.0, 1.0, 2.0]],
+                         "vignette": [1.0, 2.0, 3.0]}
+    back = DmdCalibration.from_dict(old)
+    r.check(np.allclose(back.cam_to_dmd, c.cam_to_dmd)
+            and back.model == "affine-noshear+corners",
+            "a file from the old sweep/corner tools still loads (its fit "
+            "statistics and vignette ignored)")
     return r.finish()
 
 
-# ═══ sweep ══════════════════════════════════════════════════════════════
-
-class LaggingRig:
-    """A projector and a camera whose next `latency` frames still carry the
-    previous pattern, as the real one's do — without that lag
-    `FreshGrabber`'s settle count would go untested."""
-
-    def __init__(self, M, rng, *, latency: int = 1, tick: int = 3):
-        self.image = make_camera(M, rng)
-        self.latency, self.tick = latency, tick
-        self.pattern = np.zeros((DH, DW), np.uint8)
-        self._queue: list = []              # patterns still in flight
-        self._frame = np.zeros((CH, CW))    # what the display last showed
-        self.n_pumps = 0
-        self.stalled = False
-
-    def project(self, frame) -> None:
-        self.pattern = np.asarray(frame)
-
-    def pump(self) -> None:
-        """One display tick. Publishes a NEW array object, as the adapter does."""
-        self.n_pumps += 1
-        if self.stalled or self.n_pumps % self.tick:
-            return
-        self._queue.append(self.pattern)
-        if len(self._queue) > self.latency:
-            shown = self._queue.pop(0)
-            self._frame = self.image(shown)
-
-    def latest(self):
-        return self._frame
-
-
-def check_fresh_grabber(r: Report) -> None:
-    rng = np.random.default_rng(3)
-    M = true_transform()
-
-    def marked(v):
-        return np.full((DH, DW), np.uint8(v))
-
-    def which(frame):
-        """Which pattern this frame came from: lit -> 255, dark -> 0. Against
-        a midpoint: two dark frames compared directly is a coin flip."""
-        return 255 if float(np.mean(frame)) > 1.5 * float(np.mean(dark_ref)) else 0
-
-    rig = LaggingRig(M, rng, latency=1)
-    rig.project(marked(0))
-    for _ in range(20):
-        rig.pump()
-    dark_ref = rig.latest().copy()
-
-    g = FreshGrabber(rig.latest, settle=1, timeout_s=2.0, pump=rig.pump)
-    rig.project(marked(255))
-    got = g.grab()
-    r.check(which(got) == 255,
-            "grab() returns a frame exposed AFTER the projection")
-
-    rig2 = LaggingRig(M, rng, latency=1)
-    rig2.project(marked(0))
-    for _ in range(20):
-        rig2.pump()
-    g0 = FreshGrabber(rig2.latest, settle=0, timeout_s=2.0, pump=rig2.pump)
-    rig2.project(marked(255))
-    r.check(which(g0.grab()) == 0,
-            "control: settle=0 returns the STALE frame — the lag is real, and "
-            "the settle count is what defeats it")
-
-    stuck = np.zeros((CH, CW))
-    frozen = FreshGrabber(lambda: stuck, settle=0, timeout_s=0.15,
-                          pump=lambda: None)
-    try:
-        frozen.grab()
-        r.check(False, "a stalled camera raises")
-    except CalibrationError as e:
-        r.check("RUNNING" in str(e) or "running" in str(e),
-                f"a stalled camera raises, naming the cause ({str(e)[:60]}…)")
-
-    seq = [np.zeros((4, 4)), np.zeros((4, 4)), np.zeros((4, 4))]
-    box = {"i": 0}
-
-    def next_equal():
-        box["i"] = min(box["i"] + 1, len(seq) - 1)
-        return seq[box["i"]]
-
-    g2 = FreshGrabber(lambda: seq[box["i"]], settle=0, timeout_s=1.0,
-                      pump=next_equal)
-    ok = True
-    try:
-        g2.grab()
-    except CalibrationError:
-        ok = False
-    r.check(ok, "equal-but-distinct frames count as new (identity, not ==) — "
-                "an unchanging sample still yields real exposures")
-
-
-def check_end_to_end(r: Report) -> None:
-    """calibrate() through a camera that LAGS: a wrong pairing of project and
-    grab shows only here, not in either half's own tests."""
-    rng = np.random.default_rng(11)
-    M = true_transform()
-    rig = LaggingRig(M, rng, latency=1, tick=2)
-    g = FreshGrabber(rig.latest, settle=1, timeout_s=2.0, pump=rig.pump)
-    n = {"n": 0}
-
-    def project(f):
-        n["n"] += 1
-        rig.project(f)
-
-    c = calibrate(project, g.grab, (DW, DH), log=lambda _s: None,
-                 thick_frac=TEST_THICK_FRAC, cross_frac=TEST_CROSS_FRAC)
-    r.check(c.rms_px < 2.0,
-            f"a calibration comes back through a lagging camera "
-            f"(rms {c.rms_px:.2f} px over {c.n_points} stripes)")
-    pts = np.array([[DW / 2, DH / 2], [DW / 4, DH / 4]], float)
-    err = float(np.abs(apply_transform(np.linalg.inv(c.cam_to_dmd), pts)
-                       - apply_transform(M, pts)).max())
-    r.check(err < 4.0,
-            f"…and agrees with the transform we projected through ({err:.2f} px)")
-    r.check(n["n"] == sweep_exposures() == 1 + 2 * len(STRIPE_OFFSETS),
-            f"sweep_exposures() is what the run really costs "
-            f"({sweep_exposures()} quoted, {n['n']} run) — the operator is "
-            f"shown that number before any light is emitted")
-
+# ═══ reticle ════════════════════════════════════════════════════════════
 
 def check_display_modes(r: Report) -> None:
     """All ON / Image / ROIs each load a different frame, and ROI needs a calib."""
@@ -1248,8 +776,8 @@ def check_display_modes(r: Report) -> None:
 
 
 def check_project_frame(r: Report) -> None:
-    """`project_frame` must not go through `build_frame`: a warped calibration
-    pattern still decodes, into the wrong geometry."""
+    """`project_frame` must not go through `build_frame`: the panel's scale
+    and rotation would move the reticle off the pose being steered."""
     from acqApp.acq.devices import RawProjector
     from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, DmdSettings,
                                             MockDmdController)
@@ -1261,7 +789,8 @@ def check_project_frame(r: Report) -> None:
     r.check(isinstance(c, RawProjector),
             "the mock controller satisfies RawProjector")
 
-    pattern = offset_stripe(DEFAULT_W, DEFAULT_H, 0, 200.0)
+    pattern = np.zeros((DEFAULT_H, DEFAULT_W), np.uint8)
+    pattern[300:340, 600:620] = ON
     c.project_frame(pattern)
     held = c._pattern
     r.check(np.array_equal(held, pattern),
@@ -1285,7 +814,7 @@ def check_project_frame(r: Report) -> None:
                 f"a mis-sized frame is refused, naming both shapes ({e})")
 
     # After a calibration, Display (apply_settings, then display) must show
-    # the selection, not the last stripe, though no setting changed.
+    # the selection, not the last reticle, though no setting changed.
     from acqApp.devices.dmd.control import MODE_ALL_ON
     on = MockDmdController(DmdSettings(display_mode=MODE_ALL_ON))
     on.apply_settings(on._s)
@@ -1297,8 +826,9 @@ def check_project_frame(r: Report) -> None:
 
 
 def check_wiring(r: Report) -> None:
-    """The Calibrate button reaches the adapter, which opens the dialog with
-    the camera stopped and hands it set_live."""
+    """The Calibrate button reaches the adapter, which starts the camera,
+    opens the reticle alignment on a fresh frame, ends dark, puts the camera
+    back, and saves what was aligned."""
     isolate_user_state()
     app = qt_app()
     sys.argv = ["main.py", "--mock"]
@@ -1311,43 +841,57 @@ def check_wiring(r: Report) -> None:
 
     # Requiring Live view first would add nothing: the dialog's own button is
     # the actuation decision.
-    seen = {"box": 0, "dialog": 0, "exec": 0, "live": []}
-    from PyQt6.QtWidgets import QMessageBox
+    seen = {"box": 0, "dialog": 0, "exec": 0, "live_during": None}
+    from PyQt6.QtWidgets import QDialog, QFileDialog, QMessageBox
     real_info = QMessageBox.information
     QMessageBox.information = staticmethod(
         lambda *a, **k: seen.__setitem__("box", seen["box"] + 1))
-    import acqApp.devices.dmd.sweep as SW
-    real_dlg = SW.CalibrationDialog
+    import acqApp.devices.dmd.reticle_align as RA
+    from acqApp.devices.dmd.calibration import ReticlePose
+    real_dlg = RA.ReticleAlignDialog
+    tmp = Path(tempfile.mkdtemp())
+    real_save = QFileDialog.getSaveFileName
+    QFileDialog.getSaveFileName = staticmethod(
+        lambda *a, **k: (str(tmp / "aligned.json"), ""))
 
     class FakeDialog:
-        """Stands in for the sweep window — it must be constructed AND exec'd,
-        so a wiring that builds it and forgets to show it still fails."""
+        """Stands in for the reticle window — it must be constructed AND
+        exec'd, so a wiring that builds it and forgets to show it fails."""
 
-        def __init__(self, projector, *_a, **kw):
+        def __init__(self, project, dmd_size, frame, *, live_source=None,
+                     seed=None, parent=None):
             seen["dialog"] += 1
-            seen["live"].append(kw.get("set_live"))
-            self._proj = projector
+            seen["live_during"] = win._btn_run.isChecked()
+            seen["cam_size"] = (frame.shape[1], frame.shape[0])
+            self._project, self._dmd, self._cam = project, dmd_size, seen["cam_size"]
+            self.calibration = None
 
         def exec(self):
             seen["exec"] += 1
-            w, h = self._proj.resolution
-            self._proj.project_frame(offset_stripe(w, h, 0, 100.0))
-            self._proj.stop()
-            return 0
+            w, h = self._dmd
+            self._project(np.full((h, w), ON, np.uint8))
+            self.calibration = ReticlePose.centred(
+                self._dmd, self._cam).to_calibration(self._dmd, self._cam)
+            return QDialog.DialogCode.Accepted
 
-    SW.CalibrationDialog = FakeDialog
+    RA.ReticleAlignDialog = FakeDialog
     try:
         r.check(not win._btn_run.isChecked(), "control: the camera is stopped")
         dmd.panel.calibrate_requested.emit()
         r.check(seen["dialog"] == 1 and seen["exec"] == 1 and seen["box"] == 0,
-                "the dialog opens with the camera stopped — it starts the "
-                "camera itself rather than refusing")
-        r.check(callable(seen["live"][0]),
-                "…and is handed set_live, so it can start the camera and put "
-                "it back")
+                "the reticle alignment opens with the camera stopped — it "
+                "starts the camera itself rather than refusing")
+        r.check(seen["live_during"] is True and not win._btn_run.isChecked(),
+                "…live while it is open, stopped again after")
         r.check(not dmd.controller._raw and not dmd.controller.projecting,
-                "after it the held frame is the selection again, not the last "
-                "stripe the card would show")
+                "after it the DMD is dark and the held frame is the selection "
+                "again, not the reticle the card would show")
+        saved = tmp / "aligned.json"
+        r.check(saved.is_file()
+                and dmd.panel.settings.calib_path == str(saved)
+                and DmdCalibration.load(saved).cam_size == seen["cam_size"],
+                "what was aligned is saved and adopted, in the camera px of "
+                "the frame it was aligned on")
 
         was = win.set_live(True)
         pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
@@ -1363,14 +907,11 @@ def check_wiring(r: Report) -> None:
         r.check(not win._btn_run.isChecked(), "set_live(False) stops it again")
     finally:
         QMessageBox.information = real_info
-        SW.CalibrationDialog = real_dlg
+        QFileDialog.getSaveFileName = real_save
+        RA.ReticleAlignDialog = real_dlg
 
-    # Else the ROI editor keeps drawing the old field.
-    dmd._adopt_calibration("C:/nowhere/dmd_calib_test.json")
-    r.check(dmd.panel.settings.calib_path.endswith("dmd_calib_test.json"),
-            "a saved calibration is adopted by the panel straight away")
-    r.check(dmd.metadata()["dmd_calibration"] == "dmd_calib_test.json",
-            "…and lands in the session metadata")
+    r.check(dmd.metadata()["dmd_calibration"] == "aligned.json",
+            "the adopted calibration lands in the session metadata")
 
     win._btn_run.setChecked(False)
     pump(app, 0.3)
@@ -1378,320 +919,14 @@ def check_wiring(r: Report) -> None:
     pump(app, 0.1)
 
 
-def check_geometry_controls(r: Report) -> None:
-    """The Model/cross-length controls seed from the rig profile, and the
-    operator's choice, not the seed, reaches calibrate()."""
-    # Held: an unreferenced QApplication is GC'd, and every widget built
-    # after that segfaults with no traceback.
-    _app = qt_app()
-    import acqApp.devices.dmd.sweep as SW
-
-    class FakeProjector:
-        resolution = (64, 48)
-
-        def project_frame(self, _f):
-            pass
-
-        def stop(self):
-            pass
-
-    real_seed = SW.config.rig_dmd_calibration
-    SW.config.rig_dmd_calibration = lambda: {"model": "homography",
-                                             "cross_frac": 0.06}
-    try:
-        dlg = SW.CalibrationDialog(FakeProjector(), lambda: None, real=True)
-        r.check(dlg._cmb_model.currentData() == "homography",
-                "the model combo seeds from the rig profile")
-        r.check(abs(dlg._spn_cross.value() - 6.0) < 1e-6,
-                "…and so does the cross-length spinbox (as a percent)")
-
-        captured: dict = {}
-
-        def fake_calibrate(_project, _grab, _size, **kw):
-            captured.update(kw)
-            raise SW.CalibrationError("stub — nothing to fit")
-
-        real_calibrate = SW.calibrate
-        SW.calibrate = fake_calibrate
-        try:
-            dlg._cmb_model.setCurrentIndex(0)      # override the seed: affine
-            dlg._spn_cross.setValue(12.5)
-            dlg._run()
-        finally:
-            SW.calibrate = real_calibrate
-        r.check(captured.get("model") == "affine",
-                "the dialog's own selection reaches calibrate(), not the "
-                "rig-profile seed it started from")
-        r.check(abs(captured.get("cross_frac", 0.0) - 0.125) < 1e-6,
-                "…and the percent spinbox arrives as a fraction")
-    finally:
-        SW.config.rig_dmd_calibration = real_seed
-
-
-def check_corner_adjust(r: Report) -> None:
-    """"Adjust corners…" is disabled until a fit exists, projects ALL-ON (not
-    a stripe) for the operator to align against, and only replaces `_calib`
-    on Apply — never on Cancel."""
-    _app = qt_app()          # kept alive — see check_geometry_controls
-    import acqApp.devices.dmd.sweep as SW
-
-    projected: list = []
-
-    class FakeProjector:
-        resolution = (64, 48)
-
-        def project_frame(self, f):
-            projected.append(np.asarray(f).copy())
-
-        def stop(self):
-            pass
-
-    # A fresh array every call: FreshGrabber keys on identity, and a reused
-    # one would make every grab() wait out its timeout.
-    counter = {"n": 0}
-
-    def source():
-        counter["n"] += 1
-        return np.full((10, 10), counter["n"] % 256, np.uint8)
-
-    dlg = SW.CalibrationDialog(FakeProjector(), source, real=True)
-    r.check(not dlg._btn_adjust.isEnabled(),
-            "corner adjustment is unavailable before any fit exists")
-
-    stub_calib = DmdCalibration(
-        cam_to_dmd=np.eye(3), dmd_size=(64, 48), cam_size=(10, 10))
-    dlg._calib = stub_calib
-    dlg._btn_save.setEnabled(True)
-    dlg._btn_adjust.setEnabled(True)
-
-    # Cancel first: the fake reports Rejected until `result` is set.
-    seen: dict = {"built": 0, "exec": 0}
-    adjusted = DmdCalibration(
-        cam_to_dmd=2 * np.eye(3), dmd_size=(64, 48), cam_size=(10, 10),
-        notes="corners manually adjusted")
-
-    class FakeCornerDialog:
-        result = None
-
-        def __init__(self, calib, frame, *, parent=None):
-            seen["built"] += 1
-            seen["calib_in"] = calib
-            seen["frame_shape"] = np.asarray(frame).shape
-
-        def exec(self):
-            seen["exec"] += 1
-            return SW.QDialog.DialogCode.Accepted if self.result is not None \
-                else SW.QDialog.DialogCode.Rejected
-
-        @property
-        def calibration(self):
-            return self.result
-
-    import acqApp.devices.dmd.corner_editor as CE
-    real_corner_dlg = CE.CornerAdjustDialog
-    CE.CornerAdjustDialog = FakeCornerDialog
-    try:
-        dlg._adjust_corners()
-        r.check(seen["built"] == 1 and seen["exec"] == 1,
-                "the corner-adjust dialog is built AND exec'd on click")
-        r.check(len(projected) == 1 and bool(np.all(projected[0] == ON)),
-                "it projects ALL-ON, not a stripe — that's what the operator "
-                "needs to see to align the corners against")
-        r.check(seen["calib_in"] is stub_calib,
-                "…handed the fit that's currently in force")
-        r.check(seen["frame_shape"] == (10, 10),
-                "…and the frame it just grabbed")
-        r.check(dlg._calib is stub_calib,
-                "Cancel (exec -> Rejected) leaves the calibration untouched")
-        for b in (dlg._btn_run, dlg._btn_adjust, dlg._btn_save, dlg._btn_close):
-            r.check(b.isEnabled(),
-                    "…and every button is left enabled again, not stuck mid-run")
-
-        FakeCornerDialog.result = adjusted
-        dlg._adjust_corners()
-        r.check(dlg._calib is adjusted,
-                "Apply (exec -> Accepted) adopts the corner-adjusted calibration")
-    finally:
-        CE.CornerAdjustDialog = real_corner_dlg
-
-
-def check_corner_editor(r: Report) -> None:
-    """The real `CornerAdjustDialog`: corners AND the vignette circle reach
-    Apply's result, independently of each other, and Cancel discards both."""
-    _app = qt_app()          # kept alive — see check_geometry_controls
-    from acqApp.devices.dmd.corner_editor import CornerAdjustDialog
-
-    calib = DmdCalibration(cam_to_dmd=np.linalg.inv(
-        np.array([[4.0, 0.0, 100.0], [0.0, 4.0, 60.0], [0.0, 0.0, 1.0]])),
-        dmd_size=(64, 48), cam_size=(400, 300))
-    frame = np.zeros((300, 400), np.uint8)
-
-    dlg = CornerAdjustDialog(calib, frame)
-    r.check(len(dlg._targets) == 4,
-            "one draggable corner per DMD corner")
-    r.check(not dlg._chk_vignette.isChecked() and not dlg._vignette_roi.isVisible(),
-            "the vignette circle starts unmarked and hidden when the "
-            "calibration never had one")
-
-    dlg._chk_vignette.setChecked(True)
-    r.check(dlg._vignette_roi.isVisible(),
-            "checking the box shows it, for dragging")
-    dlg._vignette_roi.setPos([150.0, 110.0])
-    dlg._vignette_roi.setSize([80.0, 80.0])    # r=40, centre (190, 150)
-    dlg._targets[0].setPos(5.0, 5.0)           # move the (0, 0) corner too
-
-    dlg._apply()
-    got = dlg.calibration
-    r.check(got is not None, "Apply with a checked box produces a result")
-    r.check(got.vignette is not None
-            and abs(got.vignette[0] - 190.0) < 1e-6
-            and abs(got.vignette[1] - 150.0) < 1e-6
-            and abs(got.vignette[2] - 40.0) < 1e-6,
-            f"…recording the circle exactly as dragged ({got.vignette})")
-    r.check(np.allclose(got.accessible_corners()[0], [5.0, 5.0]),
-            "…and the dragged corner too — both reach the same result "
-            "independently")
-
-    dlg2 = CornerAdjustDialog(calib, frame)
-    dlg2.reject()
-    r.check(dlg2.calibration is None, "Cancel produces no result at all")
-
-    marked = DmdCalibration(cam_to_dmd=calib.cam_to_dmd, dmd_size=calib.dmd_size,
-                            cam_size=calib.cam_size, vignette=(200.0, 150.0, 90.0))
-    dlg3 = CornerAdjustDialog(marked, frame)
-    r.check(dlg3._chk_vignette.isChecked() and dlg3._vignette_roi.isVisible(),
-            "a previously marked vignette shows pre-checked and visible")
-    pos, size = dlg3._vignette_roi.pos(), dlg3._vignette_roi.size()
-    r.check(abs(float(pos[0]) + float(size[0]) / 2 - 200.0) < 1e-6
-            and abs(float(pos[1]) + float(size[1]) / 2 - 150.0) < 1e-6
-            and abs(float(size[0]) / 2 - 90.0) < 1e-6,
-            "…seeded at the calibration's own circle, not a fresh guess")
-
-    dlg3._chk_vignette.setChecked(False)
-    dlg3._apply()
-    r.check(dlg3.calibration.vignette is None,
-            "unchecking before Apply clears a previously marked vignette")
-
-
-def check_manual_live(r: Report) -> None:
-    """Manual (live): works with no sweep, seeds sanely, projects all-on and
-    ends dark whatever happens, the editor image follows the camera, and only
-    Apply replaces `_calib`."""
-    _app = qt_app()          # kept alive — see check_geometry_controls
-    import acqApp.devices.dmd.corner_editor as CE
-    import acqApp.devices.dmd.sweep as SW
-    from acqApp.devices.dmd.calibration import manual_seed
-
-    seed = manual_seed((64, 48), (400, 300))
-    c = seed.accessible_corners()
-    r.check(seed.model == "manual+corners", f"seed is labelled manual ({seed.model})")
-    r.check(c[:, 0].min() > 0 and c[:, 0].max() < 399
-            and c[:, 1].min() > 0 and c[:, 1].max() < 299,
-            "the seed rectangle sits inside the camera frame")
-    r.check(abs((c[1, 0] - c[0, 0]) / (c[3, 1] - c[0, 1]) - 64 / 48) < 1e-6,
-            "…at the panel's aspect ratio")
-
-    projected: list = []
-    events: list = []
-
-    class FakeProjector:
-        resolution = (64, 48)
-
-        def project_frame(self, f):
-            projected.append(np.asarray(f).copy())
-
-        def stop(self):
-            events.append("dark")
-
-    counter = {"n": 0}
-
-    def source():
-        counter["n"] += 1
-        return np.full((30, 40), counter["n"] % 256, np.uint8)
-
-    seen: dict = {}
-
-    class FakeEditor:
-        result = None
-
-        def __init__(self, calib, frame, *, live_source=None, start_label="",
-                     parent=None):
-            seen.update(calib=calib, live=live_source, label=start_label)
-
-        def exec(self):
-            events.append("exec")
-            return SW.QDialog.DialogCode.Accepted if self.result is not None \
-                else SW.QDialog.DialogCode.Rejected
-
-        @property
-        def calibration(self):
-            return self.result
-
-    dlg = SW.CalibrationDialog(FakeProjector(), source, real=True)
-    r.check(dlg._btn_manual.isEnabled() and dlg._calib is None,
-            "Manual is available with no sweep done")
-    real_editor = CE.CornerAdjustDialog
-    CE.CornerAdjustDialog = FakeEditor
-    try:
-        dlg._cancel = True               # as a stopped sweep leaves it
-        dlg._manual_live()
-        r.check(len(projected) == 1 and bool(np.all(projected[0] == ON)),
-                "it projects ALL-ON")
-        r.check(seen["calib"].model == "manual+corners" and seen["live"] is source
-                and seen["label"] == "starting rectangle",
-                "with no sweep the editor starts from the seed, fed by the camera")
-        r.check(events == ["exec", "dark"], f"light is off after the editor ({events})")
-        r.check(dlg._calib is None, "Cancel leaves the calibration unset")
-        r.check(not dlg._btn_save.isEnabled() and not dlg._btn_adjust.isEnabled(),
-                "…and Save / Adjust stay off")
-
-        FakeEditor.result = manual_seed((64, 48), (40, 30))
-        events.clear()
-        dlg._manual_live()
-        r.check(dlg._calib is FakeEditor.result and dlg._btn_save.isEnabled()
-                and dlg._btn_adjust.isEnabled(),
-                "Apply adopts the calibration and enables Save / Adjust")
-
-        dlg._manual_live()
-        r.check(seen["calib"] is FakeEditor.result and seen["label"] == "sweep fit",
-                "with a fit in hand the editor starts from it")
-
-        class Boom(FakeEditor):
-            def exec(self):
-                raise RuntimeError("boom")
-        CE.CornerAdjustDialog = Boom
-        events.clear()
-        dlg._manual_live()
-        r.check(events == ["dark"] and dlg._btn_run.isEnabled()
-                and dlg._btn_manual.isEnabled(),
-                "an editor failure still ends dark and re-enables the buttons")
-    finally:
-        CE.CornerAdjustDialog = real_editor
-
-    # The real editor: a new frame object reaches the image; the same one doesn't.
-    calib = manual_seed((64, 48), (400, 300))
-    frames = [np.zeros((300, 400), np.uint8)]
-    ed = CE.CornerAdjustDialog(calib, frames[0], live_source=lambda: frames[-1])
-    r.check(ed._feed.active, "a live editor polls the camera")
-    bright = np.full((300, 400), 200, np.uint8)
-    frames.append(bright)
-    ed._feed.refresh()
-    r.check(ed._img.image.max() == 200, "a newer frame replaces the image")
-    ed.reject()
-    r.check(not ed._feed.active, "closing the editor stops the polling")
-    still = CE.CornerAdjustDialog(calib, frames[0])
-    r.check(not still._feed.active, "a still editor never polls")
-
-
 def check_reticle(r: Report) -> None:
     """Align to reticle: the pose round-trips through a matrix, the projected
-    shapes land on the reticle under that pose, the dialog steers and applies
-    it, and the calibration dialog ends dark around it."""
+    shapes land on the reticle under that pose, and the dialog steers and
+    applies it."""
     _app = qt_app()
     import acqApp.devices.dmd.reticle_align as RA
-    import acqApp.devices.dmd.sweep as SW
     from acqApp.devices.dmd.calibration import (ReticlePose, apply_transform,
-                                                reticle_frame, with_vignette)
+                                                reticle_frame)
 
     dmd, cam = (64, 48), (400, 300)
     for p in (ReticlePose(30.0, 20.0, 12.5, 0.12, 0.1),
@@ -1741,63 +976,50 @@ def check_reticle(r: Report) -> None:
             and np.allclose(c.cam_to_dmd, want.matrix(cam)) and c.cam_size == cam,
             "Use this returns the steered pose as a calibration")
 
-    seed = with_vignette(want.to_calibration(dmd, cam), 200, 150, 90)
+    seed = want.to_calibration(dmd, cam)
     dlg2 = RA.ReticleAlignDialog(projected.append, dmd, frame, seed=seed)
     r.check(np.allclose(dlg2.pose().matrix(cam), seed.cam_to_dmd, atol=1e-3),
-            "a loaded fit seeds the guess")
-    dlg2._apply()
-    r.check(dlg2.calibration.vignette == seed.vignette, "…and keeps its vignette")
+            "a loaded calibration seeds the guess")
     dlg2.reject()
-
-    events: list = []
-
-    class FakeProjector:
-        resolution = dmd
-
-        def project_frame(self, f):
-            events.append("light")
-
-        def stop(self):
-            events.append("dark")
+    other = ReticlePose(1.0, 1.0).to_calibration(dmd, (200, 100))
+    dlg3 = RA.ReticleAlignDialog(projected.append, dmd, frame, seed=other)
+    corners = ReticlePose.centred(dmd, cam).to_calibration(
+        dmd, cam).accessible_corners()
+    r.check(np.allclose(dlg3.pose().matrix(cam),        # the spins round
+                        ReticlePose.centred(dmd, cam).matrix(cam), atol=0.05)
+            and np.ptp(corners[:, 0]) <= 0.6 * cam[0] + 1e-6
+            and np.ptp(corners[:, 1]) <= 0.6 * cam[1] + 1e-6,
+            "a seed for another camera size is ignored: the guess starts "
+            "upright and centred, the panel inside 60 % of the frame")
+    dlg3.reject()
 
     n = {"i": 0}
 
     def source():
         n["i"] += 1
-        return np.full((300, 400), n["i"] % 256, np.uint8)
+        return None if n["i"] < 3 else np.zeros((4, 4))
 
-    class FakeAlign:
-        def __init__(self, project, dmd_size, frame, *, live_source=None,
-                     seed=None, parent=None):
-            pass
-
-        def exec(self):
-            events.append("exec")
-            return SW.QDialog.DialogCode.Accepted
-
-        calibration = c
-
-    cal = SW.CalibrationDialog(FakeProjector(), source, real=True)
-    cal._running = True
-    cal.reject()
-    r.check(cal._cancel, "closing mid-sweep stops the sweep rather than hiding it")
-    cal._running = cal._cancel = False
-    real_dlg = RA.ReticleAlignDialog
-    RA.ReticleAlignDialog = FakeAlign
+    got = RA.fresh_frame(source, settle=1, timeout_s=1.0)
+    r.check(got.shape == (4, 4) and n["i"] == 4,
+            "fresh_frame skips the frame on hand and `settle` more; equal "
+            "but distinct arrays count as new (identity, not ==)")
+    stuck = np.zeros((4, 4))
     try:
-        cal._align_reticle()
-    finally:
-        RA.ReticleAlignDialog = real_dlg
-    r.check(events == ["exec", "dark"] and cal._calib is c
-            and cal._btn_save.isEnabled() and cal._btn_reticle.isEnabled(),
-            f"Align to reticle adopts the result and ends dark ({events})")
+        RA.fresh_frame(lambda: stuck, timeout_s=0.1)
+        r.check(False, "a stalled camera raises")
+    except TimeoutError as e:
+        r.check("Live view" in str(e), f"a stalled camera raises, naming the "
+                                       f"cause ({str(e)[:50]}…)")
 
 
 def check_reticle_seed(r: Report) -> None:
-    """A homography seed gives the pose of its Jacobian at the camera centre
-    (not M/M22), and a failed calibration save is logged, not raised."""
+    """An older file's homography seeds the pose of its Jacobian at the
+    camera centre (not M/M22), and a failed calibration save is reported,
+    not raised."""
     _app = qt_app()
-    import acqApp.devices.dmd.sweep as SW
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+    from acqApp.adapters.dmd import DmdModule
     from acqApp.devices.dmd.calibration import ReticlePose
 
     dmd, cam = (64, 48), (400, 300)
@@ -1818,46 +1040,155 @@ def check_reticle_seed(r: Report) -> None:
             and back.mirrored,
             f"a perspective seed's pose is its local scale at the centre ({back})")
 
-    class Proj:
-        resolution = dmd
-
-        def project_frame(self, f): pass
-
-        def stop(self): pass
-
-    cal = SW.CalibrationDialog(Proj(), lambda: None, real=False)
-    cal._calib = seed
+    adopted, warned = [], []
+    fake = types.SimpleNamespace(
+        panel=types.SimpleNamespace(calib_path="", set_calib_path=adopted.append),
+        win=types.SimpleNamespace(status=lambda _m: None))
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_calsave_"))
     (tmp / "a_file").write_text("x")
-    real_ask = SW.QFileDialog.getSaveFileName
-    SW.QFileDialog.getSaveFileName = staticmethod(
+    real_ask, real_warn = QFileDialog.getSaveFileName, QMessageBox.warning
+    QFileDialog.getSaveFileName = staticmethod(
         lambda *a, **k: (str(tmp / "a_file" / "calib.json"), ""))
+    QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a[-1]))
     try:
-        cal._save()
+        DmdModule._save_calibration(fake, seed)
         ok = True
     except Exception:                       # noqa: BLE001
         ok = False
     finally:
-        SW.QFileDialog.getSaveFileName = real_ask
+        QFileDialog.getSaveFileName = real_ask
+        QMessageBox.warning = real_warn
         shutil.rmtree(tmp, ignore_errors=True)
-    r.check(ok and "could not save" in cal._log.toPlainText() and cal.result() == 0,
-            "an unwritable calibration path is logged and the dialog stays open")
-    cal.reject()
+    r.check(ok and warned and "Could not save" in warned[0] and not adopted,
+            "an unwritable calibration path is reported and not adopted")
 
 
-def _part_sweep() -> int:
-    r = Report("dmd-sweep")
+def check_bend(r: Report) -> None:
+    """The checkerboard bend: a `Warp` shifts camera px bilinearly between
+    its nodes, `to_cam` undoes `to_dmd` through it, the board and ROIs follow
+    it onto the DMD, it persists, and the dialog's step 4 steers it."""
+    _app = qt_app()
+    import acqApp.devices.dmd.reticle_align as RA
+    from acqApp.devices.dmd.calibration import (ReticlePose, Warp,
+                                                checker_frame, checker_lattice)
+    from acqApp.devices.dmd.roi import RectRoi, RoiSet
+
+    dmd, cam = (128, 96), (800, 600)
+    pose = ReticlePose(63.0, 47.0, 8.0, 0.2, 0.18, mirrored=True)
+    xs, ys = checker_lattice(cam, 4)
+    r.check(len(xs) == 5 and len(ys) == 4 and np.isclose(xs[0], 159.5),
+            f"the board fills the box with near-square cells ({len(xs)}×{len(ys)})")
+    w = Warp.flat(xs, ys).moved(6, 12.0, -8.0)        # row 1, column 1
+    sx, sy = w.shift(np.array([xs[1], (xs[1] + xs[2]) / 2, -50.0]),
+                     np.array([ys[1], ys[1], ys[1]]))
+    r.check(np.allclose(sx, [12.0, 6.0, 0.0]) and np.allclose(sy, [-8.0, -4.0, 0.0]),
+            "a node's shift is exact there, halves midway, and holds the "
+            "edge value beyond the board")
+    gx, gy = w.shift(np.arange(0.0, 800.0, 7.0)[None, :],
+                     np.arange(0.0, 600.0, 5.0)[:, None])
+    X, Y = np.meshgrid(np.arange(0.0, 800.0, 7.0), np.arange(0.0, 600.0, 5.0))
+    ex, ey = w.shift(X, Y)
+    r.check(np.allclose(gx, ex) and np.allclose(gy, ey),
+            "the row × column fast path equals the per-point shift")
+
+    flat = pose.to_calibration(dmd, cam)
+    bent = pose.to_calibration(dmd, cam, w)
+    r.check(pose.to_calibration(dmd, cam, Warp.flat(xs, ys)).warp is None
+            and bent.warp is w and "bent" in bent.describe(),
+            "a flat bend is dropped; a real one is kept and described")
+    p = np.random.default_rng(3).uniform([0, 0], cam, (500, 2))
+    r.check(np.abs(bent.to_cam(bent.to_dmd(p)) - p).max() < 0.05,
+            "to_cam undoes to_dmd through the bend")
+    W, H = dmd
+    u, v = bent.to_cam_xy(np.arange(W, dtype=float)[None, :],
+                          np.arange(H, dtype=float)[:, None])
+    MX, MY = np.meshgrid(np.arange(W, dtype=float), np.arange(H, dtype=float))
+    ue, ve = bent.to_cam_xy(MX, MY)
+    mirror = 1.0 / np.sqrt(pose.sx * pose.sy)
+    err = max(np.abs(u - ue).max(), np.abs(v - ve).max())
+    r.check(err < 0.5 * mirror,
+            f"the coarse panel unbend is within half a mirror ({err:.2f} px)")
+
+    board = checker_frame(flat, xs, ys)
+    lit_cam = flat.to_cam(np.column_stack(np.nonzero(board)[::-1]).astype(float))
+    i = np.searchsorted(xs, lit_cam[:, 0], side="right") - 1
+    j = np.searchsorted(ys, lit_cam[:, 1], side="right") - 1
+    r.check(board.shape == (H, W) and board.any()
+            and np.all((i + j) % 2 == 0) and i.min() >= 0 and i.max() < 4
+            and j.min() >= 0 and j.max() < 3,
+            "every lit mirror lands on a light square of the board")
+    slide = Warp(xs, ys, np.full((4, 5), 10.0), np.zeros((4, 5)))
+    slid = checker_frame(pose.to_calibration(dmd, cam, slide), xs, ys)
+    moved = checker_frame(flat, xs + 10.0, ys)
+    r.check(np.mean(slid != moved) < 0.005,
+            "a uniform bend slides the board by its shift")
+
+    rs = RoiSet()
+    rs.add(RectRoi(x=330.0, y=250.0, w=120.0, h=90.0))
+    lit = rs.dmd_frame(pose.to_calibration(dmd, cam, slide))
+    rs2 = RoiSet()
+    rs2.add(RectRoi(x=340.0, y=250.0, w=120.0, h=90.0))
+    r.check(lit.any() and np.mean(lit != rs2.dmd_frame(flat)) < 0.005,
+            "ROIs follow the bend onto the DMD")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_bend_"))
+    try:
+        back = type(bent).load(bent.save(tmp / "bent.json"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    r.check(back.warp is not None and np.allclose(back.warp.dx, w.dx)
+            and np.allclose(back.to_dmd(p), bent.to_dmd(p)),
+            "a bent calibration survives save -> load")
+
+    projected: list = []
+    frame = np.zeros((cam[1], cam[0]), np.uint16)
+    dlg = RA.ReticleAlignDialog(projected.append, dmd, frame,
+                                seed=pose.to_calibration(dmd, cam))
+    dlg._steps.button(3).setChecked(True)
+    dlg._send()
+    r.check(dlg.kind == "bend" and dlg.warp.is_flat
+            and all(n.isVisible() for n in dlg._nodes)
+            and not dlg._outline.isVisible()
+            and projected and projected[-1].shape == (H, W)
+            and projected[-1].any(),
+            "step 4 shows the board's dots and projects the checkerboard")
+    k = len(dlg.warp.xs) + 1
+    dlg._pick(k)
+    dlg.nudge(RA.Qt.Key.Key_Right)
+    dlg.nudge(RA.Qt.Key.Key_Up, 10)
+    m = 1.0 / np.sqrt(dlg.pose().sx * dlg.pose().sy)
+    r.check(np.isclose(dlg.warp.dx.flat[k], m)
+            and np.isclose(dlg.warp.dy.flat[k], -10 * m)
+            and np.count_nonzero(dlg.warp.dx) == 1,
+            "arrows move the picked dot one mirror (Shift ten), and only it")
+    dlg._apply()
+    got = dlg.calibration
+    r.check(got is not None and got.warp is not None
+            and np.isclose(got.warp.dx.flat[k], m),
+            "Use this returns the bend with the pose")
+    cols = int(dlg._spn_cols.value())
+    dlg._spn_cols.setValue(cols + 2)
+    r.check(len(dlg.warp.xs) == cols + 3 and not dlg.warp.is_flat,
+            "a finer board keeps the bend")
+    dlg2 = RA.ReticleAlignDialog(projected.append, dmd, frame, seed=got)
+    r.check(int(dlg2._spn_cols.value()) == cols
+            and np.allclose(dlg2.warp.dx, got.warp.dx)
+            and np.allclose(dlg2.warp.xs, got.warp.xs),
+            "a bent seed restores its board and bend")
+    dlg2._set_warp(None)
+    r.check(dlg2.warp.is_flat, "Flatten undoes the bend")
+    dlg2._reset()
+    r.check(np.allclose(dlg2.warp.dx, got.warp.dx), "Reset restores the seed's bend")
+    dlg2.reject()
+
+
+def _part_reticle() -> int:
+    r = Report("dmd-reticle")
     check_reticle(r)
     check_reticle_seed(r)
-    check_manual_live(r)
-    check_fresh_grabber(r)
-    check_end_to_end(r)
+    check_bend(r)
     check_display_modes(r)
     check_project_frame(r)
     check_wiring(r)
-    check_geometry_controls(r)
-    check_corner_adjust(r)
-    check_corner_editor(r)
     return r.finish()
 
 
@@ -1869,7 +1200,6 @@ def calib() -> DmdCalibration:
     """A DMD sitting rotated and offset inside a slightly larger camera FOV."""
     return DmdCalibration(cam_to_dmd=np.linalg.inv(true_transform()),
                           dmd_size=(DW, DH), cam_size=(CW, CH),
-                          model="homography", rms_px=0.31, n_points=4096,
                           created="2026-08-18T00:00:00")
 
 
@@ -2084,23 +1414,6 @@ def _part_roi() -> int:
             f"control: the same circle inside the field is not flagged "
             f"({inn.outside(c)})")
 
-    # dim() is outside()'s twin for the marked vignette.
-    vcx, vcy = float(corners[:, 0].mean()), float(corners[:, 1].mean())
-    cv = with_vignette(c, vcx, vcy, 25.0)
-    r.check(inn.dim(cv) == ["circle1"],
-            f"an ROI past the marked vignette is reported, even though it's "
-            f"fully reachable by the DMD ({inn.dim(cv)})")
-    r.check(inn.outside(cv) == [],
-            "control: it's still geometrically fine — dim() and outside() "
-            "answer different questions")
-    r.check(inn.dim(c) == [],
-            "…and with no vignette ever marked, dim() has nothing to report")
-    small = RoiSet()
-    small.add(CircleRoi(x=vcx, y=vcy, r=5))
-    r.check(small.dim(cv) == [],
-            f"control: well inside the marked circle is not flagged "
-            f"({small.dim(cv)})")
-
     for st in (far, off, inn):
         _, exact = st.clipped_mask(c)
         r.check(abs(st.reach_fraction(c) - exact) < 0.05,
@@ -2170,30 +1483,6 @@ def _part_roi() -> int:
     r.check(hit_bad < 0.6,
             f"control: a 40 px registration error misses ({100*hit_bad:.0f}%)")
 
-    # ── 4b. Flip X/Y mirror the PROJECTED PIXELS and nothing else ───────────
-    # What the panel tooltip promises (2026-09-24): the drawing stays put,
-    # only the lit mirrors flip.
-    r.check(np.array_equal(near.dmd_frame(flip_y(c)), frame[::-1, :]),
-            "Flip Y mirrors the mask's rows on the panel, exactly")
-    r.check(np.array_equal(near.dmd_frame(flip_x(c)), frame[:, ::-1]),
-            "Flip X mirrors its columns, exactly")
-    r.check(np.allclose(np.sort(flip_y(c).accessible_corners(), axis=0),
-                        np.sort(c.accessible_corners(), axis=0)),
-            "…while the reachable field stays exactly where it was")
-    probe = np.array([[CW / 2, CH / 2], [-50.0, -50.0], [CW + 50.0, CH + 50.0]])
-    r.check(np.array_equal(flip_y(c).accessible(probe), c.accessible(probe))
-            and np.array_equal(flip_x(c).accessible(probe), c.accessible(probe)),
-            "…and so does every \"can the DMD reach this?\" answer")
-
-    # ── 5. persistence of the calibration itself ─────────────────────────────
-    tmp = Path(tempfile.mkdtemp(prefix="dmd_calib_")) / "cal.json"
-    c.save(tmp)
-    back = DmdCalibration.load(tmp)
-    r.check(np.allclose(back.cam_to_dmd, c.cam_to_dmd)
-            and back.dmd_size == c.dmd_size and back.cam_size == c.cam_size,
-            "the calibration survives save/load")
-    r.check(back.rms_px == c.rms_px and back.n_points == c.n_points,
-            "…including the provenance that says whether to trust it")
 
     # ── 6. the editor ────────────────────────────────────────────────────────
     isolate_user_state()
@@ -2541,10 +1830,10 @@ def _part_roi() -> int:
             "moving the on-screen item still writes an absolute-coordinate "
             "model position")
 
-    corners = c.accessible_corners()
+    border = c.accessible_outline()
     xdata, ydata = ed3._field.getData()
-    r.check(np.allclose(xdata[:-1], corners[:, 0] - ox)
-            and np.allclose(ydata[:-1], corners[:, 1] - oy),
+    r.check(np.allclose(xdata, border[:, 0] - ox)
+            and np.allclose(ydata, border[:, 1] - oy),
             "the reachable-field outline is drawn display-local too")
 
     ed4 = RoiEditor(c)
@@ -2949,6 +2238,7 @@ def _part_pair() -> int:
     win.close()
     pump(app, 0.1)
     check_pair_faults(r)
+    check_roi_editor_live(r)
     return r.finish()
 
 
@@ -3005,10 +2295,79 @@ def check_pair_faults(r: Report) -> None:
     dlg.reject()
 
 
+def check_roi_editor_live(r: Report) -> None:
+    """Edit ROIs… projects each edit while Illuminate is on (on from the
+    start if the DMD was lighting ROIs), and on close the DMD shows what it
+    did before, with the edits only if saved."""
+    isolate_user_state()
+    app = qt_app()
+    import acqApp.devices.dmd.pair_dialog as PD
+    from acqApp.devices.dmd.calibration import ReticlePose
+    from acqApp.devices.voltage_cam.presets import SENSOR_H, SENSOR_W
+
+    sys.argv = ["main.py", "--mock"]
+    win = make_window({"voltage_cam", "dmd"})
+    dmd = next(m for m in win._modules if m.key == "dmd")
+    win._btn_run.setChecked(True)
+    pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
+    size, sensor = dmd.controller.resolution, (SENSOR_W, SENSOR_H)
+    cal = ReticlePose.centred(size, sensor).to_calibration(size, sensor)
+    path = Path(tempfile.mkdtemp(prefix="acqapp_roilive_")) / "cal.json"
+    cal.save(path)
+    dmd.panel.set_calib_path(str(path))
+    first = RectRoi(name="a", x=SENSOR_W / 2, y=SENSOR_H / 2, w=300, h=200)
+    dmd.panel.set_roi_pattern("old", [first.to_dict()])
+    old_frame = RoiSet([first]).dmd_frame(cal)
+
+    seen: dict = {}
+    real_exec = PD.RoiLightDialog.exec
+
+    def drive(dlg, save: bool):
+        seen["lit_at_open"] = dlg._btn_light.isChecked()
+        ed = dlg._ed
+        dlg._btn_light.setChecked(True)
+        ed._add(CircleRoi(x=SENSOR_W / 2 - 900, y=SENSOR_H / 2, r=150))
+        pump(app, 0.3)
+        seen["projected"] = (dmd.controller.projecting and np.array_equal(
+            dmd.controller.frame, ed.roi_set.dmd_frame(cal)))
+        seen["n"] = len(ed.roi_set)
+        dlg._save() if save else dlg.reject()
+        return dlg.result()
+
+    try:
+        PD.RoiLightDialog.exec = lambda dlg: drive(dlg, True)
+        dmd.edit_rois()
+        r.check(seen["lit_at_open"] is False,
+                "with the DMD dark, the editor opens with Illuminate off")
+        r.check(seen["projected"],
+                "with it on, a new ROI is on the DMD within the debounce")
+        r.check(len(dmd.panel.rois) == seen["n"] == 2
+                and not dmd.controller.projecting,
+                "Save adopts the edits, and the DMD is dark again as before")
+
+        dmd.panel.set_roi_pattern("old", [first.to_dict()])
+        dmd.display()
+        PD.RoiLightDialog.exec = lambda dlg: drive(dlg, False)
+        dmd.edit_rois()
+        r.check(seen["lit_at_open"] is True,
+                "with the DMD lighting ROIs, Illuminate starts on: edits show "
+                "at once")
+        r.check(dmd.controller.projecting and len(dmd.panel.rois) == 1
+                and np.array_equal(dmd.controller.frame, old_frame),
+                "Cancel drops the edits and the old ROIs are lit again")
+    finally:
+        PD.RoiLightDialog.exec = real_exec
+        dmd.stop_display()
+        win._btn_run.setChecked(False)
+        pump(app, 0.3)
+        win.close()
+        pump(app, 0.1)
+
+
 PARTS = {
     "dmd": _part_dmd,
     "calib": _part_calib,
-    "sweep": _part_sweep,
+    "reticle": _part_reticle,
     "roi": _part_roi,
     "pair": _part_pair,
 }

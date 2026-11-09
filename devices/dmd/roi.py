@@ -11,8 +11,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from acqApp.devices.dmd.calibration import (OFF, ON, DmdCalibration,
-                                            apply_transform)
+from acqApp.devices.dmd.calibration import OFF, ON, DmdCalibration
 
 
 @dataclass
@@ -353,12 +352,6 @@ class RoiSet:
         return [r.name for r in self.rois
                 if r.enabled and not calib.accessible(r.boundary()).all()]
 
-    def dim(self, calib: DmdCalibration) -> list[str]:
-        """Names of ROIs at least partly outside the marked vignette circle
-        (reachable but dim). Advisory; empty if no vignette is marked."""
-        return [r.name for r in self.rois
-                if r.enabled and not calib.well_lit(r.boundary()).all()]
-
     def beyond(self, x0: float, y0: float, w: float, h: float) -> list[str]:
         """Names of ROIs not wholly inside the camera-px rect (x0, y0, w, h):
         the capture area, which a cropped preset shrinks to a band."""
@@ -385,13 +378,12 @@ class RoiSet:
         """
         w, h = int(calib.dmd_size[0]), int(calib.dmd_size[1])
         cw, ch = calib.cam_size
-        M = np.asarray(calib.dmd_to_cam, dtype=np.float64)
         out = np.zeros((h, w), dtype=bool)
 
         for roi in self.rois:
             if enabled_only and not roi.enabled:
                 continue
-            d = apply_transform(calib.cam_to_dmd, roi.boundary(64))
+            d = calib.to_dmd(roi.boundary(64))
             x0 = max(0, int(np.floor(d[:, 0].min())))
             x1 = min(w, int(np.ceil(d[:, 0].max())) + 1)
             y0 = max(0, int(np.floor(d[:, 1].min())))
@@ -400,10 +392,7 @@ class RoiSet:
                 continue                    # entirely off the panel
             x = np.arange(x0, x1, dtype=np.float64)[None, :]
             y = np.arange(y0, y1, dtype=np.float64)[:, None]
-            den = M[2, 0] * x + M[2, 1] * y + M[2, 2]
-            den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-            px = (M[0, 0] * x + M[0, 1] * y + M[0, 2]) / den
-            py = (M[1, 0] * x + M[1, 1] * y + M[1, 2]) / den
+            px, py = calib.to_cam_xy(x, y)
             hit = roi.contains(px, py)
             hit &= (px >= 0) & (px < cw) & (py >= 0) & (py < ch)
             out[y0:y1, x0:x1] |= hit

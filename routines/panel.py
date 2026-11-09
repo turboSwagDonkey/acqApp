@@ -156,8 +156,8 @@ class SettingsPanel(QWidget):
         # Per-step actions live on the table's right-click menu.
         add, other, up, down, timeline = self._make_buttons((
             ("+ FOV step…", self._add_fov_step,
-             "Pick a saved FOV: move there, show its ROI set, capture, light "
-             "off, wait."),
+             "Pick a saved FOV: move there, show its ROI set, wait for the "
+             "camera's trigger, capture, light off, wait."),
             ("Other ▾", lambda: None, "Add a Wait, Puff or Trigger step."),
             ("↑", self._move_up,
              "Move the selected step earlier. Dragging the row and "
@@ -383,7 +383,7 @@ class SettingsPanel(QWidget):
     def _new_fov_step(self) -> Step:
         r = self._r
         return Step(kind="fov", length=r.capture_length, unit=r.capture_unit,
-                    wait_s=r.wait_s, repeats=DEFAULT_REPEATS)
+                    wait_s=r.wait_s, repeats=DEFAULT_REPEATS, trigger=True)
 
     def _on_general_changed(self, *_a) -> None:
         """Steps still on the old general value follow; hand-edited ones keep

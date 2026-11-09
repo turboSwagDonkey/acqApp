@@ -250,9 +250,15 @@ class StepTable(QTableWidget):
             item.setToolTip("")
             if field == "kind":
                 item.setData(VALUE, s.kind)
-                item.setText(KIND_LABELS.get(s.kind, s.kind))
+                item.setText("FOV + Trigger" if s.trigger
+                             else KIND_LABELS.get(s.kind, s.kind))
                 self._set_editable(item, False)
-                if s.kind == "trigger":
+                if s.trigger:
+                    item.setToolTip(
+                        "After the move, every run shows its ROIs and holds "
+                        "until an external edge on the camera's trigger line, "
+                        "so the capture is lit from its first frame.")
+                elif s.kind == "trigger":
                     item.setToolTip(
                         "Holds until an external edge on the camera's trigger "
                         "line. Right before an FOV step, it waits after that "

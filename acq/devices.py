@@ -87,8 +87,8 @@ class RecordingOutput(OutputController, Protocol):
 
 @runtime_checkable
 class RawProjector(Protocol):
-    """Displays a frame at device size, untransformed — the calibration sweep
-    needs a guarantee nothing reshapes the geometry it measures."""
+    """Displays a frame at device size, untransformed — the reticle
+    calibration needs a guarantee nothing reshapes the shape it steers."""
 
     @property
     def resolution(self) -> tuple[int, int]: ...

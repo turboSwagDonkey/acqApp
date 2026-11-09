@@ -4,8 +4,9 @@ A routine is a list of steps, one `Step` class whose unused fields stay at
 their defaults. The operator builds `KINDS`: chiefly `fov` (move to a saved
 FOV, show its ROI set, capture, light off, wait), plus Wait, Puff and Trigger.
 `expand()` turns that into the engine's atomic `ENGINE_KINDS`, where each
-`record` step is a one-step Recording. A Trigger right before an FOV step
-waits for its edge after the move, right before the capture.
+`record` step is a one-step Recording. A Trigger right before an FOV step, or
+an FOV step's own `trigger`, waits for its edge after the move, right before
+the capture.
 
 - A timed step's length is frames OR seconds, never converted: at 106 Hz a
   rounded conversion sheds frames at every boundary.
@@ -66,11 +67,14 @@ class Step:
     wait_s:   float = 0.0
     # fov: runs in a row. 1 here, so a saved routine keeps what it ran.
     repeats:  int = 1
+    # fov: wait for an edge before each capture. False here, likewise.
+    trigger:  bool = False
 
     def describe(self) -> str:
         if self.kind == "fov":
             where = self.fov or _xyz(self) or "here"
-            body = (f"{where}: capture {self.length:g} {self.unit}"
+            body = (f"{where}: {'on trigger, ' if self.trigger else ''}"
+                    f"capture {self.length:g} {self.unit}"
                     + (f" with {pattern_label(self.pattern)}" if self.pattern
                        else "")
                     + (f", wait {self.wait_s:g} s" if self.wait_s > 0 else ""))
@@ -355,8 +359,10 @@ def _legacy_run(steps: list[Step], i: int) -> list[Step]:
 def expand(routine: Routine) -> tuple[Routine, list[int]]:
     """The engine's routine (atomic `ENGINE_KINDS` only) and, per engine step,
     the row of `routine` it came from. An FOV step: move, show its ROI set,
-    capture, light off, wait. A Trigger right before one waits after the
-    move, so the capture still starts on its edge; not across a group's edge."""
+    capture, light off, wait. Its own `trigger`, or a Trigger right before it
+    (not across a group's edge), waits after the move, so the capture still
+    starts on the edge; both together wait once. A Trigger across a group's
+    edge stays a wait of its own."""
     edges = {g.start for g in routine.groups} | {g.end + 1
                                                  for g in routine.groups}
     out: list[Step] = []
@@ -379,8 +385,8 @@ def expand(routine: Routine) -> tuple[Routine, list[int]]:
                      z_um=s.z_um, fov=s.fov, settle_s=s.settle_s))
             if s.pattern:
                 add(Step(kind="display", pattern=s.pattern))
-            if held is not None:
-                add(Step(kind="trigger"), held)
+            if held is not None or s.trigger:
+                add(Step(kind="trigger"), row if held is None else held)
             add(Step(kind="record", label=s.label, length=s.length,
                      unit=s.unit))
             if s.pattern:
@@ -440,6 +446,7 @@ def _typed(s: Step) -> Step:
     s.length = _num(s.length, Step.length)
     s.wait_s = _num(s.wait_s, Step.wait_s)
     s.repeats = max(1, int(_num(s.repeats, Step.repeats)))
+    s.trigger = s.trigger is True
     return s
 
 

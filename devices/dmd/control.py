@@ -42,16 +42,6 @@ def _load_calibration(path):
     return calib
 
 
-def orient_calibration(calib, settings):
-    """`calib` with the operator's ROI flips applied (Y, then X)."""
-    from acqApp.devices.dmd.calibration import flip_x, flip_y
-    if settings.roi_flip_y:
-        calib = flip_y(calib)
-    if settings.roi_flip_x:
-        calib = flip_x(calib)
-    return calib
-
-
 def roi_frame(settings, width: int, height: int):
     """The ROI mask as a device-sized frame, or None (reason printed)."""
     if not settings.rois:
@@ -63,9 +53,8 @@ def roi_frame(settings, width: int, height: int):
         return None
     try:
         from acqApp.devices.dmd.roi import RoiSet
-        calib = orient_calibration(_load_calibration(settings.calib_path),
-                                   settings)
-        frame = RoiSet.from_list(list(settings.rois)).dmd_frame(calib)
+        frame = RoiSet.from_list(list(settings.rois)).dmd_frame(
+            _load_calibration(settings.calib_path))
     except Exception as e:                        # noqa: BLE001
         print(f"[DMD] ROI mode: couldn't build the mask ({type(e).__name__}: "
               f"{e})")
@@ -119,18 +108,13 @@ class DmdSettings:
     # `calib_path` registration.
     rois:          tuple       = ()
     calib_path:    str         = ""
-    # Mirror only the ROI mask on its way to the panel (`calibration.flip_y`
-    # / `flip_x`); pattern images are unaffected.
-    roi_flip_y:    bool        = False
-    roi_flip_x:    bool        = False
 
 
 # Everything that changes the built frame; the real controller reloads only
 # when one of these differs.
 _GEOMETRY = attrgetter(
     "scale_pct", "rotation_deg", "offset_x", "offset_y", "invert", "fit",
-    "display_mode", "rois", "calib_path", "roi_flip_y", "roi_flip_x",
-    "sub_sampling")
+    "display_mode", "rois", "calib_path", "sub_sampling")
 
 
 class _Base:
@@ -143,7 +127,7 @@ class _Base:
         self._pattern: np.ndarray | None = None
         self._running = False
         # A `project_frame` (calibration) replaced the built frame: the next
-        # apply_settings must rebuild it, or Display re-shows the stripe.
+        # apply_settings must rebuild it, or Display re-shows the reticle.
         self._raw = False
 
     @property
@@ -246,7 +230,7 @@ class DmdController(_Base):
 
     def project_frame(self, frame: np.ndarray) -> None:
         """Project a device-sized frame as-is, skipping `build_frame` (the
-        sweep measures that geometry). Settings are untouched."""
+        reticle sets that geometry). Settings are untouched."""
         self._hold_raw(frame, self.resolution)
         self._dev.project(self._pattern)
         self._running = True

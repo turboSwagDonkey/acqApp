@@ -23,10 +23,6 @@
     "channels": {
       "primary_led": "port0/line7",
       "wheel": "ai2"
-    },
-    "dmd_calibration": {
-      "model": "homography",
-      "cross_frac": 0.06
     }
   }
 }

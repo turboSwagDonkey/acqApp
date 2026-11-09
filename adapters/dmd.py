@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -186,10 +186,9 @@ class DmdModule(ModuleAdapter):
 
     # ── the camera↔DMD registration ──
     def calibrate(self) -> None:
-        """The sweep dialog: project stripes, image them, fit a transform."""
+        """Align to the reticle on the live voltage camera, then save."""
         from PyQt6.QtWidgets import QMessageBox
 
-        from acqApp.devices.dmd.sweep import CalibrationDialog
         from acqApp.devices.voltage_cam.presets import DEFAULT_PRESET
 
         if self.controller is None:
@@ -197,8 +196,8 @@ class DmdModule(ModuleAdapter):
         if "voltage_cam" not in self.win.module_keys():
             QMessageBox.information(
                 self.panel, "No voltage camera",
-                "The sweep images each pattern with the voltage camera, and "
-                "that module isn't loaded.\n\n"
+                "Calibration aligns the DMD on the voltage camera's live "
+                "image, and that module isn't loaded.\n\n"
                 "Restart and tick Voltage camera in the startup picker.")
             return
 
@@ -236,12 +235,10 @@ class DmdModule(ModuleAdapter):
                 self.win.set_camera_binning("voltage_cam", 1)
 
         try:
-            dlg = CalibrationDialog(
-                self.controller, lambda: self.win.latest_frame("voltage_cam"),
-                parent=self.panel, real=self._real,
-                on_saved=self._adopt_calibration,
-                set_live=self.win.set_live)
-            dlg.exec()
+            calib = self._align_reticle()
+            # Before the rebuild below: saving over the active file must show.
+            if calib is not None:
+                self._save_calibration(calib)
         finally:
             # The dialog drives the controller directly; the card must follow.
             self._show_light(self.controller.projecting)
@@ -252,10 +249,55 @@ class DmdModule(ModuleAdapter):
                 if binned:
                     self.win.set_camera_binning("voltage_cam", prev_binning)
                 self.win.set_live(was_live)
-            # The card shows the held frame: rebuild it over the last stripe/reticle.
+            # The card shows the held frame: rebuild it over the last reticle.
             self.controller.apply_settings(self.panel.settings)
 
-    def _adopt_calibration(self, path: str) -> None:
+    def _align_reticle(self):
+        """`ReticleAlignDialog` on a fresh full-frame image -> its
+        calibration, or None. Lit only while it is open; ends dark."""
+        from PyQt6.QtCore import QEventLoop
+        from PyQt6.QtWidgets import QApplication, QDialog
+
+        from acqApp.devices.dmd.reticle_align import ReticleAlignDialog, fresh_frame
+
+        if not self._real:
+            self.win.status("DMD emulated: the reticle won't light anything")
+        source = lambda: self.win.latest_frame("voltage_cam")    # noqa: E731
+        was_live = self.win.set_live(True)
+        try:
+            # A just-started camera has to build its worker first: a long wait,
+            # with no dialog up yet to stop a second click re-entering this.
+            frame = fresh_frame(source, pump=lambda: QApplication.processEvents(
+                QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents))
+            seed, _ = self._calibration()
+            dlg = ReticleAlignDialog(
+                self.controller.project_frame, self.controller.resolution,
+                frame, live_source=source, seed=seed, parent=self.panel)
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+            return dlg.calibration if accepted else None
+        finally:
+            self.controller.stop()
+            self.win.set_live(was_live)
+
+    def _save_calibration(self, calib) -> None:
+        from datetime import datetime
+
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        here = self.panel.calib_path
+        name = f"dmd_calib_{datetime.now():%Y%m%d_%H%M%S}.json"
+        start = str(Path(here).parent / name) if here else name
+        path, _ = QFileDialog.getSaveFileName(
+            self.panel, "Save DMD calibration", start, "Calibration (*.json)")
+        if not path:
+            self.win.status("DMD calibration not saved")
+            return
+        try:
+            calib.save(path)
+        except OSError as e:
+            QMessageBox.warning(self.panel, "DMD calibration",
+                                f"Could not save: {e}")
+            return
         self.panel.set_calib_path(path)
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
@@ -295,14 +337,13 @@ class DmdModule(ModuleAdapter):
 
     def edit_rois(self) -> None:
         """`RoiEditor` on the camera's newest frame (taken full-field), live
-        view under it. Starts Live view, never light: all-on first is the
-        operator's step."""
-        from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QMessageBox,
-                                     QVBoxLayout)
+        view under it. Starts Live view; light only from its Illuminate
+        toggle, which starts on if the DMD was already lighting ROIs. On
+        close the DMD goes back to what it showed, with any saved edits."""
+        from PyQt6.QtWidgets import QMessageBox
 
-        from acqApp import style
+        from acqApp.devices.dmd.pair_dialog import RoiLightDialog
         from acqApp.devices.dmd.roi import RoiSet
-        from acqApp.devices.dmd.roi_live import attach_live_view
 
         frame = self.win.latest_frame("voltage_cam")
         if frame is None:
@@ -311,35 +352,48 @@ class DmdModule(ModuleAdapter):
                 "The ROI editor draws on a voltage-camera frame, and none has "
                 "arrived yet.\n\nLoad the voltage camera and press Live view "
                 "(or Record), then try again.\n\nTo see the projected field in "
-                "the snapshot, put the DMD in all-on and press Display first.")
+                "the snapshot, put the DMD in all-on and switch it on first.")
             return
 
-        dlg = QDialog(self.panel)
-        dlg.setWindowTitle("Photostimulation ROIs")
-        dlg.resize(1000, 940)
-        dlg.setStyleSheet(style.accent_panel("dmd"))
-        lay = QVBoxLayout(dlg)
         ed = self._editor(frame)
         if self.panel.rois:
             ed.load(RoiSet.from_list(list(self.panel.rois)))
-        live = attach_live_view(ed, self._live_frame)
-        lay.addWidget(ed, 1)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
-                              | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
-        was_live = self.win.set_live(True)
-        live.start()
+        was_lit = bool(self.controller is not None and self.controller.projecting)
+        saved: list = []
+        dlg = RoiLightDialog(
+            ed, title="Photostimulation ROIs",
+            message="Draw where the DMD should light up on the snapshot (top); "
+                    "the live camera below shows them over what it captures "
+                    "now. With Illuminate on, every edit is projected at once.",
+            live_source=self._live_frame, illuminate=self._light_rois,
+            save=lambda rois: saved.append(rois.to_list()),
+            set_live=self.win.set_live,
+            lit=was_lit and self.panel.mode == MODE_ROI, allow_empty=True,
+            parent=self.panel)
         try:
-            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+            dlg.exec()
         finally:
-            live.stop()
-            self.win.set_live(was_live)
-        if accepted:
-            rois = ed.roi_set.to_list()
-            self.panel.set_rois(tuple(rois))
-            self.win.status(f"{len(rois)} photostimulation ROI(s) saved")
+            if saved:
+                self.panel.set_rois(tuple(saved[0]))
+                self.win.status(f"{len(saved[0])} photostimulation ROI(s) saved")
+            # The dialog ends dark; put back what was lit, with the edits.
+            if was_lit:
+                self.display()
+            elif self.controller is not None:
+                self.controller.apply_settings(self.panel.settings)
+
+    def _light_rois(self, rois) -> None:
+        """Project `rois` without adopting them (Save does); None stops."""
+        if rois is None:
+            self.stop_display()
+            return
+        if self.controller is None:
+            return
+        self.controller.apply_settings(replace(
+            self.panel.settings, display_mode=MODE_ROI, all_on=False,
+            rois=tuple(rois.to_list())))
+        self.controller.display()
+        self._show_light(self.controller.projecting)
 
     def draw_paired_rois(self, name: str):
         """`PairRoiDialog` on the camera's newest frame (the FOV just saved)
@@ -396,9 +450,7 @@ class DmdModule(ModuleAdapter):
             return None, ""
         try:
             from acqApp.devices.dmd.calibration import DmdCalibration
-            from acqApp.devices.dmd.control import orient_calibration
-            return orient_calibration(DmdCalibration.load(path),
-                                      self.panel.settings), ""
+            return DmdCalibration.load(path), ""
         except Exception as e:      # noqa: BLE001 — missing, corrupt, or stale
             return None, (f"DMD calibration {Path(path).name} could not be "
                           f"read ({type(e).__name__}) — ROIs can be drawn but "
@@ -496,7 +548,8 @@ class DmdModule(ModuleAdapter):
             self.load(p)
 
     def set_all_on(self) -> None:
-        """Config only (projects on Display, or at once with Live update)."""
+        """Config only (projects at the next switch-on, or at once with Live
+        update)."""
         if self.panel is not None:
             self.panel.set_all_on()
 

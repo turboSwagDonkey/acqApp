@@ -52,9 +52,6 @@ def check_sanitize(r: Report, tmp: Path) -> None:
         "part-bad": {"ni_device": "Dev9",
                      "hardware": {"puffer": "yes", "primary_led": False},
                      "channels": {"puffer": "port0/line3", "wheel": 5}},
-        "bad-dmd-cal": {"ni_device": "Dev2",
-                        "dmd_calibration": {"model": "projective",
-                                            "cross_frac": 4.0}},
     })
     rigs = config.load_rigs()
     r.check("good" in rigs and "bad-types" in rigs, "valid + salvageable kept")
@@ -70,10 +67,6 @@ def check_sanitize(r: Report, tmp: Path) -> None:
             "a non-bool hardware flag is dropped, the real bool kept")
     r.check(part["channels"] == {"puffer": "port0/line3"},
             "a non-str channel value is dropped, the str kept")
-    dmd_cal = rigs["bad-dmd-cal"]["dmd_calibration"]
-    r.check(dmd_cal == {"model": None, "cross_frac": None},
-            "an unrecognized model name and an out-of-range cross_frac both "
-            "fall back to None (\"use the module default\"), not raise")
 
 
 def check_corrupt(r: Report, tmp: Path) -> None:
@@ -185,9 +178,6 @@ def check_bad_values(r: Report, tmp: Path) -> None:
             and not list(tmp.glob("unencodable.json.*.tmp")),
             "an unencodable value is reported, keeps the old file, leaves no temp")
 
-    _write(tmp, {"r": {"dmd_calibration": {"cross_frac": True}}}, active="r")
-    r.check(config.load_rigs()["r"]["dmd_calibration"]["cross_frac"] is None,
-            "a bool cross_frac is not taken for 1.0")
     config.save_config({"enabled_modules": ["wheel", ["junk"], {"x": 1}, 7]})
     r.check(config.load_enabled_modules() == config.order_modules(["wheel"]),
             "junk in enabled_modules is skipped, not raised at startup")
@@ -255,28 +245,6 @@ def check_profile_beats_saved(r: Report, tmp: Path) -> None:
     r.check(config.load_dataclass(EncoderSettings, "wheel").channel
             == "Dev2/ai2",
             "so hardware false leaves the encoder aimed at real hardware")
-
-
-def check_dmd_calibration(r: Report, tmp: Path) -> None:
-    """Camera tilt is a physical fact, so it lives in the rig profile."""
-    _write(tmp, {"tilted": {"ni_device": "Dev2",
-                            "dmd_calibration": {"model": "homography",
-                                                "cross_frac": 0.06}}},
-           active="tilted")
-    r.check(config.rig_dmd_calibration() == {"model": "homography",
-                                             "cross_frac": 0.06},
-            "an explicit override is passed straight through")
-
-    _write(tmp, {"plain": {"ni_device": "Dev3"}}, active="plain")
-    r.check(config.rig_dmd_calibration() == {"model": "affine",
-                                             "cross_frac": None},
-            "a rig that never mentions it gets affine / module-default cross "
-            "-frac — byte-for-byte the pre-dmd_calibration behaviour")
-
-    _write(tmp, {}, active="no-such-rig")
-    r.check(config.rig_dmd_calibration() == {"model": "affine",
-                                             "cross_frac": None},
-            "no profile at all resolves the same way")
 
 
 def check_no_profile_is_unchanged(r: Report, tmp: Path) -> None:
@@ -381,7 +349,6 @@ def _part_rigs() -> int:
         check_transient_locks(r, tmp)
         check_bad_values(r, tmp)
         check_resolution(r, tmp)
-        check_dmd_calibration(r, tmp)
         check_profile_beats_saved(r, tmp)
         check_no_profile_is_unchanged(r, tmp)
         check_puffer_skips_daq(r)

@@ -53,11 +53,16 @@ def _panel(key: str):
         return ReviewWidget(), None
     if key == "roi":
         return _roi_dialog(), None
-    if key == "reticle":
+    if key in ("reticle", "bend"):
         from acqApp.devices.dmd._roi_editor import DMD_H, DMD_W, demo_frame
         from acqApp.devices.dmd.reticle_align import ReticleAlignDialog
-        return ReticleAlignDialog(lambda _f: None, (DMD_W, DMD_H),
-                                  demo_frame()), None
+        dlg = ReticleAlignDialog(lambda _f: None, (DMD_W, DMD_H), demo_frame())
+        if key == "bend":           # step 4 with one corner dragged
+            dlg._steps.button(3).setChecked(True)
+            k = len(dlg.warp.xs) + 2
+            node = dlg._nodes[k]
+            node.setPos(node.pos().x() + 120, node.pos().y() - 80)
+        return dlg, None
     from acqApp import config
     if key == "main":
         win = make_window(set(config.MODULES))

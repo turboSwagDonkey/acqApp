@@ -30,8 +30,6 @@ from acqApp.devices.dmd.roi_picker import RoiSetPicker
 # The field wears the DMD accent; ROI pens must read against a grey frame
 # and stay distinct from it.
 _FIELD_PEN = pg.mkPen(style.HEX["dmd"], width=2, style=Qt.PenStyle.DashLine)
-# Distinct colour AND dash: dim, not unreachable, and it can overlap the field.
-_VIGNETTE_PEN = pg.mkPen(style.WARN, width=2, style=Qt.PenStyle.DotLine)
 _ROI_PEN = pg.mkPen("#00d0ff", width=2)
 _ROI_HOVER = pg.mkPen("#4dff88", width=3)
 _BAND_PEN = pg.mkPen("#00d0ff", width=1, style=Qt.PenStyle.DashLine)
@@ -331,8 +329,6 @@ class RoiEditor(QWidget):
                                 [y0, y0, y0 + h, y0 + h, y0])
         self._field = pg.PlotCurveItem(pen=_FIELD_PEN)
         self._vb.addItem(self._field)
-        self._vignette = pg.PlotCurveItem(pen=_VIGNETTE_PEN)
-        self._vb.addItem(self._vignette)
         self._vb.drawn.connect(self._on_drawn)
         self._vb.drawn_free.connect(self._on_free)
 
@@ -477,18 +473,9 @@ class RoiEditor(QWidget):
     def _draw_field(self) -> None:
         if self._calib is None:
             self._field.setData([], [])
-            self._vignette.setData([], [])
             return
-        c = self._calib.accessible_corners()
-        self._field.setData(np.append(c[:, 0] - self._ox, c[0, 0] - self._ox),
-                            np.append(c[:, 1] - self._oy, c[0, 1] - self._oy))
-        if self._calib.vignette is None:
-            self._vignette.setData([], [])
-        else:
-            cx, cy, r = self._calib.vignette
-            t = np.linspace(0.0, 2.0 * np.pi, 96)
-            self._vignette.setData(cx - self._ox + r * np.cos(t),
-                                   cy - self._oy + r * np.sin(t))
+        c = self._calib.accessible_outline()
+        self._field.setData(c[:, 0] - self._ox, c[:, 1] - self._oy)
 
     # ── tools ────────────────────────────────────────────────────────────────
     def set_tool(self, tool: str) -> None:
@@ -800,7 +787,7 @@ class RoiEditor(QWidget):
         if self._calib is None:
             self._status.setText(
                 "No DMD calibration loaded — ROIs can be drawn but not "
-                "projected. Run the calibration sweep first.")
+                "projected. Calibrate on the DMD tab first.")
             return
         if not len(self._set):
             self._status.setText(f"{self._calib.describe()} — no ROIs yet")
@@ -808,12 +795,9 @@ class RoiEditor(QWidget):
         self._sync_from_items()
         # Estimates: this runs on every drag for a whole-number percentage.
         outside = self._set.outside(self._calib)
-        dim = self._set.dim(self._calib)
         kept = self._set.reach_fraction(self._calib)
         msg = f"{len(self._set)} ROI(s); {100 * kept:.0f}% of the drawn area is "
         msg += "reachable by the DMD"
         if outside:
             msg += f" — outside the field: {', '.join(outside)}"
-        if dim:
-            msg += f" — dim (past the vignette): {', '.join(dim)}"
         self._status.setText(msg)

@@ -83,7 +83,7 @@ def main() -> int:
         (MockPufferController,    RecordingOutput),
         (DmdController,           ProjectorController),
         (MockDmdController,       ProjectorController),
-        # The calibration sweep: needs the frame not reshaped, nothing wider.
+        # The reticle calibration: needs the frame not reshaped, nothing wider.
         (DmdController,           RawProjector),
         (MockDmdController,       RawProjector),
     ]
@@ -117,7 +117,7 @@ def main() -> int:
             f"control: a projector missing only on_pixels is caught "
             f"(got {missing})")
     # Merged, a controller that projects only THROUGH build_frame could be
-    # handed to the sweep.
+    # handed to the reticle calibration.
     r.check(has_all(AlmostAProjector, RawProjector) == ["project_frame", "stop"],
             f"control: RawProjector is a separate promise, not implied by "
             f"ProjectorController (missing "

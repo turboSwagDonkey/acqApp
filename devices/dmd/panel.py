@@ -181,8 +181,7 @@ class SettingsPanel(QWidget):
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy,
                   self._sld_subsample):
             w.valueChanged.connect(self._emit)
-        for c in (self._chk_fit, self._chk_invert, self._chk_roi_flip_y,
-                  self._chk_roi_flip_x):
+        for c in (self._chk_fit, self._chk_invert):
             c.toggled.connect(self._emit)
 
     # ── Image mode: the pattern file and where it lands ──────────────────────
@@ -277,27 +276,10 @@ class SettingsPanel(QWidget):
         self.set_sub_sampling(self._s.sub_sampling)
         self._show_subsample()
 
-        self._chk_roi_flip_x = pill(
-            "Flip X", "dmd", checked=self._s.roi_flip_x,
-            tip="Mirror the ROI mask across X on its way to the panel — a "
-                "manual correction for a rig that projects backwards in X.\n"
-                "The ROIs you drew don't move, and neither do the editor's "
-                "field outline or its \"outside the field\" checks: only which "
-                "mirrors light up changes. Pattern images aren't affected.")
-        self._chk_roi_flip_y = pill(
-            "Flip Y", "dmd", checked=self._s.roi_flip_y,
-            tip="Mirror the ROI mask across Y on its way to the panel — a "
-                "manual correction for a rig that projects backwards in Y.\n"
-                "The ROIs you drew don't move, and neither do the editor's "
-                "field outline or its \"outside the field\" checks: only which "
-                "mirrors light up changes. Pattern images aren't affected.")
-
         self._lbl_dev = QLabel("no device yet")
         self._lbl_dev.setWordWrap(True)
 
         v.addLayout(button_row(self._chk_live, self._chk_invert))
-        v.addLayout(button_row(QLabel("ROI mask:"), self._chk_roi_flip_x,
-                               self._chk_roi_flip_y))
         sub = QHBoxLayout()
         sub.setSpacing(6)
         sub.addWidget(QLabel("Sub-sampling:"))
@@ -342,12 +324,12 @@ class SettingsPanel(QWidget):
         b_run = QPushButton("Calibrate…")
         b_run.setStyleSheet(style.solid_btn("dmd"))
         b_run.setToolTip(
-            "Measure the camera↔DMD transform: a stripe sweep, or by eye "
-            "(drag corners, or align to a reticle) on the live camera.\n"
-            "THIS PROJECTS LIGHT — the dialog says what each does first.")
+            "Set the camera↔DMD transform by eye: the DMD lights a shape "
+            "you steer onto a reticle over the live camera.\n"
+            "THIS PROJECTS LIGHT until the window closes.")
         b_run.clicked.connect(self.calibrate_requested)
         b_load = QPushButton("Load…")
-        b_load.setToolTip("A DmdCalibration JSON written by an earlier sweep.")
+        b_load.setToolTip("A DmdCalibration JSON saved by Calibrate…")
         b_load.clicked.connect(self._pick_calib)
         self._btn_calib_clear = QPushButton("Clear")
         self._btn_calib_clear.clicked.connect(lambda: self._set_calib(""))
@@ -683,8 +665,6 @@ class SettingsPanel(QWidget):
             lib_dir=self._s.lib_dir,
             rois=self._rois,
             calib_path=self._calib_path,
-            roi_flip_y=self._chk_roi_flip_y.isChecked(),
-            roi_flip_x=self._chk_roi_flip_x.isChecked(),
         )
 
     @property
