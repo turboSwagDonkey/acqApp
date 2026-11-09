@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
                              QScrollArea, QToolTip, QVBoxLayout, QWidget)
 
 from acqApp import style
-from acqApp.routines.estimate import clock, estimate, step_seconds
+from acqApp.routines.estimate import (clock, engine_routine, estimate,
+                                      step_seconds)
 from acqApp.routines.settings import (Routine, TIMED_KINDS, group_region_at,
                                       play_order, recording_region_at,
                                       recording_run_ids)
@@ -209,6 +210,7 @@ class TimelineDialog(QDialog):
 
     def __init__(self, routine: Routine, hz: float | None, parent=None) -> None:
         super().__init__(parent)
+        routine = engine_routine(routine)       # FOV steps drawn as their parts
         self.setWindowTitle(f"Timeline — {routine.name}")
         self.resize(900, 260)
         v = QVBoxLayout(self)

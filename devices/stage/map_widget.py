@@ -1,28 +1,25 @@
 """
-Stage travel pictures: `StageMap` for X/Y, `ZGauge` for Z (focus).
-
-Both show the hard travel, the soft limits inside it, the origin and the
-current position; the map also shows this session's saved FOVs. The legend
-is the panel's.
-Nothing here commands motion: dragging the position dot only emits the
-target, and the panel decides whether and how fast to move.
-Z gets a gauge, not a third map axis, so it reads as depth rather than
-another position on a table.
+The stage's X/Y travel picture, `StageMap`: the hard travel, the soft limits
+inside it, the origin, the current position and this session's saved FOVs.
+Z is the readout's alone. Nothing here commands motion: dragging the
+position dot only emits the target, and the panel decides whether and how
+fast to move.
 """
 from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
+
+from acqApp import style
 
 from .cam_axes import view_dir
 from .settings import _BAD, _C_CUR, _C_FOV, _C_ORIGIN, _C_SOFT, WINDOW_DIAMETER_UM
 
 _TRAVEL_EDGE = QColor("#8a8a8a")
-_TRAVEL_FILL = QColor("#f4f4f4")
-_TEXT        = _TRAVEL_EDGE.darker(160)
+_TEXT       = _TRAVEL_EDGE.darker(160)
 _SOFT_EDGE   = QColor(_C_SOFT)
 _CURRENT     = QColor(_C_CUR)
 _ORIGIN      = QColor(_C_ORIGIN)
@@ -100,25 +97,30 @@ class StageMap(_TravelWidget):
     `set_fovs()` when the saved FOVs change. While `set_draggable(True)`,
     dragging the position dot emits `drag_moved(x_um, y_um)` (inside the soft
     limits); the owner shows its chase via `set_target()` and ends a drag
-    early with `cancel_drag()`."""
+    early with `cancel_drag()`. Right-clicking a saved FOV's square emits
+    `fov_menu_requested(index into set_fovs' list, global pos)`."""
 
     drag_moved = pyqtSignal(float, float)
+    fov_menu_requested = pyqtSignal(int, QPoint)
 
-    # With _MapXf.PAD_PX: the square's top and bottom meet ZGauge's bar.
-    _MARGIN_LEFT   = 0
-    _MARGIN_RIGHT  = 0
-    _MARGIN_TOP    = 14
-    _MARGIN_BOTTOM = 14
+    _MARGIN_LEFT   = 1
+    _MARGIN_RIGHT  = 1
+    _MARGIN_TOP    = 1
+    _MARGIN_BOTTOM = 1
     _GRAB_PX       = 12     # how close to the dot a press must land
 
-    _TIP = ("Stage position within its travel, with this session's saved "
-            "FOVs. Drag the blue dot to move the stage (speed-capped; Esc "
-            "stops). Clicking elsewhere does nothing. With measured camera "
-            "axes the map is turned to match the camera: drag right and the "
-            "view moves right.")
-    _TIP_NO_DRAG = ("Stage position within its travel, with this session's "
-                    "saved FOVs. Dragging needs a connected stage with a "
-                    "valid frame.")
+    _LEGEND = (f'<span style="color:{_C_CUR}">●</span> position &nbsp; '
+               f'<span style="color:{_C_ORIGIN}">✚</span> 0,0 &nbsp; '
+               f'<span style="color:{_C_ORIGIN}">◌</span> window &nbsp; '
+               f'<span style="color:{_C_SOFT}">▭</span> limits &nbsp; '
+               f'<span style="color:{_C_FOV}">□</span> saved FOV '
+               "(right-click: its snapshot + ROIs)<br>")
+    _TIP = _LEGEND + (
+        "Drag the blue dot to move the stage (speed-capped; Esc stops). With "
+        "measured camera axes the map is turned to match the camera: drag "
+        "right and the view moves right.")
+    _TIP_NO_DRAG = _LEGEND + (
+        "Dragging needs a connected stage with a valid frame.")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -132,16 +134,12 @@ class StageMap(_TravelWidget):
         self._target: tuple[float, float] | None = None
         self._draggable = False
         self._dragging = False
+        self._held_view = None          # `_view()` frozen while dragging
 
-        self.setMinimumSize(320, 320)
+        self.setMinimumSize(200, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)     # the open-hand cursor over the dot
         self.setToolTip(self._TIP_NO_DRAG)
-
-    def resizeEvent(self, event) -> None:
-        # The plot is square: no wider than tall, so neighbours sit beside it.
-        self.setMaximumWidth(max(self.minimumWidth(), self.height()))
-        super().resizeEvent(event)
 
     # ── inputs ──────────────────────────────────────────────────────────────
     def set_axes(self, x_axis, y_axis, invert_y: bool = True) -> None:
@@ -177,6 +175,7 @@ class StageMap(_TravelWidget):
     def cancel_drag(self) -> None:
         """Ignore the rest of the current drag (until the next press)."""
         self._dragging = False
+        self._held_view = None
         self.unsetCursor()
 
     @property
@@ -195,6 +194,27 @@ class StageMap(_TravelWidget):
                 return True
         return False
 
+    def fov_at(self, pt: QPointF) -> int | None:
+        """Index of the nearest FOV square within grab range of `pt`."""
+        xf = self._frame()
+        if xf is None:
+            return None
+        best, best_d2 = None, self._GRAB_PX ** 2
+        for i, (_name, x_um, y_um) in enumerate(self._fovs):
+            c = xf.to_px(x_um, y_um)
+            d2 = (c.x() - pt.x()) ** 2 + (c.y() - pt.y()) ** 2
+            if d2 <= best_d2:
+                best, best_d2 = i, d2
+        return best
+
+    def contextMenuEvent(self, event) -> None:
+        i = self.fov_at(QPointF(event.pos()))
+        if i is None:
+            super().contextMenuEvent(event)
+            return
+        self.fov_menu_requested.emit(i, event.globalPos())
+        event.accept()
+
     def _emit_drag(self, pt: QPointF) -> None:
         xf = self._frame()
         if xf is None:
@@ -206,6 +226,7 @@ class StageMap(_TravelWidget):
     def mousePressEvent(self, event) -> None:
         if (self._draggable and event.button() == Qt.MouseButton.LeftButton
                 and self._near_dot(event.position())):
+            self._held_view = self._view()
             self._dragging = True
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
@@ -225,6 +246,8 @@ class StageMap(_TravelWidget):
     def mouseReleaseEvent(self, event) -> None:
         if self._dragging and event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
+            self._held_view = None
+            self.update()
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
             return
@@ -241,23 +264,34 @@ class StageMap(_TravelWidget):
             return ax / s, bx / s, ay / s, by / s
         return (1.0, 0.0, 0.0, -1.0) if self._invert_y else (1.0, 0.0, 0.0, 1.0)
 
+    def _view(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """(x, y) µm ranges shown: the window's range around home, or the
+        travel with no home or the stage beyond it. Held through a drag, or
+        the map would rescale under the pointer."""
+        if self._held_view is not None:
+            return self._held_view
+        wx, wy = self._x.window_limits_um(), self._y.window_limits_um()
+        pos = self._pos
+        if wx is None or wy is None or (pos is not None and not (
+                wx[0] <= pos[0] <= wx[1] and wy[0] <= pos[1] <= wy[1])):
+            return self._x.travel_limits_um(), self._y.travel_limits_um()
+        return wx, wy
+
     def _frame(self) -> _MapXf | None:
-        """The µm <-> px map for this size (the window's range while it
-        confines motion, else the travel), or None with nothing to draw."""
+        """The µm <-> px map for this size, or None with nothing to draw."""
         if self._x is None or self._y is None:
             return None
-        xt, yt = self._x.view_limits_um(), self._y.view_limits_um()
+        xt, yt = self._view()
         if xt[1] <= xt[0] or yt[1] <= yt[0]:
             return None
         return _MapXf(self._orientation(), xt, yt, self._box())
 
     def _box(self) -> QRectF:
-        """The largest square that fits inside the margins: at the left, so
-        it lines up with the panel's other rows; centred vertically."""
+        """The largest square that fits inside the margins, centred."""
         avail_w = max(1.0, self.width() - self._MARGIN_LEFT - self._MARGIN_RIGHT)
         avail_h = max(1.0, self.height() - self._MARGIN_TOP - self._MARGIN_BOTTOM)
         side = min(avail_w, avail_h)
-        return QRectF(self._MARGIN_LEFT,
+        return QRectF(self._MARGIN_LEFT + (avail_w - side) / 2.0,
                       self._MARGIN_TOP + (avail_h - side) / 2.0, side, side)
 
     # ── painting ────────────────────────────────────────────────────────────
@@ -271,13 +305,13 @@ class StageMap(_TravelWidget):
         if xf is None:
             self._center_text(p, "No travel limits — calibrate")
             return
-        xt, yt = self._x.view_limits_um(), self._y.view_limits_um()
+        xt, yt = self._view()
 
         # Clamped to the view: zoomed to the window, the travel fills it.
         travel_poly = xf.poly(self._x.travel_limits_um(), self._y.travel_limits_um())
         travel = travel_poly.boundingRect()
         p.setPen(QPen(_TRAVEL_EDGE, 1.5))
-        p.setBrush(QBrush(_TRAVEL_FILL))
+        p.setBrush(QBrush(QColor(style.plot_bg())))
         p.drawPolygon(travel_poly)
 
         p.setPen(QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine))
@@ -344,7 +378,7 @@ class StageMap(_TravelWidget):
             f = QFont(font)
             f.setBold(active)
             p.setFont(f)
-            p.setPen(QPen(_FOV.darker(120)))
+            p.setPen(QPen(_FOV.lighter(140)))
             p.drawText(QRectF(left, c.y() - h / 2, w + 6, h), _LEFT_VCENTER, name)
             p.setFont(font)
 
@@ -359,121 +393,3 @@ class StageMap(_TravelWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()))
         p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r))
-
-
-class ZGauge(_TravelWidget):
-    """Z (focus) within its travel, as a vertical thermometer. `set_axis()`
-    once, `set_position()` per poll.
-
-    The origin ticks on the bar's left; the soft limits carry their µm values.
-    """
-
-    _MARGIN_TOP    = 20        # room for the top soft-limit number
-    _MARGIN_BOTTOM = 20        # room for the bottom soft-limit number
-    _BAR_WIDTH     = 26
-    _SIDE_TICK     = 16        # origin tick length, past the bar edge
-    _LABEL_W       = 56        # room for "1234 µm" beside the bar
-    _RADIUS        = 4.0
-    BAR_CENTER_X   = _SIDE_TICK + _BAR_WIDTH / 2   # for a caption under the bar
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._ax = None
-        self._pos: float | None = None
-
-        self.setMinimumSize(self._SIDE_TICK + self._BAR_WIDTH + self._LABEL_W + 12,
-                            220)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.setToolTip("Z (focus) position within its travel. Display "
-                        "only — clicking here doesn't move the stage.")
-
-    # ── inputs ──────────────────────────────────────────────────────────────
-    def set_axis(self, z_axis) -> None:
-        self._ax = z_axis
-        self.update()
-
-    def set_position(self, z_um: float) -> None:
-        self._pos = z_um
-        self.update()
-
-    # ── geometry ────────────────────────────────────────────────────────────
-    def _bar(self) -> QRectF:
-        h = max(1.0, self.height() - self._MARGIN_TOP - self._MARGIN_BOTTOM)
-        return QRectF(self._SIDE_TICK, self._MARGIN_TOP, self._BAR_WIDTH, h)
-
-    def _y_for(self, z_um: float, lim: tuple[float, float], bar: QRectF) -> float:
-        """Screen y for a value in `lim`; bigger is always up (no invert_y
-        for a single axis)."""
-        lo, hi = lim
-        f = (z_um - lo) / (hi - lo) if hi > lo else 0.5
-        f = min(max(f, 0.0), 1.0)
-        return bar.bottom() - f * bar.height()
-
-    # ── painting ────────────────────────────────────────────────────────────
-    def paintEvent(self, _event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._ax is None:
-            self._center_text(p, "No Z axis")
-            return
-
-        zt = self._ax.travel_limits_um()
-        if zt[1] <= zt[0]:
-            self._center_text(p, "No travel\nlimits")
-            return
-
-        bar = self._bar()
-        p.setPen(QPen(_TRAVEL_EDGE, 1.5))
-        p.setBrush(QBrush(_TRAVEL_FILL))
-        p.drawRoundedRect(bar, self._RADIUS, self._RADIUS)
-
-        lo, hi = self._ax.soft_limits_um()
-        top, bot = self._y_for(hi, zt, bar), self._y_for(lo, zt, bar)
-        p.setPen(QPen(_SOFT_EDGE, 1.2, Qt.PenStyle.DashLine))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(QRectF(bar.left(), top, bar.width(), bot - top),
-                          self._RADIUS, self._RADIUS)
-
-        small = self._small()
-        p.setFont(small)
-        p.setPen(QPen(_TEXT))
-        # As wide as the tick margins allow, so "-12650" isn't clipped.
-        lw = bar.width() + 2 * self._SIDE_TICK
-        p.drawText(QRectF(bar.left() - self._SIDE_TICK, top - 17, lw, 16),
-                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom),
-                   f"{hi:.0f}")
-        p.drawText(QRectF(bar.left() - self._SIDE_TICK, bot + 1, lw, 16),
-                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
-                   f"{lo:.0f}")
-
-        if self._ax.origin_set:
-            self._origin_tick(p, bar, self._y_for(0.0, zt, bar))
-        else:
-            p.setPen(QPen(_STALE))
-            p.drawText(bar.adjusted(-6, 0, 6, 0),
-                       int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter),
-                       "0 not\nset")
-
-        if self._pos is not None:
-            y = self._y_for(self._pos, zt, bar)
-            p.setPen(QPen(_CURRENT.lighter(130), 0.8, Qt.PenStyle.DotLine))
-            p.drawLine(QPointF(bar.left(), y), QPointF(bar.right(), y))
-            p.setPen(QPen(_CURRENT.darker(130), 1.4))
-            p.setBrush(QBrush(_CURRENT))
-            p.drawEllipse(QPointF(bar.center().x(), y), 5.5, 5.5)
-            p.setPen(QPen(_TEXT))
-            p.drawText(QRectF(bar.right() + 6, y - 7, self._LABEL_W, 14),
-                       _LEFT_VCENTER, f"{self._pos:.0f} µm")
-
-        if not self._ax.has_frame:
-            p.setPen(QPen(_STALE))
-            p.drawText(bar.adjusted(-6, -6, 6, 0),
-                       int(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter),
-                       "no frame")
-
-    # ── drawing helpers ─────────────────────────────────────────────────────
-    def _origin_tick(self, p: QPainter, bar: QRectF, y: float) -> None:
-        """A marker extending outward from the bar's left edge."""
-        p.setPen(QPen(_ORIGIN, 1.8))
-        p.drawLine(QPointF(bar.left(), y),
-                   QPointF(bar.left() - self._SIDE_TICK + 4, y))

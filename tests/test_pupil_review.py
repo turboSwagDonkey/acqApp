@@ -908,7 +908,6 @@ def _part_mode() -> int:
     class FakeWin:
         def __init__(self) -> None:
             self.messages: list[str] = []
-            self.docks: list = []
 
         def status(self, msg: str) -> None:
             self.messages.append(msg)
@@ -916,19 +915,13 @@ def _part_mode() -> int:
         def on_worker_error(self, _msg) -> None:
             pass
 
-        def register_pg_view(self, _v) -> None:
-            pass
-
-        def add_dock(self, title, widget, *_a, **_k) -> None:
-            self.docks.append((title, widget))
-
         def is_recording(self) -> bool:
             return False
 
     win = FakeWin()
     m = PupilCamModule(win)
     m.build_panel()
-    m.build_views()
+    m.view_widget()
     r.check(isinstance(m.panel.mode, PillGroup)
             and m.panel.mode.value() == "live" and m.mode() == "live",
             "the tab opens in Live, with a Live | Review switch")
@@ -1015,8 +1008,6 @@ def _part_recorded() -> int:
 
         def status(self, msg): self.messages.append(msg)
         def on_worker_error(self, _m): pass
-        def register_pg_view(self, _v): pass
-        def add_dock(self, *_a, **_k): pass
         def is_recording(self): return False
         def recording_path(self): return self.path
 
@@ -1026,7 +1017,7 @@ def _part_recorded() -> int:
     win = FakeWin()
     m = PupilCamModule(win)
     m.build_panel()
-    m.build_views()
+    m.view_widget()
     m.build_session(True)
     win.path = sess
     m.attach_sink(FakeRec())

@@ -2,7 +2,7 @@
 In vivo acquisition suite — entry point.
 
 Owns what is session-wide: the clock, the sync/trigger bus, the recorder, the
-save destination, docks and theme. Each instrument is a `ModuleAdapter` in
+save destination and docks. Each instrument is a `ModuleAdapter` in
 `adapters/`; this window only iterates over them.
 
   acqApp\\.venv\\Scripts\\python.exe acqApp\\main.py
@@ -21,7 +21,6 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 # A segfault in the DCAM SDK can't be caught; this at least dumps the stacks.
@@ -153,24 +152,25 @@ def _close_camera(handle) -> None:
 
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PyQt6")
 
-from PyQt6.QtCore import Qt, QTimer, QSettings, QSignalBlocker
-from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QSettings, QSignalBlocker
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDockWidget, QLabel, QMainWindow,
-    QPushButton, QStatusBar, QTabWidget, QToolBar, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QDockWidget, QFrame, QLabel,
+    QHBoxLayout, QMainWindow, QPushButton, QScrollArea, QSplitter, QStatusBar,
+    QToolButton, QVBoxLayout, QWidget,
 )
 import pyqtgraph as pg
 
 from acqApp import adapters, style
-from acqApp.dialogs import ConnectionMonitor, ModuleSelectDialog, PanelWindow
+from acqApp.dialogs import ModuleSelectDialog
 from acqApp.saving import SaveConfig, SavePanel, write_routine_fov_sidecar
 from acqApp.acq.sync import DEFAULT_TICK_MS, SyncController
 from acqApp.acq.clock import SessionClock
 from acqApp.acq.recorder import Recorder
 from acqApp.acq.ring_buffer import RingBuffer
 from acqApp.acq.writer import SessionWriter
-from acqApp.sidebar import MiniText, ModuleCard
-from acqApp.widgets import compact
+from acqApp.sidebar import Fold, MiniText
+from acqApp.widgets import align_grids, compact
 
 pg.setConfigOptions(imageAxisOrder="row-major")
 
@@ -195,13 +195,62 @@ def _sample_nbytes(item) -> int:
 # "None" leaves everything as set; other modes come from modes.json.
 MODE_NONE = "None"
 
-_MODULES_TIP = "Load or unload instruments without restarting the app"
+_MODULES_TIP = ("Load or unload instruments without restarting the app, and "
+                "see whether each one's hardware is detected")
+
+# Saved dock layouts of an older version are ignored, not half-applied.
+_LAYOUT_VERSION = 4
+# An own-dock module's default place, (column, row). General tops column
+# _GENERAL_COL; the others lie to its right.
+_GENERAL_COL = -1
+_SLOTS = {"stage": (_GENERAL_COL, 1),
+          "voltage_cam": (0, 0), "routines": (0, 1),
+          "dmd": (1, 0), "pupil_cam": (1, 1)}
 
 
 def _rank(key: str) -> int:
     """Position in config.MODULES; unknown keys sort last."""
     keys = list(config.MODULES)
     return keys.index(key) if key in config.MODULES else len(keys)
+
+
+def _section_rank(key: str) -> int:
+    return -1 if key == "saving" else _rank(key)
+
+
+def _slot(key: str) -> tuple[int, int]:
+    return _SLOTS.get(key, (1, 99))
+
+
+def _dress(panel: QWidget, key: str) -> None:
+    """What every settings panel gets: its accent and aligned grids. Its
+    boxes don't fold: the card does, so one click shows them all."""
+    panel.setStyleSheet(style.accent_panel(key))
+    align_grids(panel)
+
+
+class _VScroll(QScrollArea):
+    """Scrolls only up and down: never narrower than what it holds, so a
+    column can't be dragged so thin that its sections need a sideways bar."""
+
+    def __init__(self, w: QWidget) -> None:
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWidget(w)
+        w.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()       # a section opened or shut
+        return super().eventFilter(obj, event)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        bar = self.verticalScrollBar().sizeHint().width()
+        hint.setWidth(self.widget().minimumSizeHint().width() + bar)
+        return hint
 
 
 class MainWindow(QMainWindow):
@@ -234,18 +283,9 @@ class MainWindow(QMainWindow):
         self._routine_save_ctx: tuple[str, int, tuple | None] | None = None
         self._routine_arming_trigger = False
         self._save_panel: SavePanel | None = None
-        self._panel_windows: dict[str, PanelWindow] = {}   # one per panel
-        self._devices_dialog: ConnectionMonitor | None = None
-        self._pg_views: list = []      # recoloured on theme change
-        # What each module added to the window, to take back on unload.
-        # add_dock/register_pg_view don't say who's calling, so the window
-        # tracks whose build is running.
-        self._building_key: str | None = None
-        self._module_docks: dict[str, list] = {}
-        self._module_views: dict[str, list] = {}
-        self._module_plots: dict[str, QWidget] = {}
+        self._folds: dict[str, Fold] = {}           # each card, its panel under it
+        self._docks: dict[str, QDockWidget] = {}    # the own_dock modules'
         self._status_widgets: dict[str, QWidget] = {}   # beside Record
-        self._central_owner: str | None = None
 
         self._modules = adapters.build_adapters(self, self._enabled)
         self._build_ui()
@@ -370,6 +410,9 @@ class MainWindow(QMainWindow):
 
     def set_camera_burst(self, key: str, n: int) -> bool | None:
         return self._call(key, "set_burst_frames", n)
+
+    def add_routine_fov_step(self, fov: Path, roi: Path) -> None:
+        self._call("routines", "add_fov_step", fov, roi)
 
     def camera_burst_frames(self, key: str) -> int | None:
         return self._call(key, "burst_frames_done")
@@ -518,30 +561,9 @@ class MainWindow(QMainWindow):
         `camera_preset`, which can name a switch not yet in effect."""
         return self._call(key, "last_frame_preset")
 
-    @contextmanager
-    def _attributed_to(self, key: str):
-        """Charge add_dock/register_pg_view calls in this block to `key`."""
-        self._building_key = key
-        try:
-            yield
-        finally:
-            self._building_key = None
-
-    def register_pg_view(self, view) -> None:
-        self._pg_views.append(view)
-        if self._building_key is not None:
-            self._module_views.setdefault(self._building_key, []).append(view)
-
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         if self._save_panel is not None:
             self._save_panel.set_expected_rate(mbps, writer_mbps)
-
-    def add_dock(self, title: str, widget: QWidget, area: "Qt.DockWidgetArea",
-                 accent: str = "sync") -> QDockWidget:
-        dock = self._make_dock(title, widget, area, accent)
-        if self._building_key is not None:
-            self._module_docks.setdefault(self._building_key, []).append(dock)
-        return dock
 
     def on_worker_error(self, msg: str) -> None:
         sender = self.sender()
@@ -552,69 +574,28 @@ class MainWindow(QMainWindow):
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
+        """One window, all docks (no central widget, so every pane drags):
+        General over stage | voltage cam over routines | DMD over pupil cam."""
         self.resize(1600, 900)
-        self.setDockNestingEnabled(True)
+        # Nested, never tabbed: a tab would hide one region behind another
+        # (General behind the stage, say).
+        self.setDockOptions(QMainWindow.DockOption.AnimatedDocks
+                            | QMainWindow.DockOption.AllowNestedDocks)
 
-        self._build_central()
-        self._build_panels()
-        self._build_plots_dock()
+        self._build_general()
+        # Every panel before any view: controllers read them.
         for m in self._modules:
-            self._build_views_for(m)
-
-        self.resizeDocks([self._plots_dock], [420], Qt.Orientation.Horizontal)
+            m.build_panel()
+        for m in self._modules:
+            self._place_module(m)
 
         self._build_status_bar()
-        self._build_sidebar()
-
+        self._arrange_docks()
         self._restore_layout()
 
-    def _build_views_for(self, m) -> None:
-        with self._attributed_to(m.key):
-            m.build_views()
-
-    def _central_claimant(self):
-        """The first module with a `central_title` (asking `central_widget()`
-        would build one)."""
-        for m in self._modules:
-            if m.central_title:
-                return m
-        return None
-
-    def _build_central(self) -> None:
-        # setCentralWidget DELETES the old widget; its pyqtgraph views must
-        # leave `_pg_views` too, or the next theme toggle crashes natively.
-        if self._central_owner is not None:
-            for v in self._module_views.pop(self._central_owner, []):
-                if v in self._pg_views:
-                    self._pg_views.remove(v)
-        owner = self._central_claimant()
-        view = None
-        if owner is not None:
-            with self._attributed_to(owner.key):
-                view = owner.central_widget()
-        self._central_owner = owner.key if view is not None else None
-        if view is None:
-            placeholder = QLabel("Voltage camera not loaded")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder.setStyleSheet("color:#888; font-style:italic;")
-            self.setCentralWidget(placeholder)
-            return
-
-        header = QLabel(owner.central_title)
-        header.setStyleSheet(
-            f"background:{style.HEX[owner.key]}; color:white; "
-            "font-weight:bold; padding:3px 8px;")
-        wrap = QWidget()
-        lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(header)
-        lay.addWidget(view)
-        self.setCentralWidget(wrap)
-
-    def _build_panels(self) -> None:
-        """Every panel in its own hidden window — built now because
-        controllers read them."""
+    def _build_general(self) -> None:
+        """The left dock: Save and every module without a dock of its own,
+        each folded under its card, over the session-wide controls."""
         save_cfg = config.load_dataclass(SaveConfig, "saving")
         if not save_cfg.mouse_id:
             # Legacy key: `subject` became mouse_id on 2026-09-14.
@@ -623,54 +604,137 @@ class MainWindow(QMainWindow):
                 save_cfg.mouse_id = old_subject.strip()
         self._save_panel = SavePanel(save_cfg)
         self._save_panel.settings_changed.connect(self._save_save_settings)
-        self._place_window(self._save_panel, "Save", "saving")
+        _dress(self._save_panel, "saving")
 
-        for m in self._modules:
-            m.build_panel()
-            self._place_panel(m)
+        inner = QWidget()
+        col = QVBoxLayout(inner)
+        col.setContentsMargins(4, 4, 4, 4)
+        self._sections = QVBoxLayout()
+        self._sections.setSpacing(6)
+        col.addLayout(self._sections)
+        col.addStretch(1)
+        self._add_section("saving", "Save", self._mini("saving"), self._save_panel)
 
-    def _place_panel(self, m) -> None:
+        host = QWidget()
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._general_scroll = _VScroll(inner)
+        lay.addWidget(self._general_scroll, 1)
+        lay.addWidget(self._build_controls())
+        self._general_dock = self._make_dock(
+            "General", host, Qt.DockWidgetArea.LeftDockWidgetArea)
+
+    def _build_controls(self) -> QWidget:
+        """One line: Mode, then small buttons (icons, bar Modules)."""
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(4, 4, 4, 4)
+        row.setSpacing(4)
+
+        self._modes = config.load_modes()
+        self._mode_combo = compact(QComboBox())
+        self._mode_combo.addItems((MODE_NONE, *self._modes))
+        self._mode_combo.setToolTip(
+            "Apply a named preset across modules (DMD illumination, camera "
+            "capture area, ...), defined in modes.json. \"None\" leaves "
+            "everything as set.")
+        self._mode_combo.currentTextChanged.connect(self.set_mode)
+        row.addWidget(QLabel("Mode:"))
+        row.addWidget(self._mode_combo)
+
+        self._save_mode_action = QAction("💾", self)
+        self._save_mode_action.setToolTip(
+            "Save as preset: capture the DMD's and voltage camera's CURRENT "
+            "settings as a new (or replacement) entry in modes.json.")
+        self._save_mode_action.triggered.connect(self._save_mode_as)
+
+        self._modules_action = QAction("🧩 Modules", self)
+        self._modules_action.setToolTip(_MODULES_TIP)
+        self._modules_action.triggered.connect(self._open_modules_dialog)
+
+        self._reset_action = QAction("⟲", self)
+        self._reset_action.setToolTip(
+            "Reset layout: put every pane back where it started (drag a pane "
+            "by its title bar to move it; drag the gaps between panes to "
+            "resize)")
+        self._reset_action.triggered.connect(self._arrange_docks)
+
+        row.addStretch()
+        for act in (self._save_mode_action, self._modules_action,
+                    self._reset_action):
+            b = QToolButton()
+            b.setDefaultAction(act)
+            row.addWidget(b)
+        return box
+
+    def _mini(self, key: str) -> QWidget | None:
+        """A fresh live view for `key`'s card."""
+        if key == "saving":
+            return MiniText(self._save_mini_text)
+        m = self._module(key)
+        return m.mini_view() if m is not None else None
+
+    def _place_module(self, m) -> None:
+        """Its settings folded under its card: in its own dock over its
+        view, else as a section of General."""
         if m.panel is not None:
-            self._place_window(m.panel, m.tab_label, m.key, m.window_size)
-
-    def _place_window(self, panel: QWidget, label: str, key: str,
-                      size: tuple[int, int] | None = None) -> None:
-        win = PanelWindow(panel, label, key, parent=self, size=size)
-        win.visibility_changed.connect(
-            lambda vis, k=key: self._on_panel_window(k, vis))
-        self._panel_windows[key] = win
-
-    def _on_panel_window(self, key: str, visible: bool) -> None:
-        act = self._page_actions.get(key)
-        if act is not None:
-            act.setChecked(visible)
-
-    def _build_plots_dock(self) -> None:
-        self._plots_tabs = QTabWidget()
-        self._plots_tabs.setMovable(True)
-        for m in self._modules:
-            self._add_plot_tab(m)
-        self._plots_dock = self._make_dock("Signals", self._plots_tabs,
-                                           Qt.DockWidgetArea.RightDockWidgetArea)
-
-    def _add_plot_tab(self, m, index: int | None = None) -> None:
-        pw = m.build_plot()
-        if pw is None:
+            _dress(m.panel, m.key)
+        mini = m.mini_view()
+        if not m.own_dock:
+            if m.panel is not None or mini is not None:
+                self._add_section(m.key, m.tab_label, mini, m.panel)
             return
-        idx = (self._plots_tabs.addTab(pw, m.plot_label) if index is None
-              else self._plots_tabs.insertTab(index, pw, m.plot_label))
-        self._plots_tabs.tabBar().setTabTextColor(idx, QColor(style.HEX[m.key]))
-        self._module_plots[m.key] = pw
-        with self._attributed_to(m.key):
-            self.register_pg_view(pw)
+        view = m.view_widget()
+        body = _VScroll(m.panel) if m.panel is not None else None
+        fold = Fold(m.key, "Settings", mini, body, default_open=view is None)
+        self._folds[m.key] = fold
+        self._docks[m.key] = self._make_dock(
+            m.tab_label, self._dock_body(fold, view),
+            Qt.DockWidgetArea.LeftDockWidgetArea, accent=m.key)
+
+    def _add_section(self, key: str, label: str, mini: QWidget | None,
+                     panel: QWidget | None) -> None:
+        fold = Fold(key, label, mini, panel)
+        at = sum(1 for k in self._folds
+                 if k not in self._docks and _section_rank(k) < _section_rank(key))
+        self._sections.insertWidget(at, fold)
+        self._folds[key] = fold
+
+    @staticmethod
+    def _dock_body(fold: Fold, view: QWidget | None) -> QWidget:
+        """The view over the fold (its Settings at the bottom), the line
+        between them draggable; with no view, the fold fills the dock."""
+        if view is None:
+            host = QWidget()
+            lay = QVBoxLayout(host)
+            lay.setContentsMargins(4, 4, 4, 4)
+            lay.addWidget(fold, 1)
+            lay.addStretch(0)
+            return host
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(view)
+        split.addWidget(fold)
+        split.setStretchFactor(0, 1)
+
+        def opened(on: bool) -> None:
+            total = sum(split.sizes())
+            if total:       # shut, the card alone: no band left over it
+                want = (min(fold.sizeHint().height(), total * 3 // 5) if on
+                        else fold.maximumHeight())
+                split.setSizes([total - want, want])
+        fold.toggled.connect(opened)
+        return split
 
     def _build_status_bar(self) -> None:
         self._btn_emulate = QPushButton("Emulate")
         self._btn_emulate.setCheckable(True)
         self._btn_emulate.setChecked(self._emulate)
-        self._btn_emulate.setStyleSheet(style.toggle_btn("wheel"))
+        self._btn_emulate.setStyleSheet(style.quiet_toggle("wheel"))
         self._btn_emulate.setToolTip("Use simulated signals instead of hardware")
         self._btn_emulate.toggled.connect(self._on_emulate_toggled)
+        self._btn_emulate.toggled.connect(self._label_emulate)
+        self._label_emulate(self._emulate)
 
         self._btn_run = QPushButton("Live view")
         self._btn_run.setCheckable(True)
@@ -735,118 +799,23 @@ class MainWindow(QMainWindow):
             w.setParent(None)
             w.deleteLater()
 
-    def _build_sidebar(self) -> None:
-        self._sidebar = QToolBar("Sidebar")
-        self._sidebar.setObjectName("sidebar")
-        self._sidebar.setMovable(False)
-        self._sidebar.setOrientation(Qt.Orientation.Vertical)
-        self._sidebar.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._sidebar.setStyleSheet(
-            "QToolButton { text-align:left; padding:4px 10px; }")
-        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self._sidebar)
-
-        # One card per module above the separator; those with a page also
-        # in `_page_actions`.
-        self._cards: dict[str, ModuleCard] = {}
-        self._page_actions: dict[str, ModuleCard] = {}
-        self._sidebar_sep = self._sidebar.addSeparator()
-        self._rebuild_page_actions()
-
-        self._modes = config.load_modes()
-        self._sidebar.addWidget(QLabel("  Mode:"))
-        self._mode_combo = compact(QComboBox())
-        self._mode_combo.addItems((MODE_NONE, *self._modes))
-        self._mode_combo.setToolTip(
-            "Apply a named preset across modules (DMD illumination, camera "
-            "capture area, ...), defined in modes.json. \"None\" leaves "
-            "everything as set.")
-        self._mode_combo.currentTextChanged.connect(self.set_mode)
-        self._sidebar.addWidget(self._mode_combo)
-
-        self._btn_save_mode = QPushButton("💾 Save as preset…")
-        self._btn_save_mode.setToolTip(
-            "Capture the DMD's and voltage camera's CURRENT settings as a "
-            "new (or replacement) entry in modes.json.")
-        self._btn_save_mode.clicked.connect(self._save_mode_as)
-        self._sidebar.addWidget(self._btn_save_mode)
-
-        self._theme_action = QAction(self._swatch(None), "☾ Theme", self)
-        self._theme_action.setCheckable(True)
-        self._theme_action.setChecked(config.get_theme() == "dark")
-        self._theme_action.setToolTip("Toggle dark / light theme")
-        self._theme_action.toggled.connect(self._on_theme_toggled)
-        self._sidebar.addAction(self._theme_action)
-
-        self._modules_action = QAction(self._swatch(None), "🧩 Modules", self)
-        self._modules_action.setToolTip(_MODULES_TIP)
-        self._modules_action.triggered.connect(self._open_modules_dialog)
-        self._sidebar.addAction(self._modules_action)
-
-        # Checkable only as an "open" indicator.
-        self._devices_action = QAction(self._swatch(None), "🔌 Devices", self)
-        self._devices_action.setCheckable(True)
-        self._devices_action.setToolTip("Check which devices are detected")
-        self._devices_action.triggered.connect(self._show_devices)
-        self._sidebar.addAction(self._devices_action)
-        self._stretch_sidebar()
-
     def _make_dock(self, title: str, widget: QWidget,
                    area: "Qt.DockWidgetArea", accent: str = "sync") -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(f"dock_{title}")
-        dock.setWidget(widget)
+        zone = QFrame()                 # the accent frame under the title band
+        zone.setObjectName("zone")
+        zone.setStyleSheet(style.zone(accent))
+        lay = QVBoxLayout(zone)
+        lay.setContentsMargins(3, 3, 3, 3)
+        lay.addWidget(widget)
+        dock.setWidget(zone)
         dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
-        dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        # Rearranged within the window, never torn out of it or closed.
+        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable)
         dock.setStyleSheet(style.dock_accent(accent))
         self.addDockWidget(area, dock)
         return dock
-
-    # ── Sidebar cards and panel windows ─────────────────────────────────────────
-
-    @staticmethod
-    def _swatch(key: str | None) -> "QIcon":
-        """An accent chip; transparent for None, because a QToolButton without
-        an icon ignores `text-align:left`."""
-        pm = QPixmap(12, 12)
-        pm.fill(QColor(style.HEX[key]) if key else Qt.GlobalColor.transparent)
-        return QIcon(pm)
-
-    def _rebuild_page_actions(self) -> None:
-        """Rebuilt wholesale: a stale item would point at a deleted panel."""
-        for act in self._cards.values():
-            self._sidebar.removeAction(act)
-            act.deleteLater()           # and its card, whose view polls a module
-        self._cards.clear()
-        self._page_actions.clear()
-
-        # (key, label, page or None, its card's view factory)
-        items: list[tuple[str, str, QWidget | None, Any]] = []
-        if self._save_panel is not None:
-            items.append(("saving", "Save", self._save_panel,
-                          lambda: MiniText(self._save_mini_text)))
-        items += [(m.key, m.tab_label, m.panel, m.mini_view)
-                  for m in self._modules]
-
-        for key, label, panel, make_mini in items:
-            mini = make_mini()
-            if panel is None:
-                if mini is None:
-                    continue
-                act = ModuleCard(key, label, mini, label, self, page=False)
-            else:
-                act = ModuleCard(key, label, mini, f"{label} settings", self)
-                act.triggered.connect(
-                    lambda _checked=False, k=key: self._toggle_window(k))
-                self._page_actions[key] = act
-            self._sidebar.insertAction(self._sidebar_sep, act)
-            self._cards[key] = act
-        self._stretch_sidebar()
-        # New actions start unchecked; re-light whatever is showing.
-        for key, win in self._panel_windows.items():
-            self._on_panel_window(key, win.isVisible())
 
     def _save_mini_text(self) -> tuple[str, str]:
         path = self.recording_path()
@@ -855,71 +824,84 @@ class MainWindow(QMainWindow):
         s = self._save_panel.settings
         return "", f"{s.mouse_id or 'no mouse ID'} → {s.resolved_folder().name}"
 
-    def _stretch_sidebar(self) -> None:
-        """One minimum width for all buttons: QToolBarLayout centres each at
-        its own size whatever the size policy says."""
-        btns = [self._sidebar.widgetForAction(a) for a in self._sidebar.actions()]
-        btns = [b for b in btns if b is not None]
-        if not btns:
+    # ── Dock layout ─────────────────────────────────────────────────────────────
+
+    def _label_emulate(self, on: bool) -> None:
+        self._btn_emulate.setText("EMULATE: no hardware" if on else "Emulate")
+
+    def _arrange_docks(self) -> None:
+        """The default layout, also Reset layout: a column per `_SLOTS`
+        column, its docks stacked by row, General on top of the first."""
+        general = self._general_dock
+        for d in (general, *self._docks.values()):
+            d.setFloating(False)
+            self.removeDockWidget(d)
+        cols: dict[int, list] = {_GENERAL_COL: [general]}
+        for key in sorted(self._docks, key=lambda k: (_slot(k), _rank(k))):
+            cols.setdefault(_slot(key)[0], []).append(self._docks[key])
+        stacks = [cols[c] for c in sorted(cols)]
+        # Columns first, then each split into rows: a row split first would
+        # put the next column beside one row only.
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, general)
+        for prev, stack in zip(stacks, stacks[1:]):
+            self.splitDockWidget(prev[0], stack[0], Qt.Orientation.Horizontal)
+        for stack in stacks:
+            for upper, lower in zip(stack, stack[1:]):
+                self.splitDockWidget(upper, lower, Qt.Orientation.Vertical)
+        for d in (general, *self._docks.values()):
+            d.show()
+        widths = [370, 750, 480][:len(stacks)]  # narrow left: the stage map fills it
+        self.resizeDocks([s[0] for s in stacks], widths,
+                         Qt.Orientation.Horizontal)
+        for stack in stacks:
+            if len(stack) == 2:
+                # General takes only its cards' height: the stage map gets the rest.
+                # resizeDocks treats sizes as ratios, so these must add up.
+                h = self._general_height()
+                self.resizeDocks(stack, ([h, max(1, self.height() - h)]
+                                         if stack[0] is general else [3, 2]),
+                                 Qt.Orientation.Vertical)
+
+    def _general_height(self) -> int:
+        """The dock's hint with the scroll area's stock ~24 lines swapped for
+        what it holds."""
+        scroll = self._general_scroll
+        return (self._general_dock.sizeHint().height()
+                - scroll.sizeHint().height()
+                + scroll.widget().sizeHint().height())
+
+    def _dock_beside(self, key: str) -> None:
+        """A dock loaded mid-session: under a docked neighbour in its column
+        (General heads its own), else right of General."""
+        dock = self._docks.get(key)
+        if dock is None:
             return
-        widest = max(b.sizeHint().width() for b in btns)
-        for b in btns:
-            b.setMinimumWidth(widest)
-
-    def _toggle_window(self, key: str) -> None:
-        """Open the module's window, or shut it if open. Owned by the main
-        window, so it can't hide behind it: open means seen."""
-        win = self._panel_windows[key]
-        if win.isVisible():
-            win.close()
+        col = _slot(key)[0]
+        sib = next((d for k, d in self._docks.items()
+                    if k != key and _slot(k)[0] == col and not d.isFloating()),
+                   self._general_dock if col == _GENERAL_COL else None)
+        if sib is not None:
+            self.splitDockWidget(sib, dock, Qt.Orientation.Vertical)
         else:
-            win.show()
-            win.raise_()
-            win.activateWindow()
-        # The card toggled itself on the click; the window has the last word.
-        self._on_panel_window(key, win.isVisible())
-
-    # ── Dock layout persistence ─────────────────────────────────────────────────
+            self.splitDockWidget(self._general_dock, dock,
+                                 Qt.Orientation.Horizontal)
 
     def _restore_layout(self) -> None:
         state = QSettings("acqApp", "acqApp").value("dockState")
         if state is not None:
-            self.restoreState(state)
+            self.restoreState(state, _LAYOUT_VERSION)
+        # A layout saved while floating was allowed would restore a dock outside.
+        for d in (self._general_dock, *self._docks.values()):
+            d.setFloating(False)
 
     def _save_layout(self) -> None:
-        QSettings("acqApp", "acqApp").setValue("dockState", self.saveState())
-
-    # ── Theme ───────────────────────────────────────────────────────────────────
-
-    def _on_theme_toggled(self, dark: bool) -> None:
-        theme = "dark" if dark else "light"
-        config.set_theme(theme)
-        style.apply_theme(QApplication.instance(), theme)
-        # setConfigOption only reaches new views.
-        bg = style.plot_colors(theme)[0]
-        for v in self._pg_views:
-            try:
-                v.setBackground(bg)
-            except Exception:
-                pass
-        self._rebuild_page_actions()    # the cards' muted text is per theme
+        QSettings("acqApp", "acqApp").setValue(
+            "dockState", self.saveState(_LAYOUT_VERSION))
 
     # ── Device connection monitor ────────────────────────────────────────────────
 
     def _probe_kwargs(self) -> dict:
         return {k: v for m in self._modules for k, v in m.probe_kwargs().items()}
-
-    def _show_devices(self) -> None:
-        if self._devices_dialog is None:
-            self._devices_dialog = ConnectionMonitor(
-                [m.key for m in self._modules], self._probe_kwargs, parent=self)
-            self._devices_dialog.visibility_changed.connect(
-                self._devices_action.setChecked)
-        else:
-            self._devices_dialog.refresh()
-        self._devices_dialog.show()
-        self._devices_dialog.raise_()
-        self._devices_dialog.activateWindow()
 
     # ── Session start / stop ──────────────────────────────────────────────────
 
@@ -1035,13 +1017,6 @@ class MainWindow(QMainWindow):
 
         self._enabled = {m.key for m in self._modules}
         config.save_enabled_modules(list(self._enabled))
-        # The monitor snapshots module keys at build.
-        if self._devices_dialog is not None:
-            self._devices_dialog.close()
-            self._devices_dialog.deleteLater()
-            self._devices_dialog = None
-        self._refresh_central()
-        self._rebuild_page_actions()
         for m in self._modules:
             m.on_modules_changed()
         return added, removed
@@ -1051,9 +1026,8 @@ class MainWindow(QMainWindow):
         self._modules.append(m)             # the caller sorts
 
         m.build_panel()
-        self._place_panel(m)
-        self._add_plot_tab(m, index=self._plot_tab_index(key))
-        self._build_views_for(m)
+        self._place_module(m)
+        self._dock_beside(key)
         m.build_controller(self._emulate)
         self._add_status_widget(m)
         self._size_status_boxes()
@@ -1077,53 +1051,35 @@ class MainWindow(QMainWindow):
 
         # setParent(None) before deleteLater: removal only leaves the layout,
         # and a still-parented dock would come back on restoreState().
-        win = self._panel_windows.pop(key, None)
-        if win is not None:
-            # A QScrollArea owns its widget; release, or the panel dies too.
-            win.release()
-            win.setParent(None)
-            win.deleteLater()
-        if m.panel is not None:
-            m.panel.setParent(None)
-            m.panel.deleteLater()
-        plot = self._module_plots.pop(key, None)
-        if plot is not None:
-            i = self._plots_tabs.indexOf(plot)
-            if i >= 0:
-                self._plots_tabs.removeTab(i)
-            plot.setParent(None)
-            plot.deleteLater()
-        for dock in self._module_docks.pop(key, []):
+        # The panel and the card's view go with their fold.
+        fold = self._folds.pop(key, None)
+        dock = self._docks.pop(key, None)
+        if dock is not None:
             self.removeDockWidget(dock)
             dock.setParent(None)
             dock.deleteLater()
-        for view in self._module_views.pop(key, []):
-            if view in self._pg_views:
-                self._pg_views.remove(view)
+        elif fold is not None:
+            self._sections.removeWidget(fold)
+            fold.setParent(None)
+            fold.deleteLater()
         self._remove_status_widget(key)
 
         self._modules.remove(m)
 
-    def _plot_tab_index(self, key: str) -> int:
-        return sum(1 for k in self._module_plots
-                   if k != key and _rank(k) < _rank(key))
-
-    def _refresh_central(self) -> None:
-        """Rebuild the centre pane only if its owner changed."""
-        claimant = self._central_claimant()
-        want = claimant.key if claimant is not None else None
-        if want != self._central_owner:
-            self._build_central()
+    def _modules_dialog(self) -> ModuleSelectDialog:
+        """The module picker, each row also reporting its hardware."""
+        running = " — applied to the running session" if self._session_on else ""
+        return ModuleSelectDialog(
+            sorted(self._enabled), parent=self, title="Modules and devices",
+            prompt=f"Instruments to load{running}:",
+            probe_kwargs=self._probe_kwargs)
 
     def _open_modules_dialog(self) -> None:
         if self._recorder is not None:
             self.status("Stop the recording before changing which modules "
                         "are loaded")
             return
-        running = " — applied to the running session" if self._session_on else ""
-        dlg = ModuleSelectDialog(
-            sorted(self._enabled), parent=self, title="Modules",
-            prompt=f"Instruments to load{running}:")
+        dlg = self._modules_dialog()
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -1347,10 +1303,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_layout()
-        # Top-level windows left open would keep the app alive.
-        for win in self._panel_windows.values():
-            win.save_geometry()
-            win.close()
         try:
             if self._session_on:
                 self._stop_session()
@@ -1373,7 +1325,7 @@ def main() -> None:
     ap.parse_args()
 
     app = QApplication(sys.argv)
-    style.apply_theme(app, config.get_theme())
+    style.apply_theme(app)
 
     dlg = ModuleSelectDialog(config.load_enabled_modules())
     if dlg.exec() != QDialog.DialogCode.Accepted:

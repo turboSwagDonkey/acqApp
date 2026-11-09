@@ -62,10 +62,10 @@ From a mock session, so camera frames are synthetic noise; the layout is real.
 
 <p align="center">
   <img src="docs/images/readme/main_live.png" width="900"
-       alt="Main window during live view: the sidebar lists the loaded instruments, the voltage camera fills the centre, and the signals plot and pupil camera are docked on the right">
+       alt="Main window during live view: General lists the loaded instruments on the left, the voltage camera is over Routines in the middle, and the DMD is over the pupil camera on the right">
   <br>
-  <em>Main window, live. The sidebar lists the loaded instruments and opens their
-  settings; panels dock, float and tab.</em>
+  <em>Main window, live. General lists the loaded instruments with their
+  settings folded under each; every pane moves and resizes in the window.</em>
 </p>
 
 <table>
@@ -129,25 +129,34 @@ described below. It is **always loaded and opens in a window of its own**.
 > **not** been run on the rig; treat their rates, timings and device quirks as
 > unconfirmed until they have.
 
-Panels are **dockable**: drag any plot or video panel to re-dock, float or tab
-it; the layout is remembered. The voltage camera has the central image; the
-**pupil camera has its own dockable video box** (live frame, fitted pupil
-ellipse, eye region, pinned reflections), with its radius trace in Signals.
+Everything is in **one window of docks**: **General** over the **Stage** on
+the left, the **voltage camera** over **Routines** in the middle, the **DMD** over the
+**pupil camera** on the right (live frame, fitted pupil ellipse, eye region,
+pinned reflections). Each is framed in its accent colour. Drag a dock by its
+title bar to move it beside, above or below another (docks stay in the main
+window, side by side: none floats off, closes or hides behind another as a
+tab); drag the gaps between docks to resize; the layout is remembered, and
+**⟲** (Reset layout, on General's bottom line beside Mode, 💾 Save as preset
+and 🧩 Modules) puts it back.
 
-**Settings** for every loaded subsystem live in one tabbed pop-up window,
-opened two ways that stay in step. The sidebar has one item per page (**Save**
-first, then each loaded instrument in its accent colour), so it doubles as the
-list of what is loaded. The window's tab bar shows every page at once and the
-tabs drag into your own order. Clicking a sidebar item opens that page; clicking
-the current one tucks the window away. It can stay open on a second screen
-during a session, and its size and position are remembered. The pupil page
+**Settings** fold under each instrument's card: one line in its accent colour,
+with a live readout. A click on the card opens or shuts them, all of them at
+once (only an **Advanced** box stays folded), and which are open is remembered. **Save** and the instruments without a dock of
+their own (wheel, puffer, visual stim, mirror) are sections of General, so it
+doubles as the list of what is loaded; the stage, the cameras, the DMD and Routines
+carry theirs as a **Settings** fold at the bottom of their own dock, under its
+main view. The pupil page
 covers exposure and frame rate, tracking (threshold, blur, ellipse or circle),
 reflection removal, and the eye-tracking LED; the **eye region** and **pinned
 reflections** are placed on the preview, not typed.
 
 **Every panel's settings persist** to `acqapp_local.json`: camera preset and
-exposure, wheel V/rev and diameter, pupil tracking, puffer line and duration,
-stage port, DMD pattern and timing, save destination. Runtime state does not
+exposure, wheel V/rev and diameter, pupil tracking, puffer duration, DMD
+pattern and timing, save destination. **Connections have no widget**; set them
+in `acqapp_local.json` under `settings` and restart: `stage.port`,
+`stage.poll_hz`, `wheel.channel`, `wheel.rate`, `puffer.channel` (a rig named
+in `rigs.json` overrides the DAQ channels). The app never overwrites these
+keys, even if they're edited while it runs. Runtime state does not
 persist (the eye-tracking LED always starts off), and neither does the stage's
 axis calibration, which belongs to the config shared with the standalone
 `stage_control` app.
@@ -179,6 +188,14 @@ standalone `stage_control` app** (`../stage_control/config.json`, falling back
 to `devices/stage/stage_config.json`), so both agree on where 0,0 is. Only one
 program can hold the serial port at a time. Every write leaves the previous
 file as `.bak`.
+
+**Home** is 0,0, the imaging window's centre: centre the stage by eye, then
+Settings ▸ **Set home here** (it never moves the stage). The map then shows
+±350 µm around home with the 300 µm window dashed, zooming out to the whole
+travel while the stage is beyond that range. The window is a view, not a
+limit: moves reach the full soft-limited travel. The stage's Settings bar
+says whether home is set and how jogs are turned to the camera (the measured
+axes, or Frame rotation).
 
 The **Visual stim** tab drives a drifting sinusoidal grating, full-screen
 through a circular aperture on a chosen display, gated by "trigger" pulses.
@@ -240,8 +257,10 @@ On startup a **module picker** pops up — tick which instruments to load
 to unload, and unticking it would only lose the protocol you had written
 (`config.ALWAYS_ON`).
 
-The set is **not fixed for the run**: the sidebar's **🧩 Modules** button reopens
-the same picker, and loading or unloading applies to the window you are looking
+The set is **not fixed for the run**: General's **🧩 Modules** button reopens
+the same picker, now also showing whether each instrument's hardware is
+detected (enumeration only, safe mid-session; **Check devices** looks again),
+and loading or unloading applies to the window you are looking
 at. A module loaded while a session is running builds and starts its own worker
 and joins the live view; an unloaded one is stopped and its tabs, docks and
 plots come off. The only refusal is **while recording** — the session file names
@@ -333,15 +352,15 @@ run actually got (`hardware`, or `software` if the board refused the timing
 configuration and acquisition fell back to pacing), and `wheel_rate_actual_hz`
 records the rate the divider settled on rather than the one requested.
 
-The **DMD** is a stimulus *output*, not an input: its settings tab loads a
-pattern image, places it on the 1024×768 panel, and starts/stops projection.
+The **DMD** is a stimulus *output*, not an input: its dock shows the frame the
+switch would project, named underneath (the image file, or the ROI set and how
+many mirrors it lights); its Settings pick what to show (all mirrors, a placed
+pattern image, or ROIs), and the switch on its Settings bar, the only thing
+there, starts and stops projection. The app is always in control: the ALP holds one
+frame from switch-on until switch-off, with no hardware trigger or cycling.
 While a session is recording, the projection's boundaries are logged on the
 shared clock (`/dmd`) so the stimulus aligns with the imaging and behavioural
-streams: **0** when Display starts it, **−1** when it stops. Those are the two
-instants the app actually commands — once started, the ALP runs its own sequence
-clock, so a cycling pattern is reconstructed from `dmd_on_time_ms` and
-`dmd_repeats` between them rather than logged frame by frame. (The mock also
-emits a tick per on-time, because it genuinely does produce them.)
+streams: **0** when it starts, **−1** when it stops.
 
 **Where the pattern lands** is the alignment to the optics, so it is recorded
 too — `dmd_scale_pct`, `dmd_rotation_deg`, `dmd_offset_x/y`, `dmd_invert`,
@@ -355,7 +374,8 @@ says `mock`, so a session that projected can be told from one that didn't.
 **Sub-sampling** (`dmd_sub_sampling`, `DmdSettings.sub_sampling`) turns off 1
 of every N pixels — a coarse ND filter made of missing mirrors, cutting total
 light without touching exposure time or geometry. 1 (the default) is off; the
-panel offers 2 ("1 out of 2", half the light) up to 10. It applies uniformly
+panel's slider runs dimmest first, "1 in 2 off" through "1 in 10 off", then
+off. It applies uniformly
 to whatever mode is loaded — All ON, an image, or ROIs — via
 `control.subsample_frame`, diagonally striped so the removed fraction is even
 across the panel rather than banded along one axis. `dmd_on_pixels` already
@@ -372,11 +392,9 @@ the DMD tab says `nothing will be projected` rather than silently doing nothing.
 
 ### Experiment routines
 
-A window that owns no device and drives two that do. It is **always loaded**.
-Like every module's settings, its panel is a window of its own, opened from
-its sidebar card, so a routine runs beside the camera window it is driving.
-It opens at a set size (`window_size`, `adapters/base.py`); the others are
-fitted to their panels.
+A panel that owns no device and drives two that do. It is **always loaded**.
+It has its own dock under the voltage camera (`own_dock`, `adapters/base.py`),
+so a routine runs beside the image it is driving.
 
 A **routine** is a list of **atomic steps** executed in order — Move the
 stage, start Displaying a pattern, Wait, Puff, wait for an external
@@ -507,13 +525,26 @@ is black while waiting** — inherent to gating capture on the line. The panel
 also names which repeat is running (`RoutinesModule._repeat_suffix`) — "step
 1/2" alone would read identically on repeat 1 and repeat 100.
 
-**The step list is edited through widgets, not words.** Kind is a drop-down
-(Move/Display/Wait/Puff/Trigger); Length/Unit are only editable on a Wait row and
-Settle only on a Move row — every other row renders them as **"—"** rather
-than a number that means nothing for that kind. A Move step's target reads
-**no change** on an axis it should not move, rather than being blank, which
-used to mean both "leave it alone" and "not typed yet" — Delete on the cell
-clears it, or a small dialog to type numbers. Steps reorder with the arrows
+**A routine is mostly FOV steps.** **+ FOV step…** picks a saved FOV; the
+step moves there, settles, shows the FOV's paired ROI set ("<name>_roi"),
+captures, turns the light off and waits. Capture length (frames or seconds)
+and the wait after it are set once, above the table, before building: each
+new step copies them into its own Capture and Wait cells, which can still be
+edited per row. Changing a general value moves every step still on the old
+value and leaves hand-edited ones alone; the unit is one per routine. An FOV
+with no ROI set offers to draw one on its saved snapshot (no light: the
+stage is elsewhere); saving an FOV in the stage pane already asks for its
+ROIs. **Other ▾** adds Wait, Puff or Trigger steps; a Trigger right before an
+FOV step waits after that step's move, so the capture starts on the edge.
+At Start the FOV steps expand into the engine's atomic steps (`expand()`),
+and the running row stays the one the operator built. Older protocols load
+with each move/show/record run folded into one FOV step.
+
+**The step list is edited through widgets, not words.** A row's kind is fixed
+once added; FOV, ROI, Capture, Wait and Settle are editable only on the rows
+that use them — every other row renders them as **"—"** rather than a number
+that means nothing for that kind. FOV and ROI are set through pickers
+(double-click); Delete on ROI means no light. Steps reorder with the arrows
 or by dragging the row, and the row being executed is shown in bold while
 the routine runs. A summary line under the table says how many runs, how
 long at least, whether the stage moves and how many steps emit light.
@@ -622,7 +653,7 @@ HDF5 writer that came before is in `archive/hdf5/`.
   two widget builders they share; `adapters/__init__.py` holds the registry and
   the lifecycle table. The adapters never import each other.
 - `main.py` — session-wide shell only: the shared clock, the trigger bus, the
-  recorder, the save destination, the docks and the theme. It iterates over the
+  recorder, the save destination and the docks. It iterates over the
   adapters and holds no per-instrument logic.
 - `console.py` — `enable_safe_console()`, called by **every** runnable entry
   point before its first print. The diagnostic messages use characters ("→",

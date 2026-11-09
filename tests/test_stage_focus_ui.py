@@ -76,65 +76,26 @@ def check_z_rides_the_motion_grid(r: Report) -> None:
     p = SettingsPanel(_settings())
     r.check("z" in p._axis_widgets, "z is registered in _axis_widgets")
     w = p._axis_widgets["z"]
-    r.check(set(w) == {"step", "goto", "buttons"},
+    r.check(set(w) == {"step", "buttons"},
             f"z's entry is the same shape as x/y's — no slider left over "
             f"({sorted(w)})")
-    r.check(len(w["buttons"]) == 4,
-            "z has the same four buttons (jog-, jog+, Go, Stop) as x/y")
-    lo, hi = p._s.z.soft_limits_um()
-    r.check(w["goto"].minimum() == lo and w["goto"].maximum() == hi,
-            "z's Go-to spin box ranges over its own soft limits")
+    r.check(len(w["buttons"]) == 2,
+            "z has the same two jog buttons (−, +) as x/y")
 
     p2 = SettingsPanel(StageSettings())      # no z
     r.check("z" not in p2._axis_widgets,
             "a no-z rig gets no 'z' row at all")
 
 
-def check_z_gauge_exists_and_updates(r: Report) -> None:
-    """`set_readout` feeds the Z gauge through the map's repaint guard."""
+def check_z_readout(r: Report) -> None:
+    """Z is shown by the readout alone (no gauge since 2026-11-02)."""
     p = SettingsPanel(_settings(has_frame=True))
-    r.check(p._z_gauge is not None, "a has_z rig gets a Z gauge")
     p.bind_controller(FakeCtrl())
-
-    calls: list[float] = []
-    p._z_gauge.set_position = lambda z: calls.append(z)
     p.set_readout(0.0, 0.0, z_um=333.0)
-    r.check(calls == [333.0], f"the first Z readout repaints the gauge ({calls})")
-
-    calls.clear()
-    p.set_readout(0.0, 0.0, z_um=333.0 + p._MAP_EPS_UM / 4)   # sub-epsilon
-    r.check(calls == [],
-            f"a sub-epsilon Z move does not repaint the gauge ({calls})")
-
-    calls.clear()
-    p.set_readout(0.0, 0.0, z_um=333.0 + p._MAP_EPS_UM * 4)   # a real move
-    r.check(len(calls) == 1, f"control: a real Z move still repaints ({calls})")
-
+    r.check(p._lbl_z is not None and p._lbl_z.text() == "333.0",
+            f"a has_z rig shows Z in the readout ({p._lbl_z and p._lbl_z.text()!r})")
     p2 = SettingsPanel(StageSettings())      # no z
-    r.check(p2._z_gauge is None, "a no-z rig gets no Z gauge at all")
-
-
-def check_z_gauge_geometry(r: Report) -> None:
-    """Bigger Z reads higher on screen; out of range clamps into the bar."""
-    from acqApp.devices.stage.map_widget import ZGauge
-
-    g = ZGauge()
-    g.resize(80, 200)
-    z = StageAxis(6, "Z", 1.0, step_um=20.0)
-    g.set_axis(z)
-
-    lim = z.travel_limits_um()
-    bar = g._bar()
-    y_lo, y_hi = g._y_for(lim[0], lim, bar), g._y_for(lim[1], lim, bar)
-    r.check(y_hi < y_lo, f"a bigger Z value is higher on screen ({y_hi} < {y_lo})")
-
-    y_mid = g._y_for((lim[0] + lim[1]) / 2.0, lim, bar)
-    r.check(abs(y_mid - (y_lo + y_hi) / 2.0) < 1.0,
-            "the midpoint value lands at the midpoint pixel")
-
-    y_over = g._y_for(lim[1] + 10_000.0, lim, bar)
-    r.check(abs(y_over - bar.top()) < 1e-6,
-            "a value past the top of travel clamps to the top of the bar")
+    r.check(p2._lbl_z is None, "a no-z rig has no Z readout")
 
 
 def check_jog_arrows(r: Report) -> None:
@@ -152,31 +113,12 @@ def check_jog_arrows(r: Report) -> None:
             "down arrow jogs -step through jog_um")
 
 
-def check_frame_gating_disables_z_goto(r: Report) -> None:
-    """As X/Y: absolute go-to needs a frame, jog does not."""
-    p = SettingsPanel(_settings(has_frame=False))
-    p.bind_controller(FakeCtrl())
-    w = p._axis_widgets["z"]
-    r.check(not w["goto"].isEnabled(),
-            "no valid Z frame -> the Go-to spin box is disabled")
-    r.check(not w["buttons"][2].isEnabled(),
-            "…and the Go button too")
-    r.check(w["buttons"][0].isEnabled(),
-            "…but a jog button stays enabled (jog needs no frame)")
-
-    p2 = SettingsPanel(_settings(has_frame=True))
-    p2.bind_controller(FakeCtrl())
-    w2 = p2._axis_widgets["z"]
-    r.check(w2["goto"].isEnabled() and w2["buttons"][2].isEnabled(),
-            "a valid Z frame enables Go-to and the Go button")
-
-
 def check_set_readout_updates_z(r: Report) -> None:
     p = SettingsPanel(_settings(has_frame=True))
     p.bind_controller(FakeCtrl())
     p.set_readout(0.0, 0.0, z_um=333.0)
     r.check(p._last_z == 333.0,
-            "set_readout updates _last_z, used by _goto's confirm-move check")
+            "set_readout updates _last_z, used by Go to FOV's confirm-move check")
     r.check(p._lbl_z.text().strip() == "333.0",
             f"…and the Z readout label ({p._lbl_z.text()!r})")
 
@@ -189,10 +131,12 @@ def check_goto_uses_z_threshold(r: Report) -> None:
     c = FakeCtrl()
     p.bind_controller(c)
     p.set_readout(0.0, 0.0, z_um=0.0)
-    p._axis_widgets["z"]["goto"].setValue(1000.0)   # > z threshold, < xy one
+    from types import SimpleNamespace
+    fov = SimpleNamespace(name="deep_fov", x_um=0.0, y_um=0.0,
+                          z_um=1000.0, path=None)   # > z threshold, < xy one
 
     _ANSWERS[:] = [QMessageBox.StandardButton.No]
-    p._goto("z")
+    p.goto_fov(fov)
     r.check("move_to_um" not in c.names(),
             "a 1000 µm Z move is 'large' by Z's own 500 µm threshold, and a "
             "No here blocks it even though it's far under the XY threshold")
@@ -320,10 +264,8 @@ def main() -> int:
     r = Report("stage-focus-ui")
     try:
         check_z_rides_the_motion_grid(r)
-        check_z_gauge_exists_and_updates(r)
-        check_z_gauge_geometry(r)
+        check_z_readout(r)
         check_jog_arrows(r)
-        check_frame_gating_disables_z_goto(r)
         check_set_readout_updates_z(r)
         check_goto_uses_z_threshold(r)
         check_active_fov(r)

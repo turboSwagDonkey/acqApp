@@ -38,7 +38,7 @@ class WheelModule(ModuleAdapter):
 
     def _on_settings(self, st) -> None:
         """V/rev and diameter apply live; they scale every wheel number filed."""
-        config.save_settings(self.key, asdict(st))
+        config.save_settings(self.key, asdict(st), keep=("channel", "rate"))
         self._cfg = st
         if self.worker is not None:
             self.worker.set_scaling(st.volts_per_rev, st.wheel_dia_mm)

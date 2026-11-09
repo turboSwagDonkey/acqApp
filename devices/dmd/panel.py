@@ -10,28 +10,40 @@ from PyQt6.QtCore import QRect, QSignalBlocker, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen,
                          QPixmap, QShortcut)
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
+    QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from acqApp import style
-from acqApp.widgets import (PillGroup, button_row, compact, pairs_grid, pill,
-                            sections_help, spin)
+from acqApp.widgets import (PillGroup, button_row, collapsible, pairs_grid,
+                            pill, spin)
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
                                         roi_frame, subsample_frame)
 
+# Sub-sampling slider stops, dimmest first: 1 in n off keeps (n-1)/n, 1 = off.
+_SUB_STEPS = (2, 3, 4, 5, 6, 7, 8, 9, 10, 1)
 
 class _DraggablePreview(QLabel):
     """The preview label; click-drag nudges the pattern's offset. `dragged`
     is in PREVIEW px — the panel converts (it knows the scale)."""
     dragged = pyqtSignal(float, float)   # (dx, dy) in PREVIEW px
 
+    resized = pyqtSignal()
+
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self._draggable = False
         self._drag_from = None
+        # Ignored: the pixmap is drawn to the label's size, so its own size
+        # must not feed back into the layout.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Ignored)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.resized.emit()
 
     def set_draggable(self, on: bool) -> None:
         self._draggable = on
@@ -68,8 +80,6 @@ class _DraggablePreview(QLabel):
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)   # emits DmdSettings
     load_requested   = pyqtSignal(object)   # emits Path
-    display_requested = pyqtSignal()
-    stop_requested    = pyqtSignal()
     # The adapter opens both: only it reaches the camera frame and controller.
     rois_edit_requested = pyqtSignal()
     calibrate_requested = pyqtSignal()
@@ -96,10 +106,6 @@ class SettingsPanel(QWidget):
         self._build()
         self._init_shortcuts()
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._update_preview()
-
     def set_device(self, name: str, resolution: tuple[int, int], real: bool) -> None:
         self._res = resolution
         w, h = resolution
@@ -109,42 +115,25 @@ class SettingsPanel(QWidget):
         self._lbl_dev.setText(dev_label)
         self._lbl_dev.setStyleSheet(
             f"color:{style.HEX['dmd'] if real else style.WARN};")
+        self._lbl_warn.setText(dev_label)
+        self._lbl_warn.setVisible(not real)
         self._update_preview()
 
     def _build(self) -> None:
-        grp = QGroupBox("DMD settings")
-        lay = QFormLayout(grp)
-        lay.setSpacing(6)
+        """`self.view`, always shown: what the switch would project and its
+        name. This panel, the settings: Show (the mode pills), that mode's
+        controls, the rest under Advanced."""
+        # Only without a real DMD: why the switch lights nothing.
+        self._lbl_warn = QLabel()
+        self._lbl_warn.setWordWrap(True)
+        self._lbl_warn.setStyleSheet(f"color:{style.WARN};")
+        self._lbl_warn.hide()
 
-        self._lbl_dev = QLabel("no device yet")
-        self._lbl_dev.setWordWrap(True)
-        lay.addRow("Device:", self._lbl_dev)
-
-        # ── pattern + browse ─────────────────────────────────────────────────
-        pat_w = QWidget()
-        pat_lay = QHBoxLayout(pat_w)
-        pat_lay.setContentsMargins(0, 0, 0, 0)
-        pat_lay.setSpacing(6)
-
-        self._lbl_pattern = QLabel("No pattern loaded")
-        self._lbl_pattern.setWordWrap(True)
-        self._btn_browse = QPushButton("Browse…")
-        self._btn_browse.setToolTip(
-            "In Image mode: a pattern file (.png/.bmp/.tif).\n"
-            "In ROIs mode: a saved ROI set (.roi.json) — the same ones "
-            "'Edit ROIs… -> Load…' opens, without a trip through the editor.")
-        self._btn_browse.clicked.connect(self._browse)
-
-        pat_lay.addWidget(self._lbl_pattern, 1)
-        pat_lay.addWidget(self._btn_browse)
-        lay.addRow("Pattern:", pat_w)
-
-        # ── what to display ──────────────────────────────────────────────────
-        # Pills, not a combo: what Display emits should read at a glance.
+        # Pills, not a combo: what the switch projects should read at a glance.
         self._modes = PillGroup((
             ("All ON", MODE_ALL_ON, "Every mirror on — the full field."),
-            ("Image", MODE_PATTERN, "The pattern file, placed by the "
-                                    "alignment below."),
+            ("Image", MODE_PATTERN, "A pattern file, placed by scale, "
+                                    "rotation and offset."),
             ("ROIs", MODE_ROI, "Only the drawn ROIs, mapped through the "
                                "measured calibration.")), "dmd")
         self._rb = {k: self._modes.button(k)
@@ -152,25 +141,60 @@ class SettingsPanel(QWidget):
         self._rb.get(self._s.display_mode, self._rb[MODE_PATTERN]).setChecked(True)
         for rb in self._rb.values():
             rb.toggled.connect(self._on_mode_changed)
-        lay.addRow("Display:", button_row(self._modes))
 
-        # ── preview ──────────────────────────────────────────────────────────
         self._preview = _DraggablePreview("No preview")
-        self._preview.setMinimumSize(200, 180)
-        self._preview.setMaximumHeight(240)
+        self._preview.setMinimumSize(200, 140)
+        self._preview.resized.connect(self._update_preview)
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._preview.setStyleSheet(
-            f"color:{style.muted()}; border:1px solid {style.line()}; "
-            f"border-radius:3px;")
+        self._preview.setStyleSheet(f"color:{style.muted()};")
         self._preview.setToolTip(
-            "In Image mode (Fit off), drag to move the pattern — the same "
-            "offset the Offset X/Y fields and arrow-key nudging use.")
+            "What the DMD switch projects. In Image mode (Fit off), drag to "
+            "move the pattern — the same offset as Offset X/Y.")
         self._preview.dragged.connect(self._on_preview_dragged)
-        lay.addRow(self._preview)
+        # What the preview shows, in words.
+        self._lbl_pattern = QLabel("No pattern loaded")
+        self._lbl_pattern.setWordWrap(True)
+        self._lbl_pattern.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # ── alignment ────────────────────────────────────────────────────────
-        geom_grp = QGroupBox("Pattern Alignment")
-        geom_lay = QVBoxLayout(geom_grp)
+        self.view = QWidget()
+        vroot = QVBoxLayout(self.view)
+        vroot.setContentsMargins(4, 4, 4, 4)
+        vroot.setSpacing(4)
+        vroot.addWidget(self._preview, 1)
+        vroot.addWidget(self._lbl_pattern)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
+        root.addWidget(self._lbl_warn)
+        root.addLayout(button_row(QLabel("Show:"), self._modes))
+        self._image = self._build_image()
+        self._roi = self._build_rois()
+        root.addWidget(self._image)
+        root.addWidget(self._roi)
+        root.addWidget(self._build_advanced())
+        root.addStretch(1)
+
+        self._on_mode_changed()
+        self._update_preview()
+
+        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy,
+                  self._sld_subsample):
+            w.valueChanged.connect(self._emit)
+        for c in (self._chk_fit, self._chk_invert, self._chk_roi_flip_y,
+                  self._chk_roi_flip_x):
+            c.toggled.connect(self._emit)
+
+    # ── Image mode: the pattern file and where it lands ──────────────────────
+    def _build_image(self) -> QWidget:
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+
+        self._btn_browse = QPushButton("Browse pattern…")
+        self._btn_browse.setToolTip("A pattern image (.png/.bmp/.tif).")
+        self._btn_browse.clicked.connect(self._browse)
 
         self._chk_fit = pill(
             "Fit to panel", "dmd", checked=self._s.fit,
@@ -194,20 +218,10 @@ class SettingsPanel(QWidget):
                             decimals=0, step=1.0, suffix=" px",
                             tooltip="Offset from center in device pixels.")
 
-        self._chk_invert = pill("Invert mirrors", "dmd", checked=self._s.invert,
-                                tip="Swap which mirrors are on and off.")
-
-        btn_reset_geom = QPushButton("Reset Alignment")
-        btn_reset_geom.setToolTip("Reset scale to 100%, rotation to 0°, and offsets to (0, 0)")
+        btn_reset_geom = QPushButton("Reset")
+        btn_reset_geom.setToolTip("Scale 100 %, rotation 0°, offsets (0, 0); "
+                                  "Fit and Invert off.")
         btn_reset_geom.clicked.connect(self._reset_geometry)
-
-        self._spn_subsample = spin(
-            1, 10, self._s.sub_sampling,
-            tooltip="Turn off 1 of every N pixels to cut total light without "
-                    "changing exposure time — a coarse ND filter made of "
-                    "missing mirrors. 1 = off (every mirror the pattern would "
-                    "light stays on); 2 = half off, up to 10 = 1 in 10 off.")
-        self._spn_subsample.setSpecialValueText("off")
 
         self._chk_nudge = pill(
             "Keyboard nudging", "dmd",
@@ -217,84 +231,51 @@ class SettingsPanel(QWidget):
                 " • [ / ]  : Rotation (0.5 °)\n"
                 "Hold Shift for 10x larger steps.")
         self._chk_nudge.toggled.connect(self._on_nudge_toggled)
-        geom_lay.addLayout(button_row(self._chk_fit, self._chk_invert,
-                                      self._chk_nudge))
-        geom_lay.addLayout(pairs_grid(
+        v.addLayout(button_row(self._btn_browse, None, self._chk_fit,
+                               self._chk_nudge, right=(btn_reset_geom,)))
+        v.addLayout(pairs_grid(
             ("Scale:", self._spn_scale, "Rotation:", self._spn_rot),
-            ("Offset X:", self._spn_dx, "Offset Y:", self._spn_dy),
-            ("Sub-sampling:", self._spn_subsample,
-             None, button_row(right=(btn_reset_geom,)))))
+            ("Offset X:", self._spn_dx, "Offset Y:", self._spn_dy)))
+        return box
 
-        lay.addRow(geom_grp)
-
-        self._cmb_trig = compact(QComboBox())
-        self._cmb_trig.addItems(["Internal", "External", "Software"])
-        self._cmb_trig.setCurrentText(self._s.trigger_mode)
-        lay.addRow("Trigger:", self._cmb_trig)
+    # ── rarely changed: folded ───────────────────────────────────────────────
+    def _build_advanced(self) -> QGroupBox:
+        adv = QGroupBox("Advanced")
+        adv.setObjectName("advanced")       # style.accent_panel: underline when folded
+        v = QVBoxLayout(adv)
+        v.setSpacing(4)
 
         # Emits light unprompted, so never persisted: off every session.
         self._chk_live = pill(
-            "Live update (project every change)", "dmd",
+            "Live update", "dmd",
             tip="While on, every change here re-projects onto the DMD a moment "
                 "after you pause (debounced, not on every keystroke/drag tick) "
-                "— no need to press Display. This actually emits light; leave "
-                "it off unless you're actively aligning. Turning it off "
+                "— no need to flip the switch. This actually emits light; "
+                "leave it off unless you're actively aligning. Turning it off "
                 "cancels a pending re-project immediately.")
         self._chk_live.toggled.connect(self.live_toggled.emit)
-        lay.addRow(button_row(self._chk_live))
+        self._chk_invert = pill("Invert mirrors", "dmd", checked=self._s.invert,
+                                tip="Image mode: swap which mirrors are on and off.")
 
-        btn_row_w = QWidget()
-        btn_row = QHBoxLayout(btn_row_w)
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_display = QPushButton("Display")
-        btn_display.setStyleSheet(style.solid_btn("dmd"))
-        btn_display.clicked.connect(self.display_requested)
-        btn_stop = QPushButton("Stop")
-        btn_stop.clicked.connect(self.stop_requested)
-        btn_row.addWidget(btn_display)
-        btn_row.addWidget(btn_stop)
-        lay.addRow(btn_row_w)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(grp)
-        root.addWidget(self._build_rois())
-        root.addStretch(1)
-        sections_help(self, keep=True)
-
-        self._on_mode_changed()
-        self._update_preview()
-
-        for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy,
-                  self._spn_subsample):
-            w.valueChanged.connect(self._emit)
-        for c in (self._chk_fit, self._chk_invert, self._chk_roi_flip_y,
-                  self._chk_roi_flip_x):
-            c.toggled.connect(self._emit)
-        self._cmb_trig.currentTextChanged.connect(self._emit)
-
-    # ── photostimulation ROIs ────────────────────────────────────────────────
-    def _build_rois(self) -> QGroupBox:
-        """ROI + calibration controls. The editor itself is a separate
-        window: it's an image view, and this tab lives in a scroll area."""
-        box = QGroupBox("Photostimulation ROIs")
-        box.setToolTip(
-            "Draw regions on a snapshot from the VOLTAGE camera — that's the "
-            "imaging path the DMD projects into — and turn them into a mirror "
-            "mask.\nTurning them into a mask needs a measured camera↔DMD "
-            "registration; without one they can still be drawn and saved.")
-        v = QVBoxLayout(box)
-        v.setSpacing(4)
-
-        self._lbl_rois = QLabel()
-        v.addWidget(self._lbl_rois)
-        btn = QPushButton("Edit ROIs…")
-        btn.setToolTip(
-            "Open the editor on the voltage camera's newest frame, with the "
-            "live camera under it.\nTake that frame full field with the DMD "
-            "all-on (Display) to see the projected field — this button starts "
-            "Live view but never commands the projector itself.")
-        btn.clicked.connect(self.rois_edit_requested)
+        self._sld_subsample = QSlider(Qt.Orientation.Horizontal)
+        self._sld_subsample.setRange(0, len(_SUB_STEPS) - 1)
+        self._sld_subsample.setPageStep(1)
+        self._sld_subsample.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._sld_subsample.setToolTip(
+            "Turn off 1 of every N mirrors the pattern would light, in an even "
+            "diagonal spread, cutting total light without changing exposure "
+            "time — a coarse ND filter made of missing mirrors. Left is "
+            "dimmest: 1 in 2 off (half the light) through 1 in 10 off, then "
+            "off (every mirror stays on).")
+        self._lbl_subsample = QLabel()
+        self._lbl_subsample.ensurePolished()        # the stylesheet's font, not the default
+        self._lbl_subsample.setFixedWidth(
+            self._lbl_subsample.fontMetrics().horizontalAdvance("1 in 10 off") + 4)
+        self._lbl_subsample.setAlignment(Qt.AlignmentFlag.AlignRight
+                                         | Qt.AlignmentFlag.AlignVCenter)
+        self._sld_subsample.valueChanged.connect(self._show_subsample)
+        self.set_sub_sampling(self._s.sub_sampling)
+        self._show_subsample()
 
         self._chk_roi_flip_x = pill(
             "Flip X", "dmd", checked=self._s.roi_flip_x,
@@ -310,13 +291,54 @@ class SettingsPanel(QWidget):
                 "The ROIs you drew don't move, and neither do the editor's "
                 "field outline or its \"outside the field\" checks: only which "
                 "mirrors light up changes. Pattern images aren't affected.")
-        v.addLayout(button_row(btn, None, self._chk_roi_flip_x,
+
+        self._lbl_dev = QLabel("no device yet")
+        self._lbl_dev.setWordWrap(True)
+
+        v.addLayout(button_row(self._chk_live, self._chk_invert))
+        v.addLayout(button_row(QLabel("ROI mask:"), self._chk_roi_flip_x,
                                self._chk_roi_flip_y))
+        sub = QHBoxLayout()
+        sub.setSpacing(6)
+        sub.addWidget(QLabel("Sub-sampling:"))
+        sub.addWidget(self._sld_subsample, 1)
+        sub.addWidget(self._lbl_subsample)
+        v.addLayout(sub)
+        v.addLayout(button_row(QLabel("Device:"), self._lbl_dev))
+        collapsible(adv, expanded=False)
+        return adv
+
+    # ── ROIs mode: the drawn regions and the calibration that maps them ──────
+    def _build_rois(self) -> QWidget:
+        """The editor itself is a separate window: it's an image view, and
+        this panel lives in a scroll area."""
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+
+        self._lbl_rois = QLabel()
+        self._lbl_rois.setToolTip(
+            "Draw regions on a snapshot from the VOLTAGE camera — that's the "
+            "imaging path the DMD projects into — and turn them into a mirror "
+            "mask.\nTurning them into a mask needs a measured camera↔DMD "
+            "registration; without one they can still be drawn and saved.")
+        btn = QPushButton("Edit ROIs…")
+        btn.setToolTip(
+            "Open the editor on the voltage camera's newest frame, with the "
+            "live camera under it.\nTake that frame full field with the DMD "
+            "all-on to see the projected field — this button starts Live "
+            "view but never commands the projector itself.")
+        btn.clicked.connect(self.rois_edit_requested)
+        btn_set = QPushButton("Load ROIs…")
+        btn_set.setToolTip(
+            "A saved ROI set (.roi.json) — the same ones the editor's Load… "
+            "opens, without a trip through the editor.")
+        btn_set.clicked.connect(self._browse)
+        v.addLayout(button_row(self._lbl_rois, None, right=(btn, btn_set)))
 
         self._lbl_calib = QLabel()
         self._lbl_calib.setWordWrap(True)
-        self._lbl_calib.setStyleSheet(f"color:{style.muted()};")
-        v.addWidget(self._lbl_calib)
         b_run = QPushButton("Calibrate…")
         b_run.setStyleSheet(style.solid_btn("dmd"))
         b_run.setToolTip(
@@ -330,7 +352,8 @@ class SettingsPanel(QWidget):
         self._btn_calib_clear = QPushButton("Clear")
         self._btn_calib_clear.clicked.connect(lambda: self._set_calib(""))
         self._btn_calib_clear.setToolTip("Forget the loaded calibration.")
-        v.addLayout(button_row(b_run, right=(b_load, self._btn_calib_clear)))
+        v.addLayout(button_row(self._lbl_calib, None, right=(
+            b_run, b_load, self._btn_calib_clear)))
         self._show_rois()
         return box
 
@@ -379,7 +402,7 @@ class SettingsPanel(QWidget):
             self._emit()
 
     def set_all_on(self) -> None:
-        """Switch to All ON; projects on the next Display (or Live update)."""
+        """Switch to All ON; projects on the next switch-on (or Live update)."""
         if not self._rb[MODE_ALL_ON].isChecked():
             self._rb[MODE_ALL_ON].setChecked(True)   # -> _on_mode_changed -> _emit
         else:
@@ -387,27 +410,40 @@ class SettingsPanel(QWidget):
 
     def set_sub_sampling(self, n: int) -> None:
         """Set 1-in-N sub-sampling for any mode; projects on the next
-        Display (or Live update)."""
-        self._spn_subsample.setValue(n)
+        switch-on (or Live update)."""
+        n = min(max(int(n), 1), 10)
+        self._sld_subsample.setValue(_SUB_STEPS.index(n))
+
+    def _sub_n(self) -> int:
+        return _SUB_STEPS[self._sld_subsample.value()]
+
+    def _show_subsample(self, *_a) -> None:
+        n = self._sub_n()
+        self._lbl_subsample.setText(f"1 in {n} off" if n > 1 else "off")
 
     def _show_rois(self) -> None:
         n = len(self._rois)
-        base = f"{n} ROI{'' if n == 1 else 's'} defined" if n else "No ROIs yet"
+        base = f"ROIs: {n}" if n else "ROIs: none yet"
         self._lbl_rois.setText(
             f'{base} — "{self._roi_pattern_name}"' if self._roi_pattern_name
             else base)
         self._lbl_calib.setText(
             f"Calibration: {Path(self._calib_path).name}" if self._calib_path
-            else "No calibration — ROIs can be drawn but not projected")
+            else "Calibration: none")
         self._btn_calib_clear.setEnabled(bool(self._calib_path))
 
     def _init_shortcuts(self) -> None:
+        # On the settings and on the view: the image being nudged is in the
+        # view, which a click on it focuses.
+        self.view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
         def add_sc(key_seq: str, callback: Callable[[], None]) -> None:
-            sc = QShortcut(QKeySequence(key_seq), self)
-            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            sc.activated.connect(callback)
-            sc.setEnabled(False)
-            self._shortcuts.append(sc)
+            for host in (self, self.view):
+                sc = QShortcut(QKeySequence(key_seq), host)
+                sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                sc.activated.connect(callback)
+                sc.setEnabled(False)
+                self._shortcuts.append(sc)
 
         add_sc("Left", lambda: self._nudge_spn(self._spn_dx, -1))
         add_sc("Right", lambda: self._nudge_spn(self._spn_dx, 1))
@@ -456,16 +492,14 @@ class SettingsPanel(QWidget):
         self.settings_changed.emit(self.settings)
 
     def _on_mode_changed(self, checked: bool = True) -> None:
-        """Alignment is greyed, not hidden, outside Image mode, so a set scale
-        stays visible. A switch fires `toggled` twice (off, then on); only
-        the incoming button acts."""
+        """Only the shown mode's controls are on screen. A switch fires
+        `toggled` twice (off, then on); only the incoming button acts."""
         if not checked:
             return
         mode = self.mode
         pattern = mode == MODE_PATTERN
-        # In ROIs mode Browse opens a saved ROI set.
-        self._btn_browse.setEnabled(pattern or mode == MODE_ROI)
-        self._chk_fit.setEnabled(pattern)
+        self._image.setVisible(pattern)
+        self._roi.setVisible(mode == MODE_ROI)
         self._chk_invert.setEnabled(pattern)
         self._set_alignment_enabled(pattern and not self._chk_fit.isChecked())
         self._update_preview()
@@ -540,7 +574,7 @@ class SettingsPanel(QWidget):
         if mode == MODE_ALL_ON:
             self._lbl_pattern.setText("All mirrors ON (Full Illumination)")
             frame = subsample_frame(np.full((h, w), 255, dtype=np.uint8),
-                                    self._spn_subsample.value())
+                                    self._sub_n())
         elif mode == MODE_ROI:
             n = len(self._rois)
             # Guarded: roi_frame prints why it can't, and this runs per resize.
@@ -549,12 +583,14 @@ class SettingsPanel(QWidget):
             if frame is None:
                 frame = np.zeros((h, w), dtype=np.uint8)
                 self._lbl_pattern.setText(
-                    f"{n} ROI(s) — need a calibration to project"
-                    if n else "No ROIs drawn yet")
+                    "Needs a calibration to project the ROIs"
+                    if n else "Nothing to project: draw or load ROIs")
             else:
-                frame = subsample_frame(frame, self._spn_subsample.value())
+                frame = subsample_frame(frame, self._sub_n())
+                name = (f"{self._roi_pattern_name}: "
+                        if self._roi_pattern_name else "")
                 self._lbl_pattern.setText(
-                    f"{n} ROI(s) -> {int((frame > 0).sum())} mirrors")
+                    f"{name}{n} ROI(s) -> {int((frame > 0).sum())} mirrors")
         elif p is None:
             self._lbl_pattern.setText("No pattern loaded")
             frame = np.zeros((h, w), dtype=np.uint8)
@@ -635,16 +671,12 @@ class SettingsPanel(QWidget):
     def settings(self) -> DmdSettings:
         return DmdSettings(
             pattern_path=self._pattern_path,
-            on_time_ms=self._s.on_time_ms,
-            static_hold=True,
-            trigger_mode=self._cmb_trig.currentText(),
-            n_repeats=self._s.n_repeats,
             scale_pct=self._spn_scale.value(),
             rotation_deg=self._spn_rot.value(),
             offset_x=self._spn_dx.value(),
             offset_y=self._spn_dy.value(),
             invert=self._chk_invert.isChecked(),
-            sub_sampling=self._spn_subsample.value(),
+            sub_sampling=self._sub_n(),
             display_mode=self.mode,
             all_on=self.mode == MODE_ALL_ON,
             fit=self._chk_fit.isChecked(),

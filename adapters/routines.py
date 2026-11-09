@@ -39,7 +39,7 @@ from acqApp.devices.voltage_cam.presets import (BURST_TIMES_MAX, PRESETS,
                                                 resolve_preset_key)
 from acqApp.routines.estimate import burst_frames, clock, remaining
 from acqApp.routines.panel import SettingsPanel as RoutinePanel
-from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS,
+from acqApp.routines.settings import (RigLimits, Routine, TIMED_KINDS, expand,
                                       group_region_at, group_repeat_at,
                                       pattern_label, play_order,
                                       recording_region_at, validate)
@@ -88,7 +88,7 @@ def rois_beyond_capture(routine: Routine, preset_key: str | None) -> list[str]:
     area = (preset.hpos, preset.vpos, preset.hsize, preset.vsize)
     out: list[str] = []
     for path in dict.fromkeys(s.pattern for s in routine.steps
-                              if s.kind == "display"
+                              if s.kind in ("display", "fov")
                               and roi_store.is_roi_file(s.pattern)):
         try:
             beyond = roi_store.load(path).beyond(*area)
@@ -146,7 +146,7 @@ class RoutinesModule(ModuleAdapter):
     """Wires `routines/` into this window. Owns no device."""
     key = "routines"
     tab_label = "Routines"
-    window_size = (728, 936)
+    own_dock = True
 
     def __init__(self, win) -> None:
         super().__init__(win)
@@ -157,6 +157,7 @@ class RoutinesModule(ModuleAdapter):
         self._n_steps = 0
         self._group_repeat: list[tuple[int, int] | None] = []  # by order_position
         self._order: list[int] = []     # play_order(self._routine), for _left
+        self._rows: list[int] = []      # engine step -> table row
         self._routine: Routine | None = None
         self._rate_tick = 0
         self._own_rec = False           # Start opened the recording
@@ -200,6 +201,7 @@ class RoutinesModule(ModuleAdapter):
         self.panel.skip_requested.connect(self._skip)
         self.panel.abort_requested.connect(self._abort)
         self.panel.status_message.connect(self._status)
+        self.panel.draw_roi = self._draw_roi
         self._banner = RoutineBanner()   # top-level, so closed with the panel
         self.panel.state_shown.connect(self._banner.show_state)
         self.panel.destroyed.connect(self._banner.close)
@@ -211,6 +213,37 @@ class RoutinesModule(ModuleAdapter):
 
     def _save(self, routine: Routine) -> None:
         config.save_settings(self.key, {"routine": routine.to_dict()})
+
+    def add_fov_step(self, fov_path: Path, roi: Path) -> None:
+        """A just-saved FOV + ROI set becomes a step, except under a routine:
+        it holds the protocol locked."""
+        from acqApp.devices.stage import fov_store
+
+        if self._engine is not None and self._engine.running:
+            self._status(f"{fov_path.name} saved, but not added as a step: a "
+                         f"routine is running")
+            return
+        try:
+            fov = fov_store.load(fov_path)
+        except (OSError, ValueError, TypeError) as e:
+            self._status(f"could not add {fov_path.name} as a step ({e})")
+            return
+        row = self.panel.add_fov_step(fov, roi)
+        self._status(f'FOV "{fov.name}" and its ROI set added as routine step '
+                     f"{row + 1}")
+
+    def _draw_roi(self, fov) -> Path | None:
+        """An FOV step's missing ROI set, drawn on the FOV's snapshot (needs
+        the DMD for its calibration)."""
+        from acqApp.routines import pairs
+
+        dmd = self.win.pattern_target()
+        if dmd is None or not hasattr(dmd, "draw_rois_on_snapshot"):
+            self._status("load the DMD to draw an ROI set")
+            return None
+        return dmd.draw_rois_on_snapshot(pairs.roi_name(fov.name),
+                                         fov.image_path, fov.camera_preset,
+                                         parent=self.panel)
 
     # ── what the engine is allowed to do ──
     def _rig(self) -> RigLimits:
@@ -325,8 +358,10 @@ class RoutinesModule(ModuleAdapter):
         """Validate, arm, open the recording, run — refusals leave no file."""
         # A copy: the engine holds step indices, so the panel's object must
         # not change under it (a shorter template loaded mid-run -> IndexError).
-        routine = copy.deepcopy(self.panel.settings)
-        problems = validate(routine, self._rig())
+        protocol = copy.deepcopy(self.panel.settings)
+        problems = validate(protocol, self._rig())
+        # The engine runs atomic steps; `_rows` maps each back to its row.
+        routine, rows = expand(protocol)
         n_burst, why = burst_frames(routine, self.win.frame_rate_hz())
         if why:
             problems.append(why)
@@ -389,7 +424,8 @@ class RoutinesModule(ModuleAdapter):
         self._filed_from = 0
         self._pending_scope = {}
         self._routine_origin = self.win.sync.clock.now()
-        self._n_steps = len(routine.steps)
+        self._n_steps = len(protocol.steps)
+        self._rows = rows
         self._order = play_order(routine)
         self._group_repeat = group_repeat_at(routine, self._order)
         self._engine = RoutineEngine(
@@ -449,6 +485,7 @@ class RoutinesModule(ModuleAdapter):
 
     def _close_own_recording(self) -> None:
         """Stop recording and capture at the routine's end."""
+        self._doom_unused_prepared()
         junk = self._take_doomed()
         bad = self._bad_file()
         self.win.set_routine_save_context(None, None)
@@ -567,6 +604,7 @@ class RoutinesModule(ModuleAdapter):
         the edge's first frame lands in the new file. Raises to pause."""
         if self.win.dcimg_frames(FRAME_STREAM) is None:
             return
+        self._doom_unused_prepared()
         if self.win.arm_camera_with_next_file(FRAME_STREAM) is not True:
             raise RuntimeError("the camera could not be armed with the next "
                                "file")
@@ -669,8 +707,14 @@ class RoutinesModule(ModuleAdapter):
             self._discard(junk, bad)
         return ok
 
+    def _doom_unused_prepared(self) -> None:
+        """A file opened for an edge that never came (paused at the trigger,
+        then Resume or Abort) is as empty as Start's travel-only one."""
+        if self._prepared is not None:
+            self._prepared, self._doomed = None, self.win.recording_path()
+
     def _take_doomed(self) -> Path | None:
-        """Start's travel-only file, unless it caught frames after all."""
+        """A file doomed as empty, unless it caught frames after all."""
         junk, self._doomed = self._doomed, None
         if junk is not None and self.win.dcimg_frames(FRAME_STREAM):
             return None
@@ -726,8 +770,8 @@ class RoutinesModule(ModuleAdapter):
 
     def _delete_junk(self, path: Path, tries: int) -> None:
         if delete_recording(path):
-            self._status(f"deleted {path.name} — stage travel before the "
-                         f"first trigger, no frames")
+            self._status(f"deleted {path.name} — opened before a trigger that "
+                         f"never came, no frames")
         elif tries > 1:
             QTimer.singleShot(JUNK_RETRY_MS,
                               lambda: self._delete_junk(path, tries - 1))
@@ -825,6 +869,7 @@ class RoutinesModule(ModuleAdapter):
             return
         if eng.phase == Phase.WAITING:
             i, cycle, _ = eng.position
+            i = self._row(i)
             what = ("WAITING for the camera's trigger" if eng.edge_ready else
                     "RE-ARMING the camera — an edge now is lost")
             self.panel.set_state(
@@ -837,7 +882,7 @@ class RoutinesModule(ModuleAdapter):
             return
         if eng.phase == Phase.PAUSED:
             self.panel.set_state(eng.phase, f"PAUSED — {eng.fault}",
-                                 eng.position[0])
+                                 self._row(eng.position[0]))
             self.panel.set_progress(eng.overall_progress(), self._left(eng))
             return
         if eng.phase == Phase.DONE:
@@ -847,6 +892,7 @@ class RoutinesModule(ModuleAdapter):
             self.panel.set_progress(1.0, f"took {clock(eng.elapsed())}")
             return
         i, cycle, attempt = eng.position
+        i = self._row(i)
         step = eng.step
         where = (f"step {i + 1}/{self._n_steps}  cycle {cycle + 1}"
                 f"{self._repeat_suffix(eng)}")
@@ -872,6 +918,9 @@ class RoutinesModule(ModuleAdapter):
     def mini_view(self) -> QWidget:
         return MiniText(self._mini_text)
 
+    def view_widget(self) -> QWidget:
+        return self.panel.view
+
     def _mini_text(self) -> tuple[str, str]:
         eng = self._engine
         if eng is None or eng.phase == Phase.IDLE:
@@ -879,10 +928,14 @@ class RoutinesModule(ModuleAdapter):
         name = self._routine.name if self._routine is not None else ""
         if eng.phase in (Phase.ARMED, Phase.DONE):
             return ("aborted" if eng.aborted else eng.phase), name
-        i = eng.position[0]
+        i = self._row(eng.position[0])
         return (f"step {i + 1}/{self._n_steps}  ·  "
                 f"{eng.overall_progress() * 100:.0f} %",
                 f"{eng.phase}  ·  {name}" if name else eng.phase)
+
+    def _row(self, i: int) -> int:
+        """The table row engine step `i` belongs to."""
+        return self._rows[i] if 0 <= i < len(self._rows) else i
 
     def _repeat_suffix(self, eng) -> str:
         pos = eng.order_position

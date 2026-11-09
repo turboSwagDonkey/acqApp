@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
 )
 
-from acqApp.widgets import (button_row, check, compact, hrow, pairs_grid,
+from acqApp.widgets import (button_row, check, compact, pairs_grid,
                             pill, sections_help, spin)
 from .presets import (
     AcqConfig, PRESETS, LINK_LABEL,
@@ -57,8 +57,9 @@ class SettingsPanel(QWidget):
         self._cmb_preset.setCurrentIndex(PRESET_KEYS.index(start))
         self._cmb_preset.currentIndexChanged.connect(
             lambda i: self.resolution_changed.emit(self._cmb_preset.itemData(i)))
-        self._cmb_preset.setToolTip("Sensor area and the link rate it allows. "
-                                    "Takes effect at the next Start.")
+        self._cmb_preset.setToolTip("Sensor area and the rate it allows, over "
+                                    "USB / CoaXPress. Takes effect at the next "
+                                    "Start.")
 
         self._cmb_binning = compact(QComboBox())
         for b in BINNING_OPTIONS:
@@ -148,17 +149,25 @@ class SettingsPanel(QWidget):
                     "1 = off. The recorded file still gets every raw frame.")
         self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
 
-        # Same shape as the pupil panel: a line per theme, aligned columns.
-        lay.addRow(pairs_grid(("Resolution:", self._cmb_preset),
-                              ("Save as:", self._cmb_format)))
+        # Long names clip in the box rather than widen the dock; the list
+        # still shows them whole. Before the grid, which sizes from these.
+        cap = self.fontMetrics().horizontalAdvance("0" * 24) + 30
+        for c in (self._cmb_preset, self._cmb_format, self._cmb_binning,
+                  self._cmb_trigger):
+            c.setMaximumWidth(min(c.maximumWidth(), cap))
+            c.view().setMinimumWidth(c.view().sizeHintForColumn(0) + 24)
+        # Switches first, then one narrow column of inputs.
+        lay.addRow(button_row(self._chk_lut, self._chk_auto))
         lay.addRow(pairs_grid(
-            ("Binning:", self._cmb_binning,
-             "Capture rate:", self._spn_target_hz),
-            ("Trigger:", self._cmb_trigger, "Frames per edge:", self._spn_burst)))
+            ("Resolution:", self._cmb_preset),
+            ("Save as:", self._cmb_format),
+            ("Binning:", self._cmb_binning),
+            ("Trigger:", self._cmb_trigger),
+            ("Capture rate:", self._spn_target_hz),
+            ("Frames per edge:", self._spn_burst),
+            ("Preview avg:", self._spn_preview_avg)))
         lay.addRow(self._lbl_rate)
         lay.addRow(self._lbl_rec)
-        lay.addRow(button_row(self._chk_lut, self._chk_auto, None,
-                              hrow("Preview average:", self._spn_preview_avg)))
 
         led = QGroupBox("Illumination")
         ll = QVBoxLayout(led)
@@ -209,11 +218,19 @@ class SettingsPanel(QWidget):
             "color:#c62828; font-weight:bold;" if cfg.rate_unreachable
             else "color:#2e7d32;")
 
+    def _mbps(self, cfg: AcqConfig) -> float:
+        hz = self._measured[0] if self._measured is not None else cfg.rate_hz
+        return cfg.frame_bytes * hz / (1 << 20)
+
+    def writable_fraction(self, cfg: AcqConfig) -> float:
+        """Share of frames the write path keeps up with; 1.0 = all of them."""
+        mbps = self._mbps(cfg)
+        return min(1.0, WRITER_MBPS / mbps) if mbps > 0 else 1.0
+
     def _refresh_recordability(self, cfg: AcqConfig) -> None:
         """`WRITER_MBPS` is the whole write path, not a disk benchmark.
         Binning cuts bytes, not rate, so 2×2 is the lever."""
-        hz = self._measured[0] if self._measured is not None else cfg.rate_hz
-        mbps = cfg.frame_bytes * hz / (1 << 20)
+        mbps = self._mbps(cfg)
         if mbps <= WRITER_MBPS:
             self._lbl_rec.setText(
                 f"{mbps:.0f} MB/s — fits the writer (~{WRITER_MBPS:.0f} MB/s)")

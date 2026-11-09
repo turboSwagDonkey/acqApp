@@ -77,7 +77,7 @@ _SORTED = {USB: sorted(_ROWS_HZ_USB),
 def _label(rows: int, hz_usb: float, hz_cxp: float) -> str:
     dims = f"{SENSOR_W}×{rows}"
     tag = f"Full Frame ({dims})" if rows == SENSOR_H else dims
-    return f"{tag} · {hz_usb:g} USB / {hz_cxp:g} CXP Hz"
+    return f"{tag} · {hz_usb:g} / {hz_cxp:g} Hz"
 
 
 # 8/4-row bands stay table-only (interpolation). Binning does NOT speed up this

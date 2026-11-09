@@ -3,8 +3,9 @@
   acqApp\\.venv\\Scripts\\python.exe acqApp\\tests\\snap.py <module_key|save|review|roi>
       [--width 380] [--out file.png] [--settings JSON]
 
-module_key is a config.MODULES key (voltage_cam, pupil_cam, wheel, ...); `save`
-is the Save tab, `review` the standalone pupil review, `roi` the DMD ROI
+module_key is a config.MODULES key (voltage_cam, pupil_cam, wheel, ...); `main`
+is the whole window, every module loaded (try --width 1600); `save` is the
+Save section, `review` the standalone pupil review, `roi` the DMD ROI
 dialog (demo frame, live band; try --width 1000). `--settings` seeds the
 module's stored settings first, e.g. vis_stim --settings
 "{\\"trial_type\\": \\"contrast\\"}". Mock window, isolated user state:
@@ -58,6 +59,9 @@ def _panel(key: str):
         return ReticleAlignDialog(lambda _f: None, (DMD_W, DMD_H),
                                   demo_frame()), None
     from acqApp import config
+    if key == "main":
+        win = make_window(set(config.MODULES))
+        return win, win
     win = make_window({key} if key in config.MODULES else set())
     if key == "save":
         return win._save_panel, win
@@ -70,8 +74,8 @@ def _panel(key: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("key", help="a config.MODULES key, 'save', 'review', 'roi' "
-                                "or 'reticle'")
+    ap.add_argument("key", help="a config.MODULES key, 'main', 'save', 'review', "
+                                "'roi' or 'reticle'")
     ap.add_argument("--width", type=int, default=380)
     ap.add_argument("--out", default="",
                     help="default: snap_<key>.png in the temp dir")
@@ -85,13 +89,18 @@ def main() -> int:
         config.save_settings(a.key, json.loads(a.settings))
     app = qt_app()      # held: a collected QApplication takes the process down
     w, win = _panel(a.key)
-    w.setParent(None)   # out of its scroll area, so the width is ours to set
-    w.resize(a.width, 100)
-    w.show()
-    app.processEvents()
-    h = w.heightForWidth(a.width) if w.hasHeightForWidth() else -1
-    w.resize(a.width, max(h, w.sizeHint().height(), w.minimumSizeHint().height()))
-    app.processEvents()
+    if w is win:        # the whole window, at 16:9
+        w.resize(a.width, a.width * 9 // 16)
+        w.show()
+        app.processEvents()
+    else:
+        w.setParent(None)   # out of its scroll area, so the width is ours to set
+        w.resize(a.width, 100)
+        w.show()
+        app.processEvents()
+        h = w.heightForWidth(a.width) if w.hasHeightForWidth() else -1
+        w.resize(a.width, max(h, w.sizeHint().height(), w.minimumSizeHint().height()))
+        app.processEvents()
     out = a.out or os.path.join(tempfile.gettempdir(), f"snap_{a.key}.png")
     if not w.grab().save(out):
         print(f"could not write {out}")

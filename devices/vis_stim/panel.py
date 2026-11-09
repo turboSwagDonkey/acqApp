@@ -49,7 +49,7 @@ _TICK_FIELDS = frozenset({
     "VisuomotorDurationTicks",
 })
 
-# (field, label, min, max, step, decimals); ticks for _TICK_FIELDS.
+# (field, label, min, max, step, decimals[, suffix]); ticks for _TICK_FIELDS.
 _GEOMETRY_FIELDS = [
     ("StimDiameter",  "Diameter (px)",     0, 20000, 10, 0),
     ("StimXPosition", "X position (px)", -10000, 10000, 5, 0),
@@ -77,6 +77,7 @@ _MAP_FIELDS = [
     ("MapRepeats",      "Repeats",  1, 1000, 1, 0),
 ]
 _TIPS = {
+    "VisuomotorGain": "Grating drift, in px, per unit the wheel turns.",
     "MapGreySeconds":
         "Grey on all 9 regions before the first flash and again after the "
         "last one, this long each (the right-hand column is always black). "
@@ -152,7 +153,7 @@ _TIPS.update({
        for field in _SWEEP_REPEATS.values()},
 })
 _VISUOMOTOR_FIELDS = [
-    ("VisuomotorGain", "Gain (px drift / wheel unit)", -100, 100, 0.1, 3),
+    ("VisuomotorGain", "Gain", -100, 100, 0.1, 3, " px/unit"),
     ("VisuomotorDurationTicks", "Trial duration", 1, 100000, 1, 0),
 ]
 
@@ -220,7 +221,7 @@ class SettingsPanel(QWidget):
             tip="Fill the whole screen with the stimulus field (overrides "
                 "Diameter and position).")
         self._chk_stretch.toggled.connect(self._emit)
-        self._grp_geometry.layout().addWidget(self._chk_stretch)
+        self._grp_geometry.layout().insertWidget(0, self._chk_stretch)
         self._grp_grating = self._field_group("Grating & timing", _GRATING_FIELDS)
         self._grp_trigger = self._field_group(
             "Trial timing (shared clock ticks)", _TRIGGER_FIELDS)
@@ -278,7 +279,7 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._field_grid(
             _SWEEP_FIELDS, before=[("Region:", self._region),
                                    ("Repeats:", self._spn_repeats)]))
-        self._edt_levels = compact(QLineEdit(), chars=28)
+        self._edt_levels = QLineEdit()
         self._edt_levels.editingFinished.connect(self._set_levels)
         lay.addLayout(pairs_grid(("Levels:", self._edt_levels)))
         self._lbl_sweep_total = self._total_label(
@@ -344,8 +345,8 @@ class SettingsPanel(QWidget):
         btn_save.setToolTip("Save every setting below (type, parameters, "
                             "loops, display) to a .json file.")
         btn_save.clicked.connect(self._save_file)
-        lay.addRow(button_row(pairs_grid(("Type:", self._cmb_trial)),
-                              right=(btn_load, btn_save)))
+        lay.addRow(pairs_grid(("Type:", self._cmb_trial)))
+        lay.addRow(button_row(right=(btn_load, btn_save)))
         return grp
 
     # ── settings file ─────────────────────────────────────────────────────
@@ -430,8 +431,8 @@ class SettingsPanel(QWidget):
         return grp
 
     def _field_grid(self, fields, before=()):
-        """Two fields a line, in aligned columns like the other panels;
-        `before` is (label, widget) pairs to lead with."""
+        """One field a line (it lives in the narrow General column), in
+        aligned columns; `before` is (label, widget) pairs to lead with."""
         items = [x for pair in before for x in pair]
         for name, label, lo, hi, step, dec, *suffix in fields:
             value = getattr(self._s.params, name)
@@ -447,7 +448,7 @@ class SettingsPanel(QWidget):
             box.valueChanged.connect(self._emit)
             self._spins[name] = self._rows[name] = box
             items += [f"{label}:", box]
-        return pairs_grid(*(items[k:k + 4] for k in range(0, len(items), 4)))
+        return pairs_grid(*(items[k:k + 2] for k in range(0, len(items), 2)))
 
     # ── loop variables ───────────────────────────────────────────────────
     def _loop_group(self) -> QGroupBox:
@@ -458,9 +459,9 @@ class SettingsPanel(QWidget):
         self._lst_loops.currentRowChanged.connect(self._select_loop)
         lay.addWidget(self._lst_loops)
 
-        self._edt_loop_name = compact(QLineEdit(), chars=20)
+        self._edt_loop_name = QLineEdit()
         self._edt_loop_name.setPlaceholderText("e.g. Orientation")
-        self._edt_loop_vals = compact(QLineEdit(), chars=28)
+        self._edt_loop_vals = QLineEdit()
         self._edt_loop_vals.setPlaceholderText("0,45,90,135  or  0:45:315")
         self._edt_loop_name.setToolTip("A stimulus parameter to step through.")
         self._edt_loop_vals.setToolTip("The values it takes, one per trial: "

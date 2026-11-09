@@ -216,13 +216,12 @@ def run_parts(parts: dict) -> int:
 def qt_app():
     """The QApplication, created once per process, with the app's own theme."""
     from PyQt6.QtWidgets import QApplication
-    from acqApp import config, style
+    from acqApp import style
     app = QApplication.instance()
-    theme = "dark" if config.get_theme() == "dark" else "light"
     # Re-applying restyles every live widget (~0.2 s each, 100+ calls in a part).
-    if app is None or style._ACTIVE != theme:
-        app = app or QApplication(sys.argv)
-        style.apply_theme(app, theme)
+    if app is None:
+        app = QApplication(sys.argv)
+        style.apply_theme(app)
     return app
 
 

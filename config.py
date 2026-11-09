@@ -263,21 +263,6 @@ def save_enabled_modules(enabled: list[str]) -> None:
     save_config(cfg)
 
 
-# ── App-wide preferences ──────────────────────────────────────────────────────
-DEFAULT_THEME = "dark"
-
-
-def get_theme() -> str:
-    t = load_config().get("theme")
-    return t if t in ("dark", "light") else DEFAULT_THEME
-
-
-def set_theme(theme: str) -> None:
-    cfg = load_config()
-    cfg["theme"] = "dark" if theme == "dark" else "light"
-    save_config(cfg)
-
-
 # ── Per-module settings (under "settings") ────────────────────────────────────
 def load_settings(module: str) -> dict:
     """Every key optional; callers validate values."""
@@ -287,12 +272,15 @@ def load_settings(module: str) -> dict:
     return {}
 
 
-def save_settings(module: str, values: dict) -> None:
+def save_settings(module: str, values: dict, keep: tuple[str, ...] = ()) -> None:
+    """`keep`: keys edited only in this file; what's on disk wins over `values`,
+    so a hand edit made while the app runs isn't overwritten."""
     cfg = load_config()
     section = cfg.get("settings")
     if not isinstance(section, dict):
         section = {}
-    section[module] = dict(values)
+    old = section.get(module) if isinstance(section.get(module), dict) else {}
+    section[module] = {**values, **{k: old[k] for k in keep if k in old}}
     cfg["settings"] = section
     save_config(cfg)
 

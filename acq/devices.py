@@ -199,11 +199,6 @@ class ModuleHost(Protocol):
         `Recorder.offered()`, which DCAM's own writes never reach."""
 
     def status(self, message: str) -> None: ...
-    def add_dock(self, title: str, widget: Any, area: Any,
-                 accent: str = "sync") -> Any: ...
-
-    def register_pg_view(self, view: Any) -> None:
-        """So the theme toggle can recolour it."""
 
     def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
         """Two numbers: the disk fills at the smaller one."""
@@ -264,6 +259,9 @@ class ModuleHost(Protocol):
         """(re-arms completed, frames since the last)."""
 
     def stage_target(self) -> Any: ...
+
+    def add_routine_fov_step(self, fov: Any, roi: Any) -> None:
+        """Make a saved FOV + ROI set (their paths) a routine step."""
 
     def pattern_target(self) -> Any: ...
 

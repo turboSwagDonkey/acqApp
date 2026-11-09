@@ -136,12 +136,13 @@ class TrackingControls(QWidget):
         self._chk_rim.setToolTip("Drops a fit that isn't dark inside (a lid "
                                  "crease): no fit rather than a wrong one.")
 
-        # A line per feature: its switch, then its numbers.
+        # Switches first, then their numbers.
         QVBoxLayout(box).addLayout(self._grid(
-            (None, self._chk_smooth, "Over:", self._spn_smooth_win),
-            (None, self._chk_blink, "Drop of:", self._spn_blink_drop,
-             "Baseline:", self._spn_blink_win),
-            (None, self._chk_rim)))
+            (None, self._chk_smooth, None, self._chk_blink),
+            (None, self._chk_rim),
+            ("Smooth over:", self._spn_smooth_win,
+             "Blink drop:", self._spn_blink_drop),
+            ("Blink baseline:", self._spn_blink_win)))
         gate(self._chk_smooth, self._spn_smooth_win)
         gate(self._chk_blink, self._spn_blink_drop, self._spn_blink_win)
 
@@ -197,14 +198,14 @@ class TrackingControls(QWidget):
         self._btn_pins_clear.clicked.connect(self.clear_pins)
         self._show_pins()
 
-        # A line per feature, as above; the painting-out numbers serve both.
+        # Switches first, as above; the painting-out numbers serve both.
         pins = hrow(self._lbl_pins, self._btn_pins_clear)
         QVBoxLayout(box).addLayout(self._grid(
-            (None, self._chk_cr, "Brighter than:", self._spn_cr_thr,
+            (None, self._chk_cr, None, self._chk_whiskers),
+            (None, pins),
+            ("Brighter than:", self._spn_cr_thr,
              "Search out to:", self._spn_cr_reach),
-            (None, pins, "Grow by:", self._spn_cr_pad,
-             "Fill from:", self._spn_cr_ring),
-            (None, self._chk_whiskers)))
+            ("Grow by:", self._spn_cr_pad, "Fill from:", self._spn_cr_ring)))
         gate(self._chk_cr, self._spn_cr_thr, self._spn_cr_reach)
         gate([self._chk_cr, self._chk_whiskers],
              self._spn_cr_pad, self._spn_cr_ring)
@@ -217,10 +218,8 @@ class TrackingControls(QWidget):
         return box
 
     def _grid(self, *rows):
-        """Wide in the Live panel; two items a line, closer, in Review's narrow
-        column."""
-        if self._live:
-            return pairs_grid(*rows)
+        """Two items a line, close: the Live dock and Review's column are
+        both narrow."""
         return pairs_grid(*rows, per_row=2, gap=12)
 
     # ── API ─────────────────────────────────────────────────────────────────

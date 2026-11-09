@@ -1,21 +1,19 @@
-"""The sidebar's module cards: an accent header over a small live view of the
-module's state. Right-click opens the module's full page."""
+"""The module cards: an accent header over a small live view of the module's
+state, with its settings folded under it."""
 from __future__ import annotations
 
 from typing import Callable
 
-import numpy as np
-from PyQt6.QtCore import QRectF, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen
+from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy,
-                             QVBoxLayout, QWidget, QWidgetAction)
+                             QVBoxLayout, QWidget, QWIDGETSIZE_MAX)
 
 from acqApp import style
+from acqApp.widgets import _GEOM_APP, _GEOM_ORG, OPEN, SHUT
 
 REFRESH_MS = 250                # a glance, not a preview
 CARD_MIN_W = 190
-THUMB_H = 84
-_THUMB_SIDE = 256               # frames are decimated to this before scaling
 
 
 def _rgba(c: QColor, a: int) -> str:
@@ -23,8 +21,8 @@ def _rgba(c: QColor, a: int) -> str:
 
 
 def _line(lbl: QLabel) -> None:
-    """Centred; a long name clips rather than widening the whole bar."""
-    lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+    """A long text clips rather than widening the whole dock."""
+    lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
 
@@ -62,7 +60,8 @@ class MiniView(QWidget):
 
 
 class MiniText(MiniView):
-    """A value line over a muted detail line; `source()` -> (value, detail)."""
+    """A bold value then a muted detail, on one line; `source()` -> (value,
+    detail). Clipped text is in the tooltip."""
 
     def __init__(self, source: Callable[[], tuple[str, str]],
                  parent: QWidget | None = None) -> None:
@@ -70,16 +69,15 @@ class MiniText(MiniView):
         self._source = source
         self._shown: tuple[str, str] | None = None
         self._value = QLabel()
-        self._value.setStyleSheet("font-size:10pt;font-weight:bold")
+        self._value.setStyleSheet("font-weight:bold")
         self._detail = QLabel()
         self._detail.setStyleSheet(f"color:{style.muted()}")
-        for lbl in (self._value, self._detail):
-            _line(lbl)
-        lay = QVBoxLayout(self)
+        _line(self._detail)
+        lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
+        lay.setSpacing(6)
         lay.addWidget(self._value)
-        lay.addWidget(self._detail)
+        lay.addWidget(self._detail, 1)
 
     def refresh(self) -> None:
         got = self._source()
@@ -90,99 +88,19 @@ class MiniText(MiniView):
         self._value.setText(value)
         self._value.setVisible(bool(value))
         self._detail.setText(detail)
-        self._detail.setVisible(bool(detail))
+        tone = style.WARN if detail.startswith("⚠") else style.muted()
+        self._detail.setStyleSheet(f"color:{tone}")
+        self.setToolTip(" · ".join(t for t in got if t))
 
 
-class _Thumb(QWidget):
-    """A frame scaled to fit, dimmed unless lit, in a dashed accent box."""
+class _Card(QFrame):
+    """One line: an accent chip and title, then the module's mini view. A
+    click on it, not on the view's own controls, is `clicked`."""
 
-    def __init__(self, color: QColor) -> None:
+    clicked = pyqtSignal()
+
+    def __init__(self, key: str, label: str, mini: QWidget | None) -> None:
         super().__init__()
-        self._color = color
-        self._img: QImage | None = None
-        self._lit = False
-        self.setFixedHeight(THUMB_H)
-
-    def sizeHint(self) -> QSize:
-        return QSize(CARD_MIN_W - 20, THUMB_H)
-
-    def set_frame(self, frame: np.ndarray | None, lit: bool) -> None:
-        self._img = None if frame is None else _to_qimage(frame)
-        self._lit = lit
-        self.update()
-
-    def paintEvent(self, _e) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        box = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        if self._img is not None:
-            size = QSize(self._img.width(), self._img.height()).scaled(
-                box.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio)
-            box = QRectF(box.x() + (box.width() - size.width()) / 2,
-                         box.y() + (box.height() - size.height()) / 2,
-                         size.width(), size.height())
-            p.fillRect(box, Qt.GlobalColor.black)
-            p.setOpacity(1.0 if self._lit else 0.4)
-            p.drawImage(box, self._img)
-            p.setOpacity(1.0)
-        pen = QPen(self._color, 1.2,
-                   Qt.PenStyle.SolidLine if self._lit else Qt.PenStyle.DashLine)
-        p.setPen(pen)
-        p.drawRect(box)
-        if self._img is None:
-            p.setPen(QColor(style.muted()))
-            p.drawText(box, Qt.AlignmentFlag.AlignCenter, "nothing loaded")
-        p.end()
-
-
-def _to_qimage(frame: np.ndarray) -> QImage:
-    step = max(1, max(frame.shape[:2]) // _THUMB_SIDE)
-    small = np.ascontiguousarray(frame[::step, ::step], dtype=np.uint8)
-    h, w = small.shape[:2]
-    # copy(): the QImage would otherwise point into `small`'s buffer.
-    return QImage(small.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
-
-
-class MiniPattern(MiniView):
-    """A projector's frame and its name; `source()` -> (frame, name, lit)."""
-
-    def __init__(self, key: str,
-                 source: Callable[[], tuple[np.ndarray | None, str, bool]],
-                 parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._source = source
-        self._color = QColor(style.HEX.get(key, "#888"))
-        # The frame itself, not its id: holding it keeps an id from recycling.
-        self._shown: tuple | None = None
-        self._thumb = _Thumb(self._color)
-        self._caption = QLabel()
-        _line(self._caption)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(3)
-        lay.addWidget(self._thumb)
-        lay.addWidget(self._caption)
-
-    def refresh(self) -> None:
-        frame, name, lit = self._source()
-        now = (frame, name, lit)
-        if (self._shown is not None and self._shown[0] is frame
-                and self._shown[1:] == now[1:]):
-            return
-        self._shown = now
-        self._thumb.set_frame(frame, lit)
-        self._caption.setText(name)
-        self._caption.setVisible(bool(name))     # the empty box says it
-        self._caption.setStyleSheet(
-            f"color:{self._color.name()};font-weight:bold" if lit
-            else f"color:{style.muted()}")
-
-
-class _CardFrame(QFrame):
-    def __init__(self, action: QWidgetAction, key: str, label: str,
-                 mini: QWidget | None) -> None:
-        super().__init__()
-        self._action = action
         self.setObjectName("moduleCard")
         self.setMinimumWidth(CARD_MIN_W)
         c = QColor(style.HEX.get(key, "#888"))
@@ -196,45 +114,103 @@ class _CardFrame(QFrame):
         chip = QLabel()
         chip.setFixedSize(10, 10)
         chip.setStyleSheet(f"background:{c.name()};border-radius:2px")
-        title = QLabel(label)
-        title.setStyleSheet("font-weight:bold")
-        head = QHBoxLayout()
-        head.setSpacing(6)
-        head.addStretch(1)
-        head.addWidget(chip)
-        head.addWidget(title)
-        head.addStretch(1)
+        self.title = QLabel(label)
+        self.title.setStyleSheet("font-weight:bold")
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 5, 8, 6)
-        lay.setSpacing(3)
-        lay.addLayout(head)
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(8, 3, 8, 3)
+        self._lay.setSpacing(8)
+        self._lay.addWidget(chip)
+        self._lay.addWidget(self.title)
+        self.mini = None
+        self.set_mini(mini)
+
+    def set_mini(self, mini: QWidget | None) -> None:
+        if self.mini is not None:
+            self.mini.setParent(None)
+            self.mini.deleteLater()     # its view polls a module
+        self.mini = mini
         if mini is not None:
-            lay.addWidget(mini)
+            self._lay.addWidget(mini, 1)
 
     def set_open(self, on: bool) -> None:
         self.setProperty("open", on)
         self.style().unpolish(self)
         self.style().polish(self)
 
-    def contextMenuEvent(self, e) -> None:
-        # Accepted, or the toolbar's own hide-me menu pops up too.
-        e.accept()
-        if self._action.isCheckable():
-            self._action.trigger()
+    def mousePressEvent(self, e) -> None:
+        e.accept()                      # or the release goes elsewhere
+
+    def mouseReleaseEvent(self, e) -> None:
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(e.position().toPoint())):
+            self.clicked.emit()
 
 
-class ModuleCard(QWidgetAction):
-    """A sidebar item: checkable like the button it replaced (checked = its
-    page is open), and right-click triggers it. A module with no page gets
-    an inert card, there only for its view's own controls."""
+class Fold(QWidget):
+    """A module's card with its settings folded under it: a click on the card
+    opens or shuts them, remembered per key. No body: an inert card, there
+    only for its view's own controls."""
+
+    toggled = pyqtSignal(bool)
 
     def __init__(self, key: str, label: str, mini: QWidget | None,
-                 tip: str, parent, *, page: bool = True) -> None:
-        super().__init__(parent)
-        self.setText(label)
-        self.setCheckable(page)
-        self.card = _CardFrame(self, key, label, mini)
-        self.card.setToolTip(f"{tip}\nRight-click to open." if page else tip)
-        self.setDefaultWidget(self.card)
-        self.toggled.connect(self.card.set_open)
+                 body: QWidget | None, *, default_open: bool = False) -> None:
+        super().__init__()
+        self.key = key
+        self.body = body
+        self._label = label
+        self._open = False
+        self._setting = f"fold/{key}"
+        self.card = _Card(key, label, mini)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        lay.addWidget(self.card)
+        if body is None:
+            return
+        lay.addWidget(body, 1)
+        self.card.setToolTip(f"Click to show or hide the {label} settings.")
+        self.card.clicked.connect(lambda: self.set_open(not self._open))
+        saved = QSettings(_GEOM_ORG, _GEOM_APP).value(self._setting)
+        self.set_open(default_open if saved is None
+                      else saved not in (False, "false", "0", 0), remember=False)
+
+    def is_open(self) -> bool:
+        return self._open
+
+    def set_open(self, on: bool, *, remember: bool = True) -> None:
+        if self.body is None:
+            return
+        self._open = on
+        self.body.setVisible(on)
+        self.card.set_open(on)
+        self.card.title.setText(f"{OPEN if on else SHUT} {self._label}")
+        self._clamp()
+        if remember:
+            QSettings(_GEOM_ORG, _GEOM_APP).setValue(self._setting,
+                                                     "1" if on else "0")
+        self.toggled.emit(on)
+
+    def sizeHint(self) -> QSize:
+        """Open over a scroll area, as tall as what it holds: a QScrollArea
+        asks ~24 lines whatever its content, and a splitter gives it that."""
+        hint = super().sizeHint()
+        inner = getattr(self.body, "widget", lambda: None)()
+        if self._open and isinstance(inner, QWidget):
+            lay = self.layout()
+            hint.setHeight(self.card.sizeHint().height() + lay.spacing()
+                           + inner.sizeHint().height()
+                           + 2 * self.body.frameWidth())
+        return hint
+
+    def _clamp(self) -> None:
+        """Shut, no taller than the card: a splitter ignores size policies."""
+        self.setMaximumHeight(QWIDGETSIZE_MAX if self._open or self.body is None
+                              else self.card.sizeHint().height())
+
+    def event(self, e) -> bool:
+        # The card's mini view grows and shrinks a line as its text comes and goes.
+        if e.type() == QEvent.Type.LayoutRequest:
+            self._clamp()
+        return super().event(e)

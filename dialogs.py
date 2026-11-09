@@ -1,54 +1,74 @@
-"""The shell's own windows; none knows about the clock, recorder or devices.
-
-Geometry lives in QSettings, which `tests/_harness.isolate_user_state()`
-substitutes here too — or the suite overwrites the operator's layout.
-"""
+"""The shell's own dialogs; none knows about the clock, recorder or devices."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QGridLayout,
-    QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QLabel,
+    QVBoxLayout,
 )
 
-from acqApp import config, probe, style, widgets
-
-_GEOM_ORG, _GEOM_APP = "acqApp", "acqApp"
-
-
-def _qsettings() -> QSettings:
-    return QSettings(_GEOM_ORG, _GEOM_APP)
+from acqApp import config, probe
 
 
 class ModuleSelectDialog(QDialog):
-    """A checkbox per module, at startup and from the sidebar. ALWAYS_ON
-    modules get no box and are added back by `selected()`."""
+    """A checkbox per module, at startup and from General's Modules button.
+    With `probe_kwargs` each row also says whether its device is detected
+    (enumeration-only probes, safe mid-session). ALWAYS_ON modules get no box
+    and are added back by `selected()`."""
+
+    _DOT = {"ok": "#2e7d32", "missing": "#c62828", "error": "#e0860a", "stub": "#8a8a8a"}
+    _WORD = {"ok": "connected", "missing": "not found", "error": "error", "stub": "stub"}
+    _DETAIL_W = 300
 
     def __init__(self, enabled: list[str], parent=None, *,
                  title: str = "Select modules to load",
-                 prompt: str = "Load these instruments this session:"):
+                 prompt: str = "Load these instruments this session:",
+                 probe_kwargs=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setMinimumWidth(300)
+        if probe_kwargs is None:        # else the detail column sets the width
+            self.setMinimumWidth(300)
+        # A callable, so Refresh sees a port edited after opening.
+        self._probe_kwargs = probe_kwargs
+        self._rows: dict[str, tuple[QLabel, QLabel]] = {}
+        self._busy = False
+        self._closed = False
 
         root = QVBoxLayout(self)
         root.addWidget(QLabel(prompt))
 
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setColumnStretch(2, 1)
         self._boxes: dict[str, QCheckBox] = {}
-        for key, label in config.MODULES.items():
-            if key in config.ALWAYS_ON:
-                continue
-            cb = QCheckBox(label)
+        keys = [k for k in config.MODULES if k not in config.ALWAYS_ON]
+        for r, key in enumerate(keys):
+            cb = QCheckBox(config.MODULES[key])
             cb.setChecked(key in enabled)
             cb.toggled.connect(self._update_ok)
             self._boxes[key] = cb
-            root.addWidget(cb)
+            grid.addWidget(cb, r, 0)
+            if probe_kwargs is not None:
+                status, detail = QLabel(""), QLabel("")
+                detail.setStyleSheet("color:#9aa0a6;")
+                detail.setFixedWidth(self._DETAIL_W)     # one line; tooltip has it all
+                grid.addWidget(status, r, 1)
+                grid.addWidget(detail, r, 2)
+                self._rows[key] = (status, detail)
+        root.addLayout(grid)
 
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
+        self._btn_refresh = None
+        if probe_kwargs is not None:
+            self._btn_refresh = self._buttons.addButton(
+                "Check devices", QDialogButtonBox.ButtonRole.ActionRole)
+            self._btn_refresh.setToolTip("Look again for each instrument's "
+                                         "hardware (enumeration only).")
+            self._btn_refresh.clicked.connect(self.refresh)
+            QTimer.singleShot(0, self.refresh)      # once the dialog is up
         root.addWidget(self._buttons)
         self._update_ok()
 
@@ -60,168 +80,10 @@ class ModuleSelectDialog(QDialog):
         return config.order_modules(
             k for k, cb in self._boxes.items() if cb.isChecked())
 
-
-def _looks_sane(size: QSize, floor: tuple[int, int]) -> bool:
-    """A restored size can be garbage (seen: a few px, saved mid-drag)."""
-    return size.width() >= floor[0] // 2 and size.height() >= floor[1] // 2
-
-
-def _fits_on_screen(hint: QSize, floor: tuple[int, int], pad: int,
-                    screen) -> QSize:
-    """`hint` + padding, at least `floor`, at most 90% of the screen — or the
-    bottom buttons can open off-screen on the rig."""
-    w = max(floor[0], hint.width() + 2 * pad)
-    h = max(floor[1], hint.height() + 2 * pad)
-    screen = screen or QGuiApplication.primaryScreen()
-    if screen is not None:
-        avail = screen.availableGeometry()
-        w = min(w, int(avail.width() * 0.9))
-        h = min(h, int(avail.height() * 0.9))
-    return QSize(w, h)
-
-
-def _restore_or_fit(win: QDialog, saved, floor: tuple[int, int]) -> None:
-    """Saved geometry if it restores AND looks sane (a restore can succeed on
-    a garbage size), else `win.default_size()`."""
-    if not (saved is not None and win.restoreGeometry(saved)
-            and _looks_sane(win.size(), floor)):
-        win.resize(win.default_size())
-
-
-class PanelWindow(QDialog):
-    """One module's settings panel (or the Save tab) in a window of its own,
-    first sized to the panel. Hidden, never destroyed: the panel is wired to a
-    live controller. Geometry is saved per module key."""
-
-    visibility_changed = pyqtSignal(bool)
-
-    # Only a floor for a first size and for a sane restore; the panel's own
-    # size hint normally decides.
-    _MIN_DEFAULT = (360, 200)
-    _PAD = 16
-
-    def __init__(self, panel: QWidget, label: str, key: str, parent=None,
-                 size: tuple[int, int] | None = None):
-        super().__init__(parent)
-        self._size = size
-        self._geom_key = f"panelGeometry/{key}"
-        self.setWindowTitle(label)
-        self.setWindowFlag(Qt.WindowType.Window, True)
-
-        # Scrolls, so the window can be narrower than the panel.
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setWidget(panel)
-        self._scroll.setMinimumWidth(80)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(self._scroll)
-
-        panel.setStyleSheet(style.accent_panel(key))
-        widgets.collapsible_groups(panel, key)
-        widgets.align_grids(panel)
-
-        self._panel = panel
-        self._saved_geom = _qsettings().value(self._geom_key)
-        self._sized = False
-
-    def default_size(self) -> QSize:
-        if self._size is not None:
-            return _fits_on_screen(QSize(*self._size), (0, 0), 0, self.screen())
-        return _fits_on_screen(self._panel.sizeHint(), self._MIN_DEFAULT,
-                               self._PAD, self.screen())
-
-    def showEvent(self, event) -> None:
-        if not self._sized:
-            self._sized = True
-            _restore_or_fit(self, self._saved_geom, self._MIN_DEFAULT)
-        super().showEvent(event)
-        self.visibility_changed.emit(True)
-
-    def hideEvent(self, event) -> None:
-        super().hideEvent(event)
-        self.visibility_changed.emit(False)
-
-    def save_geometry(self) -> None:
-        # Never shown: its geometry is Qt's default, not the operator's.
-        if self._sized:
-            _qsettings().setValue(self._geom_key, self.saveGeometry())
-
-    def closeEvent(self, event) -> None:
-        self.save_geometry()
-        super().closeEvent(event)       # hides; the adapter owns the panel
-
-    def release(self) -> QWidget | None:
-        """Hand the panel back before this window dies: a QScrollArea deletes
-        its widget, and the adapter disposes of the panel itself."""
-        self.save_geometry()
-        self.hide()
-        panel = self._scroll.takeWidget()
-        self._panel = None
-        return panel
-
-
-class ConnectionMonitor(QDialog):
-    """Whether each loaded device is detected. Enumeration-only probes, safe
-    mid-session."""
-
-    _DOT = {"ok": "#2e7d32", "missing": "#c62828", "error": "#e0860a", "stub": "#8a8a8a"}
-    _WORD = {"ok": "connected", "missing": "not found", "error": "error", "stub": "stub"}
-
-    visibility_changed = pyqtSignal(bool)
-
-    def __init__(self, module_keys: list[str], probe_kwargs=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Device connections")
-        self.setMinimumWidth(420)
-        # A callable, so Refresh sees a port edited after opening.
-        self._probe_kwargs = probe_kwargs or (lambda: {})
-        self._rows: dict[str, tuple[QLabel, QLabel]] = {}
-        self._busy = False
-
-        root = QVBoxLayout(self)
-        grid = QGridLayout()
-        grid.setColumnStretch(2, 1)
-        grid.setHorizontalSpacing(12)
-        for r, key in enumerate(module_keys):
-            name = QLabel(config.MODULES.get(key, key))
-            name.setStyleSheet(f"color:{style.HEX.get(key, '#ccc')}; font-weight:bold;")
-            status = QLabel("…")
-            detail = QLabel("")
-            detail.setStyleSheet("color:#9aa0a6;")
-            detail.setWordWrap(True)
-            grid.addWidget(name,   r, 0)
-            grid.addWidget(status, r, 1)
-            grid.addWidget(detail, r, 2)
-            self._rows[key] = (status, detail)
-        root.addLayout(grid)
-
-        buttons = QHBoxLayout()
-        self._btn_refresh = QPushButton("Refresh")
-        self._btn_refresh.clicked.connect(self.refresh)
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.close)
-        buttons.addStretch()
-        buttons.addWidget(self._btn_refresh)
-        buttons.addWidget(btn_close)
-        root.addLayout(buttons)
-
-        self.refresh()
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self.visibility_changed.emit(True)
-
-    def hideEvent(self, event) -> None:
-        super().hideEvent(event)
-        self.visibility_changed.emit(False)
-
     def refresh(self) -> None:
-        """One module at a time, painting each row as it lands. Refresh is
-        disabled meanwhile: these touch hardware, and must not re-enter (nor
-        through the sidebar's Devices item, which calls this directly)."""
-        if self._busy:
+        """One module at a time, painting each row as it lands. Not
+        re-entrant: these touch hardware. Stops once the dialog is closed."""
+        if self._busy or self._probe_kwargs is None:
             return
         kwargs = self._probe_kwargs()
         self._busy = True
@@ -236,8 +98,17 @@ class ConnectionMonitor(QDialog):
                 status.setText(f"● {self._WORD.get(res.status, res.status)}")
                 status.setStyleSheet(f"color:{self._DOT.get(res.status, '#ccc')}; "
                                      "font-weight:bold;")
-                detail.setText(res.detail)
+                detail.setText(detail.fontMetrics().elidedText(
+                    " ".join(res.detail.split()), Qt.TextElideMode.ElideRight,
+                    self._DETAIL_W))
+                detail.setToolTip(res.detail)
                 QApplication.processEvents()
+                if self._closed:
+                    break                   # OK/Cancel pressed mid-check
         finally:
             self._busy = False
             self._btn_refresh.setEnabled(True)
+
+    def done(self, r: int) -> None:
+        self._closed = True
+        super().done(r)

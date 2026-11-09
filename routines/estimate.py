@@ -8,7 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from acqApp.routines.settings import Routine, Step, TIMED_KINDS, play_order
+from acqApp.routines.settings import (ENGINE_KINDS, Routine, Step, TIMED_KINDS,
+                                      expand, play_order)
+
+
+def engine_routine(routine: Routine) -> Routine:
+    """`routine` as the engine runs it: FOV steps expanded."""
+    if all(s.kind in ENGINE_KINDS for s in routine.steps):
+        return routine
+    return expand(routine)[0]
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,7 @@ def _one_pass(routine: Routine, order: list[int],
 
 def estimate(routine: Routine, hz: float | None = None) -> Estimate:
     """The whole routine, cycles and group repeats included."""
+    routine = engine_routine(routine)
     one = _one_pass(routine, play_order(routine), hz)
     cycles = max(1, routine.cycles)
     return Estimate(seconds=one.seconds * cycles, frames=one.frames * cycles,
@@ -122,6 +131,7 @@ def burst_frames(routine: Routine, hz: float | None) -> tuple[int, str]:
     Record right after a Trigger shares, at `hz` for a seconds Record (the
     camera counts pulses, not time). (0, "") if the routine has no such pair;
     (0, why) if they disagree."""
+    routine = engine_routine(routine)
     lengths = set()
     for a, b in zip(routine.steps, routine.steps[1:]):
         if a.kind != "trigger" or b.kind != "record":

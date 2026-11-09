@@ -47,9 +47,9 @@ def step_toward(cur: tuple[float, float], target: tuple[float, float],
 def _jump_refused(ax: StageAxis) -> str:
     """A jog never moves further than its step: from outside the allowed
     range, clamping would turn a small jog into a jump to the range's edge."""
-    return (f"{ax.name} is outside its allowed range, so this jog would jump "
-            f"to the range's edge. Use Go to, or untick Calibrate… ▸ Limit "
-            f"to window.")
+    return (f"{ax.name} is outside its soft limits, so this jog would jump "
+            f"to their edge. Go to a saved FOV inside them, or set home "
+            f"again.")
 
 
 def _center_here_updates(s: StageSettings, cx: int, cy: int) -> dict[int, dict]:
@@ -245,7 +245,7 @@ class StageController:
             raise StageControllerError(
                 f"The {self.backend_kind} backend has no drifting command "
                 "origin to re-establish — its position readout is already a "
-                "stable encoder count. Use 'Set 0,0 = center' / 'Set Z = 0' "
+                "stable encoder count. Use 'Set home here' / 'Set Z = 0' "
                 "instead.")
 
         def say(msg: str) -> None:
@@ -283,8 +283,9 @@ class StageController:
 
         save_axis_updates(updates)
         say("Frame re-established. " + (
-            f"0,0 not set for {', '.join(dropped)} — centre the stage and click "
-            "'Set 0,0 = center (here)'." if dropped else "Origin unchanged."))
+            f"home not set for {', '.join(dropped)} — centre the stage and "
+            "click Settings ▸ 'Set home here'." if dropped
+            else "Home unchanged."))
         return updates
 
     def go_to_center(self) -> None:

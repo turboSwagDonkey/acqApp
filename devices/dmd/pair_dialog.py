@@ -27,17 +27,21 @@ class PairRoiDialog(QDialog):
     """Modal. `.path` is the saved ROI set after Save, else None."""
 
     def __init__(self, editor: RoiEditor, name: str, *,
-                 live_source: Callable[[], LiveFrame | None],
-                 illuminate: Callable[[RoiSet | None], None],
+                 live_source: Callable[[], LiveFrame | None] | None,
+                 illuminate: Callable[[RoiSet | None], None] | None,
                  set_live: Callable[[bool], bool] | None = None, parent=None):
         """`editor` already shows the FOV snapshot; the live camera goes under
         it. `illuminate(rois)` projects them, `illuminate(None)` stops.
-        `set_live` starts/stops the camera and returns its previous state."""
+        `set_live` starts/stops the camera and returns its previous state.
+        No `live_source`: the stage is elsewhere, so the snapshot alone and
+        no light (it would land on another field)."""
         super().__init__(parent)
         self._ed = editor
+        editor.hide_save()              # the name is already fixed by the FOV
         self._name = name
-        self._illuminate = illuminate
-        self._set_live = set_live
+        self._snapshot_only = live_source is None
+        self._illuminate = illuminate or (lambda _r: None)
+        self._set_live = None if self._snapshot_only else set_live
         self._was_live: bool | None = None     # set once we started the camera
         self._lit = False
         self.path: Path | None = None
@@ -45,7 +49,8 @@ class PairRoiDialog(QDialog):
         self.setWindowTitle(f"DMD ROIs for {name}")
         self.setStyleSheet(style.accent_panel("dmd"))
         self.resize(1000, 980)
-        self._live = attach_live_view(editor, live_source)
+        self._live = (None if live_source is None
+                      else attach_live_view(editor, live_source))
         self._build()
 
         self._reproject = QTimer(self)
@@ -58,6 +63,8 @@ class PairRoiDialog(QDialog):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         msg = QLabel(
+            "Draw where the DMD should light up on the FOV's saved snapshot, "
+            f'then Save as "{self._name}".' if self._snapshot_only else
             "Draw where the DMD should light up on the full-field snapshot "
             "(top). Below, the live camera shows them over what it captures "
             "now. Illuminate to see them lit; keep tweaking until it's right, "
@@ -86,7 +93,9 @@ class PairRoiDialog(QDialog):
         self._bb.rejected.connect(self.reject)
         root.addWidget(self._bb)
 
-        if self._ed.can_project:
+        if self._snapshot_only:
+            self._btn_light.hide()
+        elif self._ed.can_project:
             self._btn_light.setToolTip(
                 "THIS PROJECTS LIGHT: shows these ROIs on the DMD, and keeps "
                 "them in step with your edits until switched off.")
@@ -100,7 +109,8 @@ class PairRoiDialog(QDialog):
         super().showEvent(ev)
         if self._set_live is not None and self._was_live is None:
             self._was_live = self._set_live(True)
-        self._live.start()
+        if self._live is not None:
+            self._live.start()
 
     # ── light ────────────────────────────────────────────────────────────────
     def _on_light_toggled(self, on: bool) -> None:
@@ -143,7 +153,8 @@ class PairRoiDialog(QDialog):
         if not len(rois):
             return
         try:
-            self.path = roi_store.save(self._name, rois)
+            self.path = roi_store.save(self._name, rois,
+                                       png_bytes=self._ed.render_png())
         except OSError as e:
             self._fail("Could not save", e)
             return
@@ -151,7 +162,8 @@ class PairRoiDialog(QDialog):
 
     def done(self, result: int) -> None:
         # Every exit (Save, Skip, Esc, the title-bar X) turns the light off.
-        self._live.stop()
+        if self._live is not None:
+            self._live.stop()
         self._reproject.stop()
         self._stop_light()
         if self._was_live is not None and self._set_live is not None:

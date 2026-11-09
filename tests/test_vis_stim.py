@@ -569,8 +569,8 @@ def check_hotload(r: Report, win) -> None:
             "…and is in the live module list")
 
     m = next(x for x in win._modules if x.key == "vis_stim")
-    r.check("vis_stim" in win._panel_windows,
-            "its panel gets a window of its own, like every module's")
+    r.check("vis_stim" in win._folds and win._folds["vis_stim"].body is m.panel,
+            "its panel gets a General section, like every module's")
     r.check(m.controller is not None and m.controller.phase == "IDLE",
             "its controller is built and idle immediately (always-on, "
             "not per-session)")

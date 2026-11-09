@@ -18,6 +18,7 @@ from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
 from acqApp.acq.devices import ModuleHost
 from acqApp.devices.stage.acquisition import StagePollWorker
+from acqApp.devices.stage.cam_axes import screen_angle
 from acqApp.devices.stage.control import MockStageController, StageController
 from acqApp.devices.stage.panel import SettingsPanel as StageSettingsPanel
 from acqApp.devices.stage.settings import load_settings as load_stage_settings
@@ -43,12 +44,15 @@ def _cam_axes_or_none(raw) -> tuple[float, float, float, float] | None:
 class StageModule(ModuleAdapter):
     key = "stage"
     tab_label = "Stage"
+    own_dock = True
     _move_issued_at = float("-inf")
 
     # Only what the panel owns; calibration stays in the shared config
     # (nested StageAxis objects don't fit this flat JSON).
     _PANEL_KEYS = ("port", "poll_hz", "frame_rotation_deg", "drag_speed_um_s",
-                   "cam_axes", "window_limit")
+                   "cam_axes")
+    # No widget: edited in acqapp_local.json, read at launch.
+    _FILE_KEYS = ("port", "poll_hz")
 
     def __init__(self, win: ModuleHost) -> None:
         super().__init__(win)
@@ -63,15 +67,20 @@ class StageModule(ModuleAdapter):
         return MiniText(self._mini_text)
 
     def _mini_text(self) -> tuple[str, str]:
-        if self.controller is None:
-            return "not connected", ""
-        pos = self._pos
-        if pos is None:
-            return "…", ""
-        z = f"Z {pos[2]:.1f} µm" if len(pos) > 2 else "µm"
-        fov = self.active_fov_name()
-        return (f"X {pos[0]:.1f}   Y {pos[1]:.1f}",
-                z + (f"  ·  FOV {fov}" if fov else ""))
+        """Home set or not, and how jogs are turned to the camera: what the
+        page's readout doesn't already say."""
+        if self.panel is None:
+            return "", ""
+        s = self.panel.settings
+        home = ("home set" if s.x.origin_set and s.y.origin_set
+                else "home not set")
+        axes = self.panel.cam_axes
+        if axes is not None:
+            turn = f"camera axes: +X {screen_angle(axes[0], axes[1]):.0f}°"
+        else:
+            turn = f"rotation {s.frame_rotation_deg:g}°"
+        return home, turn + ("" if self.controller is not None
+                             else "  ·  not connected")
 
     def build_panel(self) -> QWidget:
         s = load_stage_settings()
@@ -97,19 +106,22 @@ class StageModule(ModuleAdapter):
             if speed > 0:
                 s.drag_speed_um_s = speed
         s.cam_axes = _cam_axes_or_none(saved.get("cam_axes"))
-        if isinstance(saved.get("window_limit"), bool):
-            s.window_limit = saved["window_limit"]
         self.panel = StageSettingsPanel(s)
         self.panel.settings_changed.connect(self._save)
         self.panel.save_fov_requested.connect(self.save_fov)
+        self.panel.fov_preview_requested.connect(self.preview_fov)
         self.panel.set_camera_source(
             lambda: self.win.latest_frame(CAMERA_KEY),
             lambda: self.win.camera_binning(CAMERA_KEY) or 1)
         return self.panel
 
+    def view_widget(self) -> QWidget:
+        return self.panel.view
+
     def _save(self, s) -> None:
         config.save_settings(self.key,
-                             {k: getattr(s, k) for k in self._PANEL_KEYS})
+                             {k: getattr(s, k) for k in self._PANEL_KEYS},
+                             keep=self._FILE_KEYS)
 
     def probe_kwargs(self) -> dict[str, Any]:
         try:
@@ -124,7 +136,8 @@ class StageModule(ModuleAdapter):
         try:
             ctrl.connect()
         except Exception as e:
-            self.win.status(f"stage: could not connect ({e})")
+            self.win.status(f"stage: could not connect on {s.port} ({e}); "
+                            "the port is set in acqapp_local.json")
             return
         self.win.status(f"stage: connected ({ctrl.backend_kind})")
         self.controller = ctrl
@@ -176,8 +189,9 @@ class StageModule(ModuleAdapter):
         if not self.panel.connected:
             QMessageBox.information(
                 self.panel, "Stage not connected",
-                "The stage isn't connected — check the port on the Stage "
-                "tab and that the hardware is powered on.")
+                "The stage isn't connected: check that it's powered on and "
+                f"that \"port\" ({self.panel.settings.port}) under stage in "
+                "acqapp_local.json is its serial port, then restart.")
             return
         if not self.panel.position_known:
             QMessageBox.information(
@@ -187,9 +201,13 @@ class StageModule(ModuleAdapter):
             return
         x_um, y_um, z_um = self.panel.current_position
         dmd = self.win.pattern_target()
-        prompt = (f"Name (saved as <name>{pairs.FOV_SUFFIX}, its DMD ROI set "
-                  f"as <name>{pairs.ROI_SUFFIX}):" if dmd is not None
-                  else f"Name (saved as <name>{pairs.FOV_SUFFIX}):")
+        prompt = f"FOV name (saved as <name>{pairs.FOV_SUFFIX}):"
+        if dmd is not None and self.win.latest_frame(CAMERA_KEY) is None:
+            prompt += ("\n\nNo voltage-cam frame yet, so no snapshot and no "
+                       "DMD ROIs: Cancel, start Live, then Save FOV again.")
+        elif dmd is not None:
+            prompt += (f"\nNext you draw its DMD ROIs; they take the same "
+                       f"name (<name>{pairs.ROI_SUFFIX}).")
         base, ok = QInputDialog.getText(self.panel, "Save FOV", prompt)
         base = pairs.base_name(base)
         if not ok or not base:
@@ -206,12 +224,52 @@ class StageModule(ModuleAdapter):
         self.panel.refresh_fovs()
         self.win.status(f'Saved FOV "{name}" at {x_um:.0f}, {y_um:.0f} µm '
                         f"({path.name})")
-        if dmd is None or self.win.latest_frame(CAMERA_KEY) is None:
+        if dmd is None:
+            return
+        if self.win.latest_frame(CAMERA_KEY) is None:
+            self.win.status(f'Saved FOV "{name}" without DMD ROIs: no '
+                            "voltage-cam frame yet (start Live first)")
             return
         roi_path = dmd.draw_paired_rois(pairs.roi_name(base))
         if roi_path is not None:
             self.win.status(f'Saved FOV "{name}" with its DMD ROI set '
                             f'"{pairs.roi_name(base)}"')
+            self.win.add_routine_fov_step(path, roi_path)
+
+    def preview_fov(self, fov):
+        """Non-modal look at `fov`: its paired ROI set's saved image (the
+        snapshot with the shapes), else the bare snapshot -> the dialog."""
+        from PyQt6.QtCore import Qt
+
+        from acqApp.devices.dmd import roi_store
+        from acqApp.devices.stage.fov_preview import FovPreview
+        from acqApp.routines import pairs
+
+        z = f", z {fov.z_um:.0f}" if fov.z_um is not None else ""
+        lines = [f"{fov.x_um:.0f}, {fov.y_um:.0f}{z} µm · saved "
+                 f"{fov.saved_at.replace('T', ' ')}"]
+        image = None
+        roi = pairs.roi_for_fov(fov)
+        if roi is None:
+            lines.append("No DMD ROI set paired with it: the snapshot alone.")
+        else:
+            try:
+                roi_name, rois = roi_store.load_named(roi)
+                what = f'DMD ROI set "{roi_name}" ({len(rois)} ROIs)'
+            except (OSError, ValueError):   # a slot: escaping would abort the app
+                what = f"DMD ROI set {roi.name} (unreadable)"
+            png = roi_store.image_for(roi)
+            if png.is_file():
+                image = png
+                lines.append(f"{what}, as drawn on the snapshot.")
+            else:
+                lines.append(f"{what} was saved before ROI images were kept: "
+                             "the snapshot alone, without its shapes.")
+        dlg = FovPreview(fov.name, "\n".join(lines), image or fov.image_path,
+                         parent=self.panel)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
+        return dlg
 
     def _snapshot_png(self) -> bytes | None:
         """The newest camera frame as the preview shows it (downsampled,

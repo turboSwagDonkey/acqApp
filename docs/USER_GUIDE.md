@@ -27,8 +27,8 @@ Tick which instruments to load this session. It defaults to whatever you had
 loaded last time. **Experiment routines** has no checkbox — it owns no
 device, so there's nothing to unload.
 
-You aren't locked in: the sidebar's **🧩 Modules** button reopens this same
-picker at any time, and loading or unloading applies live — a module you add
+You aren't locked in: General's **🧩 Modules** button reopens this same
+picker at any time (with each device's connection status, §5), and loading or unloading applies live — a module you add
 mid-session builds its own worker and joins the live view immediately. The
 only time it's refused is **while recording**, so a stream can't appear or
 vanish partway through a file.
@@ -38,8 +38,9 @@ vanish partway through a file.
 <img src="images/guide/02_main_window_live.png" width="900" alt="Main window during live view, several instruments loaded">
 
 - **Left sidebar** — one item per loaded instrument's settings page (plus
-  **Save**), each in its own accent colour. Below the divider: **Theme**,
-  **Modules** (the picker again), **Devices** (§6).
+  **Save**), each in its own accent colour. On the bottom line: **Mode**,
+  then 💾 Save as preset, ☾ Theme, **🧩 Modules** (the picker plus device
+  status, §5) and ⟲ Reset layout.
 - **Centre** — the voltage camera's live preview, when loaded; otherwise
   whatever module claims the central view.
 - **Right** — the **Signals** dock: rolling plots per instrument, tabbed.
@@ -103,7 +104,8 @@ numbers:
 Every panel's settings **persist** to `acqapp_local.json` and come back at
 the next launch — except runtime-only state like the eye-tracking LED, which
 always starts off so the app can never come up with an illuminator already
-on.
+on. Connections (stage port and poll rate, wheel channel and sample rate,
+puffer DO line) have no widget: edit them in `acqapp_local.json` and restart.
 
 ### Where the data goes — the Save tab
 
@@ -126,14 +128,15 @@ benchmarks each one directly rather than trusting what the OS reports.
 
 ## 5. Checking device connections
 
-<img src="images/guide/05_devices_monitor.png" width="420" alt="Device connections monitor, one row per loaded instrument">
+<img src="images/guide/05_devices_monitor.png" width="540" alt="Modules and devices: a load box, status and detail per instrument">
 
-The sidebar's **Devices** item opens a live probe of every loaded
-instrument — safe to open any time, including mid-session, since it only
+General's **🧩 Modules** button lists every instrument with a live probe
+beside its load box (**Check devices** probes again) — safe to open any time, including mid-session, since it only
 *enumerates* (checks presence), never opens a device for real. On the rig,
 instruments that are plugged in and powered read **connected**; the example
 above is from a dev machine with none of the rig hardware attached, so
-almost everything reads **error** — that's expected there, not a fault.
+almost everything reads **error** or **not found** — that's expected there,
+not a fault. Hover a detail for the full message.
 
 A **connected** probe is not the same as *working*: it means the OS can see
 the device, not that acqApp has successfully opened and driven it.
@@ -173,7 +176,7 @@ automatically on close and restored at the next launch.
 
 ## Quick troubleshooting
 
-- **A device won't connect** — open **Devices** first; it tells you whether
+- **A device won't connect** — open **🧩 Modules** first; it tells you whether
   the OS even sees it before you go looking further.
 - **Nothing to test with, no rig nearby** — toggle **Emulate**, or launch
   with `--mock`.

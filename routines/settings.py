@@ -1,13 +1,18 @@
 """Experiment routines — the protocol. No Qt.
 
-A routine is a list of atomic steps (`KINDS`), one `Step` class whose unused
-fields stay at their defaults. Each `record` step is a one-step Recording.
-One recording per external edge is `[trigger, record]` in a repeat group.
+A routine is a list of steps, one `Step` class whose unused fields stay at
+their defaults. The operator builds `KINDS`: chiefly `fov` (move to a saved
+FOV, show its ROI set, capture, light off, wait), plus Wait, Puff and Trigger.
+`expand()` turns that into the engine's atomic `ENGINE_KINDS`, where each
+`record` step is a one-step Recording. A Trigger right before an FOV step
+waits for its edge after the move, right before the capture.
 
 - A timed step's length is frames OR seconds, never converted: at 106 Hz a
   rounded conversion sheds frames at every boundary.
 - `validate()` refuses a run up front, not at step 7 with an animal on the rig.
-- Pre-redesign composite steps migrate on load (`_migrate_step`).
+- Older protocols load: composite steps migrate (`_migrate_step`), and
+  move/show/record runs fold into FOV steps (`_fold_legacy`). Atomic steps
+  that don't fold still load and run as they are.
 """
 from __future__ import annotations
 
@@ -16,7 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 UNITS = ("frames", "seconds")
-KINDS = ("move", "display", "wait", "record", "puff", "trigger")
+KINDS = ("fov", "wait", "puff", "trigger")              # what the operator adds
+ENGINE_KINDS = ("move", "display", "wait", "record", "puff", "trigger")
 TIMED_KINDS = ("wait", "record")      # run for `length` `unit`
 
 # Files roll at each run boundary (per_repeat) or only when the Group changes
@@ -29,6 +35,8 @@ SAVE_MODES: dict[str, str] = {
 
 # Not a safety limit; catches an obviously wrong entry.
 MAX_SETTLE_S = 120.0
+
+DEFAULT_REPEATS = 5                 # what a new FOV step or repeat group starts at
 
 
 def pattern_label(path: str) -> str:
@@ -43,26 +51,31 @@ def pattern_label(path: str) -> str:
 class Step:
     kind:     str = "wait"
     label:    str = ""
-    comment:  str = ""
-    # move
+    # move, fov
     x_um:     float | None = None      # None leaves the axis alone
     y_um:     float | None = None
     z_um:     float | None = None
     fov:      str = ""                 # display label; "" once hand-edited
     settle_s: float = 0.25             # after arrival
-    # display: "" means STOP displaying
+    # display, fov (its ROI set): "" means STOP displaying / no light
     pattern:  str = ""
-    # wait / record
+    # wait / record; fov: the capture
     length:   float = 100.0
     unit:     str = "frames"
+    # fov: unlit, after the capture
+    wait_s:   float = 0.0
+    # fov: runs in a row. 1 here, so a saved routine keeps what it ran.
+    repeats:  int = 1
 
     def describe(self) -> str:
-        if self.kind == "move":
-            where = (f"FOV {self.fov}" if self.fov else
-                     ", ".join(f"{a}={v:.0f}um" for a, v in
-                               (("x", self.x_um), ("y", self.y_um),
-                                ("z", self.z_um))
-                               if v is not None) or "NA")
+        if self.kind == "fov":
+            where = self.fov or _xyz(self) or "here"
+            body = (f"{where}: capture {self.length:g} {self.unit}"
+                    + (f" with {pattern_label(self.pattern)}" if self.pattern
+                       else "")
+                    + (f", wait {self.wait_s:g} s" if self.wait_s > 0 else ""))
+        elif self.kind == "move":
+            where = f"FOV {self.fov}" if self.fov else _xyz(self) or "NA"
             body = f"move to {where}"
         elif self.kind == "display":
             body = (f"show {pattern_label(self.pattern)}" if self.pattern
@@ -74,6 +87,18 @@ class Step:
         else:
             body = "puff"
         return f"{self.label} ({body})" if self.label else body
+
+    @property
+    def moves(self) -> bool:
+        return self.kind in ("move", "fov") and (
+            self.x_um is not None or self.y_um is not None
+            or self.z_um is not None)
+
+
+def _xyz(s: Step) -> str:
+    return ", ".join(f"{a}={v:.0f}um" for a, v in
+                     (("x", s.x_um), ("y", s.y_um), ("z", s.z_um))
+                     if v is not None)
 
 
 @dataclass
@@ -89,6 +114,14 @@ class Recording:
     """Derived from a `record` step, never stored."""
     start: int = 0
     end:   int = 0
+
+
+def own_repeats(routine: "Routine", i: int) -> int:
+    """Step `i`'s own run count: an FOV step's, unless a group repeats it."""
+    s = routine.steps[i]
+    if s.kind != "fov" or any(g.start <= i <= g.end for g in routine.groups):
+        return 1
+    return max(1, s.repeats)
 
 
 def play_order(routine: "Routine") -> list[int]:
@@ -107,7 +140,7 @@ def play_order(routine: "Routine") -> list[int]:
             i = g.end + 1
             gi += 1
         else:
-            order.append(i)
+            order.extend([i] * own_repeats(routine, i))
             i += 1
     return order
 
@@ -186,6 +219,10 @@ class Routine:
     # Hold at a .dcimg roll (camera stopped ~0.9 s) and restart the step's
     # clock, or a seconds Wait counts down against a stopped camera.
     wait_for_camera: bool = True
+    # What a new FOV step starts with (it keeps its own copy).
+    capture_length: float = 5.0
+    capture_unit:   str = "seconds"
+    wait_s:         float = 0.0
 
     @property
     def recordings(self) -> list[Recording]:
@@ -201,6 +238,8 @@ class Routine:
         return {"name": self.name, "cycles": self.cycles,
                 "save_mode": self.save_mode,
                 "wait_for_camera": self.wait_for_camera,
+                "capture_length": self.capture_length,
+                "capture_unit": self.capture_unit, "wait_s": self.wait_s,
                 "steps": [vars(s).copy() for s in self.steps],
                 "groups": [vars(g).copy() for g in self.groups]}
 
@@ -225,7 +264,7 @@ class Routine:
                     s = _typed(Step(**kw))
                 except TypeError:
                     continue
-                if s.kind not in KINDS:
+                if s.kind not in KINDS and s.kind not in ENGINE_KINDS:
                     continue
                 old_to_new[old_i] = (len(steps), len(steps))
                 steps.append(s)
@@ -241,6 +280,7 @@ class Routine:
         if d.get("recordings"):
             print("[routines] this file has recording brackets, which no "
                   "longer exist — add Record steps where they were")
+        steps, groups = _fold_legacy(steps, groups)
 
         try:
             cycles = max(1, int(d.get("cycles", 1)))
@@ -249,10 +289,124 @@ class Routine:
         mode = d.get("save_mode")
         if mode == "per_step":            # retired name
             mode = "per_repeat"
+        unit = d.get("capture_unit")
         return cls(name=str(d.get("name") or "routine"), steps=steps,
                    groups=groups, cycles=cycles,
                    save_mode=mode if mode in SAVE_MODES else "single",
-                   wait_for_camera=bool(d.get("wait_for_camera", True)))
+                   wait_for_camera=bool(d.get("wait_for_camera", True)),
+                   capture_length=max(0.01, _num(d.get("capture_length"),
+                                                 cls.capture_length)),
+                   capture_unit=unit if unit in UNITS else cls.capture_unit,
+                   wait_s=max(0.0, _num(d.get("wait_s"), cls.wait_s)))
+
+
+def _fold_legacy(steps: list[Step],
+                 groups: list[Group]) -> tuple[list[Step], list[Group]]:
+    """Each Move [, Display] , Record [, stop displaying] [, Wait in seconds]
+    run -> one FOV step, unless a repeat group starts or ends inside it."""
+    edges = {g.start for g in groups} | {g.end + 1 for g in groups}
+    out: list[Step] = []
+    old_to_new: dict[int, tuple[int, int]] = {}
+    i, n = 0, len(steps)
+    while i < n:
+        run = _legacy_run(steps, i)
+        if run and not any(i < e <= i + len(run) - 1 for e in edges):
+            move = steps[i]
+            shown = next((s.pattern for s in run if s.kind == "display"), "")
+            rec = next(s for s in run if s.kind == "record")
+            wait = next((s.length for s in run if s.kind == "wait"), 0.0)
+            out.append(Step(kind="fov", label=move.label or rec.label,
+                            x_um=move.x_um, y_um=move.y_um, z_um=move.z_um,
+                            fov=move.fov, settle_s=move.settle_s,
+                            pattern=shown, length=rec.length, unit=rec.unit,
+                            wait_s=wait))
+            for k in range(i, i + len(run)):
+                old_to_new[k] = (len(out) - 1, len(out) - 1)
+            i += len(run)
+        else:
+            old_to_new[i] = (len(out), len(out))
+            out.append(steps[i])
+            i += 1
+    for g in groups:
+        g.start, g.end = old_to_new[g.start][0], old_to_new[g.end][1]
+    return out, groups
+
+
+def _legacy_run(steps: list[Step], i: int) -> list[Step]:
+    """The steps from `i` that make one FOV step, or []."""
+    if steps[i].kind != "move":
+        return []
+    j = i + 1
+    if j < len(steps) and steps[j].kind == "display" and steps[j].pattern:
+        j += 1
+    if j >= len(steps) or steps[j].kind != "record":
+        return []
+    lit = steps[j - 1].kind == "display"
+    j += 1
+    if (lit and j < len(steps) and steps[j].kind == "display"
+            and not steps[j].pattern):
+        j += 1
+    if (j < len(steps) and steps[j].kind == "wait"
+            and steps[j].unit == "seconds" and not steps[j].label):
+        j += 1
+    return steps[i:j]
+
+
+def expand(routine: Routine) -> tuple[Routine, list[int]]:
+    """The engine's routine (atomic `ENGINE_KINDS` only) and, per engine step,
+    the row of `routine` it came from. An FOV step: move, show its ROI set,
+    capture, light off, wait. A Trigger right before one waits after the
+    move, so the capture still starts on its edge; not across a group's edge."""
+    edges = {g.start for g in routine.groups} | {g.end + 1
+                                                 for g in routine.groups}
+    out: list[Step] = []
+    rows: list[int] = []
+    old_to_new: dict[int, tuple[int, int]] = {}
+    steps = routine.steps
+    held: int | None = None             # a Trigger row waiting for its FOV step
+    for row, s in enumerate(steps):
+        nxt = steps[row + 1] if row + 1 < len(steps) else None
+        if (s.kind == "trigger" and nxt is not None and nxt.kind == "fov"
+                and row + 1 not in edges):
+            held = row
+            continue
+        lo = len(out)
+        if s.kind == "fov":
+            def add(step: Step, owner: int = row) -> None:
+                out.append(step)
+                rows.append(owner)
+            add(Step(kind="move", label=s.label, x_um=s.x_um, y_um=s.y_um,
+                     z_um=s.z_um, fov=s.fov, settle_s=s.settle_s))
+            if s.pattern:
+                add(Step(kind="display", pattern=s.pattern))
+            if held is not None:
+                add(Step(kind="trigger"), held)
+            add(Step(kind="record", label=s.label, length=s.length,
+                     unit=s.unit))
+            if s.pattern:
+                add(Step(kind="display"))
+            if s.wait_s > 0:
+                add(Step(kind="wait", length=s.wait_s, unit="seconds"))
+            if held is not None:
+                old_to_new[held] = (lo, len(out) - 1)
+                held = None
+        else:
+            out.append(Step(**vars(s)))
+            rows.append(row)
+        old_to_new[row] = (lo, len(out) - 1)
+    groups = [Group(start=old_to_new[g.start][0], end=old_to_new[g.end][1],
+                    repeats=g.repeats)
+              for g in routine.groups
+              if g.start in old_to_new and g.end in old_to_new]
+    # An FOV step's whole block, so a Trigger folded into it waits every run.
+    groups += [Group(*old_to_new[row], repeats=own_repeats(routine, row))
+               for row in range(len(steps)) if own_repeats(routine, row) > 1]
+    return Routine(name=routine.name, steps=out, groups=groups,
+                   cycles=routine.cycles, save_mode=routine.save_mode,
+                   wait_for_camera=routine.wait_for_camera,
+                   capture_length=routine.capture_length,
+                   capture_unit=routine.capture_unit,
+                   wait_s=routine.wait_s), rows
 
 
 def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list:
@@ -278,12 +432,14 @@ def _remap_ranges(raw_list, cls, old_to_new: dict[int, tuple[int, int]]) -> list
 def _typed(s: Step) -> Step:
     """A hand-edited file's wrong-typed values back to defaults: the table
     formats them at launch, before `validate` could refuse them."""
-    for f in ("kind", "label", "comment", "fov", "pattern", "unit"):
+    for f in ("kind", "label", "fov", "pattern", "unit"):
         v = getattr(s, f)
         setattr(s, f, v if isinstance(v, str) else "")
     s.x_um, s.y_um, s.z_um = (_opt_num(v) for v in (s.x_um, s.y_um, s.z_um))
     s.settle_s = _num(s.settle_s, Step.settle_s)
     s.length = _num(s.length, Step.length)
+    s.wait_s = _num(s.wait_s, Step.wait_s)
+    s.repeats = max(1, int(_num(s.repeats, Step.repeats)))
     return s
 
 
@@ -370,10 +526,21 @@ def validate(routine: Routine, rig: RigLimits) -> list[str]:
     if not rig.has_frames:
         out.append("no camera is loaded to arm the routine's start on")
 
-    for i, s in enumerate(routine.steps, start=1):
-        at = f"step {i}"
-        if s.kind not in KINDS:
-            out.append(f"{at}: unknown kind {s.kind!r}")
+    for row, s in enumerate(routine.steps, start=1):
+        if s.kind not in KINDS and s.kind not in ENGINE_KINDS:
+            out.append(f"step {row}: unknown kind {s.kind!r}")
+        elif s.kind == "fov":
+            if not s.moves:
+                out.append(f"step {row}: FOV step has no position")
+            if s.wait_s < 0:
+                out.append(f"step {row}: wait = {s.wait_s:g} s; must not be "
+                           f"negative")
+
+    # The steps that will run, each problem under the row the operator sees.
+    engine, rows = expand(Routine(steps=routine.steps))
+    for i, s in enumerate(engine.steps):
+        at = f"step {rows[i] + 1}"
+        if s.kind not in ENGINE_KINDS:
             continue
         if s.kind == "move":
             if s.x_um is not None or s.y_um is not None or s.z_um is not None:

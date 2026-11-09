@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
 
 from acqApp import config
 from acqApp.acq.devices import ExposureControl
-from acqApp.adapters.base import (PLOT_HISTORY, DragRectViewBox, ModuleAdapter,
-                                  _image_view, _plot, led_controller)
+from acqApp.adapters.base import (DragRectViewBox, ModuleAdapter, _image_view,
+                                  led_controller)
 from acqApp.devices.pupil_cam.acquisition import (MockPupilCameraWorker,
                                           PupilCameraWorker)
 from acqApp.devices.pupil_cam.control import LedController, MockLedController
@@ -39,12 +39,12 @@ class PupilCamModule(ModuleAdapter):
     _AUTO_CLOSE_WAIT_MS = 5000
     key = "pupil_cam"
     tab_label = "Pupil cam"
-    plot_label = "Pupil"
+    own_dock = True
     image_format = "avi"        # recorded as Pupil review reads it
 
     def __init__(self, win) -> None:
         super().__init__(win)
-        # None until build_views; _on_settings can fire before then.
+        # None until view_widget; _on_settings can fire before then.
         self._limit_curve = None
         self._limit_ghost = None        # rubber band while dragging
         self._vb = None
@@ -82,10 +82,7 @@ class PupilCamModule(ModuleAdapter):
         self._mask_rgba = None
         self._btn_pin = None
         self._btn_lock = None
-        self._curve = None
-        self._trace: list[tuple[float, bool]] = []  # (radius, is_blink)
-        self._blink_regions: list = []  # pooled LinearRegionItems
-        self._plot_widget = None
+        self._tracked: tuple[float, bool] | None = None  # newest (radius, is_blink)
         self._last_frame = None
         self._said: str | None = None   # last tracker complaint, said once
 
@@ -256,11 +253,6 @@ class PupilCamModule(ModuleAdapter):
         if self.panel is not None:
             self.panel.set_auto_busy(False)
 
-    def build_plot(self) -> QWidget:
-        pw, self._curve = _plot("Pupil radius", "Radius", "px", "Frame", self.key)
-        self._plot_widget = pw
-        return pw
-
     def _on_settings(self, s) -> None:
         config.save_settings(self.key, asdict(s))
         prev_limit = None if self._settings is None else self._settings.search_limit()
@@ -281,7 +273,7 @@ class PupilCamModule(ModuleAdapter):
         if self._track is not None:
             self._track.configure(s)
 
-    def build_views(self) -> None:
+    def view_widget(self) -> QWidget:
         self._img, hist, chk_auto, gv, vb, row, self._rec_dot = _image_view(
             DragRectViewBox)
         self._hist = hist
@@ -295,8 +287,6 @@ class PupilCamModule(ModuleAdapter):
         if s is not None:
             hist.setVisible(s.show_lut)
             self._chk_auto_lut.setChecked(s.auto_levels)
-        self.win.register_pg_view(hist)
-        self.win.register_pg_view(gv)
 
         self._limit_curve = pg.PlotCurveItem(
             pen=pg.mkPen("#00e5ff", width=2, style=Qt.PenStyle.DashLine))
@@ -331,8 +321,7 @@ class PupilCamModule(ModuleAdapter):
         self._view_stack.addWidget(host)
         if self._review is not None:        # views rebuilt: keep the review
             self._view_stack.addWidget(self._review.view_widget)
-        self.win.add_dock("Pupil cam", self._view_stack,
-                          Qt.DockWidgetArea.RightDockWidgetArea, accent=self.key)
+        return self._view_stack
 
     def _on_click(self, ev) -> None:
         """Place a pin or an Auto seed (the region uses a drag)."""
@@ -554,12 +543,9 @@ class PupilCamModule(ModuleAdapter):
             panel = self.panel
             cam.hz_update.connect(lambda _n, hz: panel.set_measured_rate(hz))
         # Fresh per session: EyeLoop searches from the previous centre.
-        self._track = PupilTrackWorker(lambda: self._pull_frame(cam), s,
-                                       history=PLOT_HISTORY)
+        self._track = PupilTrackWorker(lambda: self._pull_frame(cam), s)
         self._track.error.connect(self.win.on_worker_error)
-        self._trace.clear()
-        for reg in self._blink_regions:
-            reg.setVisible(False)
+        self._tracked = None
         self._said = None
         self._reset_levels()
 
@@ -609,9 +595,9 @@ class PupilCamModule(ModuleAdapter):
     def _mini_text(self) -> tuple[str, str]:
         if self.worker is None:
             return "idle", ""
-        if not self._trace:
+        if self._tracked is None:
             return "● live", ""
-        radius, blink = self._trace[-1]
+        radius, blink = self._tracked
         return ("blink" if blink else f"r {radius:.1f} px"), "● live · pupil"
 
     # ── display ──
@@ -630,11 +616,8 @@ class PupilCamModule(ModuleAdapter):
                                  if self._settings is not None
                                  and self._settings.track else None)
         tracked = self._track.take_tracked()
-        if tracked and self._curve is not None:
-            self._trace.extend(tracked)
-            del self._trace[:-PLOT_HISTORY]
-            self._curve.setData([radius for radius, _blink in self._trace])
-            self._update_blink_overlay()
+        if tracked:
+            self._tracked = tracked[-1]
 
         tr = self._track.get_latest()
         if tr is None:
@@ -662,28 +645,6 @@ class PupilCamModule(ModuleAdapter):
                 x0, y0, x1, y1 = box
                 return frame[y0:y1, x0:x1], QRectF(x0, y0, x1 - x0, y1 - y0)
         return frame, QRectF(0, 0, w, h)
-
-    def _update_blink_overlay(self) -> None:
-        """Shade each run of blink frames. Rebuilt every tick: the trace
-        scrolls. Region items are pooled, not recreated."""
-        flags = np.fromiter((b for _r, b in self._trace), bool, len(self._trace))
-        edges = np.diff(np.concatenate(([False], flags, [False])).astype(np.int8))
-        starts = np.flatnonzero(edges == 1)
-        ends = np.flatnonzero(edges == -1)
-        runs = [(s - 0.5, e - 0.5) for s, e in zip(starts, ends)]
-        while len(self._blink_regions) < len(runs):
-            reg = pg.LinearRegionItem(movable=False,
-                                      brush=pg.mkBrush(220, 40, 40, 60),
-                                      pen=pg.mkPen(None))
-            reg.setZValue(-10)
-            if self._plot_widget is not None:
-                self._plot_widget.addItem(reg)
-            self._blink_regions.append(reg)
-        for reg, span in zip(self._blink_regions, runs):
-            reg.setRegion(span)
-            reg.setVisible(True)
-        for reg in self._blink_regions[len(runs):]:
-            reg.setVisible(False)
 
     def last_frame(self):
         return self._last_frame

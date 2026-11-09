@@ -72,7 +72,7 @@ def cmd_mark(args) -> int:
               f"(pass --overwrite to start again)")
 
     app = QApplication([])          # assign it: an unreferenced one is GC'd
-    apply_theme(app, "dark")
+    apply_theme(app)
 
     win = QWidget()
     win.setWindowTitle("Mark the pupil edge")

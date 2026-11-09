@@ -78,7 +78,7 @@ def main() -> int:
     from acqApp.style import apply_theme
 
     app = QApplication([])          # assign it: an unreferenced one is GC'd
-    apply_theme(app, "dark")
+    apply_theme(app)
     ed = RoiEditor(calib)
     ed.set_image(frame)
     ed.resize(1100, 800)

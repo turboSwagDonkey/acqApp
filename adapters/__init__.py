@@ -10,9 +10,8 @@ here against it.
 
 Lifecycle, in call order:
 
-    build_panel()      once -> settings tab (or None)
-    build_plot()       once -> Signals tab (or None)
-    build_views()      once -> central image / extra docks
+    build_panel()      once -> its settings (or None)
+    view_widget()      once -> its live view (or None), in its dock if own_dock
     build_controller() at startup and whenever Emulate is toggled
     build_session()    per session: create the worker, but DO NOT start it
     start()            per session: only after the shared clock reached t=0

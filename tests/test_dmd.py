@@ -189,8 +189,7 @@ def _part_dmd() -> int:
     Image.fromarray(src, mode="L").save(pat)
 
     FakeALP4.instances.clear()
-    s = DmdSettings(pattern_path=pat, on_time_ms=250.0, static_hold=False,
-                    n_repeats=0, scale_pct=100.0)
+    s = DmdSettings(pattern_path=pat, scale_pct=100.0)
     c = DmdController(s)
     dev = FakeALP4.instances[0]
     r.check(dev.names() == ["Initialize"], f"opening initialises the ALP and "
@@ -217,10 +216,12 @@ def _part_dmd() -> int:
     r.check(dev.last("SeqControl")[1:] == (2104, 2106),
             f"binary uninterrupted mode is set, so a held pattern does not "
             f"blank between pictures (got {dev.last('SeqControl')[1:]})")
-    r.check(dev.last("SetTiming")[1] == 250_000,
-            f"on-time reaches the device in microseconds "
-            f"(got {dev.last('SetTiming')[1]})")
-    r.check(dev.last("Run")[1] is True, "0 repeats means loop")
+    r.check(dev.last("SetTiming")[1] is None and dev.last("Run")[1] is True,
+            f"a pattern is held: device-default timing, looping "
+            f"(got illumination={dev.last('SetTiming')[1]}, "
+            f"loop={dev.last('Run')[1]})")
+    r.check(not any(c[0] == "SeqControl" and c[1] == 2100 for c in dev.calls),
+            "…with no repeat count sent")
     r.check(events == [FRAME_START],
             f"display logs one event to /dmd (got {events})")
 
@@ -232,32 +233,6 @@ def _part_dmd() -> int:
     events.clear()
     c.stop()
     r.check(events == [], "a second stop is a no-op, not a second event")
-
-    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=True))
-    c.display()
-    r.check(dev.last("SetTiming")[1] is None and dev.last("Run")[1] is True,
-            f"static hold leaves the timing at the device default and loops "
-            f"(got illumination={dev.last('SetTiming')[1]}, "
-            f"loop={dev.last('Run')[1]})")
-    c.stop()
-
-    # The cycling path below: the panel never offers it, and the dataclass
-    # default follows the panel, so static_hold=False is explicit.
-    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
-                                 on_time_ms=20.0, n_repeats=3))
-    c.display()
-    r.check(dev.last("Run")[1] is False, "a repeat count stops looping")
-    r.check(("SeqControl", 2100, 3) in dev.calls,
-            f"…and is sent as ALP_SEQ_REPEAT (calls {dev.calls[-4:]})")
-    c.stop()
-
-    c.apply_settings(DmdSettings(pattern_path=pat, static_hold=False,
-                                 on_time_ms=30_000.0))
-    c.display()
-    r.check(dev.last("SetTiming")[1] == alp.MAX_PICTURE_US,
-            f"an on-time past the ALP's limit is clamped, not passed through "
-            f"(got {dev.last('SetTiming')[1]})")
-    c.stop()
 
     # Unrebuilt, Display would project the old alignment under the new panel.
     c.apply_settings(DmdSettings(pattern_path=pat, scale_pct=50.0))
@@ -281,7 +256,7 @@ def _part_dmd() -> int:
     c.close()
 
     # ══ the mock agrees about the /dmd stream ═════════════════════════════════
-    m = MockDmdController(DmdSettings(pattern_path=pat, static_hold=True))
+    m = MockDmdController(DmdSettings(pattern_path=pat))
     m.load_pattern(pat)
     mev: list[int] = []
     m.set_sink(mev.append)
@@ -493,10 +468,10 @@ def check_light_switch(r) -> None:
     lit = lambda: bool(dmd.controller._running)             # noqa: E731
     msg = lambda: win.statusBar().currentMessage()          # noqa: E731
 
-    card = win._page_actions["dmd"].card
+    card = win._folds["dmd"].card
     r.check(btn is not None and card.isAncestorOf(btn)
             and "dmd" not in win._status_widgets,
-            "the DMD's switch sits on its sidebar card, not the status bar")
+            "the DMD's switch sits on its card, not the status bar")
     clipped = []
     keep = btn.text()
     for text in ("DMD OFF", "● DMD ON"):
@@ -606,9 +581,8 @@ def check_light_switch(r) -> None:
         r.check(not btn.isChecked() and not lit() and "ALP gone" in msg()
                 and "forced off" in msg(),
                 f"a failing Display from the switch ends dark and says so ({msg()!r})")
-        panel.display_requested.emit()
         dmd.on_trigger(dmd.key, 0.0)
-        r.check(not lit(), "…as do the tab's Display and a trigger")
+        r.check(not lit(), "…as does a trigger")
         try:
             dmd.display()
             raised = False
@@ -625,7 +599,7 @@ def check_light_switch(r) -> None:
         r.check(False, f"fixture: module unload refused ({e})")
     else:
         pump(app, 0.05)
-        r.check("dmd" not in win._cards,
+        r.check("dmd" not in win._folds and "dmd" not in win._docks,
                 "unloading the DMD module removes its card and switch")
     shutil.rmtree(tmp, ignore_errors=True)
     win.close()
@@ -2720,7 +2694,7 @@ def check_roi_store_corrupt(r) -> None:
     real_text, real_save = RP.QInputDialog.getText, RP.roi_store.save
     RP.QInputDialog.getText = staticmethod(lambda *a, **k: ("set", True))
 
-    def bad_save(*_a):
+    def bad_save(*_a, **_k):
         raise PermissionError("read-only")
     RP.roi_store.save = bad_save
     try:
@@ -2869,6 +2843,9 @@ def _part_pair() -> int:
                 "…and Routines draws their thumbnail")
 
     # ── the whole flow, from the Stage tab's button ─────────────────────────
+    from types import SimpleNamespace
+
+    from PyQt6.QtGui import QPixmap
     from PyQt6.QtWidgets import QInputDialog
 
     from acqApp.devices.stage import fov_store
@@ -2876,9 +2853,10 @@ def _part_pair() -> int:
 
     isolate_user_state()
     sys.argv = ["main.py", "--mock"]
-    win = make_window({"voltage_cam", "dmd", "stage"})
+    win = make_window({"voltage_cam", "dmd", "stage", "routines"})
     dmd = next(m for m in win._modules if m.key == "dmd")
     stage = next(m for m in win._modules if m.key == "stage")
+    routines = next(m for m in win._modules if m.key == "routines")
     win._btn_run.setChecked(True)
     pump_until(app, lambda: win.latest_frame("voltage_cam") is not None)
 
@@ -2886,6 +2864,7 @@ def _part_pair() -> int:
 
     def fake_exec(self):
         seen.append(self.windowTitle())
+        seen.append(self._ed._btn_save.isHidden())
         self._ed._add(RectRoi(x=100, y=80, w=40, h=20))
         self._ed.set_tool("free")
         self._ed._on_free([(150, 20), (200, 25), (210, 70), (160, 60), (150, 20)])
@@ -2902,11 +2881,62 @@ def _part_pair() -> int:
     fovs = fov_store.list_session()
     r.check([f.name for f in fovs] == ["cellA_fov"],
             f"the FOV is saved as <name>_fov ({[f.name for f in fovs]})")
-    r.check(seen == ["DMD ROIs for cellA_roi"],
-            f"…and the ROI prompt follows at once ({seen})")
+    r.check(seen == ["DMD ROIs for cellA_roi", True],
+            f"…and the ROI prompt follows at once, with no second name "
+            f"prompt (the editor's own Save… hidden) ({seen})")
     roi = pairs.roi_for_fov(fovs[0]) if fovs else None
     r.check(roi is not None and roi_store.load_named(roi)[0] == "cellA_roi",
             f"…saved as <name>_roi, found from the FOV ({roi})")
+    png = roi_store.image_for(roi) if roi is not None else None
+    r.check(png is not None and png.is_file()
+            and not QPixmap(str(png)).isNull(),
+            f"…with its snapshot + shapes image beside it ({png})")
+
+    steps = routines.panel.settings.steps
+    step = steps[-1] if steps else None
+    general = routines.panel.settings
+    r.check(len(steps) == 1 and step.kind == "fov" and step.fov == "cellA_fov"
+            and step.pattern == str(roi) and step.x_um == fovs[0].x_um
+            and (step.length, step.unit, step.wait_s)
+            == (general.capture_length, general.capture_unit, general.wait_s),
+            f"…and the pair is already a routine step, on the general "
+            f"capture/wait ({steps})")
+
+    routines._engine = SimpleNamespace(running=True)
+    routines.add_fov_step(fovs[0].path, roi)
+    routines._engine = None
+    r.check(len(routines.panel.settings.steps) == 1,
+            "control: a running routine's locked protocol takes no new step")
+    PairRoiDialog.exec = lambda self: 0
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("cellB", True))
+    try:
+        stage.save_fov()
+    finally:
+        PairRoiDialog.exec, QInputDialog.getText = real_exec, real_text
+    r.check(len(routines.panel.settings.steps) == 1,
+            "control: an FOV whose ROI drawing was cancelled adds no step")
+
+    # Right-click on the map square -> the viewer shows that image.
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QLabel, QMenu
+    real_menu_exec = QMenu.exec
+    QMenu.exec = lambda self, *a: self.actions()[-1].trigger()
+    shown: list = []
+    real_preview = stage.preview_fov
+    stage.panel.fov_preview_requested.disconnect()
+    stage.panel.fov_preview_requested.connect(
+        lambda f: shown.append(real_preview(f)))
+    try:
+        stage.panel._on_fov_menu(0, stage.panel.mapToGlobal(QPoint(0, 0)))
+    finally:
+        QMenu.exec = real_menu_exec
+    dlg = shown[0] if shown else None
+    r.check(dlg is not None and dlg.has_image
+            and "as drawn on the snapshot" in " ".join(
+                lb.text() for lb in dlg.findChildren(QLabel)),
+            "right-click on the FOV opens its snapshot + ROIs")
+    if dlg is not None:
+        dlg.close()
     r.check(dmd.panel.mode == "roi" and len(dmd.panel.settings.rois) == 2,
             "the DMD tab adopts the saved set")
     adopted = RoiSet.from_list(list(dmd.panel.settings.rois))
@@ -2959,7 +2989,7 @@ def check_pair_faults(r: Report) -> None:
 
     real_save = PD.roi_store.save
 
-    def bad_save(*_a):
+    def bad_save(*_a, **_k):
         raise PermissionError("read-only")
     PD.roi_store.save = bad_save
     try:

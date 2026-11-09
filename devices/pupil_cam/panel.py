@@ -94,7 +94,7 @@ class SettingsPanel(QWidget):
         self._exp.setToolTip("From the camera's shortest to the longest the "
                              "Rate allows.")
         self._exp.valueChanged.connect(self.exposure_changed)
-        self._exp.setMinimumWidth(220)
+        self._exp.setMinimumWidth(140)
         self._lbl_rate = QLabel()
         self._lbl_rate.setToolTip("The frame rate you get: measured once the "
                                   "camera runs. Orange means the exposure is "
@@ -129,11 +129,11 @@ class SettingsPanel(QWidget):
         self._chk_video.toggled.connect(self._on_video_toggled)
 
         cl.addRow(pairs_grid(
-            ("Rate:", self._spn_hz, "Exposure:", self._exp,
-             None, self._lbl_rate),
-            (None, self._chk_lut, None, self._chk_auto,
-             None, self._chk_dark),
-            (None, self._chk_video, None, self._lbl_vid)))
+            (None, self._chk_lut, None, self._chk_auto),
+            (None, self._chk_dark),
+            (None, self._chk_video, None, self._lbl_vid),
+            ("Rate:", self._spn_hz, None, self._lbl_rate),
+            ("Exposure:", self._exp), gap=12))
         self._lbl_dark = QLabel()
         self._lbl_dark.setWordWrap(True)
         self._lbl_dark.setStyleSheet("color:#c47f00; font-weight:bold;")
@@ -166,8 +166,8 @@ class SettingsPanel(QWidget):
             lambda pct: self.led_intensity_changed.emit(pct / 100.0))
         self._spn_intensity.valueChanged.connect(self._emit)
         ll.addLayout(pairs_grid(
-            (None, hrow(self._chk_led), None, self._chk_led_follow,
-             "Intensity:", self._spn_intensity)))
+            (None, hrow(self._chk_led), None, self._chk_led_follow),
+            ("Intensity:", self._spn_intensity), gap=12))
 
         root.addWidget(self.tracking)
         root.addWidget(led)

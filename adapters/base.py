@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (QCheckBox, QGraphicsItem, QHBoxLayout, QLabel,
+from PyQt6.QtWidgets import (QCheckBox, QGridLayout, QHBoxLayout, QLabel,
                              QVBoxLayout, QWidget)
 
 from acqApp import config, style
@@ -17,27 +17,11 @@ from acqApp.acq.devices import (DeviceWorker, LedTarget, ModuleHost,
                                 RecordingOutput, SignalSource, StageTarget)
 
 
-PLOT_HISTORY = 600          # samples kept in each rolling plot
 DISP_DS      = 4            # preview downsample stride
 LEVELS_EVERY = 15           # recompute camera contrast levels every N ticks
 
 
 # ── shared widget builders ────────────────────────────────────────────────────
-
-def _plot(title: str, left: str, units: str, bottom: str, key: str):
-    """-> (widget, curve), in the module's accent colour."""
-    pw = pg.PlotWidget(title=title)
-    pw.setLabel("left", left, units=units)
-    pw.setLabel("bottom", bottom)
-    pw.showGrid(x=True, y=True, alpha=0.3)
-    # The grid is drawn by the axes, so every curve update replayed it: a
-    # pixmap cache took a 600-pt trace from 17 to 8 ms a repaint.
-    for side in ("left", "bottom"):
-        pw.getPlotItem().getAxis(side).setCacheMode(
-            QGraphicsItem.CacheMode.DeviceCoordinateCache)
-    curve = pw.plot(pen=pg.mkPen(style.HEX[key], width=1.5))
-    return pw, curve
-
 
 class DragRectViewBox(pg.ViewBox):
     """A left-drag draws a rectangle while armed; otherwise a plain ViewBox."""
@@ -98,6 +82,13 @@ def _image_view(vb_cls: type[pg.ViewBox] = pg.ViewBox):
     vb.addItem(img)
     rec_dot = RecDot(gv)
 
+    hint = QLabel("Press Live view")
+    hint.setObjectName("idleHint")
+    hint.setStyleSheet(f"color:{style.muted()};font-size:12pt;background:transparent")
+    hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    QGridLayout(gv).addWidget(hint, 0, 0, Qt.AlignmentFlag.AlignCenter)
+    img.sigImageChanged.connect(hint.hide)
+
     chk_auto = QCheckBox("Auto")
     chk_auto.setToolTip("Auto contrast — same control as the settings tab's.")
 
@@ -142,8 +133,8 @@ class ModuleAdapter:
 
     key: str = ""               # a config.MODULES key
     tab_label: str = ""
-    plot_label: str = ""        # empty = no Signals tab
-    central_title: str = ""
+    # Its own dock (settings folded over its view), else a General section.
+    own_dock: bool = False
     image_format: str = ""      # its image stream's file: "avi", or "" = TIFF
 
     def __init__(self, win: ModuleHost) -> None:
@@ -160,13 +151,7 @@ class ModuleAdapter:
         self._rec_dot: QLabel | None = None
 
     # ── construction (once, at startup) ───────────────────────────────────────
-    # Its panel's window opens at this size; None = fitted to the panel.
-    window_size: tuple[int, int] | None = None
-
     def build_panel(self) -> QWidget | None:
-        return None
-
-    def build_plot(self) -> QWidget | None:
         return None
 
     def status_widget(self) -> QWidget | None:
@@ -181,10 +166,9 @@ class ModuleAdapter:
         a title-only card, or no card for a module without a page."""
         return None
 
-    def build_views(self) -> None:
-        """Any further UI, after the panels."""
-
-    def central_widget(self) -> QWidget | None:
+    def view_widget(self) -> QWidget | None:
+        """Its live view, under its settings in its own dock; built once,
+        after the panel."""
         return None
 
     # ── persistent output controllers (rebuilt when Emulate is toggled) ───────

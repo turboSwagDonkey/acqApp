@@ -15,9 +15,6 @@ from typing import Any
 
 import numpy as np
 
-# Vendor cap between pictures (AlpSeqTiming); clamped here, not truncated.
-MAX_PICTURE_US = 10_000_000
-
 _ON, _OFF = np.uint8(255), np.uint8(0)
 
 _SIBLING_API = Path("ALP-4.2") / "ALP-4.2 high-speed API"
@@ -138,11 +135,10 @@ class AlpDevice:
         self.width, self.height = int(dev.nSizeX), int(dev.nSizeY)
         return self.width, self.height
 
-    def project(self, frame: np.ndarray, *, illumination_us: int | None = None,
-                loop: bool = True, repeats: int = 0) -> None:
-        """Upload one frame and display it. None timing = device default (a
-        held pattern); `repeats` > 0 shows it that many times."""
-        from ALP4 import ALP_BIN_MODE, ALP_BIN_UNINTERRUPTED, ALP_SEQ_REPEAT
+    def project(self, frame: np.ndarray) -> None:
+        """Upload one frame and hold it, at the device's default timing, until
+        `halt()`."""
+        from ALP4 import ALP_BIN_MODE, ALP_BIN_UNINTERRUPTED
         if self._dev is None:
             raise RuntimeError("ALP not open")
         if frame.shape != (self.height, self.width):
@@ -155,13 +151,8 @@ class AlpDevice:
         self._seq = True
         dev.SeqPut(imgData=np.ascontiguousarray(frame, dtype=np.uint8))
         dev.SeqControl(ALP_BIN_MODE, ALP_BIN_UNINTERRUPTED)
-        if illumination_us is None:
-            dev.SetTiming()
-        else:
-            dev.SetTiming(illuminationTime=int(illumination_us))
-        if repeats > 0:
-            dev.SeqControl(ALP_SEQ_REPEAT, int(repeats))
-        dev.Run(loop=loop)
+        dev.SetTiming()
+        dev.Run(loop=True)
 
     def halt(self) -> None:
         """Safe at any time. Steps guarded separately: an unplugged device

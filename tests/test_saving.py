@@ -531,10 +531,10 @@ def check_scan_idle_while_recording(r: Report, tmp: Path) -> None:
     r.check(panel._btn_scan.isEnabled(), "...and back when it stops")
 
     panel.set_active_fov("FOV3")
+    shown = panel._lbl_preview.text().replace("​", "")   # wrap points
     r.check(panel.resolve_dir().name.endswith("_FOV3")
-            and panel._lbl_preview.text().endswith("_FOV3"),
-            f"at a saved FOV the next file ends in its name "
-            f"({panel._lbl_preview.text()})")
+            and shown.endswith("_FOV3"),
+            f"at a saved FOV the next file ends in its name ({shown})")
     panel.set_active_fov("")
     r.check(not panel.resolve_dir().name.endswith("_FOV3"),
             "…and off it, it doesn't")
