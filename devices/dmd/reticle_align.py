@@ -5,8 +5,8 @@ optionally bends a checkerboard onto a grid where one matrix can't follow the
 optics.
 
 Needs no fine pattern and no fit, so it survives the scattering that sank the
-coarse-stripe decode (REFERENCE §5b). The light is on while this is open; the
-caller ends dark.
+coarse-stripe decode (REFERENCE §5b). It opens dark; the light is on only
+while Light on is pressed, and the caller ends dark.
 """
 from __future__ import annotations
 
@@ -104,11 +104,16 @@ class ReticleAlignDialog(QDialog):
     def __init__(self, project: Callable[[np.ndarray], None],
                  dmd_size: tuple[int, int], frame: np.ndarray, *,
                  live_source: Callable[[], object] | None = None,
-                 seed: DmdCalibration | None = None, parent=None):
-        """`project` takes a device-sized frame; `seed` (same camera size)
-        is where the guess starts, else a centred rectangle."""
+                 seed: DmdCalibration | None = None,
+                 stop: Callable[[], None] | None = None, parent=None):
+        """`project` takes a device-sized frame; `stop` darkens the DMD.
+        Opens dark: nothing is projected until Light on. `seed` (same camera
+        size) is where the guess starts, else a centred rectangle."""
         super().__init__(parent)
         self._project = project
+        self._stop = stop or (lambda: None)
+        self._lit = False
+        self._bend_src: Warp | None = None     # the bend Box/Board resample from
         self._dmd_size = tuple(dmd_size)
         f = np.asarray(frame)
         self._cam_size = (f.shape[1], f.shape[0])
@@ -160,12 +165,19 @@ class ReticleAlignDialog(QDialog):
         root.addWidget(self._view, 1)
 
         side = QVBoxLayout()
-        head = QLabel("<b>The DMD is lit while this is open.</b> Do it before "
-                      "the animal is on the rig. Work steps 1–3 in order and "
-                      "go round again to tidy up; bend last, only if the "
-                      "board's edges still miss.")
+        head = QLabel("<b>Light on projects onto the sample.</b> Do this "
+                      "before the animal is on the rig. Work steps 1–3 in "
+                      "order and go round again to tidy up; bend last, only "
+                      "if the board's edges still miss.")
         head.setWordWrap(True)
         side.addWidget(head)
+        self._btn_light = QPushButton("Light on")
+        self._btn_light.setCheckable(True)
+        self._btn_light.setStyleSheet(style.toggle_btn("dmd"))
+        self._btn_light.setToolTip("THIS PROJECTS LIGHT: shows the reticle "
+                                   "shape on the DMD and follows every change.")
+        self._btn_light.toggled.connect(self.set_lit)
+        side.addWidget(self._btn_light)
 
         self._steps = QButtonGroup(self)
         names = {"centre": "1  Centre", "angle": "2  Angle", "size": "3  Size",
@@ -209,7 +221,7 @@ class ReticleAlignDialog(QDialog):
             s.valueChanged.connect(self._changed)
         self._chk_mirror.toggled.connect(self._changed)
         for s in (self._spn_box, self._spn_cols):
-            s.valueChanged.connect(lambda *_a: self._set_warp(self._warp))
+            s.valueChanged.connect(lambda *_a: self._set_warp(self._bend_src))
 
         self._lbl_help = QLabel()
         self._lbl_help.setWordWrap(True)
@@ -318,10 +330,26 @@ class ReticleAlignDialog(QDialog):
         self._schedule()
 
     def _schedule(self) -> None:
-        if not self._push.isActive():   # a restart would starve a held key or drag
+        if self._lit and not self._push.isActive():   # a restart would starve a held key or drag
             self._push.start()
 
+    def set_lit(self, on: bool) -> None:
+        """Light on projects the current shape and follows edits; off stops."""
+        self._lit = bool(on)
+        with QSignalBlocker(self._btn_light):
+            self._btn_light.setChecked(self._lit)
+        if self._lit:
+            self._send()
+            return
+        self._push.stop()
+        try:
+            self._stop()
+        except Exception as e:   # noqa: BLE001 — escaping a slot aborts the app
+            self._lbl_status.setText(f"Could not turn the light off: {e}")
+
     def _send(self) -> None:
+        if not self._lit:
+            return
         try:
             if self.kind == "bend":
                 frame = checker_frame(self._calibration(), self._warp.xs,
@@ -355,7 +383,9 @@ class ReticleAlignDialog(QDialog):
 
     def _set_warp(self, warp: Warp | None) -> None:
         """Board nodes on the current lattice, carrying `warp`'s bend
-        (None: flat)."""
+        (None: flat). `warp` stays the source, so Box/Board changes resample
+        the original bend, not a copy of a copy."""
+        self._bend_src = warp
         xs, ys = checker_lattice(self._cam_size, int(self._spn_cols.value()),
                                  box_frac=self._spn_box.value() / 100.0)
         self._warp = (Warp.flat(xs, ys) if warp is None
@@ -379,7 +409,7 @@ class ReticleAlignDialog(QDialog):
         pos = self._nodes[k].pos()
         w = self._warp
         x, y = w.xs[k % len(w.xs)], w.ys[k // len(w.xs)]
-        self._warp = w.moved(k, pos.x() - x, pos.y() - y)
+        self._warp = self._bend_src = w.moved(k, pos.x() - x, pos.y() - y)
         self._pick(k)
         self._draw_bend()
         self._schedule()

@@ -870,7 +870,7 @@ def check_wiring(r: Report) -> None:
         exec'd, so a wiring that builds it and forgets to show it fails."""
 
         def __init__(self, project, dmd_size, frame, *, live_source=None,
-                     seed=None, parent=None):
+                     seed=None, stop=None, parent=None):
             seen["dialog"] += 1
             seen["live_during"] = win._btn_run.isChecked()
             seen["cam_size"] = (frame.shape[1], frame.shape[0])
@@ -968,11 +968,26 @@ def check_reticle(r: Report) -> None:
             "the L tells a mirror from a rotation")
 
     projected: list = []
+    stops: list = []
     frame = np.zeros((300, 400), np.uint16)
-    dlg = RA.ReticleAlignDialog(projected.append, dmd, frame)
+    dlg = RA.ReticleAlignDialog(projected.append, dmd, frame,
+                                stop=lambda: stops.append(1))
     dlg._send()
+    dlg.nudge(RA.Qt.Key.Key_Right)
+    dlg._send()
+    r.check(projected == [] and not dlg._btn_light.isChecked(),
+            "the dialog opens dark: no frame is projected, even after an edit, "
+            "until Light on")
+    dlg._btn_light.setChecked(True)
     r.check(len(projected) == 1 and projected[0].shape == (48, 64)
-            and projected[0].any(), "the dialog projects a device-sized frame")
+            and projected[0].any(),
+            "Light on projects a device-sized frame at once")
+    dlg._btn_light.setChecked(False)
+    dlg._send()
+    r.check(stops == [1] and len(projected) == 1,
+            "Light off darkens the DMD and edits stop projecting")
+    dlg.set_lit(True)
+    projected.clear()
     cx = dlg.pose().cx
     dlg.nudge(RA.Qt.Key.Key_Right, 10)
     r.check(abs(dlg.pose().cx - cx - 10) < 1e-6, "Shift+→ moves the centre 10 mirrors")
@@ -1057,21 +1072,40 @@ def check_reticle_seed(r: Report) -> None:
         win=types.SimpleNamespace(status=lambda _m: None))
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_calsave_"))
     (tmp / "a_file").write_text("x")
-    real_ask, real_warn = QFileDialog.getSaveFileName, QMessageBox.warning
-    QFileDialog.getSaveFileName = staticmethod(
-        lambda *a, **k: (str(tmp / "a_file" / "calib.json"), ""))
+    bad, good = str(tmp / "a_file" / "calib.json"), str(tmp / "calib.json")
+    yes, no = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
+    real_ask, real_warn, real_q = (QFileDialog.getSaveFileName,
+                                   QMessageBox.warning, QMessageBox.question)
     QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a[-1]))
+
+    def run(paths: list, answers: list):
+        """Save As returns `paths` in turn; Discard? answers `answers`."""
+        asked = []
+        QFileDialog.getSaveFileName = staticmethod(
+            lambda *a, **k: (paths.pop(0), ""))
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: (asked.append(1), answers.pop(0))[1])
+        try:
+            DmdModule._save_calibration(fake, seed)
+            return True, asked
+        except Exception:                   # noqa: BLE001
+            return False, asked
+
     try:
-        DmdModule._save_calibration(fake, seed)
-        ok = True
-    except Exception:                       # noqa: BLE001
-        ok = False
+        ok, asked = run([bad, ""], [yes])
+        r.check(ok and warned and "Could not save" in warned[0] and not adopted
+                and asked == [1],
+                "an unwritable path is reported, Save As asks again, and only "
+                "a confirmed Discard drops the alignment")
+        ok, asked = run(["", good], [no])
+        r.check(ok and asked == [1] and adopted == [good]
+                and Path(good).is_file(),
+                "cancelling Save As and answering No to Discard goes back to "
+                "Save As, so the alignment is saved, not lost")
     finally:
         QFileDialog.getSaveFileName = real_ask
-        QMessageBox.warning = real_warn
+        QMessageBox.warning, QMessageBox.question = real_warn, real_q
         shutil.rmtree(tmp, ignore_errors=True)
-    r.check(ok and warned and "Could not save" in warned[0] and not adopted,
-            "an unwritable calibration path is reported and not adopted")
 
 
 def check_bend(r: Report) -> None:
@@ -1155,7 +1189,7 @@ def check_bend(r: Report) -> None:
     dlg = RA.ReticleAlignDialog(projected.append, dmd, frame,
                                 seed=pose.to_calibration(dmd, cam))
     dlg._steps.button(3).setChecked(True)
-    dlg._send()
+    dlg.set_lit(True)
     r.check(dlg.kind == "bend" and dlg.warp.is_flat
             and all(n.isVisible() for n in dlg._nodes)
             and not dlg._outline.isVisible()
@@ -1180,6 +1214,14 @@ def check_bend(r: Report) -> None:
     dlg._spn_cols.setValue(cols + 2)
     r.check(len(dlg.warp.xs) == cols + 3 and not dlg.warp.is_flat,
             "a finer board keeps the bend")
+    box = dlg._spn_box.value()
+    for b in (box - 20, box - 10, box):
+        dlg._spn_box.setValue(b)
+    dlg._spn_cols.setValue(cols)
+    r.check(np.allclose(dlg.warp.dx, got.warp.dx)
+            and np.allclose(dlg.warp.dy, got.warp.dy),
+            "Box/Board changes resample the original bend: back on its own "
+            "board, the bend is exactly what was set, not degraded")
     dlg2 = RA.ReticleAlignDialog(projected.append, dmd, frame, seed=got)
     r.check(int(dlg2._spn_cols.value()) == cols
             and np.allclose(dlg2.warp.dx, got.warp.dx)
@@ -2314,6 +2356,7 @@ def check_roi_editor_live(r: Report) -> None:
     app = qt_app()
     import acqApp.devices.dmd.pair_dialog as PD
     from acqApp.devices.dmd.calibration import ReticlePose
+    from acqApp.devices.dmd.control import FRAME_STOP
     from acqApp.devices.voltage_cam.presets import SENSOR_H, SENSOR_W
 
     sys.argv = ["main.py", "--mock"]
@@ -2333,7 +2376,7 @@ def check_roi_editor_live(r: Report) -> None:
     seen: dict = {}
     real_exec = PD.RoiLightDialog.exec
 
-    def drive(dlg, save: bool):
+    def drive(dlg, save: bool, off_at_end: bool = False):
         seen["lit_at_open"] = dlg._btn_light.isChecked()
         ed = dlg._ed
         dlg._btn_light.setChecked(True)
@@ -2342,8 +2385,14 @@ def check_roi_editor_live(r: Report) -> None:
         seen["projected"] = (dmd.controller.projecting and np.array_equal(
             dmd.controller.frame, ed.roi_set.dmd_frame(cal)))
         seen["n"] = len(ed.roi_set)
+        if off_at_end:
+            dlg._btn_light.setChecked(False)
+        events.clear()
         dlg._save() if save else dlg.reject()
         return dlg.result()
+
+    events: list[int] = []
+    dmd.controller.set_sink(events.append)
 
     try:
         PD.RoiLightDialog.exec = lambda dlg: drive(dlg, True)
@@ -2366,6 +2415,14 @@ def check_roi_editor_live(r: Report) -> None:
         r.check(dmd.controller.projecting and len(dmd.panel.rois) == 1
                 and np.array_equal(dmd.controller.frame, old_frame),
                 "Cancel drops the edits and the old ROIs are lit again")
+        r.check(FRAME_STOP not in events,
+                f"…with no dark gap on close: no stop logged to /dmd ({events})")
+
+        PD.RoiLightDialog.exec = lambda dlg: drive(dlg, False, off_at_end=True)
+        dmd.edit_rois()
+        r.check(seen["lit_at_open"] is True and not dmd.controller.projecting,
+                "switching Illuminate off in the editor keeps the DMD dark on "
+                "close, even though it was lit before")
     finally:
         PD.RoiLightDialog.exec = real_exec
         dmd.stop_display()

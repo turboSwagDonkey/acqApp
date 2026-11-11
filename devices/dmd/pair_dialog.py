@@ -36,12 +36,15 @@ class RoiLightDialog(QDialog):
                  illuminate: Callable[[RoiSet | None], None] | None,
                  save: Callable[[RoiSet], None],
                  set_live: Callable[[bool], bool] | None = None,
-                 lit: bool = False, reject_label: str = "Cancel",
+                 lit: bool = False, keep_lit: bool = False,
+                 reject_label: str = "Cancel",
                  allow_empty: bool = False, parent=None):
         """`editor` already shows the snapshot; the live camera goes under
         it. `illuminate(rois)` projects them, `illuminate(None)` stops.
         `set_live` starts/stops the camera and returns its previous state.
         `lit` starts with Illuminate on (the DMD was already lit).
+        `keep_lit`: closing with Illuminate on leaves the light up for the
+        caller to replace, so a recording sees no dark gap.
         No `live_source`: the stage is elsewhere, so the snapshot alone and
         no light (it would land on another field)."""
         super().__init__(parent)
@@ -51,6 +54,7 @@ class RoiLightDialog(QDialog):
         self._save_fn = save
         self._set_live = None if self._snapshot_only else set_live
         self._allow_empty = allow_empty
+        self._keep_lit = keep_lit
         self._was_live: bool | None = None     # set once we started the camera
         self._lit = False
 
@@ -168,7 +172,8 @@ class RoiLightDialog(QDialog):
         if self._live is not None:
             self._live.stop()
         self._reproject.stop()
-        self._stop_light()
+        if not (self._keep_lit and self._btn_light.isChecked()):
+            self._stop_light()
         if self._was_live is not None and self._set_live is not None:
             self._set_live(self._was_live)
         super().done(result)

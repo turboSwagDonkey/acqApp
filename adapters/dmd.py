@@ -254,7 +254,8 @@ class DmdModule(ModuleAdapter):
 
     def _align_reticle(self):
         """`ReticleAlignDialog` on a fresh full-frame image -> its
-        calibration, or None. Lit only while it is open; ends dark."""
+        calibration, or None. Opens dark, lit only from its Light on; ends
+        dark."""
         from PyQt6.QtCore import QEventLoop
         from PyQt6.QtWidgets import QApplication, QDialog
 
@@ -272,7 +273,8 @@ class DmdModule(ModuleAdapter):
             seed, _ = self._calibration()
             dlg = ReticleAlignDialog(
                 self.controller.project_frame, self.controller.resolution,
-                frame, live_source=source, seed=seed, parent=self.panel)
+                frame, live_source=source, seed=seed,
+                stop=self.controller.stop, parent=self.panel)
             accepted = dlg.exec() == QDialog.DialogCode.Accepted
             return dlg.calibration if accepted else None
         finally:
@@ -287,17 +289,27 @@ class DmdModule(ModuleAdapter):
         here = self.panel.calib_path
         name = f"dmd_calib_{datetime.now():%Y%m%d_%H%M%S}.json"
         start = str(Path(here).parent / name) if here else name
-        path, _ = QFileDialog.getSaveFileName(
-            self.panel, "Save DMD calibration", start, "Calibration (*.json)")
-        if not path:
-            self.win.status("DMD calibration not saved")
-            return
-        try:
-            calib.save(path)
-        except OSError as e:
-            QMessageBox.warning(self.panel, "DMD calibration",
-                                f"Could not save: {e}")
-            return
+        # A cancel or a failed save asks again: the alignment exists only here.
+        while True:
+            path, _ = QFileDialog.getSaveFileName(
+                self.panel, "Save DMD calibration", start, "Calibration (*.json)")
+            if not path:
+                yes = QMessageBox.StandardButton.Yes
+                if QMessageBox.question(
+                        self.panel, "DMD calibration",
+                        "Discard this alignment? It is lost unless saved.",
+                        yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No) == yes:
+                    self.win.status("DMD calibration not saved")
+                    return
+                continue
+            try:
+                calib.save(path)
+                break
+            except OSError as e:
+                QMessageBox.warning(self.panel, "DMD calibration",
+                                    f"Could not save: {e}\n\nPick another place.")
+                start = path
         self.panel.set_calib_path(path)
         self.win.status(f"DMD calibration saved and loaded: {Path(path).name}")
 
@@ -368,16 +380,17 @@ class DmdModule(ModuleAdapter):
             live_source=self._live_frame, illuminate=self._light_rois,
             save=lambda rois: saved.append(rois.to_list()),
             set_live=self.win.set_live,
-            lit=was_lit and self.panel.mode == MODE_ROI, allow_empty=True,
-            parent=self.panel)
+            lit=was_lit and self.panel.mode == MODE_ROI, keep_lit=was_lit,
+            allow_empty=True, parent=self.panel)
         try:
             dlg.exec()
         finally:
             if saved:
                 self.panel.set_rois(tuple(saved[0]))
                 self.win.status(f"{len(saved[0])} photostimulation ROI(s) saved")
-            # The dialog ends dark; put back what was lit, with the edits.
-            if was_lit:
+            # Still lit = it was lit and Illuminate stayed on: swap in the
+            # saved edits, no dark gap. Switched off in the dialog: stays dark.
+            if self.controller is not None and self.controller.projecting:
                 self.display()
             elif self.controller is not None:
                 self.controller.apply_settings(self.panel.settings)
