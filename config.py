@@ -274,6 +274,18 @@ def load_settings(module: str) -> dict:
     return {}
 
 
+_loaded_this_launch: set[str] = set()
+
+
+def first_load(module: str) -> bool:
+    """True once per process per module: a panel rebuilt mid-session (module
+    re-enabled) keeps its state, a relaunch starts clean."""
+    if module in _loaded_this_launch:
+        return False
+    _loaded_this_launch.add(module)
+    return True
+
+
 def save_settings(module: str, values: dict, keep: tuple[str, ...] = ()) -> None:
     """`keep`: keys edited only in this file; what's on disk wins over `values`,
     so a hand edit made while the app runs isn't overwritten."""

@@ -477,6 +477,9 @@ class DmdModule(ModuleAdapter):
         for attr, val in _shared_alignment().items():
             if attr not in saved or saved.get(f"_shared_{attr}") != val:
                 setattr(s, attr, val)
+        # A launch starts with no ROIs; the calibration and pattern stay.
+        if config.first_load(self.key):
+            s.rois = ()
         return s
 
     def _save(self, s) -> None:

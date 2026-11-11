@@ -160,7 +160,10 @@ in `rigs.json` overrides the DAQ channels). The app never overwrites these
 keys, even if they're edited while it runs. Runtime state does not
 persist (the eye-tracking LED always starts off), and neither does the stage's
 axis calibration, which belongs to the config shared with the standalone
-`stage_control` app.
+`stage_control` app. **Each launch starts clean of FOV/ROI work**: saved FOVs
+and ROI sets move to `archive/`, the DMD panel has no ROIs and the routine no
+steps (its Capture/Wait defaults, cycles and the DMD calibration stay; keep a
+routine as a template). Re-enabling a module mid-session keeps its state.
 
 The **Puffer** tab can **schedule puffs** at fixed session times
 (`Puff at t = N s`). They are armed on the shared trigger bus, fire on the next

@@ -594,12 +594,14 @@ EDITS = [
     # One mode row only: the radios are exclusive.
     ("dmd",         "mode-roi",  lambda p: p._rb["roi"].setChecked(True),
      lambda p: p.settings.display_mode,         "roi"),
-    # The operator's protocol — the only nested list here.
-    ("routines",    "step list", _add_step,
-     lambda p: [(s.label, s.x_um, s.length, s.unit, s.settle_s)
-                for s in p.settings.steps],
-     [("grid A", 250.0, 64.0, "frames", 0.4)]),
+    # The steps themselves start empty each launch: `_part_settings`.
+    ("routines",    "capture default",
+     lambda p: (p._spn_capture.setValue(12.5), p._on_general_changed()),
+     lambda p: p.settings.capture_length,       12.5),
 ]
+
+_ROI = {"kind": "circle", "name": "c1", "enabled": True,
+        "x": 40.0, "y": 50.0, "r": 6.0}
 
 SAVE_EDITS = [
     ("mouse_id", lambda p: p._ed_mouse_id.setText("m17"),        "m17"),
@@ -721,6 +723,24 @@ def _part_settings() -> int:
         setter(win._save_panel)
     win._save_panel._on_edited()
 
+    # This launch's FOV/ROI work: kept through a rebuild, gone at a relaunch.
+    from acqApp import adapters
+    import numpy as np
+    from acqApp.devices.dmd.calibration import DmdCalibration
+    DmdCalibration(cam_to_dmd=np.eye(3), dmd_size=(1024, 768),
+                   cam_size=(1024, 768)).save(tmp / "calib.json")
+    _add_step(panels["routines"])
+    panels["dmd"].set_rois([_ROI])
+    panels["dmd"].set_calib_path(str(tmp / "calib.json"))
+    for key in ("routines", "dmd"):
+        again = adapters.ADAPTERS[key](win)
+        again.build_panel()
+        n = len(again.panel.settings.steps if key == "routines"
+                else again.panel.rois)
+        r.check(n == 1, f"{key}: re-enabled mid-session, its "
+                        f"{'steps' if key == 'routines' else 'ROIs'} stay ({n})")
+        again.panel.deleteLater()
+
     # Runtime state: restored, it would light an empty rig at launch.
     panels["pupil_cam"]._chk_led.setChecked(True)
 
@@ -797,8 +817,15 @@ def _part_settings() -> int:
     config._CONFIG_PATH = keep_path
 
     # ── second launch: read the panels back ──────────────────────────────────
+    config._loaded_this_launch.clear()      # what a new process starts with
     win2 = make_window(enabled)
     panels2 = {m.key: m.panel for m in win2._modules}
+    steps = panels2["routines"].settings.steps
+    r.check(not steps, f"routines: a relaunch starts with no steps ({len(steps)})")
+    dmd2 = panels2["dmd"]
+    r.check(not dmd2.rois and dmd2.calib_path == str(tmp / "calib.json"),
+            f"dmd: a relaunch drops the ROIs ({len(dmd2.rois)}) and keeps the "
+            f"calibration ({dmd2.calib_path!r})")
     for key, label, _setter, reader, expected in EDITS:
         got = reader(panels2[key])
         r.check(same(got, expected),

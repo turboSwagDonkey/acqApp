@@ -93,6 +93,7 @@ def isolate_user_state() -> Path:
 
     from acqApp import config
     config._CONFIG_PATH = tmp / "acqapp_local.json"
+    config._loaded_this_launch.clear()      # each test window is a fresh launch
 
     # Unisolated, a run writes, deletes and rotates the operator's own files.
     from acqApp.routines import templates

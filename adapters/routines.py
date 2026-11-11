@@ -165,6 +165,10 @@ class RoutinesModule(RoutineFiles, ModuleAdapter):
     # ── construction ──
     def build_panel(self) -> QWidget:
         saved = config.load_settings(self.key).get("routine")
+        # A launch starts with no steps (their FOVs/ROIs were just archived);
+        # cycles and the Capture/Wait defaults stay. Templates keep routines.
+        if config.first_load(self.key) and isinstance(saved, dict):
+            saved = {**saved, "steps": [], "groups": []}
         self.panel = RoutinePanel(Routine.from_dict(saved or {}))
         self.panel.settings_changed.connect(self._save)
         self.panel.start_requested.connect(self._on_start_clicked)
