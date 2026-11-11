@@ -254,7 +254,7 @@ class DmdController(_Base):
     def stop(self) -> None:
         if not self._running:
             return
-        self._dev.halt()
+        self._dev.blank()
         self._running = False
         self._frame(FRAME_STOP)
 

@@ -565,10 +565,6 @@ class SettingsPanel(QWidget):
         self._btn_stop_all = QPushButton("STOP ALL (Esc)")
         self._btn_stop_all.setStyleSheet(style.stop_btn())
         self._btn_stop_all.clicked.connect(self._stop_all)
-        vroot.addWidget(self._motion)
-        vroot.addWidget(self._btn_stop_all)
-
-        # ── Setup ────────────────────────────────────────────────────────────
         self._btn_home = QPushButton("Set home here")
         self._btn_home.setStyleSheet(style.solid_btn("stage"))
         self._btn_home.setToolTip(
@@ -577,20 +573,28 @@ class SettingsPanel(QWidget):
             f"window around it and shows ±{WINDOW_RANGE_UM:g} µm. Doesn't "
             "move the stage, and doesn't limit where it can go.")
         self._btn_home.clicked.connect(self._set_home_here)
+        vroot.addWidget(self._motion)
+        stop_row = QHBoxLayout()
+        stop_row.setSpacing(6)
+        stop_row.addWidget(self._btn_home)
+        stop_row.addWidget(self._btn_stop_all, 1)   # STOP ALL keeps the room
+        vroot.addLayout(stop_row)
+
+        # ── Setup ────────────────────────────────────────────────────────────
         self._btn_calibrate = QPushButton("Calibrate…")
         self._btn_calibrate.setToolTip(
             "Re-establish the coordinate frame (X/Y, and Z's zero). Rarely "
             "needed; it drives the stage into its hard limits.")
         self._btn_calibrate.clicked.connect(self._open_calibration)
 
-        # Frame first (home, calibration, how the camera sits), then motion
+        # Frame first (calibration, how the camera sits), then motion
         # feel; jog steps share the last line. Narrow: it folds under the map.
         steps = tuple(x for pair in self._steps for x in pair)
         measure = QHBoxLayout()
         measure.setSpacing(6)
         measure.addWidget(self._btn_measure_axes)
         measure.addWidget(self._btn_clear_axes)
-        root.addLayout(button_row(self._btn_home, self._btn_calibrate))
+        root.addLayout(button_row(self._btn_calibrate))
         root.addLayout(pairs_grid(
             ("Camera axes:", self._lbl_axes, None, measure),
             ("Frame rotation:", self._spn_rotation),

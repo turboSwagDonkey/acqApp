@@ -112,7 +112,7 @@ def build_frame(image: Path | np.ndarray, width: int, height: int, *,
 class AlpDevice:
     """Per projection: SeqAlloc(1, 1 bit) -> SeqPut -> BIN_UNINTERRUPTED (so a
     held pattern holds between pictures) -> SetTiming -> Run. `halt()` is
-    Halt + FreeSeq, so the next project starts clean."""
+    Halt + FreeSeq, so the next project starts clean; `blank()` is dark."""
 
     def __init__(self, lib_dir: str | None = None, version: str = "4.2") -> None:
         self._lib_dir = lib_dir
@@ -133,6 +133,7 @@ class AlpDevice:
         dev.Initialize()
         self._dev = dev
         self.width, self.height = int(dev.nSizeX), int(dev.nSizeY)
+        self.blank()                    # mirrors may hold a last session's frame
         return self.width, self.height
 
     def project(self, frame: np.ndarray) -> None:
@@ -153,6 +154,17 @@ class AlpDevice:
         dev.SeqControl(ALP_BIN_MODE, ALP_BIN_UNINTERRUPTED)
         dev.SetTiming()
         dev.Run(loop=True)
+
+    def blank(self) -> None:
+        """Point every mirror off and hold it: the dark state. `halt()` alone
+        stops the sequence but leaves the mirrors as the last frame set them."""
+        if self._dev is None:
+            return
+        try:
+            self.project(np.full((self.height, self.width), _OFF))
+        except Exception as e:                        # noqa: BLE001
+            print(f"[DMD] blank: {e}")
+            self.halt()
 
     def halt(self) -> None:
         """Safe at any time. Steps guarded separately: an unplugged device

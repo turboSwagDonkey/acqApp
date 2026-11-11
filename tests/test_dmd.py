@@ -63,6 +63,12 @@ class FakeALP4:
                 return c
         return None
 
+    def blanked(self) -> bool:
+        """The mirrors now hold an all-off frame (pointed off, not just halted)."""
+        put = self.last("SeqPut")
+        return (self.names()[-1] == "Run" and put is not None
+                and not np.asarray(put[1]).any())
+
 
 def install_fake_alp() -> None:
     mod = types.ModuleType("ALP4")
@@ -185,8 +191,10 @@ def _part_dmd() -> int:
     s = DmdSettings(pattern_path=pat, scale_pct=100.0)
     c = DmdController(s)
     dev = FakeALP4.instances[0]
-    r.check(dev.names() == ["Initialize"], f"opening initialises the ALP and "
-                                           f"nothing else (got {dev.names()})")
+    r.check(dev.names()[0] == "Initialize" and dev.blanked(),
+            f"opening initialises the ALP and points every mirror off, so a "
+            f"frame left from a last session isn't held (got {dev.names()})")
+    n_open = len(dev.calls)
     r.check(c.resolution == (W, H) and "1024x768" in c.device_name,
             f"the device reports itself: {c.device_name}")
     r.check(c.on_pixels == 100 * 100,
@@ -196,8 +204,9 @@ def _part_dmd() -> int:
     events: list[int] = []
     c.set_sink(events.append)
     c.display()
-    seq = dev.names()[1:]
-    r.check(seq[:5] == ["SeqAlloc", "SeqPut", "SeqControl", "SetTiming", "Run"],
+    seq = dev.names()[n_open:]
+    r.check(seq[:7] == ["Halt", "FreeSeq", "SeqAlloc", "SeqPut", "SeqControl",
+                        "SetTiming", "Run"],
             f"display runs the vendor sequence in order (got {seq})")
     put = dev.last("SeqPut")[1]
     r.check(isinstance(put, np.ndarray) and put.shape == (H, W)
@@ -219,8 +228,9 @@ def _part_dmd() -> int:
             f"display logs one event to /dmd (got {events})")
 
     c.stop()
-    r.check(dev.names()[-2:] == ["Halt", "FreeSeq"],
-            f"stop halts and releases the sequence (got {dev.names()[-2:]})")
+    r.check(dev.blanked(),
+            f"stop points every mirror off, not just halts the frame that "
+            f"was up (got {dev.names()[-7:]})")
     r.check(events == [FRAME_START, FRAME_STOP],
             f"…and closes the projection window in the log (got {events})")
     events.clear()
@@ -237,8 +247,9 @@ def _part_dmd() -> int:
     dev2 = FakeALP4.instances[-1]
     events2: list[int] = []
     c2.set_sink(events2.append)
+    n_open2 = len(dev2.calls)
     c2.display()
-    r.check(dev2.names() == ["Initialize"] and events2 == [],
+    r.check(len(dev2.calls) == n_open2 and dev2.blanked() and events2 == [],
             f"display with no pattern projects nothing and logs nothing "
             f"(got {dev2.names()}, {events2})")
     c2.close()
@@ -296,10 +307,10 @@ def check_controller_faults(r) -> None:
     r.check(c.projecting, "fixture: all-on is lit")
     c.apply_settings(DmdSettings(display_mode=MODE_ROI, rois=()))
     c.display()
-    r.check(c.frame is None and not c.projecting
-            and dev.names()[-2:] == ["Halt", "FreeSeq"],
+    r.check(c.frame is None and not c.projecting and dev.blanked(),
             f"Display with nothing to show (last ROI deleted under Live update) "
-            f"halts the frame already up, not leaves it lit ({dev.names()[-3:]})")
+            f"points the mirrors off, not leaves the old frame lit "
+            f"({dev.names()[-3:]})")
     c.close()
 
     from acqApp.devices.dmd.control import MockDmdController
