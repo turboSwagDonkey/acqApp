@@ -47,6 +47,8 @@ TESTS = [
     ("pickers",   "test_pickers.py"),
     ("vis-stim",  "test_vis_stim.py"),
     ("routines",  "test_routines.py"),
+    ("routine-files", "test_routines_files.py"),
+    ("routine-panel", "test_routines_panel.py"),
     ("pupil",     "test_pupil.py"),
     ("pupil-review", "test_pupil_review.py"),
     ("pupil-auto", "test_pupil_auto.py"),

@@ -135,6 +135,8 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
                         status bar (acqApp can't read what ThorImage set)
   puffer.py
   pupil_cam.py
+  routine_files.py      RoutineFiles: a routine's file rolls, edge log, *_BAD,
+                        junk deletion (mixed into routines.py)
   routines.py           the ONLY routine code that touches a real device
   stage.py
   vis_stim.py
@@ -322,6 +324,7 @@ docs/
 tests/                  plain scripts, not pytest; each file (and each part of a
                         multi-part file, `--part NAME`) runs in its own process
   _harness.py           Report, qt_app(), isolate_user_state(), run_parts()
+  _routine_rig.py       the routine tests' fake rig, rig limits, drive()/ticks()
   _pupil_helpers.py     the test_pupil*.py files' AVI writer and synthetic eyes
   README.md             the two conventions: isolate user state, include a control
   run_all.py            the suite: run this
@@ -338,7 +341,9 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_pupil.py               EyeLoop seam, tracking, pins, eye region, clip replay, exposure bar, help
   test_pupil_auto.py          Auto's suggested parameters
   test_pupil_review.py        offline review, safety, review/live mirror, seed, Apply, mode, recorded, launcher
-  test_routines.py            routine engine/adapter/panel, and the timeline
+  test_routines.py            routine protocol and engine
+  test_routines_files.py      triggers, bursts, the adapter's files
+  test_routines_panel.py      panel, table, templates, whole app, timeline, pairing
   test_saving.py              save paths, the session writer (TIFF/CSV/AVI), Bpod match
   test_session_recording.py
   test_stage.py               stage calibration persistence, the Z axis

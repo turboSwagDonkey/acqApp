@@ -6,7 +6,7 @@ acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py -v       # full output
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py session  # one test
 acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py -v # every check
 acqApp\.venv\Scripts\python.exe acqApp\tests\test_dmd.py --part calib  # one part
-acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines.py --part routines --check burst  # check_* names containing "burst"
+acqApp\.venv\Scripts\python.exe acqApp\tests\test_routines_files.py --part routine-files --check burst  # check_* names containing "burst"
 acqApp\.venv\Scripts\python.exe acqApp\tests\run_all.py -j 1  # serial (default: 8 files at a time, 4 parts each; ~18 s)
 ```
 
