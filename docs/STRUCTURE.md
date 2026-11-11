@@ -12,7 +12,8 @@ depends on nothing in the app.
 
 ```mermaid
 flowchart TD
-    main["main.py<br/><i>window · session · docks</i>"]
+    main["main.py<br/><i>bootstrap · entry point</i>"]
+    window["window/<br/><i>window · session · docks</i>"]
     adapters["adapters/<br/><i>one file per instrument</i>"]
     devices["devices/<br/><i>the six instruments</i>"]
     routines["routines/<br/><i>run a protocol step by step</i>"]
@@ -27,15 +28,21 @@ flowchart TD
     sidebar["sidebar.py<br/><i>module cards · folds</i>"]
     run_pupil_review["run_pupil_review.py<br/><i>pupil review tool, alone</i>"]
 
-    main --> adapters
-    main --> saving
+    main --> window
     main --> dialogs
-    main --> acq
     main --> config
     main --> style
     main --> console
     main --> devices
-    main --> widgets
+    window --> adapters
+    window --> saving
+    window --> dialogs
+    window --> acq
+    window --> config
+    window --> style
+    window --> devices
+    window --> widgets
+    window --> sidebar
     adapters --> devices
     adapters --> routines
     adapters --> saving
@@ -56,7 +63,6 @@ flowchart TD
     saving --> widgets
     dialogs --> probe
     widgets --> style
-    main --> sidebar
     adapters --> sidebar
     sidebar --> style
     sidebar --> widgets
@@ -74,8 +80,9 @@ Edges that look wrong but are deliberate:
   (imported inside the function, so `probe.py` runs as a plain script).
 - `routines → devices`: the step pickers open `roi_picker.py` / `fov_picker.py`;
   routines still drives no device itself.
-- `main → devices`: drift, not design (preset/mode lookups bypass `adapters/`);
-  flagged in REFERENCE.md §5b.
+- `main → devices`: the early camera open and the mirror check at launch.
+- `window → devices`: drift, not design (preset/mode lookups bypass
+  `adapters/`); flagged in REFERENCE.md §5b.
 
 `adapters/wheel.py` is how an instrument plugs into this window; `devices/wheel/`
 is the instrument (driver, worker, model, widgets) and knows nothing of the
@@ -206,6 +213,7 @@ devices/                one package per instrument
     axes_measure.py     MOTION: nudge +X/+Y, correlate frames -> camera axes
     axes_overlay.py     +X/+Y arrows on a camera view (pyqtgraph)
     backend.py          which driver is plugged in; probes the port and picks
+    calibration_dialog.py  MOTION: re-establish the X/Y frame and Z's zero
     cam_axes.py         stage <-> camera axes: image shift, camera-aligned
                         jogs (no Qt)
     control.py          StageController + mock; microns, soft-limit clamped
@@ -339,10 +347,16 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_structure.py     this file vs the code
   test_undefined_names.py     every name resolves; catches the moved-code defect
   test_vis_stim.py            trial expansion, geometry, the tick-driven state machine
-main.py                 the shell: one window of docks (General over stage |
-                        camera over routines | DMD over pupil cam),
-                        session start/stop, the venv bootstrap. No
+window/                 the shell, one window of docks (General over stage |
+                        camera over routines | DMD over pupil cam). No
                         per-instrument logic.
+  common.py             what its parts share: MODE_NONE, module order
+  docks.py              DockLayout: General column, docks, status bar, layout save
+  main_window.py        MainWindow = the three mixins + clock, ticks, close
+  services.py           WindowServices: what adapters call (ModuleHost)
+  session.py            SessionControl: start/stop, hot-load modules, recording
+main.py                 entry point: venv bootstrap, early camera open, the
+                        module picker, then window/'s MainWindow
 config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
 dialogs.py              module picker (startup + General); from General it also
@@ -385,8 +399,8 @@ showed up as a `KeyError` at build time. Then a new file in `adapters/`, a
 package in `devices/`, and an entry in the tree above.
 
 Two optional declarations on the adapter, both read by the shell and neither
-naming a module in `main.py`: **`own_dock`** gives it a dock of its own (its
+naming a module in `window/`: **`own_dock`** gives it a dock of its own (its
 settings folded under its `view_widget()`) instead of a General section, and
 **`config.ALWAYS_ON`** keeps it out of the module picker. `routines` sets both.
-Its dock's default place is `_SLOTS` in `main.py`; unlisted, it joins the right
+Its dock's default place is `_SLOTS` in `window/docks.py`; unlisted, it joins the right
 column.

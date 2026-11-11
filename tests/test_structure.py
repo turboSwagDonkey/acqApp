@@ -22,7 +22,7 @@ SKIP_DIRS = {".venv", "__pycache__", ".git", "sessions", "routine_templates",
             "rois", "fov_library", ".vs", ".claude"}
 KEEP_SUFFIX = {".py", ".json", ".txt", ".md", ".ps1"}
 # Root modules are their own node; these packages are one node each.
-PACKAGES = {"acq", "adapters", "devices", "routines", "saving"}
+PACKAGES = {"acq", "adapters", "devices", "routines", "saving", "window"}
 # tests/ imports everything by design and is not drawn; archive/ is dead code
 # kept for reference and is not part of the layering.
 UNDRAWN = {"tests", "archive"}
@@ -163,8 +163,8 @@ def check_controls(r: Report, text: str) -> None:
     broken = text.replace("    probe --> devices\n", "")
     r.check("devices" not in drawn_edges(broken)["probe"],
             "control: deleting an arrow from the diagram is visible")
-    added = text.replace("    main --> adapters\n",
-                         "    main --> adapters\n    saving --> main\n")
+    added = text.replace("    main --> window\n",
+                         "    main --> window\n    saving --> main\n")
     r.check("main" in drawn_edges(added)["saving"],
             "control: an arrow with no matching import is visible")
     dropped = re.sub(r"^  clock\.py.*\n", "", text, count=1, flags=re.M)

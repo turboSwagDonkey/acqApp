@@ -22,7 +22,8 @@ stage_settings.config_path = lambda: _TMP / "config.json"
 
 from PyQt6.QtWidgets import QMessageBox                      # noqa: E402
 
-from acqApp.devices.stage.panel import CalibrationDialog, SettingsPanel  # noqa: E402
+from acqApp.devices.stage.calibration_dialog import CalibrationDialog  # noqa: E402
+from acqApp.devices.stage.panel import SettingsPanel                  # noqa: E402
 from acqApp.devices.stage.settings import StageAxis, StageSettings  # noqa: E402
 
 
