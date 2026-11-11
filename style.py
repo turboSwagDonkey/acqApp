@@ -74,16 +74,19 @@ def record_btn(key: str) -> str:
     )
 
 
-def quiet_toggle(key: str) -> str:
-    """Neutral while off; full accent while on, even disabled: a mode that
-    stays on through a session must not grey out then."""
+def quiet_toggle(key: str, fill: bool = True) -> str:
+    """Neutral while off; accent while on, even disabled: a mode that stays
+    on through a session must not grey out then. `fill=False`: on is an
+    accent outline, for a state that is normal, not a warning."""
     c = HEX[key]
+    on = (f"background:{c};color:white;" if fill
+          else f"background:{_alpha(c)};color:{c};")
     return (
         "QPushButton{background:transparent;border:1px solid palette(mid);"
         "border-radius:4px;padding:3px 8px}"
         "QPushButton:disabled{color:palette(mid)}"
-        f"QPushButton:checked,QPushButton:checked:disabled{{background:{c};"
-        f"color:white;font-weight:bold;border:1px solid {c}}}"
+        f"QPushButton:checked,QPushButton:checked:disabled{{{on}"
+        f"font-weight:bold;border:1px solid {c}}}"
     )
 
 

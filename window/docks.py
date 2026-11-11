@@ -228,7 +228,7 @@ class DockLayout:
         self._btn_emulate = QPushButton("Emulate")
         self._btn_emulate.setCheckable(True)
         self._btn_emulate.setChecked(self._emulate)
-        self._btn_emulate.setStyleSheet(style.quiet_toggle("wheel"))
+        self._btn_emulate.setStyleSheet(style.quiet_toggle("wheel", fill=False))
         self._btn_emulate.setToolTip("Use simulated signals instead of hardware")
         self._btn_emulate.toggled.connect(self._on_emulate_toggled)
         self._btn_emulate.toggled.connect(self._label_emulate)

@@ -623,7 +623,17 @@ class SettingsPanel(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        # Nothing lit: say why inside the frame, not in a line under it.
+        empty = not frame.any()
+        if empty:
+            painter.setFont(self._preview.font())
+            painter.setPen(QColor(style.muted()))
+            painter.drawText(rect.adjusted(12, 12, -12, -12),
+                             int(Qt.AlignmentFlag.AlignCenter
+                                 | Qt.TextFlag.TextWordWrap),
+                             self._lbl_pattern.text())
         painter.end()
+        self._lbl_pattern.setVisible(not empty)
         self._preview.setPixmap(canvas)
 
     @property

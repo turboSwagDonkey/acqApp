@@ -169,6 +169,8 @@ class SettingsPanel(QWidget):
              "See one cycle drawn to scale — repeat groups as a bracket, "
              "Record steps as separate bars (one per repeat, never merged).")))
         add.setStyleSheet(style.solid_btn("routines"))
+        for b in (up, down):
+            b.setFixedWidth(32)
         menu = QMenu(other)
         for kind in KINDS[1:]:
             menu.addAction(KIND_LABELS[kind],
@@ -259,6 +261,8 @@ class SettingsPanel(QWidget):
                  "the recording stops with it.")):
             b.setToolTip(tip)
             b.clicked.connect(sig)
+        self._btn_abort.setStyleSheet(style.solid_btn("puffer"))   # STOP ALL's red
+        self._btn_resume.hide()         # shares Pause's place; see _set_phase
         rlay.addLayout(button_row(self._btn_start, self._btn_pause,
                                   self._btn_resume, self._btn_skip,
                                   right=(self._btn_abort,)))
@@ -663,6 +667,8 @@ class SettingsPanel(QWidget):
                                                  Phase.WAITING))
             for b in (self._btn_resume, self._btn_skip):
                 b.setEnabled(paused)
+            self._btn_pause.setVisible(not paused)
+            self._btn_resume.setVisible(paused)
             self._btn_abort.setEnabled(held)
             # Every edit, not just the table's: templates, ±Step, groups.
             self._protocol.setEnabled(not held)

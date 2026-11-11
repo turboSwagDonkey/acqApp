@@ -156,10 +156,15 @@ class SettingsPanel(QWidget):
             lbl.setMinimumWidth(big_w)
             lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
                               QSizePolicy.Policy.Preferred)
-            cap = QLabel(name)
-            cap.setStyleSheet("color:#9aa0a6;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                             | Qt.AlignmentFlag.AlignVCenter)
+            cap, unit = QLabel(name), QLabel("µm")
+            for t in (cap, unit):
+                t.setStyleSheet("color:#9aa0a6;")
             pos_row.addWidget(cap)
             pos_row.addWidget(lbl, 1)
+            pos_row.addWidget(unit)
+            pos_row.addSpacing(8)
             return lbl
 
         self._lbl_x = _readout(self._s.x.name)
@@ -167,9 +172,6 @@ class SettingsPanel(QWidget):
         self._lbl_z: QLabel | None = None
         if self._s.has_z:
             self._lbl_z = _readout(self._s.z.name)
-        unit = QLabel("µm")
-        unit.setStyleSheet("color:#9aa0a6;")
-        pos_row.addWidget(unit)
         vroot.addLayout(pos_row)
 
         # Shown only when absolute moves are off.
