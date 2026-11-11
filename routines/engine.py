@@ -150,7 +150,7 @@ class RoutineEngine:
                  burst_stall_s: float = BURST_STALL_S) -> None:
         """`burst_frames` > 0: the camera captures that many frames per edge,
         so a Record right after a Trigger ends on the burst, not the clock."""
-        self._r = routine
+        self._routine = routine
         self._burst_n = burst_frames
         self._burst_stall = burst_stall_s
         self._after_edge = False        # the next step is the edge's burst
@@ -159,7 +159,7 @@ class RoutineEngine:
         self._burst_moved_at = 0.0
         self._edge_at = (0, 0)          # (order position, cycle) of the last edge
         self._burst_retries = 0         # short bursts in a row
-        self._h = hooks
+        self._hooks = hooks
         self._timeout = move_timeout_s
         self._trig_timeout = trigger_timeout_s
         self._trig_drain = trigger_drain_s
@@ -171,7 +171,7 @@ class RoutineEngine:
         self._order: list[int] = []     # play_order(routine)
         self._rec_ids: list[int | None] = []
         self._pos = 0                   # index into self._order
-        self._i = 0                     # self._order[self._pos], a table row
+        self._step_index = 0                     # self._order[self._pos], a table row
         self._cycle = 0
         self._attempt = 1
         self._steps_completed = 0
@@ -204,14 +204,14 @@ class RoutineEngine:
 
     @property
     def step(self) -> Step | None:
-        if not self._r.steps or self._phase in (Phase.IDLE, Phase.DONE):
+        if not self._routine.steps or self._phase in (Phase.IDLE, Phase.DONE):
             return None
-        return self._r.steps[self._i]
+        return self._routine.steps[self._step_index]
 
     @property
     def position(self) -> tuple[int, int, int]:
         """(table row, cycle, attempt), the first two 0-based."""
-        return self._i, self._cycle, self._attempt
+        return self._step_index, self._cycle, self._attempt
 
     @property
     def order_position(self) -> int:
@@ -225,13 +225,13 @@ class RoutineEngine:
         if self._phase != Phase.WAITING:
             return False
         if self._gate_seq0 is not None:
-            gate = self._safe_value(self._h.trigger_gate, None)
+            gate = self._safe_value(self._hooks.trigger_gate, None)
             return gate is not None and gate[0] > self._gate_seq0
         return self._trig_gated
 
     @property
     def has_trigger_steps(self) -> bool:
-        return any(s.kind == "trigger" for s in self._r.steps)
+        return any(s.kind == "trigger" for s in self._routine.steps)
 
     def steps_done(self) -> int:
         return self._steps_completed
@@ -243,7 +243,7 @@ class RoutineEngine:
             return 0.0
         if step.kind in TIMED_KINDS:
             if self._in_burst:
-                got = self._safe_value(self._h.burst_frames, None)
+                got = self._safe_value(self._hooks.burst_frames, None)
                 return _ratio(float(got or 0), self._burst_n)
             if step.unit == "frames":
                 n = self._frames()
@@ -251,19 +251,19 @@ class RoutineEngine:
                     return 0.0
                 got = float(n - self._wait_frame0)
             else:
-                got = self._h.now() - self._wait_t0
+                got = self._hooks.now() - self._wait_t0
             return _ratio(got, step.length)
         if step.kind == "move":
             if self._arrived_at is None:
                 return 0.0
-            return _ratio(self._h.now() - self._arrived_at, step.settle_s)
+            return _ratio(self._hooks.now() - self._arrived_at, step.settle_s)
         return 1.0 if self._step_done else 0.0
 
     def total_runs(self) -> int:
         """From the order cached at start: `overall_progress` runs 30x/s."""
         if not self._order:
-            return self._r.total_steps()
-        return len(self._order) * max(1, self._r.cycles)
+            return self._routine.total_steps()
+        return len(self._order) * max(1, self._routine.cycles)
 
     def overall_progress(self) -> float:
         """0..1 through the whole routine. Position-based, so a repeated
@@ -279,7 +279,7 @@ class RoutineEngine:
     def elapsed(self) -> float:
         if self._started_at is None:
             return 0.0
-        return max(0.0, self._safe_value(self._h.now, self._started_at)
+        return max(0.0, self._safe_value(self._hooks.now, self._started_at)
                    - self._started_at)
 
     # ── control ───────────────────────────────────────────────────────────────
@@ -289,15 +289,15 @@ class RoutineEngine:
         sends one edge per trial, and arming would swallow trial 1's."""
         if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.PAUSED):
             raise RoutineError("already running")
-        if not self._r.steps:
+        if not self._routine.steps:
             raise RoutineError("routine has no steps")
         self.runs = []
         self.fault = ""
         self.aborted = False
-        self._order = play_order(self._r)
-        self._rec_ids = recording_run_ids(self._r, self._order)
+        self._order = play_order(self._routine)
+        self._rec_ids = recording_run_ids(self._routine, self._order)
         self._pos = self._cycle = 0
-        self._i = self._order[0]
+        self._step_index = self._order[0]
         self._attempt = 1
         self._steps_completed = 0
         # A previous run aborted between its edge and the burst would make
@@ -307,11 +307,11 @@ class RoutineEngine:
         self._dmd_on = False
         self._open_run = None
         self._open_key = None
-        self._started_at = self._safe_value(self._h.now, 0.0)
+        self._started_at = self._safe_value(self._hooks.now, 0.0)
         if trigger == "ttl" and not self.has_trigger_steps:
             self._arm_frame0 = self._frames()
             self._phase = Phase.ARMED
-            self._h.log("routine armed — waiting for the camera's TTL trigger")
+            self._hooks.log("routine armed — waiting for the camera's TTL trigger")
         else:
             self._enter_step()
 
@@ -329,8 +329,8 @@ class RoutineEngine:
         self._open_key = None
         self._burst_retries = 0
         # The pause blanked the DMD; a Move restores it on arrival itself.
-        if self._r.steps[self._i].kind != "move":
-            self._safe(self._h.light, self._dmd_on)
+        if self._routine.steps[self._step_index].kind != "move":
+            self._safe(self._hooks.light, self._dmd_on)
         self._enter_step()
 
     def skip(self) -> None:
@@ -345,10 +345,10 @@ class RoutineEngine:
             self.aborted = True
         if self._phase in (Phase.ARMED, Phase.RUNNING, Phase.WAITING):
             self._halt("aborted")
-        self._safe(self._h.stop_motion)
-        self._safe(self._h.light, False)
+        self._safe(self._hooks.stop_motion)
+        self._safe(self._hooks.light, False)
         self._phase = Phase.DONE
-        self._h.log("routine aborted")
+        self._hooks.log("routine aborted")
 
     # ── the tick ──────────────────────────────────────────────────────────────
     def tick(self) -> None:
@@ -362,7 +362,7 @@ class RoutineEngine:
                 self._steps_completed += 1
                 self._advance()
                 return
-            step = self._r.steps[self._i]
+            step = self._routine.steps[self._step_index]
             if step.kind == "move":
                 self._tick_move()
             elif step.kind in TIMED_KINDS:
@@ -388,7 +388,7 @@ class RoutineEngine:
         if n is None:
             self._halt("no frame count to detect the trigger by")
             return
-        t = self._h.now()
+        t = self._hooks.now()
 
         if not self._trig_gated:
             if n != self._trig_frame0:      # still draining
@@ -410,7 +410,7 @@ class RoutineEngine:
 
     def _edge_seen(self) -> None:
         """The trigger step's edge arrived."""
-        self._safe(self._h.edge, self._safe_value(self._h.now, 0.0),
+        self._safe(self._hooks.edge, self._safe_value(self._hooks.now, 0.0),
                    self._next_record_run())
         self._after_edge = self._burst_n > 0
         self._edge_at = (self._pos, self._cycle)
@@ -420,7 +420,7 @@ class RoutineEngine:
     def _tick_trigger_gated(self) -> None:
         """Once the re-arm count passes ours, any frame is the edge. An edge
         while the camera is stopped is lost; the step waits for the next."""
-        gate = self._h.trigger_gate()
+        gate = self._hooks.trigger_gate()
         if gate is None:
             self._halt("the camera stopped reporting its trigger state")
             return
@@ -429,7 +429,7 @@ class RoutineEngine:
         if rearmed and since > 0:
             self._edge_seen()
             return
-        waited = self._h.now() - self._trig_t0
+        waited = self._hooks.now() - self._trig_t0
         if not rearmed:
             limit = min(REARM_TIMEOUT_S, self._trig_timeout)
             if waited > limit:
@@ -439,11 +439,11 @@ class RoutineEngine:
             self._halt(f"no camera trigger within {self._trig_timeout:g} s")
 
     def _tick_move(self) -> None:
-        step = self._r.steps[self._i]
+        step = self._routine.steps[self._step_index]
         try:
-            t = self._h.now()
+            t = self._hooks.now()
             if self._arrived_at is None:
-                if self._h.moving():
+                if self._hooks.moving():
                     if t - self._issued_at > self._timeout:
                         self._halt(f"stage didn't arrive within "
                                    f"{self._timeout:g} s")
@@ -455,11 +455,11 @@ class RoutineEngine:
             self._halt(f"settle failed ({type(e).__name__}: {e})")
             return
         # The move blanked the light; restore what Display last left lit.
-        self._safe(self._h.light, self._dmd_on)
+        self._safe(self._hooks.light, self._dmd_on)
         self._step_done = True
 
     def _tick_wait(self) -> None:
-        step = self._r.steps[self._i]
+        step = self._routine.steps[self._step_index]
         if self._in_burst:
             self._tick_burst()
             return
@@ -470,18 +470,18 @@ class RoutineEngine:
                 return
             done = (n - self._wait_frame0) >= step.length
         else:
-            done = (self._h.now() - self._wait_t0) >= step.length
+            done = (self._hooks.now() - self._wait_t0) >= step.length
         if done:
             self._step_done = True
 
     def _tick_burst(self) -> None:
         """Done at N real frames. Frames come from the camera's own count,
         so file rolls and preview skips don't move it."""
-        got = self._safe_value(self._h.burst_frames, None)
+        got = self._safe_value(self._hooks.burst_frames, None)
         if got is None:
             self._halt("the camera stopped reporting its burst")
             return
-        t = self._h.now()
+        t = self._hooks.now()
         if got != self._burst_seen:
             self._burst_seen, self._burst_moved_at = got, t
         if got >= self._burst_n:
@@ -496,14 +496,14 @@ class RoutineEngine:
         pauses there instead, so resume waits for an edge too."""
         self._close_open_run(interrupted=True, fault=reason)
         self._pos, self._cycle = self._edge_at
-        self._i = self._order[self._pos]
+        self._step_index = self._order[self._pos]
         self._steps_completed -= 1      # the trigger step runs again
         self._attempt = 1
         self._burst_retries += 1
         if self._burst_retries > MAX_BURST_RETRIES:
             self._halt(f"{reason} ({MAX_BURST_RETRIES} retries in a row)")
             return
-        self._h.log(f"{reason} — marked bad; retrying on the next edge "
+        self._hooks.log(f"{reason} — marked bad; retrying on the next edge "
                     f"({self._burst_retries}/{MAX_BURST_RETRIES})")
         self._enter_step()
 
@@ -514,7 +514,7 @@ class RoutineEngine:
         if not self._update_recording():
             # Already halted. Not a phase check: resume() arrives here PAUSED.
             return
-        step = self._r.steps[self._i]
+        step = self._routine.steps[self._step_index]
         self._arrived_at = None
         self._step_done = False
         # A repeat after a pause has no edge of its own: back to the clock.
@@ -522,73 +522,74 @@ class RoutineEngine:
                           and self._attempt == 1)
         self._after_edge = False
         self._burst_seen = 0
-        self._burst_moved_at = self._safe_value(self._h.now, 0.0)
+        self._burst_moved_at = self._safe_value(self._hooks.now, 0.0)
         try:
             if step.kind == "move":
                 # Never travel lit; `_tick_move` restores it on arrival.
-                self._h.light(False)
+                self._hooks.light(False)
                 if (step.x_um is not None or step.y_um is not None
                         or step.z_um is not None):
-                    self._h.move(step.x_um, step.y_um, step.z_um)
+                    self._hooks.move(step.x_um, step.y_um, step.z_um)
             elif step.kind == "display":
                 if step.pattern:
-                    self._h.set_pattern(step.pattern)
-                    self._h.light(True)
+                    self._hooks.set_pattern(step.pattern)
+                    self._hooks.light(True)
                 else:
-                    self._h.light(False)
+                    self._hooks.light(False)
                 self._dmd_on = bool(step.pattern)
                 self._step_done = True
             elif step.kind in TIMED_KINDS:
-                self._wait_t0 = self._h.now()
+                self._wait_t0 = self._hooks.now()
                 self._wait_frame0 = self._frames()
                 if step.unit == "frames" and self._wait_frame0 is None:
                     raise RuntimeError(
                         "no frame count to measure a frames step by")
             elif step.kind == "puff":
-                self._h.puff()
+                self._hooks.puff()
                 self._step_done = True
             elif step.kind == "trigger":
                 # Read before asking, so our re-arm is the one that moves it.
-                gate = self._h.trigger_gate()
+                gate = self._hooks.trigger_gate()
                 self._gate_seq0 = None if gate is None else gate[0]
                 nxt = self._next_record_run()
                 if nxt is not None:
-                    self._h.prepare_recording(nxt)
-                self._h.arm_trigger()
+                    self._hooks.prepare_recording(nxt)
+                self._hooks.arm_trigger()
                 if nxt is not None:
                     # Lit before the edge: the camera starts on it, the
                     # software only a tick or more later (rig: 18-42 frames).
-                    self._h.led(True)
-                self._trig_t0 = self._trig_still_since = self._h.now()
+                    self._hooks.led(True)
+                self._trig_t0 = self._trig_still_since = self._hooks.now()
                 self._trig_gated = False
                 self._trig_frame0 = self._frames()
                 if self._trig_frame0 is None:
                     raise RuntimeError(
                         "no frame count to detect a trigger by")
         except Exception as e:           # noqa: BLE001
-            self._halt(f"step {self._i + 1} setup failed "
+            self._halt(f"step {self._step_index + 1} setup failed "
                        f"({type(e).__name__}: {e})")
             return
-        self._issued_at = self._safe_value(self._h.now, 0.0)
+        self._issued_at = self._safe_value(self._hooks.now, 0.0)
         self._phase = (Phase.WAITING if step.kind == "trigger"
                        else Phase.RUNNING)
-        self._h.log(f"step {self._i + 1} ({self._pos + 1}/{len(self._order)} "
-                    f"this cycle, cycle {self._cycle + 1}/"
-                    f"{max(1, self._r.cycles)}): {step.describe()}")
+        self._hooks.log(
+            f"step {self._step_index + 1} ({self._pos + 1}/{len(self._order)} "
+            f"this cycle, cycle {self._cycle + 1}/"
+            f"{max(1, self._routine.cycles)}): {step.describe()}")
 
     def _next_record_run(self) -> RecordingRun | None:
         """The run a `record` step right after this position will open."""
         pos, cycle = self._pos + 1, self._cycle
         if pos >= len(self._order):
             pos, cycle = 0, cycle + 1
-        if cycle >= max(1, self._r.cycles):
+        if cycle >= max(1, self._routine.cycles):
             return None
         i = self._order[pos]
-        if self._r.steps[i].kind != "record":
+        if self._routine.steps[i].kind != "record":
             return None
-        return RecordingRun(region=recording_region_at(self._r, i),
+        return RecordingRun(region=recording_region_at(self._routine, i),
                             start_index=i, end_index=i, cycle=cycle,
-                            attempt=1, t0=self._h.now(), frame0=None)
+                            attempt=1, t0=self._hooks.now(), frame0=None)
 
     def rearm_step(self) -> bool:
         """Restart the current Wait step's clock and frame baseline, after a
@@ -597,10 +598,10 @@ class RoutineEngine:
         or it would swallow its own edge."""
         if not self._order:
             return False
-        step = self._r.steps[self._i]
+        step = self._routine.steps[self._step_index]
         if step.kind not in TIMED_KINDS:
             return False
-        self._wait_t0 = self._h.now()
+        self._wait_t0 = self._hooks.now()
         self._wait_frame0 = self._frames()
         if self._open_run is not None:
             self._open_run.frame0 = self._wait_frame0
@@ -612,39 +613,40 @@ class RoutineEngine:
         if self._pos >= len(self._order):
             self._pos = 0
             self._cycle += 1
-        if self._cycle >= max(1, self._r.cycles):
+        if self._cycle >= max(1, self._routine.cycles):
             self._close_open_run()
             self._phase = Phase.DONE
-            self._safe(self._h.light, False)
-            self._h.log(f"routine finished — {self.steps_done()} step(s)")
+            self._safe(self._hooks.light, False)
+            self._hooks.log(f"routine finished — {self.steps_done()} step(s)")
             return
-        self._i = self._order[self._pos]
+        self._step_index = self._order[self._pos]
         self._enter_step()
 
     def _halt(self, reason: str) -> None:
         """Fault or operator pause: stop what actuates, keep what captures."""
         self.fault = reason
-        self._safe(self._h.stop_motion)
-        self._safe(self._h.light, False)
-        self._safe(self._h.led, False)      # a trigger step lit it early
+        self._safe(self._hooks.stop_motion)
+        self._safe(self._hooks.light, False)
+        self._safe(self._hooks.led, False)      # a trigger step lit it early
         self._close_open_run(interrupted=True, fault=reason)
         self._phase = Phase.PAUSED
-        self._h.log(f"routine paused: {reason}")
+        self._hooks.log(f"routine paused: {reason}")
 
     # ── recording brackets ───────────────────────────────────────────────────
     def _update_recording(self) -> bool:
-        """Open/close a run as `self._i` crosses a bracket edge. Keyed by
+        """Open/close a run as `self._step_index` crosses a bracket edge. Keyed by
         (cycle, serial): the serial alone would merge a bracket spanning a
         cycle boundary into one run. False only if opening failed (halted)."""
         serial = self._rec_ids[self._pos]
         key = None if serial is None else (self._cycle, serial)
         if key == self._open_key and self._open_run is not None:
-            self._open_run.end_index = self._i
+            self._open_run.end_index = self._step_index
             return True
         self._close_open_run()
         self._open_key = key
         if key is not None:
-            return self._open_recording(recording_region_at(self._r, self._i))
+            return self._open_recording(
+                recording_region_at(self._routine, self._step_index))
         return True
 
     def _close_open_run(self, **kw) -> None:
@@ -654,12 +656,12 @@ class RoutineEngine:
 
     def _open_recording(self, region: int) -> bool:
         try:
-            run = RecordingRun(region=region, start_index=self._i,
-                               end_index=self._i, cycle=self._cycle,
-                               attempt=self._attempt, t0=self._h.now(),
+            run = RecordingRun(region=region, start_index=self._step_index,
+                               end_index=self._step_index, cycle=self._cycle,
+                               attempt=self._attempt, t0=self._hooks.now(),
                                frame0=self._frames())
-            self._h.led(True)
-            self._h.begin_recording(run)
+            self._hooks.led(True)
+            self._hooks.begin_recording(run)
             self._open_run = run
             return True
         except Exception as e:           # noqa: BLE001
@@ -669,19 +671,19 @@ class RoutineEngine:
 
     def _close_recording(self, run: RecordingRun, *, interrupted: bool = False,
                          fault: str = "") -> None:
-        run.t_end = self._safe_value(self._h.now, run.t0)
+        run.t_end = self._safe_value(self._hooks.now, run.t0)
         n = self._frames()
         run.frames = None if (n is None or run.frame0 is None) else n - run.frame0
         run.interrupted = interrupted
         run.fault = fault
-        self._safe(self._h.led, False)
-        self._safe(self._h.end_recording, run)
+        self._safe(self._hooks.led, False)
+        self._safe(self._hooks.end_recording, run)
         self.runs.append(run)
         self._open_run = None
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _frames(self) -> int | None:
-        return self._safe_value(self._h.frames, None)
+        return self._safe_value(self._hooks.frames, None)
 
     @staticmethod
     def _safe(fn: Callable, *args) -> None:

@@ -53,7 +53,8 @@ flowchart LR
 The code follows the same split: `devices/<name>/` is the instrument (driver,
 thread, settings, panel) and knows nothing about the window; `adapters/<name>.py`
 plugs it into the window; `acq/` is the shared clock, recorder and trigger bus;
-`main.py` only wires them together. See [Architecture](#architecture) and the
+`main.py` and `window/` only wire them together. See [Architecture](#architecture),
+the one-page map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the
 annotated tree in [docs/STRUCTURE.md](docs/STRUCTURE.md).
 
 ## What it looks like

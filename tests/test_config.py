@@ -69,6 +69,22 @@ def check_sanitize(r: Report, tmp: Path) -> None:
             "a non-str channel value is dropped, the str kept")
 
 
+def check_timing(r: Report, tmp: Path) -> None:
+    _write(tmp, {"slow": {"timing": {"move_timeout_s": 45,
+                                     "trigger_timeout_s": -1,
+                                     "camera_hold_timeout_s": True,
+                                     "bogus_s": 3}}}, active="slow")
+    r.check(config.load_rigs()["slow"]["timing"] == {"move_timeout_s": 45.0},
+            "timing keeps known keys with positive numbers only (no bools, "
+            "negatives, or unknown keys)")
+    r.check(config.rig_timing("move_timeout_s", 30.0) == 45.0
+            and config.rig_timing("trigger_timeout_s", 600.0) == 600.0,
+            "rig_timing: the rig's value where it set one, else the default")
+    _write(tmp, {"slow": {}}, active="slow")
+    r.check(config.rig_timing("move_timeout_s", 30.0) == 30.0,
+            "a profile without timing keeps every default")
+
+
 def check_corrupt(r: Report, tmp: Path) -> None:
     _write(tmp, {})
     config._RIGS_PATH.write_text("{not json at all", encoding="utf-8")
@@ -344,6 +360,7 @@ def _part_rigs() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_rigs_"))
     try:
         check_sanitize(r, tmp)
+        check_timing(r, tmp)
         check_corrupt(r, tmp)
         check_non_object_quarantined(r, tmp)
         check_transient_locks(r, tmp)
@@ -511,7 +528,7 @@ def _part_modes() -> int:
 def _add_step(panel) -> None:
     """A routine step, added the way the +Step button does."""
     from acqApp.routines.settings import Step
-    panel._r.steps.append(Step(label="grid A", x_um=250.0, length=64,
+    panel._routine.steps.append(Step(label="grid A", x_um=250.0, length=64,
                                unit="frames", settle_s=0.4))
     panel._reload_table()
     panel._emit()

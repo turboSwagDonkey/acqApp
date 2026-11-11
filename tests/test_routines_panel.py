@@ -101,7 +101,7 @@ def check_step_repeats(r: Report, app) -> None:
     r.check(panel.settings.steps[row].repeats == 2
             and panel._tbl.item(row, col).text() == "×2",
             "editing the cell sets the step's count")
-    panel._r.groups.append(Group(start=0, end=0, repeats=4))
+    panel._routine.groups.append(Group(start=0, end=0, repeats=4))
     panel._reload_groups()
     r.check(panel._tbl.item(row, col).text() == "—",
             "a grouped step's cell gives way to its group")
@@ -967,7 +967,7 @@ def check_app(r: Report, app, tmp) -> None:
 
     app_pattern = tmp / "app.png"
     app_pattern.write_bytes(b"x")
-    panel._r.steps = [
+    panel._routine.steps = [
         Step(kind="move", label="one", x_um=inside, settle_s=0.0),
         Step(kind="record", label="frames-record", length=5, unit="frames"),
         Step(kind="move", label="two", x_um=inside, y_um=inside_y,
@@ -975,7 +975,7 @@ def check_app(r: Report, app, tmp) -> None:
         Step(kind="display", label="show", pattern=str(app_pattern)),
         Step(kind="record", label="seconds-record", length=0.30, unit="seconds"),
     ]
-    panel._r.save_mode = "single"   # both runs in one file to read back; rolling: check_file_rolling
+    panel._routine.save_mode = "single"   # both runs in one file to read back; rolling: check_file_rolling
     panel._reload_table()
 
     r.check(not win._btn_rec.isChecked(), "fixture: not recording yet")
@@ -1039,11 +1039,11 @@ def check_app(r: Report, app, tmp) -> None:
     win._btn_rec.setChecked(False)              # clean slate for the real run
     pump(app, 0.1)
 
-    panel._r.steps[0].x_um = hi_x + 10_000.0
+    panel._routine.steps[0].x_um = hi_x + 10_000.0
     r.check(any("soft limits" in p
                 for p in validate(panel.settings, adapter._rig())),
             "…and an out-of-limits target is refused before the run, not at step 7")
-    panel._r.steps[0].x_um = inside
+    panel._routine.steps[0].x_um = inside
 
     moved: list[tuple] = []
     lit: list[bool] = []
@@ -1073,8 +1073,8 @@ def check_app(r: Report, app, tmp) -> None:
 
     # A shorter template loaded mid-run used to IndexError the engine.
     adapter.update_display()
-    r.check(adapter._routine is not panel._r
-            and len(adapter._routine.steps) == len(panel._r.steps),
+    r.check(adapter._routine is not panel._routine
+            and len(adapter._routine.steps) == len(panel._routine.steps),
             "the engine runs a copy of the protocol, not the panel's object")
     r.check(not panel._protocol.isEnabled() and not panel._setup.isEnabled(),
             "…and every protocol edit (templates, ±Step, groups) is locked")
@@ -1182,10 +1182,10 @@ def check_file_rolling(r: Report, app, tmp) -> None:
         """Run one routine to completion, -> how many NEW recordings
         (session folders) appeared."""
         before = set(out.rglob("*_settings.json"))
-        panel._r.steps = steps
-        panel._r.groups = groups
-        panel._r.cycles = 1
-        panel._r.save_mode = save_mode      # the panel pins per_repeat
+        panel._routine.steps = steps
+        panel._routine.groups = groups
+        panel._routine.cycles = 1
+        panel._routine.save_mode = save_mode      # the panel pins per_repeat
         panel._reload_table()
         adapter._start()
         if not r.check(adapter._engine is not None,

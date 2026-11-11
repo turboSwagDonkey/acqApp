@@ -32,7 +32,8 @@ from acqApp.adapters.base import ModuleAdapter
 from acqApp.adapters.routine_files import FRAME_STREAM, RoutineFiles
 from acqApp.routines.banner import RoutineBanner
 from acqApp.routines.engine import (
-    BURST_STALL_S, Phase, RoutineEngine, RoutineHooks,
+    BURST_STALL_S, MOVE_TIMEOUT_S, TRIGGER_TIMEOUT_S, Phase, RoutineEngine,
+    RoutineHooks,
 )
 from acqApp.devices.dmd import roi_store
 from acqApp.devices.voltage_cam.presets import (
@@ -144,6 +145,7 @@ class RoutinesModule(RoutineFiles, ModuleAdapter):
         self._sealed = False            # the open file's .dcimg is closed
         self._routine_origin = 0.0
         self._hold_t0: float | None = None   # see _holding_for_camera
+        self._hold_limit = HOLD_TIMEOUT_S    # the rig's, read at Start
         self._trial_count: dict[int, int] = {}   # files opened per bracket
         # One row per trigger edge, for matching to the stim rig's log.
         self._edge_log = None                    # Path, created at first edge
@@ -398,9 +400,14 @@ class RoutinesModule(RoutineFiles, ModuleAdapter):
         self._rows = rows
         self._order = play_order(routine)
         self._group_repeat = group_repeat_at(routine, self._order)
+        self._hold_limit = config.rig_timing("camera_hold_timeout_s",
+                                             HOLD_TIMEOUT_S)
         self._engine = RoutineEngine(
             routine, self._hooks(), burst_frames=n_burst,
-            burst_stall_s=burst_stall_s(self.win.frame_rate_hz()))
+            burst_stall_s=burst_stall_s(self.win.frame_rate_hz()),
+            move_timeout_s=config.rig_timing("move_timeout_s", MOVE_TIMEOUT_S),
+            trigger_timeout_s=config.rig_timing("trigger_timeout_s",
+                                                TRIGGER_TIMEOUT_S))
         self._engine.start(trigger="ttl")
         if n_burst:
             self._status(f"camera bursts {n_burst} frames per edge")
@@ -508,10 +515,10 @@ class RoutinesModule(RoutineFiles, ModuleAdapter):
                 self._status(f"camera back after {held:.1f} s — the step's "
                              f"clock restarts from here")
             return False
-        if held > HOLD_TIMEOUT_S:
+        if held > self._hold_limit:
             self._hold_t0 = None
             eng.pause(f"the camera did not come back within "
-                      f"{HOLD_TIMEOUT_S:g} s of the file roll")
+                      f"{self._hold_limit:g} s of the file roll")
             return False
         return True
 

@@ -171,10 +171,19 @@ RIG_BLANKABLE: frozenset[str] = frozenset({"puffer"})
 # anything else names its own device ("Dev4/ai0").
 _CHANNEL_SPACES = ("port", "line", "ai", "ao", "ctr", "PFI", "di", "do")
 
+# What a rig's "timing" section may set, in seconds; the defaults stay in the
+# code that uses them. Other keys are dropped.
+RIG_TIMING_KEYS = ("move_timeout_s", "trigger_timeout_s",
+                   "camera_hold_timeout_s")
+
+
+def _positive_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
 
 def load_rigs() -> dict:
     """Named rig -> profile, sanitized like modes; every surviving profile
-    has all three keys."""
+    has all four keys."""
     rigs = {}
     for name, profile in _load_json(_RIGS_PATH).items():
         if not isinstance(name, str) or not isinstance(profile, dict):
@@ -182,6 +191,7 @@ def load_rigs() -> dict:
         device = profile.get("ni_device")
         channels = profile.get("channels")
         hardware = profile.get("hardware")
+        timing = profile.get("timing")
         rigs[name] = {
             "ni_device": device if isinstance(device, str) and device
                          else DEFAULT_NI_DEVICE,
@@ -192,6 +202,10 @@ def load_rigs() -> dict:
             "hardware": {k: v for k, v in hardware.items()
                          if isinstance(k, str) and isinstance(v, bool)}
                         if isinstance(hardware, dict) else {},
+            # Positive numbers only; anything else keeps the code's default.
+            "timing": {k: float(v) for k, v in timing.items()
+                       if k in RIG_TIMING_KEYS and _positive_number(v)}
+                      if isinstance(timing, dict) else {},
         }
     return rigs
 
@@ -225,6 +239,11 @@ def rig_has(key: str) -> bool:
     """Unset means fitted. Only an explicit False skips the DAQ open."""
     fitted = rig_profile().get("hardware", {}).get(key)
     return fitted if isinstance(fitted, bool) else True
+
+
+def rig_timing(key: str, default: float) -> float:
+    """The active rig's override of a timing constant, else `default`."""
+    return rig_profile().get("timing", {}).get(key, default)
 
 
 def order_modules(keys) -> list[str]:

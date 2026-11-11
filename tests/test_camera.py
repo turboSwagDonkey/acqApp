@@ -546,7 +546,7 @@ def check_routine_counts_recorder(r: Report, app) -> None:
             f"…and reports the recorder's own total while one is "
             f"(got {win.dcimg_frames('voltage_cam')})")
 
-    adapter.panel._r.steps = [Step(kind="wait", length=5, unit="frames")]
+    adapter.panel._routine.steps = [Step(kind="wait", length=5, unit="frames")]
     adapter.panel._reload_table()
     hooks = adapter._hooks()
     r.check(hooks.frames() == 41,
@@ -586,7 +586,7 @@ def check_wait_for_camera(r: Report, app) -> None:
 
     win = make_window({"voltage_cam", "routines", "stage"})
     adapter = {m.key: m for m in win._modules}["routines"]
-    adapter.panel._r.steps = [Step(kind="wait", length=30, unit="seconds")]
+    adapter.panel._routine.steps = [Step(kind="wait", length=30, unit="seconds")]
     adapter.panel._reload_table()
     adapter._start()
     eng = adapter._engine
@@ -618,7 +618,7 @@ def check_wait_for_camera(r: Report, app) -> None:
 
     # Re-issuing a move or resetting a trigger's baseline would undo the step.
     adapter._abort()
-    adapter.panel._r.steps = [Step(kind="move", x_um=0.0)]
+    adapter.panel._routine.steps = [Step(kind="move", x_um=0.0)]
     adapter.panel._reload_table()
     adapter._start()
     r.check(adapter._engine.rearm_step() is False,

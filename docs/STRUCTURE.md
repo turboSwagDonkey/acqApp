@@ -303,6 +303,8 @@ saving/                 where the session file goes
   config.py             SaveConfig + path building — no Qt
   panel.py
 docs/
+  ARCHITECTURE.md       one-page map: a session's flow, the adapter lifecycle,
+                        adding an instrument, customizing a rig
   AUDIT-2026-08.md      closed audit — archive — gitignored, private repo
   AUDIT-2026-10.md      open optimization/terseness audit — gitignored, private repo
   CAMERA_TRANSFER.md
@@ -372,7 +374,7 @@ requirements-pupil.txt  the pupil tool's few dependencies (no DAQ/camera/DMD)
 modes.json              named mode recipes (camera preset/exposure, DMD
                         all-on) main.py applies on selection
 rigs.json               per-rig hardware profiles (NI device, DAQ channels,
-                        what is fitted) — tracked; acqapp_local.json's "rig"
+                        what is fitted, timing overrides) — tracked; acqapp_local.json's "rig"
                         key names which one THIS machine is
 named_store.py          session/archive rotation + safe file names shared by
                         fov_store and roi_store (no Qt)

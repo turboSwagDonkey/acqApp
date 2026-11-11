@@ -45,12 +45,12 @@ class SettingsPanel(QWidget):
 
     def __init__(self, routine: Routine | None = None, parent=None) -> None:
         super().__init__(parent)
-        self._r = routine or Routine()
+        self._routine = routine or Routine()
         # One pass, a file per recording run, held at each .dcimg roll: the
         # only shapes the rig uses, so none is offered and a template's own
         # values are not adopted.
-        self._r.cycles, self._r.save_mode = 1, "per_repeat"
-        self._r.wait_for_camera = True
+        self._routine.cycles, self._routine.save_mode = 1, "per_repeat"
+        self._routine.wait_for_camera = True
         self._loading = False
         self._painted: str | None = None      # last phase actually painted
         self._painted_text: str | None = None
@@ -104,7 +104,7 @@ class SettingsPanel(QWidget):
         self._cmb_tpl.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._cmb_tpl.setMinimumContentsLength(16)
-        self._txt_name = compact(QLineEdit(self._r.name), chars=24)
+        self._txt_name = compact(QLineEdit(self._routine.name), chars=24)
         form = QFormLayout()
         form.setSpacing(4)
         form.addRow("Template:", button_row(
@@ -118,7 +118,7 @@ class SettingsPanel(QWidget):
         form.addRow("Name:", self._txt_name)
         setup.addLayout(form)
 
-        self._tbl = StepTable(self._r.steps)
+        self._tbl = StepTable(self._routine.steps)
         self._tbl.setMinimumHeight(160)
         self._tbl.changed.connect(self._emit)
         self._tbl.pattern_requested.connect(self._pick_pattern)
@@ -131,7 +131,7 @@ class SettingsPanel(QWidget):
         self._tbl.group_requested.connect(self._group_selected)
         self._tbl.itemSelectionChanged.connect(self._on_selection_changed)
         # ── what a new FOV step starts with ──────────────────────────────
-        r = self._r
+        r = self._routine
         self._spn_capture = spin(0.01, 1e6, r.capture_length, decimals=2,
                                  step=10.0, track=False,
                                  tooltip="How long each FOV step records.")
@@ -302,10 +302,10 @@ class SettingsPanel(QWidget):
     # ── repeat groups ────────────────────────────────────────────────────────
     def _reload_groups(self) -> None:
         self._lst_groups.clear()
-        for g in self._r.groups:
+        for g in self._routine.groups:
             self._lst_groups.addItem(
                 f"steps {g.start + 1}-{g.end + 1} × {g.repeats}")
-        self._tbl.set_groups(self._r.groups)
+        self._tbl.set_groups(self._routine.groups)
 
     def _on_selection_changed(self) -> None:
         span = self._tbl.selected_range()
@@ -319,23 +319,23 @@ class SettingsPanel(QWidget):
         if span is None:
             return
         start, end = span
-        self._r.groups.append(Group(start=start, end=end,
+        self._routine.groups.append(Group(start=start, end=end,
                                     repeats=self._spn_g_repeats.value()))
         self._reload_groups()
         self._emit()
 
     def _del_group(self) -> None:
         row = self._lst_groups.currentRow()
-        if 0 <= row < len(self._r.groups):
-            del self._r.groups[row]
+        if 0 <= row < len(self._routine.groups):
+            del self._routine.groups[row]
             self._reload_groups()
             self._emit()
 
     def _edit_group_repeats(self, item) -> None:
         row = self._lst_groups.row(item)
-        if not (0 <= row < len(self._r.groups)):
+        if not (0 <= row < len(self._routine.groups)):
             return
-        g = self._r.groups[row]
+        g = self._routine.groups[row]
         n, ok = QInputDialog.getInt(
             self, "Repeat count",
             f"Steps {g.start + 1}-{g.end + 1} repeat:", g.repeats, 1, 999)
@@ -354,7 +354,7 @@ class SettingsPanel(QWidget):
 
     def _add_step(self, kind: str) -> None:
         """A Wait lasts the general wait (1 s if that's none)."""
-        r = self._r
+        r = self._routine
         step = Step(kind=kind)
         if kind == "wait":
             step.length, step.unit = r.wait_s or 1.0, "seconds"
@@ -364,7 +364,7 @@ class SettingsPanel(QWidget):
     def _add_fov_step(self) -> None:
         """Pick a saved FOV -> a new FOV step with the general capture/wait
         and the FOV's ROI set (drawn now if it has none)."""
-        r = self._r
+        r = self._routine
         r.steps.append(self._new_fov_step())
         row = len(r.steps) - 1
         if not self._pick_fov_for(row):
@@ -375,20 +375,20 @@ class SettingsPanel(QWidget):
         step = self._new_fov_step()
         self._fill_from_fov(step, fov)
         step.pattern = str(roi)
-        self._r.steps.append(step)
-        row = len(self._r.steps) - 1
+        self._routine.steps.append(step)
+        row = len(self._routine.steps) - 1
         self._list_edited(row)
         return row
 
     def _new_fov_step(self) -> Step:
-        r = self._r
+        r = self._routine
         return Step(kind="fov", length=r.capture_length, unit=r.capture_unit,
                     wait_s=r.wait_s, repeats=DEFAULT_REPEATS, trigger=True)
 
     def _on_general_changed(self, *_a) -> None:
         """Steps still on the old general value follow; hand-edited ones keep
         theirs. A unit change moves every FOV step: one unit per routine."""
-        r = self._r
+        r = self._routine
         old_len, old_unit, old_wait = self._general
         r.capture_length = self._spn_capture.value()
         r.capture_unit = self._cmb_unit.currentText()
@@ -415,14 +415,14 @@ class SettingsPanel(QWidget):
     def _dup_step(self) -> None:
         row = self._selected()
         if row >= 0:
-            self._insert_step(row + 1, replace(self._r.steps[row]), owner=row)
+            self._insert_step(row + 1, replace(self._routine.steps[row]), owner=row)
             self._list_edited(row + 1)
 
     def _del_step(self) -> None:
         row = self._selected()
         if row >= 0:
             self._remove_step(row)
-            self._list_edited(min(row, len(self._r.steps) - 1))
+            self._list_edited(min(row, len(self._routine.steps) - 1))
 
     def _move_up(self) -> None:
         self._move(-1)
@@ -438,21 +438,21 @@ class SettingsPanel(QWidget):
     def _show_timeline(self) -> None:
         from acqApp.routines.timeline import TimelineDialog
 
-        TimelineDialog(self._r, self._hz, self).exec()
+        TimelineDialog(self._routine, self._hz, self).exec()
 
     def _pick_pattern(self) -> None:
         self._pick_pattern_for(self._selected())
 
     def _pick_pattern_for(self, row: int) -> None:
-        if not (0 <= row < len(self._r.steps)):
+        if not (0 <= row < len(self._routine.steps)):
             return
-        cur = self._r.steps[row].pattern
+        cur = self._routine.steps[row].pattern
         start = str(Path(cur).parent) if cur else ""
         path, _ = QFileDialog.getOpenFileName(
             self, "Pattern for this step", start,
             "Images (*.png *.bmp *.tif);;All files (*)")
         if path:                    # empty = cancelled, which must not clear it
-            self._r.steps[row].pattern = path
+            self._routine.steps[row].pattern = path
             self._reload_table()
             self._emit()
 
@@ -460,13 +460,13 @@ class SettingsPanel(QWidget):
         self._pick_roi_for(self._selected())
 
     def _pick_roi_for(self, row: int) -> None:
-        if not (0 <= row < len(self._r.steps)):
+        if not (0 <= row < len(self._routine.steps)):
             return
         from acqApp.devices.dmd.roi_picker import RoiSetPicker
 
         dlg = RoiSetPicker(self)
         if dlg.exec() and dlg.path is not None:
-            self._r.steps[row].pattern = str(dlg.path)
+            self._routine.steps[row].pattern = str(dlg.path)
             self._reload_table()
             self._emit()
 
@@ -484,9 +484,9 @@ class SettingsPanel(QWidget):
         self._set_position_for(self._selected())
 
     def _set_position_for(self, row: int) -> None:
-        if not (0 <= row < len(self._r.steps)):
+        if not (0 <= row < len(self._routine.steps)):
             return
-        step = self._r.steps[row]
+        step = self._routine.steps[row]
         dlg = QDialog(self)
         dlg.setWindowTitle("Stage position for this step")
         form = QFormLayout(dlg)
@@ -520,7 +520,7 @@ class SettingsPanel(QWidget):
     def _pick_fov_for(self, row: int) -> bool:
         """Pick a saved FOV for step `row`; an FOV step takes its ROI set too.
         -> whether one was picked."""
-        if not (0 <= row < len(self._r.steps)):
+        if not (0 <= row < len(self._routine.steps)):
             return False
         from acqApp.devices.stage.fov_picker import FovPicker
 
@@ -529,7 +529,7 @@ class SettingsPanel(QWidget):
         fov = dlg.fov
         if fov is None:
             return False
-        step = self._r.steps[row]
+        step = self._routine.steps[row]
         self._fill_from_fov(step, fov)
         if step.kind == "fov":
             roi = pairs.roi_for_fov(fov) or self._draw_roi(fov)
@@ -561,8 +561,8 @@ class SettingsPanel(QWidget):
     def _insert_step(self, at: int, step: Step, owner: int) -> None:
         """Insert `step` at `at`, belonging with step `owner` (pre-insert
         index): groups holding `owner` take it in, later groups shift."""
-        self._r.steps.insert(at, step)
-        for g in self._r.groups:
+        self._routine.steps.insert(at, step)
+        for g in self._routine.groups:
             if g.start <= owner <= g.end:
                 g.end += 1
             elif g.start >= at:
@@ -572,23 +572,23 @@ class SettingsPanel(QWidget):
     def _remove_step(self, row: int) -> None:
         """Delete step `row`: groups holding it shrink (an emptied one goes),
         later groups shift, so each still repeats the steps it did."""
-        del self._r.steps[row]
-        for g in self._r.groups:
+        del self._routine.steps[row]
+        for g in self._routine.groups:
             if g.start > row:
                 g.start -= 1
             if g.end >= row:
                 g.end -= 1
-        self._r.groups[:] = [g for g in self._r.groups if g.start <= g.end]
+        self._routine.groups[:] = [g for g in self._routine.groups if g.start <= g.end]
 
     def _clear_pattern(self) -> None:
         """Back to no light (cancelling the file dialog doesn't)."""
         row = self._selected()
-        if row >= 0 and self._r.steps[row].pattern:
+        if row >= 0 and self._routine.steps[row].pattern:
             self._tbl.clear_cell(row, "roi")
 
     def _refresh_summary(self) -> None:
         """One line: how long this is, and whether any of it emits light."""
-        r = self._r
+        r = self._routine
         self._lbl_hint.setVisible(bool(r.steps))
         if not r.steps:
             self._lbl_summary.setText("No steps yet: save an FOV + ROIs on "
@@ -739,16 +739,17 @@ class SettingsPanel(QWidget):
         self.status_message.emit(f"template {name!r} deleted")
 
     def set_routine(self, r: Routine) -> None:
-        """Adopt `r` in place: the table holds `self._r.steps` itself, so
+        """Adopt `r` in place: the table holds `self._routine.steps` itself, so
         rebinding the list would orphan it."""
         self._loading = True
         try:
-            self._r.name = r.name
-            self._r.steps[:] = r.steps
-            self._r.groups[:] = r.groups
-            self._txt_name.setText(self._r.name)
-            self._r.capture_length, self._r.capture_unit, self._r.wait_s = \
-                self._general = (r.capture_length, r.capture_unit, r.wait_s)
+            self._routine.name = r.name
+            self._routine.steps[:] = r.steps
+            self._routine.groups[:] = r.groups
+            self._txt_name.setText(self._routine.name)
+            rt = self._routine
+            rt.capture_length, rt.capture_unit, rt.wait_s = self._general = (
+                r.capture_length, r.capture_unit, r.wait_s)
             with QSignalBlocker(self._cmb_unit):
                 self._cmb_unit.setCurrentText(r.capture_unit)
             self._spn_capture.setValue(r.capture_length)
@@ -768,6 +769,6 @@ class SettingsPanel(QWidget):
 
     @property
     def settings(self) -> Routine:
-        self._r.name = self._txt_name.text().strip() or "routine"
-        return self._r
+        self._routine.name = self._txt_name.text().strip() or "routine"
+        return self._routine
 
