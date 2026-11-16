@@ -60,7 +60,8 @@ class DmdModule(ModuleAdapter):
         self._stop_timer = QTimer()
         self._stop_timer.setSingleShot(True)
         self._stop_timer.timeout.connect(lambda: self._guard("stop", self.stop_display))
-        self._light_btn: QPushButton | None = None
+        self._light_btn: QPushButton | None = None     # on the card
+        self._bar_btn: QPushButton | None = None       # beside Record
 
     def _guard(self, what: str, fn, *args, dark: bool = True) -> None:
         """Run a slot's work. A raise would abort the app (no excepthook) with
@@ -86,23 +87,33 @@ class DmdModule(ModuleAdapter):
         self._live_timer.stop()
         self._show_light(bool(c is not None and c.projecting))
 
-    # ── the sidebar card: the uploaded frame and the light switch ──
-    def mini_view(self) -> QWidget:
-        """Built fresh per card, so the switch is too; the newest is the one
-        `_show_light` keeps in step."""
+    # ── the light switch: on the card and beside Record, kept in step ──
+    def _make_switch(self, size_qss: str) -> QPushButton:
         b = QPushButton()
         b.setCheckable(True)
-        c = style.HEX["dmd"]
-        b.setStyleSheet(
-            style.toggle_btn("dmd")
-            + f"QPushButton{{font-weight:bold;padding:1px 8px}}"
-              f"QPushButton:checked{{background:{c};color:white;"
-              f"border:1px solid {c}}}")
+        b.setStyleSheet(style.toggle_btn("dmd") + size_qss)
         b.setToolTip(
             "THIS PROJECTS LIGHT.\nTurns the DMD on or off using the "
             "display selected on the DMD tab (Image, ROIs or All on). "
             "With nothing selected it projects all-on.")
         b.toggled.connect(lambda on: self._guard("switch", self._on_light_button, on))
+        return b
+
+    def status_widget(self) -> QPushButton:
+        if self._bar_btn is None:
+            # Record's size and weight, so the two read as one pair.
+            self._bar_btn = self._make_switch(
+                "QPushButton{font-weight:bold;font-size:11pt;padding:6px 22px;"
+                "border-width:2px;border-radius:5px}"
+                "QPushButton:checked{border-width:2px}")
+            self._show_light(self.controller is not None
+                             and self.controller.projecting)
+        return self._bar_btn
+
+    def mini_view(self) -> QWidget:
+        """Built fresh per card, so the switch is too; the newest is the one
+        `_show_light` keeps in step."""
+        b = self._make_switch("QPushButton{font-weight:bold;padding:1px 8px}")
         self._light_btn = b
         self._show_light(self.controller is not None
                          and self.controller.projecting)
@@ -118,14 +129,16 @@ class DmdModule(ModuleAdapter):
         return self.panel.view
 
     def _show_light(self, lit: bool) -> None:
-        """Make the button say what the projector is doing; never re-triggers it."""
-        b = self._light_btn
-        if b is None:
-            return
-        with QSignalBlocker(b):
-            b.setChecked(lit)
-        b.setText(_LIGHT_ON if lit else _LIGHT_OFF)
-        b.setEnabled(self.controller is not None)
+        """Make both switches say what the projector is doing; never re-triggers it."""
+        if self.panel is not None:
+            self.panel.set_lit(lit)
+        for b in (self._light_btn, self._bar_btn):
+            if b is None:
+                continue
+            with QSignalBlocker(b):
+                b.setChecked(lit)
+            b.setText(_LIGHT_ON if lit else _LIGHT_OFF)
+            b.setEnabled(self.controller is not None)
 
     def _display_problem(self) -> str:
         """Why the SELECTED display can't be shown ('' = it can). It is never

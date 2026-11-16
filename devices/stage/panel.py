@@ -245,7 +245,7 @@ class SettingsPanel(QWidget):
         self._btn_stop_all.setStyleSheet(style.stop_btn())
         self._btn_stop_all.clicked.connect(self._stop_all)
         self._btn_home = QPushButton("Set home here")
-        self._btn_home.setStyleSheet(style.solid_btn("stage"))
+        self._btn_home.setStyleSheet(style.big_outline_btn("stage"))
         self._btn_home.setToolTip(
             "Declare the CURRENT position as home (0,0), the centre of the "
             f"imaging window: the map draws the {WINDOW_DIAMETER_UM:g} µm "
@@ -255,8 +255,8 @@ class SettingsPanel(QWidget):
         vroot.addWidget(self._motion)
         stop_row = QHBoxLayout()
         stop_row.setSpacing(6)
-        stop_row.addWidget(self._btn_home)
-        stop_row.addWidget(self._btn_stop_all, 1)   # STOP ALL keeps the room
+        stop_row.addWidget(self._btn_home, 1)
+        stop_row.addWidget(self._btn_stop_all, 1)
         vroot.addLayout(stop_row)
 
         # ── Setup ────────────────────────────────────────────────────────────

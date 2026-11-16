@@ -107,6 +107,19 @@ def stop_btn() -> str:
     return solid_btn("puffer") + "QPushButton{font-size:12pt;padding:8px}"
 
 
+def big_outline_btn(key: str) -> str:
+    """Stop-sized but outlined, for a one-off action beside STOP ALL. The 2px
+    border eats 2px of padding, so both heights match."""
+    c = HEX[key]
+    return (
+        f"QPushButton{{background:{_alpha(c)};color:{c};border:2px solid {c};"
+        "border-radius:4px;padding:6px;font-weight:bold;font-size:12pt}"
+        f"QPushButton:hover{{background:{_alpha(c, 90)}}}"
+        f"QPushButton:pressed{{background:{c};color:white}}"
+        "QPushButton:disabled{background:#3a3a3a;color:#777;border:2px solid #555}"
+    )
+
+
 def accent_panel(key: str) -> str:
     """Group boxes in the subsystem accent. The checkable-box indicator is
     hidden: `widgets.collapsible` shows ▾/▸ in the title instead."""

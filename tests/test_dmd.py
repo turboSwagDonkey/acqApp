@@ -473,9 +473,11 @@ def check_light_switch(r) -> None:
     msg = lambda: win.statusBar().currentMessage()          # noqa: E731
 
     card = win._folds["dmd"].card
+    bar = win._status_widgets.get("dmd")
     r.check(btn is not None and card.isAncestorOf(btn)
-            and "dmd" not in win._status_widgets,
-            "the DMD's switch sits on its card, not the status bar")
+            and bar is dmd._bar_btn and bar is not None
+            and win.statusBar().isAncestorOf(bar),
+            "the DMD's switch sits on its card and beside Record")
     clipped = []
     keep = btn.text()
     for text in ("DMD OFF", "● DMD ON"):
@@ -502,6 +504,22 @@ def check_light_switch(r) -> None:
     pump(app, 0.05)
     r.check(not btn.isChecked() and btn.text() == "DMD OFF" and not lit(),
             "pressed again it turns the light off")
+    r.check(panel.view.isAncestorOf(panel._modes)
+            and not panel.isAncestorOf(panel._modes),
+            "Show (All ON / Image / ROIs) sits under the preview, not in Settings")
+    r.check(panel.camera_view() is None
+            and "not calibrated" in panel._seen_text(None),
+            "with no calibration the preview says it isn't tied to the camera")
+    bar.click()
+    pump(app, 0.05)
+    r.check(lit() and btn.isChecked() and btn.text() == bar.text() == "● DMD ON",
+            "the status-bar switch lights it too, and the card's follows")
+    r.check(panel._lit, "…and the preview's chip outline shows it lit")
+    btn.click()
+    pump(app, 0.05)
+    r.check(not lit() and not bar.isChecked() and bar.text() == "DMD OFF"
+            and not panel._lit,
+            "…and the card's switch turns it off, the status bar and outline following")
 
     # A pattern file is selected: that is what lights, not all-on.
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmdlight_"))
@@ -725,6 +743,20 @@ def _part_calib() -> int:
             and back.dmd_size == c.dmd_size and back.cam_size == c.cam_size
             and back.model == c.model,
             "a calibration survives save/load")
+
+    # ── the camera's view on the chip (the DMD preview's camera line) ──
+    same = DmdCalibration(cam_to_dmd=np.eye(3), dmd_size=(100, 80),
+                          cam_size=(100, 80))
+    edge = same.camera_outline()
+    r.check(same.seen_fraction() == 1.0
+            and np.allclose(edge.min(axis=0), 0) and np.allclose(edge.max(axis=0), (99, 79))
+            and np.allclose(edge[0], edge[-1]),
+            "a camera matching the chip sees all of it; its outline is the chip's, closed")
+    half = DmdCalibration(cam_to_dmd=np.array([[1, 0, 50], [0, 1, 0], [0, 0, 1.0]]),
+                          dmd_size=(100, 80), cam_size=(100, 80))
+    f = half.seen_fraction()
+    r.check(0.4 < f < 0.6 and np.isclose(half.camera_outline()[:, 0].min(), 50),
+            f"…shifted half a chip over, it sees about half ({f:.2f}), its edge at x=50")
     old = c.to_dict() | {"model": "affine-noshear+corners", "rms_px": 0.4,
                          "stripes": [[0, 0.0, 1.0, 2.0]],
                          "vignette": [1.0, 2.0, 3.0]}

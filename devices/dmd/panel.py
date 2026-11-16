@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from PyQt6.QtCore import QRect, QSignalBlocker, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter, QPen,
-                         QPixmap, QShortcut)
+from PyQt6.QtCore import (QPointF, QRect, QRectF, QSignalBlocker, QSize, Qt,
+                          pyqtSignal)
+from PyQt6.QtGui import (QColor, QImage, QKeySequence, QPainter,
+                         QPainterPath, QPen, QPixmap, QPolygonF, QShortcut)
 from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
@@ -20,7 +21,8 @@ from acqApp.widgets import (PillGroup, button_row, collapsible, pairs_grid,
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
-                                        roi_frame, subsample_frame)
+                                        load_calibration, roi_frame,
+                                        subsample_frame)
 
 # Sub-sampling slider stops, dimmest first: 1 in n off keeps (n-1)/n, 1 = off.
 _SUB_STEPS = (2, 3, 4, 5, 6, 7, 8, 9, 10, 1)
@@ -103,6 +105,7 @@ class SettingsPanel(QWidget):
         # Name of a saved set a routine loaded; cleared once hand-edited.
         self._roi_pattern_name: str = ""
         self._shortcuts: list[QShortcut] = []
+        self._lit = False               # the chip outline: solid while projecting
         self._build()
         self._init_shortcuts()
 
@@ -148,26 +151,39 @@ class SettingsPanel(QWidget):
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setStyleSheet(f"color:{style.muted()};")
         self._preview.setToolTip(
-            "What the DMD switch projects. In Image mode (Fit off), drag to "
-            "move the pattern — the same offset as Offset X/Y.")
+            "What the DMD switch projects. The magenta border is the chip: "
+            "dashed while dark, solid while projecting. With a calibration, "
+            "the blue outline is the camera's view on the chip; mirrors "
+            "outside it are shaded (light there won't be seen). In Image "
+            "mode (Fit off), drag to move the pattern — the same offset as "
+            "Offset X/Y.")
         self._preview.dragged.connect(self._on_preview_dragged)
-        # What the preview shows, in words.
-        self._lbl_pattern = QLabel("No pattern loaded")
-        self._lbl_pattern.setWordWrap(True)
-        self._lbl_pattern.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # What the preview shows, in words: painted under the frame, not a
+        # label at the dock's bottom edge far from it.
+        self._caption = "No pattern loaded"
 
         self.view = QWidget()
         vroot = QVBoxLayout(self.view)
         vroot.setContentsMargins(4, 4, 4, 4)
-        vroot.setSpacing(4)
-        vroot.addWidget(self._preview, 1)
-        vroot.addWidget(self._lbl_pattern)
+        vroot.setSpacing(6)
+        # The preview is capped at what the frame needs (_update_preview), so
+        # it and Show stay together, centred, whatever the dock's height.
+        vroot.addStretch(1)
+        vroot.addWidget(self._preview, 100)
+        # Under the preview, not in Settings: it chooses what the preview shows.
+        show = QHBoxLayout()
+        show.setSpacing(6)
+        show.addStretch(1)
+        show.addWidget(QLabel("Show:"))
+        show.addWidget(self._modes)
+        show.addStretch(1)
+        vroot.addLayout(show)
+        vroot.addStretch(1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
         root.addWidget(self._lbl_warn)
-        root.addLayout(button_row(QLabel("Show:"), self._modes))
         self._image = self._build_image()
         self._roi = self._build_rois()
         root.addWidget(self._image)
@@ -554,7 +570,7 @@ class SettingsPanel(QWidget):
 
         mode = self.mode
         if mode == MODE_ALL_ON:
-            self._lbl_pattern.setText("All mirrors ON (Full Illumination)")
+            self._caption = "All mirrors ON (Full Illumination)"
             frame = subsample_frame(np.full((h, w), 255, dtype=np.uint8),
                                     self._sub_n())
         elif mode == MODE_ROI:
@@ -564,23 +580,22 @@ class SettingsPanel(QWidget):
                      if n and self._calib_path else None)
             if frame is None:
                 frame = np.zeros((h, w), dtype=np.uint8)
-                self._lbl_pattern.setText(
-                    "Needs a calibration to project the ROIs"
-                    if n else "Nothing to project: draw or load ROIs")
+                self._caption = ("Needs a calibration to project the ROIs"
+                                 if n else "Nothing to project: draw or load ROIs")
             else:
                 frame = subsample_frame(frame, self._sub_n())
                 name = (f"{self._roi_pattern_name}: "
                         if self._roi_pattern_name else "")
-                self._lbl_pattern.setText(
+                self._caption = (
                     f"{name}{n} ROI(s) -> {int((frame > 0).sum())} mirrors")
         elif p is None:
-            self._lbl_pattern.setText("No pattern loaded")
+            self._caption = "No pattern loaded"
             frame = np.zeros((h, w), dtype=np.uint8)
         elif not p.exists():
-            self._lbl_pattern.setText(f"{p.name} — missing")
+            self._caption = f"{p.name} — missing"
             frame = np.zeros((h, w), dtype=np.uint8)
         else:
-            self._lbl_pattern.setText(p.name)
+            self._caption = p.name
             try:
                 arr = self._pattern_array(p)
                 s = self.settings
@@ -603,8 +618,22 @@ class SettingsPanel(QWidget):
         frame = np.ascontiguousarray(frame)
         qimg = QImage(frame.data, w, h, w, QImage.Format.Format_Grayscale8)
 
-        pad = 2                         # keeps the border stroke unclipped
-        target = QSize(w, h).scaled(max(1, pw - 2 * pad), max(1, ph - 2 * pad),
+        # Under the frame: what it shows (inside it when nothing is lit), then
+        # how it sits in the camera's view.
+        empty = not frame.any()
+        view = self.camera_view()
+        lines = ([] if empty else [self._caption]) + [self._seen_text(view)]
+        fm = self._preview.fontMetrics()
+        gap = 6
+        cap_h = gap + len(lines) * fm.height()
+        pad = 3                         # keeps the lit border's stroke unclipped
+        # Width decides height: a taller preview would only add empty bands.
+        want = max(self._preview.minimumHeight(),
+                   int(pw * h / w) + 2 * pad + cap_h)
+        if self._preview.maximumHeight() != want:
+            self._preview.setMaximumHeight(want)    # re-enters via resized
+        target = QSize(w, h).scaled(max(1, pw - 2 * pad),
+                                    max(1, ph - 2 * pad - cap_h),
                                     Qt.AspectRatioMode.KeepAspectRatio)
         self._preview_scale = w / max(1, target.width())
         scaled = QPixmap.fromImage(qimg).scaled(
@@ -613,28 +642,86 @@ class SettingsPanel(QWidget):
 
         canvas = QPixmap(pw, ph)
         canvas.fill(QColor(0, 0, 0, 0))         # the tab's grey shows through
-        rect = QRect((pw - target.width()) // 2, (ph - target.height()) // 2,
+        # Frame and caption centred as one block.
+        rect = QRect((pw - target.width()) // 2,
+                     (ph - target.height() - cap_h) // 2,
                      target.width(), target.height())
         painter = QPainter(canvas)
+        painter.setFont(self._preview.font())
         painter.drawPixmap(rect, scaled)
-        pen = QPen(QColor(style.HEX.get("dmd", "#e040fb")), 1.5,
-                   Qt.PenStyle.DashLine)
-        pen.setDashPattern([4, 4])
+        self._draw_camera(painter, rect, w, h, view)
+        # The chip's edge: solid and heavy while projecting, dashed while dark.
+        pen = QPen(QColor(style.HEX["dmd"]), 3.0 if self._lit else 1.5)
+        if not self._lit:
+            pen.setDashPattern([4, 4])
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
-        # Nothing lit: say why inside the frame, not in a line under it.
-        empty = not frame.any()
+        painter.setPen(QColor(style.muted()))
         if empty:
-            painter.setFont(self._preview.font())
-            painter.setPen(QColor(style.muted()))
             painter.drawText(rect.adjusted(12, 12, -12, -12),
                              int(Qt.AlignmentFlag.AlignCenter
                                  | Qt.TextFlag.TextWordWrap),
-                             self._lbl_pattern.text())
+                             self._caption)
+        top = rect.bottom() + gap
+        for i, text in enumerate(lines):
+            painter.drawText(QRect(0, top + i * fm.height(), pw, fm.height()),
+                             int(Qt.AlignmentFlag.AlignCenter),
+                             fm.elidedText(text, Qt.TextElideMode.ElideMiddle,
+                                           pw - 8))
         painter.end()
-        self._lbl_pattern.setVisible(not empty)
         self._preview.setPixmap(canvas)
+
+    def set_lit(self, on: bool) -> None:
+        """Whether the DMD is projecting: the chip outline turns solid."""
+        if on != self._lit:
+            self._lit = on
+            self._update_preview()
+
+    def camera_view(self) -> tuple[np.ndarray, float] | None:
+        """(the camera's view as a closed outline in mirrors, the share of the
+        chip inside it); None without a readable calibration (the ROI line
+        already says why)."""
+        if not self._calib_path:
+            return None
+        try:
+            c = load_calibration(self._calib_path)
+            return c.camera_outline(), c.seen_fraction()
+        except Exception:                           # noqa: BLE001
+            return None
+
+    def _draw_camera(self, painter: QPainter, rect: QRect, w: int, h: int,
+                     view: tuple[np.ndarray, float] | None) -> None:
+        """Where the camera's view edge crosses the chip, and a veil over the
+        mirrors it can't see: light there reaches no recorded frame."""
+        if view is None or view[1] >= 1.0:
+            return
+        pts = view[0]
+        sx, sy = rect.width() / w, rect.height() / h
+        poly = QPolygonF([QPointF(rect.x() + x * sx, rect.y() + y * sy)
+                          for x, y in pts])
+        chip = QPainterPath()
+        chip.addRect(QRectF(rect))
+        seen = QPainterPath()
+        seen.addPolygon(poly)
+        cam = QColor(style.HEX["voltage_cam"])
+        painter.save()
+        painter.setClipRect(rect)
+        painter.fillPath(chip.subtracted(seen), QColor(0, 0, 0, 120))
+        painter.setPen(QPen(cam, 2.0))
+        painter.drawPolygon(poly)
+        painter.restore()
+
+    @staticmethod
+    def _seen_text(view: tuple[np.ndarray, float] | None) -> str:
+        if view is None:
+            return "not calibrated to the camera"
+        f = view[1]
+        if f >= 1.0:
+            return "camera sees the whole chip"
+        if f <= 0.0:
+            return "camera sees none of the chip"
+        return f"camera sees {f:.0%} of the chip"
 
     @property
     def live(self) -> bool:

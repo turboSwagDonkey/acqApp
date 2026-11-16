@@ -244,16 +244,21 @@ class DmdCalibration:
 
     def accessible_outline(self, per_side: int = 24) -> np.ndarray:
         """The panel's closed border in camera px; bent, if warped."""
+        return self.to_cam(_border(self.dmd_size, per_side))
+
+    def camera_outline(self, per_side: int = 24) -> np.ndarray:
+        """The camera sensor's closed border in mirrors: where the camera's
+        view lands on the panel."""
+        return self.to_dmd(_border(self.cam_size, per_side))
+
+    def seen_fraction(self, cols: int = 32, rows: int = 24) -> float:
+        """Share of the panel inside the camera's view, on a coarse grid."""
         w, h = self.dmd_size
-        t = np.linspace(0.0, 1.0, per_side, endpoint=False)
-        x1, y1 = w - 1.0, h - 1.0
-        edge = np.concatenate([
-            np.column_stack([t * x1, np.zeros_like(t)]),
-            np.column_stack([np.full_like(t, x1), t * y1]),
-            np.column_stack([(1 - t) * x1, np.full_like(t, y1)]),
-            np.column_stack([np.zeros_like(t), (1 - t) * y1]),
-            [[0.0, 0.0]]])
-        return self.to_cam(edge)
+        x = np.linspace(0, w - 1, cols)[None, :]
+        y = np.linspace(0, h - 1, rows)[:, None]
+        u, v = self.to_cam_xy(x, y)
+        cw, ch = self.cam_size
+        return float(np.mean((u >= 0) & (u <= cw - 1) & (v >= 0) & (v <= ch - 1)))
 
     # ── persistence ──
     def to_dict(self) -> dict:
@@ -362,6 +367,20 @@ class ReticlePose:
 
 def _cam_centre(cam_size) -> np.ndarray:
     return np.array([(cam_size[0] - 1) / 2.0, (cam_size[1] - 1) / 2.0])
+
+
+def _border(size: tuple[int, int], per_side: int) -> np.ndarray:
+    """A w×h pixel grid's closed border, `per_side` points a side: dense so
+    a warp bends it."""
+    w, h = size
+    t = np.linspace(0.0, 1.0, per_side, endpoint=False)
+    x1, y1 = w - 1.0, h - 1.0
+    return np.concatenate([
+        np.column_stack([t * x1, np.zeros_like(t)]),
+        np.column_stack([np.full_like(t, x1), t * y1]),
+        np.column_stack([(1 - t) * x1, np.full_like(t, y1)]),
+        np.column_stack([np.zeros_like(t), (1 - t) * y1]),
+        [[0.0, 0.0]]])
 
 
 def _reticle_dims(cam_size, box_frac: float) -> dict:

@@ -30,7 +30,8 @@ MODE_PATTERN, MODE_ALL_ON, MODE_ROI = "pattern", "all_on", "roi"
 _calib_cache: dict[str, tuple[int, object]] = {}
 
 
-def _load_calibration(path):
+def load_calibration(path):
+    """The calibration at `path`, re-read only when the file changes."""
     from acqApp.devices.dmd.calibration import DmdCalibration
     p = Path(path)
     mtime = p.stat().st_mtime_ns
@@ -54,7 +55,7 @@ def roi_frame(settings, width: int, height: int):
     try:
         from acqApp.devices.dmd.roi import RoiSet
         frame = RoiSet.from_list(list(settings.rois)).dmd_frame(
-            _load_calibration(settings.calib_path))
+            load_calibration(settings.calib_path))
     except Exception as e:                        # noqa: BLE001
         print(f"[DMD] ROI mode: couldn't build the mask ({type(e).__name__}: "
               f"{e})")
