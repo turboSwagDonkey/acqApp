@@ -324,6 +324,26 @@ def check_puffer_closes_on_error(r: Report) -> None:
         time.sleep(0.01)
     r.check(task.writes == [True, False],
             f"the valve is closed again after a failed pulse ({task.writes})")
+
+    # Overlapping puffs: a long one, then a short one inside it. The short
+    # one's end used to close the valve on the long one.
+    task = ctl._task = FakeTask()
+    t0 = time.perf_counter()
+    closed_at: list[float] = []
+    task.write = lambda v: (task.writes.append(bool(v)),
+                            None if v else closed_at.append(time.perf_counter()))
+    ctl.fire(0.30)
+    time.sleep(0.05)
+    ctl.fire(0.05)
+    deadline = t0 + 2.0
+    while not closed_at and time.perf_counter() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    r.check(task.writes == [True, True, False] and closed_at
+            and closed_at[0] - t0 >= 0.29,
+            f"an overlapping short puff doesn't cut the long one short: closed "
+            f"once, at {(closed_at[0] - t0) if closed_at else -1:.2f} s "
+            f"({task.writes})")
     ctl._task = None
 
 

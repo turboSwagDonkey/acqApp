@@ -27,6 +27,21 @@ from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
 # Sub-sampling slider stops, dimmest first: 1 in n off keeps (n-1)/n, 1 = off.
 _SUB_STEPS = (2, 3, 4, 5, 6, 7, 8, 9, 10, 1)
 
+_ROI_LINE = "#ffd54f"           # amber: reads on white mirrors, black ones and tissue
+
+
+def _tint(frame: np.ndarray, rw: int, rh: int) -> QImage:
+    """The lit mirrors as translucent magenta at preview size, to lay over
+    the camera underlay (white would hide the tissue)."""
+    h, w = frame.shape
+    ix = ((np.arange(rw) + 0.5) * (w / rw)).astype(np.int64)
+    iy = ((np.arange(rh) + 0.5) * (h / rh)).astype(np.int64)
+    on = frame[iy][:, ix] > 0
+    c = QColor(style.HEX["dmd"])
+    bgra = np.zeros((rh, rw, 4), np.uint8)      # ARGB32 is BGRA in memory
+    bgra[on] = (c.blue(), c.green(), c.red(), 120)
+    return QImage(bgra.data, rw, rh, rw * 4, QImage.Format.Format_ARGB32).copy()
+
 class _DraggablePreview(QLabel):
     """The preview label; click-drag nudges the pattern's offset. `dragged`
     is in PREVIEW px — the panel converts (it knows the scale)."""
@@ -106,6 +121,11 @@ class SettingsPanel(QWidget):
         self._roi_pattern_name: str = ""
         self._shortcuts: list[QShortcut] = []
         self._lit = False               # the chip outline: solid while projecting
+        # (frame, (ox, oy), scale): the camera's newest frame, shown under
+        # the pattern while a session runs; None when idle.
+        self._camera = None
+        self._under_map = None          # (key, fx, fy, valid): preview px -> frame px
+        self._roi_cache = None          # (key, frame): roi_frame is ~tens of ms
         self._build()
         self._init_shortcuts()
 
@@ -570,24 +590,26 @@ class SettingsPanel(QWidget):
 
         mode = self.mode
         if mode == MODE_ALL_ON:
-            self._caption = "All mirrors ON (Full Illumination)"
+            self._caption = "Full field"      # the pill already says All ON
             frame = subsample_frame(np.full((h, w), 255, dtype=np.uint8),
                                     self._sub_n())
         elif mode == MODE_ROI:
             n = len(self._rois)
-            # Guarded: roi_frame prints why it can't, and this runs per resize.
-            frame = (roi_frame(self.settings, w, h)
-                     if n and self._calib_path else None)
+            # Guarded: roi_frame prints why it can't. Cached: this runs per
+            # resize and per camera frame.
+            frame = self._roi_mask(w, h) if n and self._calib_path else None
             if frame is None:
                 frame = np.zeros((h, w), dtype=np.uint8)
-                self._caption = ("Needs a calibration to project the ROIs"
-                                 if n else "Nothing to project: draw or load ROIs")
+                self._caption = (
+                    "Nothing to project: draw or load ROIs" if not n
+                    else "Needs a calibration to project the ROIs"
+                    if not self._calib_path
+                    else "Couldn't build the ROI mask (the console says why)")
             else:
                 frame = subsample_frame(frame, self._sub_n())
                 name = (f"{self._roi_pattern_name}: "
                         if self._roi_pattern_name else "")
-                self._caption = (
-                    f"{name}{n} ROI(s) -> {int((frame > 0).sum())} mirrors")
+                self._caption = f"{name}{n} ROI(s)"
         elif p is None:
             self._caption = "No pattern loaded"
             frame = np.zeros((h, w), dtype=np.uint8)
@@ -617,10 +639,13 @@ class SettingsPanel(QWidget):
 
         frame = np.ascontiguousarray(frame)
         qimg = QImage(frame.data, w, h, w, QImage.Format.Format_Grayscale8)
+        on = int(np.count_nonzero(frame))
+        if on:      # every mode the same: what, then how much of the chip
+            self._caption += f" · {on:,} mirrors ({100 * on / frame.size:.0f}%)"
 
         # Under the frame: what it shows (inside it when nothing is lit), then
         # how it sits in the camera's view.
-        empty = not frame.any()
+        empty = not on
         view = self.camera_view()
         lines = ([] if empty else [self._caption]) + [self._seen_text(view)]
         fm = self._preview.fontMetrics()
@@ -636,9 +661,6 @@ class SettingsPanel(QWidget):
                                     max(1, ph - 2 * pad - cap_h),
                                     Qt.AspectRatioMode.KeepAspectRatio)
         self._preview_scale = w / max(1, target.width())
-        scaled = QPixmap.fromImage(qimg).scaled(
-            target, Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
 
         canvas = QPixmap(pw, ph)
         canvas.fill(QColor(0, 0, 0, 0))         # the tab's grey shows through
@@ -648,8 +670,18 @@ class SettingsPanel(QWidget):
                      target.width(), target.height())
         painter = QPainter(canvas)
         painter.setFont(self._preview.font())
-        painter.drawPixmap(rect, scaled)
+        under = self._underlay(rect.width(), rect.height(), w, h)
+        if under is None:
+            painter.drawPixmap(rect, QPixmap.fromImage(qimg).scaled(
+                target, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+        else:
+            # The tissue, with the lit mirrors tinted over it.
+            painter.drawImage(rect, under)
+            painter.drawImage(rect, _tint(frame, rect.width(), rect.height()))
         self._draw_camera(painter, rect, w, h, view)
+        if mode == MODE_ROI:
+            self._draw_rois(painter, rect, w, h)
         # The chip's edge: solid and heavy while projecting, dashed while dark.
         pen = QPen(QColor(style.HEX["dmd"]), 3.0 if self._lit else 1.5)
         if not self._lit:
@@ -678,14 +710,97 @@ class SettingsPanel(QWidget):
             self._lit = on
             self._update_preview()
 
+    def set_camera_frame(self, live) -> None:
+        """(frame, (ox, oy), scale), the camera's newest frame and its place
+        on the sensor, shown under the pattern through the calibration; None
+        when the camera is idle."""
+        if live is None and self._camera is None:
+            return
+        self._camera = live
+        self._update_preview()
+
+    def _roi_mask(self, w: int, h: int):
+        """roi_frame, cached on what changes it (the calibration file too)."""
+        try:
+            mtime = Path(self._calib_path).stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        key = (repr(self._rois), self._calib_path, mtime, w, h)
+        if self._roi_cache is None or self._roi_cache[0] != key:
+            self._roi_cache = (key, roi_frame(self.settings, w, h))
+        return self._roi_cache[1]
+
+    def _calibration(self):
+        try:
+            return load_calibration(self._calib_path) if self._calib_path else None
+        except Exception:                           # noqa: BLE001
+            return None
+
+    def _underlay(self, rw: int, rh: int, w: int, h: int) -> QImage | None:
+        """The camera frame resampled onto the chip at preview size; None
+        without a frame, a calibration, or a mappable bend."""
+        calib = self._calibration()
+        if self._camera is None or calib is None:
+            return None
+        img, (ox, oy), scale = self._camera
+        img = np.asarray(img)
+        if img.ndim != 2:
+            return None
+        key = (id(calib), rw, rh, w, h, ox, oy, scale, img.shape)
+        if self._under_map is None or self._under_map[0] != key:
+            xs = (np.arange(rw) + 0.5) * (w / rw)
+            ys = (np.arange(rh) + 0.5) * (h / rh)
+            try:
+                u, v = calib.to_cam_xy(xs[None, :], ys[:, None])  # sensor px
+            except ValueError:
+                return None
+            fx = np.floor((u - ox) / scale).astype(np.int64)
+            fy = np.floor((v - oy) / scale).astype(np.int64)
+            fh, fw = img.shape
+            valid = (fx >= 0) & (fx < fw) & (fy >= 0) & (fy < fh)
+            self._under_map = (key, np.clip(fx, 0, fw - 1),
+                               np.clip(fy, 0, fh - 1), valid)
+        _, fx, fy, valid = self._under_map
+        if not valid.any():
+            return None
+        vals = img[fy, fx].astype(np.float32)
+        lo, hi = np.percentile(vals[valid], (1, 99))
+        g = np.clip((vals - lo) * (255.0 / max(hi - lo, 1e-6)), 0, 255)
+        g = np.ascontiguousarray(np.where(valid, g, 0).astype(np.uint8))
+        return QImage(g.data, rw, rh, rw, QImage.Format.Format_Grayscale8).copy()
+
+    def _draw_rois(self, painter: QPainter, rect: QRect, w: int, h: int) -> None:
+        """The drawn ROIs' outlines on the chip: the shapes behind the lit
+        mirrors, which sub-sampling and the chip's reach can thin out."""
+        calib = self._calibration()
+        if calib is None or not self._rois:
+            return
+        from acqApp.devices.dmd.roi import RoiSet
+        try:
+            rois = RoiSet.from_list(list(self._rois))
+        except Exception:                           # noqa: BLE001
+            return
+        sx, sy = rect.width() / w, rect.height() / h
+        painter.save()
+        painter.setClipRect(rect)
+        painter.setPen(QPen(QColor(_ROI_LINE), 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for roi in rois:
+            if not roi.enabled:
+                continue
+            pts = calib.to_dmd(roi.boundary(48))
+            painter.drawPolygon(QPolygonF([
+                QPointF(rect.x() + x * sx, rect.y() + y * sy) for x, y in pts]))
+        painter.restore()
+
     def camera_view(self) -> tuple[np.ndarray, float] | None:
         """(the camera's view as a closed outline in mirrors, the share of the
         chip inside it); None without a readable calibration (the ROI line
         already says why)."""
-        if not self._calib_path:
+        c = self._calibration()
+        if c is None:
             return None
         try:
-            c = load_calibration(self._calib_path)
             return c.camera_outline(), c.seen_fraction()
         except Exception:                           # noqa: BLE001
             return None

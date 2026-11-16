@@ -195,7 +195,13 @@ def run_parts(parts: dict) -> int:
                 if text not in n:
                     setattr(main, n, lambda *a, **k: None)
     if "--part" in sys.argv:
-        return parts[sys.argv[sys.argv.index("--part") + 1]]()
+        rc = parts[sys.argv[sys.argv.index("--part") + 1]]()
+        # No interpreter teardown: it frees what's left (Qt objects in cycles,
+        # the QApplication) in arbitrary order, and crashed natively after a
+        # part had passed. The part's own checks are all done by now.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(rc)
 
     def one(name):
         return subprocess.run(
@@ -214,8 +220,15 @@ def run_parts(parts: dict) -> int:
 
 # ── Qt helpers ────────────────────────────────────────────────────────────────
 
+_APP = None
+
+
 def qt_app():
-    """The QApplication, created once per process, with the app's own theme."""
+    """The QApplication, created once per process, with the app's own theme.
+    Held here: a part's local `app` used to be the only reference, and the
+    part's locals are freed in order on return, so the QApplication could go
+    before the widgets made after it (native crash, 1 in 8 under load)."""
+    global _APP
     from PyQt6.QtWidgets import QApplication
     from acqApp import style
     app = QApplication.instance()
@@ -223,6 +236,7 @@ def qt_app():
     if app is None:
         app = QApplication(sys.argv)
         style.apply_theme(app)
+    _APP = app
     return app
 
 

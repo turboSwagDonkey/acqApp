@@ -35,6 +35,7 @@ class PufferController(QObject):
         # The pulse thread can outlive its task (line re-pointed, or app
         # closed mid-pulse), so _task is guarded and the pulse re-checks it.
         self._task_lock = threading.Lock()
+        self._open_until = 0.0              # perf_counter the valve may close at
         self._sink: Callable[[float], None] | None = None
         self._open()
 
@@ -111,12 +112,20 @@ class PufferController(QObject):
                 with self._task_lock:
                     if self._task is not task:
                         return              # re-pointed or closed before we ran
+                    self._open_until = max(self._open_until,
+                                           time.perf_counter() + d)
                     task.write(True)
+                slept = False
                 try:
                     time.sleep(d)       # raises on a negative/NaN duration
+                    slept = True
                 finally:
                     with self._task_lock:
-                        if self._task is task:
+                        # Overlapping puffs: the one ending last closes the
+                        # valve, so an earlier one can't cut it short.
+                        if self._task is task and (
+                                not slept
+                                or time.perf_counter() >= self._open_until):
                             task.write(False)
             except Exception as e:
                 print(f"[puffer] pulse failed ({e})")

@@ -6,8 +6,9 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import (QEvent, QObject, QPropertyAnimation, QRectF,
-                          QSettings, QSize, Qt, pyqtProperty, pyqtSignal)
+from PyQt6.QtCore import (QElapsedTimer, QEvent, QObject, QPropertyAnimation,
+                          QRectF, QSettings, QSize, Qt, QTimer, pyqtProperty,
+                          pyqtSignal)
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QCheckBox,
                              QComboBox, QDialog, QDialogButtonBox,
@@ -666,6 +667,80 @@ class SlideSwitch(QAbstractButton):
             lit = abs(self._pos - i) < 0.5
             p.setPen(QColor("white") if lit else QColor(style.muted()))
             p.drawText(cell, Qt.AlignmentFlag.AlignCenter, text)
+        p.end()
+
+
+class HoldToCheck(QPushButton):
+    """A checkable button that turns ON only after a press held `hold_ms`
+    (filling as it is held), and OFF with one click. For a switch that must
+    not be hit by accident next to one that is pressed often. No keyboard
+    focus: Space would skip the hold."""
+    released_early = pyqtSignal()       # let go before the hold completed
+
+    _TICK_MS = 16
+
+    def __init__(self, text: str = "", hold_ms: int = 500, accent: str = "",
+                 parent=None):
+        super().__init__(text, parent)
+        self.setCheckable(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._hold_ms = hold_ms
+        self._accent = QColor(accent or style.HEX["sync"])
+        self._held = QElapsedTimer()
+        self._holding = False
+        self._done = False              # this press already turned it on
+        self._tick = QTimer(self)
+        self._tick.setInterval(self._TICK_MS)
+        self._tick.timeout.connect(self._advance)
+
+    def mousePressEvent(self, e) -> None:
+        if self.isChecked() or e.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(e)          # off is one ordinary click
+            return
+        self._holding, self._done = True, False
+        self._held.start()
+        self._tick.start()
+        e.accept()
+
+    def mouseReleaseEvent(self, e) -> None:
+        if not self._holding and not self._done:
+            super().mouseReleaseEvent(e)
+            return
+        early = self._holding
+        self._stop_hold()
+        self._done = False
+        e.accept()
+        if early:
+            self.released_early.emit()
+
+    def _advance(self) -> None:
+        if self._held.elapsed() >= self._hold_ms:
+            self._stop_hold()
+            self._done = True
+            self.setChecked(True)               # emits toggled(True)
+        else:
+            self.update()
+
+    def _stop_hold(self) -> None:
+        self._holding = False
+        self._tick.stop()
+        self.update()
+
+    @property
+    def hold_fraction(self) -> float:
+        return (min(1.0, self._held.elapsed() / self._hold_ms)
+                if self._holding else 0.0)
+
+    def paintEvent(self, e) -> None:
+        super().paintEvent(e)
+        f = self.hold_fraction
+        if f <= 0.0:
+            return
+        p = QPainter(self)
+        fill = QColor(self._accent)
+        fill.setAlpha(150)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        p.fillRect(QRectF(r.left(), r.top(), r.width() * f, r.height()), fill)
         p.end()
 
 

@@ -300,6 +300,8 @@ saving/                 where the session file goes
   bpod_dialog.py        the Save tab's "Match to Bpod…": Check, then Apply
   bpod_match.py         after a session: align the routine's edge log to Bpod's
                         trials, renumber folders, VOID missed trials (CLI too)
+  check_session.py      after a session (CLI): closed cleanly, every stream,
+                        drops, gaps, rates, streams out of step — reads only
   config.py             SaveConfig + path building — no Qt
   panel.py
 docs/
@@ -346,7 +348,7 @@ tests/                  plain scripts, not pytest; each file (and each part of a
   test_routines.py            routine protocol and engine
   test_routines_files.py      triggers, bursts, the adapter's files
   test_routines_panel.py      panel, table, templates, whole app, timeline, pairing
-  test_saving.py              save paths, the session writer (TIFF/CSV/AVI), Bpod match
+  test_saving.py              save paths, the session writer (TIFF/CSV/AVI), Bpod match, check_session
   test_session_recording.py
   test_stage.py               stage calibration persistence, the Z axis
   test_stage_panel.py

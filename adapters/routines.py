@@ -594,6 +594,10 @@ class RoutinesModule(RoutineFiles, ModuleAdapter):
             self._engine.abort()
             self._stop_ticking()
             self._status("routine aborted — the recording stopped")
+            # As Abort does: the path is still known here, and the deletes /
+            # renames retry until the camera lets go of the file.
+            self._doom_unused_prepared()
+            self._discard(self._take_doomed(), self._bad_file())
         self._own_rec = False
         self._rec = None
         self._seal_after = None

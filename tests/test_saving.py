@@ -613,10 +613,83 @@ def _part_bpod() -> int:
     return r.finish()
 
 
+# ═══ check_session: the after-session checker ════════════════════════════
+
+FINAL = {"recorder_dropped_samples": 0, "recorder_late_samples": 0,
+         "recorder_unstamped_samples": 0}
+
+
+def _recording(root: Path, name: str, *, gap_at: float | None = None,
+               wheel_until: float = 2.0, final: dict | None = None,
+               cam_index_skip: bool = False) -> Path:
+    """A recording written by the real SessionWriter: 1 kHz wheel, 10 Hz
+    stage, a TIFF camera with its index stream."""
+    path = root / name
+    w = SessionWriter()
+    w.open(path, {"modules": "stage,voltage_cam,wheel", "wheel_rate_hz": 1000.0})
+    for i in range(int(wheel_until * 1000)):
+        t = i / 1000
+        if gap_at is not None and gap_at <= t < gap_at + 0.2:
+            continue                                # 200 ms the wheel lost
+        for s in ("wheel_voltage", "wheel_speed", "wheel_distance"):
+            w.write(s, t, 0.1)
+    for i in range(21):
+        w.write("stage_x_um", i / 10, 1.0)
+        w.write("stage_y_um", i / 10, 2.0)
+    for i in range(20):
+        k = i + (3 if cam_index_skip and i >= 10 else 0)
+        w.write("voltage_cam", i / 10, np.zeros((4, 4), np.uint16))
+        w.write("voltage_cam_index", i / 10, float(k))
+    w.update_metadata(FINAL if final is None else final)
+    w.close()
+    return path
+
+
+def check_session_checker(r: Report, tmp: Path) -> None:
+    from acqApp.saving.check_session import check_recording, find_recordings, main
+
+    clean = _recording(tmp / "day", "m1_clean")
+    fx = check_recording(clean)
+    r.check(fx.problems == [] and any("2.0 s" in n for n in fx.notes),
+            f"control: a clean recording has no problems ({fx.problems}, "
+            f"{fx.notes})")
+    gap = check_recording(_recording(tmp / "day", "m1_gap", gap_at=1.0))
+    r.check(any("wheel_voltage: 1 gap" in p for p in gap.problems),
+            f"a 200 ms hole in the wheel is a gap ({gap.problems})")
+    short = check_recording(_recording(tmp / "day", "m1_short", wheel_until=0.5))
+    r.check(any("wheel_voltage ends 1.5 s before" in p for p in short.problems),
+            f"a stream that stops early is out of step ({short.problems})")
+    died = check_recording(_recording(tmp / "day", "m1_died", final={}))
+    r.check(any("never closed cleanly" in p for p in died.problems),
+            f"no final counts: it never closed cleanly ({died.problems})")
+    drop = check_recording(_recording(tmp / "day", "m1_drop",
+                                      cam_index_skip=True,
+                                      final={**FINAL, "recorder_dropped_samples": 7}))
+    r.check(any("3 frame(s) dropped" in p for p in drop.problems)
+            and any("7 samples dropped" in p for p in drop.problems),
+            f"camera index jumps and recorder drops are counted ({drop.problems})")
+    r.check(len(find_recordings(tmp / "day")) == 5
+            and find_recordings(clean) == [clean],
+            "a folder above recordings finds each; a recording finds itself")
+    r.check(main([str(clean)]) == 0 and main([str(tmp / "day")]) == 1,
+            "exit 0 when every recording is clean, 1 when any is not")
+
+
+def _part_check_session() -> int:
+    r = Report("check-session")
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_check_"))
+    try:
+        check_session_checker(r, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r.finish()
+
+
 PARTS = {
     "paths": _part_paths,
     "split": _part_split,
     "bpod": _part_bpod,
+    "check-session": _part_check_session,
 }
 
 

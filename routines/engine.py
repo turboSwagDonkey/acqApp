@@ -334,9 +334,16 @@ class RoutineEngine:
         self._enter_step()
 
     def skip(self) -> None:
+        """Move past the paused step. Like resume(), re-light what the last
+        Display left lit: the pause blanked it, and a Move or a Display
+        sets the light itself."""
         if self._phase != Phase.PAUSED:
             raise RoutineError("not paused")
         self.fault = ""
+        nxt = self._next_position()
+        if nxt is not None and self._routine.steps[
+                self._order[nxt[0]]].kind not in ("move", "display"):
+            self._safe(self._hooks.light, self._dmd_on)
         self._advance()
 
     def abort(self) -> None:
@@ -579,17 +586,25 @@ class RoutineEngine:
 
     def _next_record_run(self) -> RecordingRun | None:
         """The run a `record` step right after this position will open."""
-        pos, cycle = self._pos + 1, self._cycle
-        if pos >= len(self._order):
-            pos, cycle = 0, cycle + 1
-        if cycle >= max(1, self._routine.cycles):
+        nxt = self._next_position()
+        if nxt is None:
             return None
+        pos, cycle = nxt
         i = self._order[pos]
         if self._routine.steps[i].kind != "record":
             return None
         return RecordingRun(region=recording_region_at(self._routine, i),
                             start_index=i, end_index=i, cycle=cycle,
                             attempt=1, t0=self._hooks.now(), frame0=None)
+
+    def _next_position(self) -> tuple[int, int] | None:
+        """(pos, cycle) after this one; None if this is the routine's last."""
+        pos, cycle = self._pos + 1, self._cycle
+        if pos >= len(self._order):
+            pos, cycle = 0, cycle + 1
+        if cycle >= max(1, self._routine.cycles):
+            return None
+        return pos, cycle
 
     def rearm_step(self) -> bool:
         """Restart the current Wait step's clock and frame baseline, after a

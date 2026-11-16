@@ -319,8 +319,10 @@ def run_worker(app, r: Report, st: PupilSettings, *, frames: int = 6,
             deadline = time.perf_counter() + 4.0
         if served["n"] >= frames and reconfigure is None:
             break
-    radii = [radius for radius, _blink in w.take_tracked()]
     w.stop()
+    # After stop: taken before it, a frame tracked in between (under load)
+    # counted in frames_seen but not here.
+    radii = [radius for radius, _blink in w.take_tracked()]
     r.check(not w.isRunning(), "the worker stops when told to")
     r.check(crashed == [], f"…without an exception escaping its thread ({crashed})")
     return w, served, seen, sink, radii

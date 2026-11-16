@@ -290,9 +290,83 @@ def _part_dmd() -> int:
     check_roi_wiring(r)
     check_mode_switch_and_cache(r)
     check_light_switch(r)
+    check_preview_underlay(r)
+    check_calibrate_saves_first(r)
     check_sub_sampling(r)
     check_controller_faults(r)
     return r.finish()
+
+
+def check_calibrate_saves_first(r) -> None:
+    """(de) sweep fix: Calibrate saves the new alignment BEFORE rebuilding
+    the held frame. Rebuilt first, saving over the active file kept the old
+    mask on the DMD until something else rebuilt it."""
+    isolate_user_state()
+    app = qt_app()
+    sys.argv = ["main.py", "--mock"]
+    win = make_window({"voltage_cam", "dmd"})
+    dmd = win._module("dmd")
+    win.camera_preset = lambda _k: None             # no full-frame switch
+    win.camera_binning = lambda _k: None
+    order: list[str] = []
+    dmd._align_reticle = lambda: "new alignment"
+    dmd._save_calibration = lambda _c: order.append("save")
+    real = dmd.controller.apply_settings
+    dmd.controller.apply_settings = lambda s: (order.append("rebuild"), real(s))
+    dmd.calibrate()
+    r.check(order == ["save", "rebuild"],
+            f"Calibrate saves, then rebuilds the held frame ({order})")
+    order.clear()
+    dmd._align_reticle = lambda: None               # cancelled
+    dmd.calibrate()
+    r.check(order == ["rebuild"], f"…and a cancel saves nothing ({order})")
+    win.close()
+    pump(app, 0.1)
+
+
+def check_preview_underlay(r) -> None:
+    """While a session runs, the camera's frame shows under the DMD preview's
+    pattern, mapped through the calibration; it clears when the session
+    stops. Its ROI mask is cached, not rebuilt per camera frame."""
+    from acqApp.devices.dmd.calibration import DmdCalibration
+    from acqApp.devices.dmd.roi import RectRoi, RoiSet
+
+    isolate_user_state()
+    app = qt_app()
+    sys.argv = ["main.py", "--mock"]
+    win = make_window({"voltage_cam", "dmd"})
+    dmd = win._module("dmd")
+    panel = dmd.panel
+    tmp = Path(tempfile.mkdtemp(prefix="acqapp_under_"))
+    # Camera px = mirrors x 2: the camera's left half lands on the chip.
+    cal = DmdCalibration(cam_to_dmd=np.diag([0.5, 0.5, 1.0]),
+                         dmd_size=(1024, 768), cam_size=(2048, 1536))
+    panel.set_calib_path(str(cal.save(tmp / "cal.json")))
+    rs = RoiSet()
+    rs.add(RectRoi(x=400.0, y=300.0, w=200.0, h=200.0))
+    panel.set_rois(rs.to_list())
+    panel._rb["roi"].setChecked(True)
+    pump(app, 0.05)
+
+    r.check(panel._underlay(200, 150, 1024, 768) is None,
+            "no camera frame: no underlay, the plain pattern")
+    ramp = np.tile(np.arange(2048, dtype=np.uint16), (1536, 1))
+    panel.set_camera_frame((ramp, (0.0, 0.0), 1.0))
+    img = panel._underlay(200, 150, 1024, 768)
+    row = [img.pixelColor(x, 75).red() for x in (5, 100, 195)] if img else []
+    r.check(img is not None and img.width() == 200 and row == sorted(row)
+            and row[0] < row[-1],
+            f"a camera frame lies under the chip, through the calibration "
+            f"(a left-to-right ramp stays one: {row})")
+    built = panel._roi_cache
+    panel.set_camera_frame((ramp + 1, (0.0, 0.0), 1.0))
+    r.check(panel._roi_cache is built,
+            "a new camera frame reuses the cached ROI mask")
+    dmd.stop()
+    r.check(panel._camera is None, "the session stopping clears the underlay")
+    shutil.rmtree(tmp, ignore_errors=True)
+    win.close()
+    pump(app, 0.1)
 
 
 def check_controller_faults(r) -> None:
@@ -520,6 +594,29 @@ def check_light_switch(r) -> None:
     r.check(not lit() and not bar.isChecked() and bar.text() == "DMD OFF"
             and not panel._lit,
             "…and the card's switch turns it off, the status bar and outline following")
+
+    # The status-bar switch, by mouse: a tap doesn't light it, a hold does.
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+    left, mid = Qt.MouseButton.LeftButton, QPoint(bar.width() // 2, bar.height() // 2)
+    QTest.mousePress(bar, left, pos=mid)
+    pump(app, 0.15)
+    filling = bar.hold_fraction
+    QTest.mouseRelease(bar, left, pos=mid)
+    pump(app, 0.05)
+    r.check(not lit() and not bar.isChecked() and 0.0 < filling < 1.0
+            and "hold" in msg(),
+            f"a tap on the status-bar switch lights nothing and says to hold "
+            f"(filled {filling:.2f}; {msg()!r})")
+    QTest.mousePress(bar, left, pos=mid)
+    held = pump_until(app, lit, timeout=2.0)
+    QTest.mouseRelease(bar, left, pos=mid)
+    pump(app, 0.05)
+    r.check(held and lit() and bar.isChecked() and btn.isChecked(),
+            "held, it turns on (and stays on after letting go)")
+    QTest.mouseClick(bar, left, pos=mid)
+    pump(app, 0.05)
+    r.check(not lit() and not bar.isChecked(), "one click turns it off")
 
     # A pattern file is selected: that is what lights, not all-on.
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_dmdlight_"))
@@ -1185,6 +1282,26 @@ def check_bend(r: Report) -> None:
     err = max(np.abs(u - ue).max(), np.abs(v - ve).max())
     r.check(err < 0.5 * mirror,
             f"the coarse panel unbend is within half a mirror ({err:.2f} px)")
+
+    # PLAN #5: a bend undo can't follow used to give a wrong mask, silently.
+    from acqApp.devices.dmd.calibration import WarpError
+    r.check(w.problem() == "", "control: an ordinary bend has no problem")
+    cell = xs[1] - xs[0]
+    folded = Warp.flat(xs, ys).moved(6, 1.4 * cell, 0.0)     # past its neighbour
+    r.check("folds" in folded.problem(),
+            f"a node dragged past its neighbour is a fold ({folded.problem()!r})")
+    # Shift growing faster than the cell: invertible, but no fixed point.
+    steep = Warp(xs, ys, np.tile(2.5 * (xs - xs[0]), (len(ys), 1)),
+                 np.zeros((len(ys), len(xs))))
+    why = steep.problem()
+    r.check("too strong" in why, f"a bend undo can't follow is refused ({why!r})")
+    try:
+        steep.undo(np.array([xs[2] * 3.0]), np.array([ys[1]]))
+        raised = ""
+    except WarpError as e:
+        raised = str(e)
+    r.check("too strong" in raised,
+            f"…and undo raises rather than return a wrong point ({raised!r})")
 
     board = checker_frame(flat, xs, ys)
     lit_cam = flat.to_cam(np.column_stack(np.nonzero(board)[::-1]).astype(float))

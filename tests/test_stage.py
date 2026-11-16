@@ -112,9 +112,41 @@ def check_persist_corrupt(r: Report, tmp: Path) -> None:
     cfg = json.loads(path.read_text(encoding="utf-8"))
     r.check({a["index"]: a for a in cfg["axes"]}[1]["true_center"] == 42,
             "calibration written over a corrupt config")
+    bad = path.with_suffix(path.suffix + ".corrupt")
+    r.check(bad.is_file() and bad.read_text(encoding="utf-8").startswith('{"axes"'),
+            "the corrupt original is preserved in .corrupt, not discarded")
+
+
+def check_load_corrupt_uses_backup(r: Report, tmp: Path) -> None:
+    """A broken file used to load as defaults: no origin, no soft limits,
+    silently. Now its .bak is used, and saving builds on that, keeping it."""
+    path = redirect_config(tmp, "broken.json")
     bak = path.with_suffix(path.suffix + ".bak")
-    r.check(bak.is_file() and bak.read_text(encoding="utf-8").startswith('{"axes"'),
-            "the corrupt original is preserved in .bak, not discarded")
+    good = {"port": "COM7", "axes": [
+        {"index": 0, "counts_per_um": 20.0, "true_center": 100,
+         "soft_min": -1000, "soft_max": 1000},
+        {"index": 1, "counts_per_um": 20.0}]}
+    bak.write_text(json.dumps(good), encoding="utf-8")
+    path.write_text('{"port": "COM7", "axes": [{"ind', encoding="utf-8")
+    s = S.load_settings()
+    r.check(s.port == "COM7" and s.x.soft_min == -1000 and s.x.origin_set
+            and "backup" in s.load_problem,
+            f"a broken file loads its .bak, and says so ({s.load_problem!r})")
+    S.save_axis_updates({1: {"true_center": 5}})
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    r.check(cfg.get("port") == "COM7"
+            and {a["index"]: a for a in cfg["axes"]}[0].get("soft_max") == 1000
+            and json.loads(bak.read_text(encoding="utf-8")) == good,
+            "saving over it builds on the backup and leaves the backup intact")
+
+    path.write_text("{", encoding="utf-8")
+    bak.unlink()
+    s = S.load_settings()
+    r.check(s.x.soft_min is None and "NO SOFT LIMITS" in s.load_problem,
+            "no usable backup either: defaults, with a loud warning")
+    path.unlink()
+    r.check(S.load_settings().load_problem == "",
+            "a missing file (never calibrated) is not a problem")
 
 
 def check_mcm301_open_releases_handle(r: Report) -> None:
@@ -286,6 +318,7 @@ def _part_state() -> int:
         check_persist_missing(r, tmp)
         check_persist_merges(r, tmp)
         check_persist_corrupt(r, tmp)
+        check_load_corrupt_uses_backup(r, tmp)
         after = real.stat().st_mtime_ns if real.is_file() else None
         r.check(after == before,
                 f"the operator's real calibration ({real.name}) was not written")
@@ -858,7 +891,26 @@ def _part_cam_axes() -> int:
     check_measurement(r)
     check_measurement_cancel(r)
     check_mock_jog_xy(r)
+    check_mini_readout_view_axes(r)
     return r.finish()
+
+
+def check_mini_readout_view_axes(r: Report) -> None:
+    """(de) sweep fix: the sidebar's "+X n°" is where the VIEW heads, as the
+    Measure… readout says, not the way the picture slides (it said 180° off)."""
+    from types import SimpleNamespace
+
+    from acqApp.adapters.stage import StageModule
+    from acqApp.devices.stage.cam_axes import describe
+
+    m = StageModule.__new__(StageModule)
+    m.controller = object()
+    axes = (2.0, 0.0, 0.0, 2.0)          # stage +X slides the picture right
+    m.panel = SimpleNamespace(settings=S.StageSettings(), cam_axes=axes)
+    _home, turn = m._mini_text()
+    r.check("+X 180°" in turn and "+X 180°" in describe(axes),
+            f"the sidebar gives the view's direction, as Measure… does "
+            f"({turn!r} vs {describe(axes)!r})")
 
 
 # ═══ window: the map's view around home (0,0); motion stays free ═════════

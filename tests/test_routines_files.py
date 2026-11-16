@@ -1110,6 +1110,51 @@ def check_abort_is_not_finish(r: Report) -> None:
     eng.abort()
 
 
+def check_hand_stop_cleans_up(r: Report) -> None:
+    """Stop rec pressed by hand under a running routine cleans up as Abort
+    does: an interrupted file is marked *_BAD, an unused trigger file goes.
+    It used to only abort the engine."""
+    from acqApp.adapters.routines import RoutinesModule
+
+    rig = FakeRig()
+    eng = RoutineEngine(Routine(steps=[Step(kind="record", length=5.0,
+                                            unit="seconds")]), rig.hooks())
+    eng.start()
+    drive(eng, rig, until=lambda e: e.phase == Phase.RUNNING and rig.t > 0.3)
+
+    open_file = Path("FOV1_T1")
+    a = RoutinesModule.__new__(RoutinesModule)
+    a.worker = a.controller = None
+    a._rolling = False
+    a._engine = eng
+    a._timer = None
+    a._filed_from = 0
+    a._prepared = None
+    a._doomed = None
+    a._status = lambda _m: None
+    discarded: list = []
+    a._discard = lambda junk, bad: discarded.append((junk, bad))
+    a.win = SimpleNamespace(recording_path=lambda: open_file,
+                            dcimg_frames=lambda _k: 0,
+                            set_routine_save_context=lambda *_a: None)
+    a.detach_sink()
+    r.check(eng.aborted and discarded == [(None, open_file)],
+            f"a hand Stop mid-run aborts and marks the cut-short file bad "
+            f"({discarded})")
+
+    # Paused at a trigger whose file was opened for an edge that never came.
+    eng2 = RoutineEngine(Routine(steps=[Step(kind="wait", length=0.05,
+                                             unit="seconds")]), rig.hooks())
+    eng2.start()
+    eng2.pause("operator")
+    a._engine, a._prepared = eng2, (0, 1)
+    discarded.clear()
+    a.detach_sink()
+    r.check(discarded == [(open_file, None)],
+            f"…and deletes a file opened for an edge that never came "
+            f"({discarded})")
+
+
 def check_restart_forgets_edge(r: Report) -> None:
     """Aborted between a trigger's edge and its burst, a restarted engine
     must not run its first Record as a burst with no edge."""
@@ -1190,6 +1235,7 @@ def _part_files() -> int:
         check_hand_edited_load(r)
         check_adapter_guards(r)
         check_abort_is_not_finish(r)
+        check_hand_stop_cleans_up(r)
         check_restart_forgets_edge(r)
         check_roll_rebases_frames(r)
     finally:

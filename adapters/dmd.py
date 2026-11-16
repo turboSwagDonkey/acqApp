@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from acqApp.devices.dmd.control import (MODE_PATTERN, MODE_ROI, DmdController,
                                         DmdSettings, MockDmdController)
 from acqApp.devices.dmd.panel import SettingsPanel as DmdPanel
 from acqApp.adapters.base import ModuleAdapter
+from acqApp.widgets import HoldToCheck
 
 # The standalone dmdGUI_project app's alignment keys -> DmdSettings attribute.
 _SHARED_ALIGNMENT = (("defaultScale", "scale_pct"), ("defaultRot", "rotation_deg"))
@@ -62,6 +64,7 @@ class DmdModule(ModuleAdapter):
         self._stop_timer.timeout.connect(lambda: self._guard("stop", self.stop_display))
         self._light_btn: QPushButton | None = None     # on the card
         self._bar_btn: QPushButton | None = None       # beside Record
+        self._underlay_t = 0.0
 
     def _guard(self, what: str, fn, *args, dark: bool = True) -> None:
         """Run a slot's work. A raise would abort the app (no excepthook) with
@@ -88,24 +91,32 @@ class DmdModule(ModuleAdapter):
         self._show_light(bool(c is not None and c.projecting))
 
     # ── the light switch: on the card and beside Record, kept in step ──
-    def _make_switch(self, size_qss: str) -> QPushButton:
-        b = QPushButton()
-        b.setCheckable(True)
+    def _make_switch(self, size_qss: str, hold: bool = False) -> QPushButton:
+        if hold:
+            b = HoldToCheck(accent=style.HEX["dmd"])
+            b.released_early.connect(
+                lambda: self.win.status("DMD: hold the button to turn it on"))
+        else:
+            b = QPushButton()
+            b.setCheckable(True)
         b.setStyleSheet(style.toggle_btn("dmd") + size_qss)
         b.setToolTip(
             "THIS PROJECTS LIGHT.\nTurns the DMD on or off using the "
             "display selected on the DMD tab (Image, ROIs or All on). "
-            "With nothing selected it projects all-on.")
+            "With nothing selected it projects all-on."
+            + ("\nHold to turn on (it fills as you hold); one click turns "
+               "it off." if hold else ""))
         b.toggled.connect(lambda on: self._guard("switch", self._on_light_button, on))
         return b
 
     def status_widget(self) -> QPushButton:
         if self._bar_btn is None:
-            # Record's size and weight, so the two read as one pair.
+            # Record's size and weight, so the two read as one pair; a hold
+            # to turn on, since it sits one slip from Record.
             self._bar_btn = self._make_switch(
                 "QPushButton{font-weight:bold;font-size:11pt;padding:6px 22px;"
                 "border-width:2px;border-radius:5px}"
-                "QPushButton:checked{border-width:2px}")
+                "QPushButton:checked{border-width:2px}", hold=True)
             self._show_light(self.controller is not None
                              and self.controller.projecting)
         return self._bar_btn
@@ -127,6 +138,24 @@ class DmdModule(ModuleAdapter):
 
     def view_widget(self) -> QWidget:
         return self.panel.view
+
+    _UNDERLAY_S = 0.25          # camera frames under the preview, ≤ 4 a second
+
+    def update_display(self) -> None:
+        """Runs only while Live view or Record is on: the camera's newest
+        frame goes under the preview's pattern."""
+        if self.panel is None:
+            return
+        now = time.monotonic()
+        if now - self._underlay_t < self._UNDERLAY_S:
+            return
+        self._underlay_t = now
+        self.panel.set_camera_frame(self._live_frame())
+
+    def stop(self) -> None:
+        super().stop()
+        if self.panel is not None:
+            self.panel.set_camera_frame(None)   # the camera is idle again
 
     def _show_light(self, lit: bool) -> None:
         """Make both switches say what the projector is doing; never re-triggers it."""

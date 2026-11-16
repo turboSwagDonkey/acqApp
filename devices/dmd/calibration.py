@@ -57,6 +57,10 @@ def _every(a: np.ndarray, n: int) -> np.ndarray:
     return k if k[-1] == a[-1] else np.append(k, a[-1])
 
 
+class WarpError(ValueError):
+    """A bend that can't be undone to within Warp.UNDO_MAX_PX."""
+
+
 @dataclass(eq=False)
 class Warp:
     """Bends the registration where one matrix can't follow the optics: a
@@ -118,11 +122,26 @@ class Warp:
                     + ty * ((1 - tx) * g[j + 1, i] + tx * g[j + 1, i + 1]))
         return lerp(self.dx), lerp(self.dy)
 
-    def undo(self, u, v, *, tol: float = 0.05, iters: int = 8
+    # A point whose undo still misses by this much is wrong, not imprecise.
+    UNDO_MAX_PX = 1.0
+
+    def undo(self, u, v, *, tol: float = 0.05, iters: int = 30
              ) -> tuple[np.ndarray, np.ndarray]:
         """The p with p + shift(p) = (u, v). Fixed point: converges while a
         cell's shift changes by less than its size, true of any bend the
-        light could follow."""
+        light could follow. Raises WarpError rather than return points off
+        by more than UNDO_MAX_PX (a folded or too-strong bend): a wrong mask
+        would light the wrong cells with no warning."""
+        x, y = self._undo_raw(u, v, tol, iters)
+        sx, sy = self.shift(x, y)
+        miss = max(np.max(np.abs(x + sx - u), initial=0.0),
+                   np.max(np.abs(y + sy - v), initial=0.0))
+        if not miss <= self.UNDO_MAX_PX:            # NaN-safe
+            raise WarpError(f"the bend is too strong to undo (off by "
+                            f"{miss:.1f} camera px); soften it in Calibrate…")
+        return x, y
+
+    def _undo_raw(self, u, v, tol: float, iters: int):
         x, y = u, v
         for _ in range(iters):
             sx, sy = self.shift(x, y)
@@ -133,6 +152,34 @@ class Warp:
             if done:
                 break
         return x, y
+
+    def problem(self) -> str:
+        """Why this bend can't be used ('' = it can): a cell folded over
+        itself, or a bend the undo can't follow. Checked before saving."""
+        X = self.nodes[:, 0].reshape(self.dx.shape) + self.dx
+        Y = self.nodes[:, 1].reshape(self.dx.shape) + self.dy
+        # Each bent cell's corners must keep their turn direction: a sign
+        # change at any corner is a fold (bilinear: corners decide).
+        ax, ay = X[:-1, 1:] - X[:-1, :-1], Y[:-1, 1:] - Y[:-1, :-1]   # top
+        bx, by = X[1:, :-1] - X[:-1, :-1], Y[1:, :-1] - Y[:-1, :-1]   # left
+        cx, cy = X[1:, 1:] - X[1:, :-1], Y[1:, 1:] - Y[1:, :-1]       # bottom
+        dx_, dy_ = X[1:, 1:] - X[:-1, 1:], Y[1:, 1:] - Y[:-1, 1:]     # right
+        turns = np.stack([ax * by - ay * bx, ax * dy_ - ay * dx_,
+                          cx * by - cy * bx, cx * dy_ - cy * dx_])
+        if not (turns > 0).all():
+            r, c = np.argwhere((turns <= 0).any(axis=0))[0]
+            return (f"the bend folds over itself in the cell at row {r + 1}, "
+                    f"column {c + 1}; pull its nodes apart")
+        # Nodes and cell centres: where an undo is likeliest to miss.
+        xs = np.concatenate([self.xs, (self.xs[:-1] + self.xs[1:]) / 2])
+        ys = np.concatenate([self.ys, (self.ys[:-1] + self.ys[1:]) / 2])
+        P, Q = np.meshgrid(xs, ys)
+        sx, sy = self.shift(P, Q)
+        try:
+            self.undo(P + sx, Q + sy)
+        except WarpError as e:
+            return str(e)
+        return ""
 
     def resampled(self, xs, ys) -> "Warp":
         """The same bend on another lattice."""

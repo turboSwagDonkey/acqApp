@@ -398,10 +398,12 @@ class SettingsPanel(QWidget):
         and gate them; jogs are relative and stay."""
         missing = [ax.name for ax in (self._s.x, self._s.y) if not ax.has_frame]
         ok = not missing
-        self._lbl_frame.setText(
-            f"No frame for {', '.join(missing)}: only jogs work. "
-            "Settings ▸ Calibrate…")
-        self._lbl_frame.setVisible(not ok)
+        lines = [self._s.load_problem] if self._s.load_problem else []
+        if missing:
+            lines.append(f"No frame for {', '.join(missing)}: only jogs work. "
+                         "Settings ▸ Calibrate…")
+        self._lbl_frame.setText("\n".join(lines))
+        self._lbl_frame.setVisible(bool(lines))
         self._btn_goto_fov.setEnabled(ok)
         self._sync_drag(ok)
 

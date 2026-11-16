@@ -474,7 +474,11 @@ class RoiEditor(QWidget):
         if self._calib is None:
             self._field.setData([], [])
             return
-        c = self._calib.accessible_outline()
+        try:
+            c = self._calib.accessible_outline()
+        except ValueError:          # a WarpError: an older, too-strong bend
+            self._field.setData([], [])
+            return
         self._field.setData(c[:, 0] - self._ox, c[:, 1] - self._oy)
 
     # ── tools ────────────────────────────────────────────────────────────────

@@ -497,6 +497,23 @@ def check_skip(r: Report) -> None:
     r.check(eng.steps_done() == 1,
             "the skipped step does not count as done, only the next one does")
 
+    # Like resume: what the last Display lit comes back on after the skip.
+    rig = FakeRig()
+    eng = RoutineEngine(Routine(steps=[
+        Step(kind="display", pattern="roi.png"),
+        Step(kind="record", label="A", length=1.0, unit="seconds"),
+        Step(kind="record", label="B", length=0.2, unit="seconds")]),
+        rig.hooks())
+    eng.start()
+    drive(eng, rig, until=lambda e: e.phase == Phase.RUNNING and rig.t > 0.3)
+    eng.pause("operator")
+    n = len(rig.log)
+    eng.skip()
+    lights = [e for e in rig.log[n:] if e[0] == "light"]
+    r.check(lights[:1] == [("light", True)],
+            f"skip re-lights what the last Display left lit, as resume does "
+            f"({lights})")
+
 
 def check_setup_failure(r: Report, tmp: Path) -> None:
     """A step whose own action raises pauses before any light reaches the

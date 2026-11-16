@@ -359,7 +359,7 @@ class ReticleAlignDialog(QDialog):
                     self.kind, self.pose(), self._dmd_size, self._cam_size,
                     box_frac=self._spn_box.value() / 100.0)
             self._project(frame)
-            self._lbl_status.clear()
+            self._lbl_status.setText(self._warp.problem())
         except Exception as e:   # noqa: BLE001 — escaping a slot aborts the app
             self._lbl_status.setText(f"Could not project: {e}")
 
@@ -426,6 +426,7 @@ class ReticleAlignDialog(QDialog):
         grid = w.nodes.reshape(len(w.ys), len(w.xs), 2)
         self._grid.setData(*_lattice_lines(grid))
         self._mesh.setData(*_lattice_lines(grid + np.stack([w.dx, w.dy], -1)))
+        self._lbl_status.setText(w.problem())     # live, while dragging
 
     def _calibration(self) -> DmdCalibration:
         return self.pose().to_calibration(self._dmd_size, self._cam_size,
@@ -437,6 +438,10 @@ class ReticleAlignDialog(QDialog):
 
     # ── result ───────────────────────────────────────────────────────────────
     def _apply(self) -> None:
+        why = self._warp.problem()
+        if why:                     # it would build wrong ROI masks, silently
+            self._lbl_status.setText(f"Not applied: {why}")
+            return
         self._result = self._calibration()
         self.accept()
 

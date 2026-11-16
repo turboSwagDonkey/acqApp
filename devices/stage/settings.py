@@ -158,6 +158,9 @@ class StageSettings:
     x: StageAxis = None      # type: ignore[assignment]
     y: StageAxis = None      # type: ignore[assignment]
     z: StageAxis | None = None         # None on a rig without focus
+    # Why the file wasn't used as is (unreadable, read from its .bak), for
+    # the panel to show; "" when it loaded cleanly or was simply absent.
+    load_problem: str = ""
 
     def __post_init__(self):
         if self.x is None:
@@ -176,13 +179,37 @@ class StageSettings:
         return self.z is not None
 
 
-def load_settings() -> StageSettings:
+def _read_json_dict(path: Path) -> dict | None:
+    """The file as a dict; None if missing, unreadable or not a JSON object."""
     try:
-        cfg = json.loads(config_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return StageSettings()
-    if not isinstance(cfg, dict):           # shared file, edited by hand too
-        return StageSettings()
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return cfg if isinstance(cfg, dict) else None   # shared, hand-edited too
+
+
+def load_settings() -> StageSettings:
+    """A broken file (a crash mid-write, a bad hand edit) falls back to the
+    `.bak` that save_axis_updates keeps. Defaults would silently mean no
+    origin and no soft limits."""
+    path = config_path()
+    if not path.exists():
+        return StageSettings()              # never calibrated: defaults are right
+    cfg = _read_json_dict(path)
+    problem = ""
+    if cfg is None:
+        bak = path.with_suffix(path.suffix + ".bak")
+        cfg = _read_json_dict(bak)
+        if cfg is None:
+            problem = (f"{path.name} is unreadable and has no usable backup: "
+                       f"no calibration and NO SOFT LIMITS. Fix the file or "
+                       f"re-calibrate before moving.")
+            print(f"[stage] {problem}")
+            return StageSettings(load_problem=problem)
+        problem = (f"{path.name} is unreadable; using its backup "
+                   f"({bak.name}). Check the calibration, then Set home or "
+                   f"re-calibrate to rewrite it.")
+        print(f"[stage] {problem}")
 
     axes = {a["index"]: a for a in cfg.get("axes", [])}
     pad = cfg.get("xy_pad", {})
@@ -229,6 +256,7 @@ def load_settings() -> StageSettings:
         x                 = x,
         y                 = _axis(yi, "Y"),
         z                 = z,
+        load_problem      = problem,
     )
 
 
@@ -238,21 +266,30 @@ def save_axis_updates(updates: dict[int, dict]) -> Path:
     or corrupt file: the live axes are already updated, and establish_frame
     may have spent minutes driving the limits."""
     path = config_path()
+    bak = path.with_suffix(path.suffix + ".bak")
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
         raw = ""
-    if raw:
-        try:
-            path.with_suffix(path.suffix + ".bak").write_text(raw, encoding="utf-8")
-        except OSError:
-            pass
     try:
         cfg = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
-        cfg = {}                                # recoverable from the .bak
-    if not isinstance(cfg, dict):
-        cfg = {}
+        cfg = None
+    if isinstance(cfg, dict):
+        if raw:
+            try:
+                bak.write_text(raw, encoding="utf-8")
+            except OSError:
+                pass
+    else:
+        # Broken: build on the backup load_settings read and keep it intact;
+        # the broken text goes to .corrupt, for a human to look at.
+        try:
+            path.with_suffix(path.suffix + ".corrupt").write_text(
+                raw, encoding="utf-8")
+        except OSError:
+            pass
+        cfg = _read_json_dict(bak) or {}
     by_index = {a.get("index"): a for a in cfg.get("axes", [])}
     for idx, upd in updates.items():
         entry = by_index.get(idx)
