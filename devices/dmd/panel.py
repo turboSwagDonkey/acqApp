@@ -16,8 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acqApp import style
-from acqApp.widgets import (PillGroup, button_row, collapsible, pairs_grid,
-                            pill, spin)
+from acqApp.widgets import PillGroup, button_row, pairs_grid, pill, spin
 from acqApp.devices.dmd import alp, roi_store
 from acqApp.devices.dmd.control import (DEFAULT_H, DEFAULT_W, MODE_ALL_ON,
                                         MODE_PATTERN, MODE_ROI, DmdSettings,
@@ -46,13 +45,17 @@ class _DraggablePreview(QLabel):
     """The preview label; click-drag nudges the pattern's offset. `dragged`
     is in PREVIEW px — the panel converts (it knows the scale)."""
     dragged = pyqtSignal(float, float)   # (dx, dy) in PREVIEW px
+    clicked = pyqtSignal()               # pressed and released, not dragged
 
     resized = pyqtSignal()
+    _CLICK_SLOP = 4                      # px a click may wander
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self._draggable = False
+        self._actionable = False
         self._drag_from = None
+        self._press_at = None
         # Ignored: the pixmap is drawn to the label's size, so its own size
         # must not feed back into the layout.
         self.setSizePolicy(QSizePolicy.Policy.Ignored,
@@ -66,12 +69,27 @@ class _DraggablePreview(QLabel):
         self._draggable = on
         if not on:
             self._drag_from = None
-        self.setCursor(Qt.CursorShape.SizeAllCursor if on
+        self._sync_cursor()
+
+    def set_actionable(self, on: bool) -> None:
+        """A click does something (an empty preview's next step)."""
+        if on != self._actionable:
+            self._actionable = on
+            self._sync_cursor()
+
+    def _sync_cursor(self) -> None:
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self._actionable
+                       else Qt.CursorShape.SizeAllCursor if self._draggable
                        else Qt.CursorShape.ArrowCursor)
 
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_at = event.position()
         if self._draggable and event.button() == Qt.MouseButton.LeftButton:
             self._drag_from = event.position()
+            event.accept()
+            return
+        if self._actionable:
             event.accept()
             return
         super().mousePressEvent(event)
@@ -87,6 +105,10 @@ class _DraggablePreview(QLabel):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        at, self._press_at = self._press_at, None
+        if (at is not None and event.button() == Qt.MouseButton.LeftButton
+                and (event.position() - at).manhattanLength() <= self._CLICK_SLOP):
+            self.clicked.emit()
         if self._drag_from is not None:
             self._drag_from = None
             event.accept()
@@ -143,9 +165,9 @@ class SettingsPanel(QWidget):
         self._update_preview()
 
     def _build(self) -> None:
-        """`self.view`, always shown: what the switch would project and its
-        name. This panel, the settings: Show (the mode pills), that mode's
-        controls, the rest under Advanced."""
+        """`self.view`, always shown: what the switch would project, nothing
+        else. This panel, the settings: Show (the mode pills) and what it
+        shows in words, that mode's controls, then Output."""
         # Only without a real DMD: why the switch lights nothing.
         self._lbl_warn = QLabel()
         self._lbl_warn.setWordWrap(True)
@@ -178,37 +200,43 @@ class SettingsPanel(QWidget):
             "mode (Fit off), drag to move the pattern — the same offset as "
             "Offset X/Y.")
         self._preview.dragged.connect(self._on_preview_dragged)
-        # What the preview shows, in words: painted under the frame, not a
-        # label at the dock's bottom edge far from it.
+        self._preview.clicked.connect(self._on_preview_clicked)
+        self._empty_action = None   # an empty preview's next step, on a click
+        self._preview_tip = self._preview.toolTip()
+        # What the preview shows, in words: in Settings (and the preview's
+        # tooltip), so the view is the pattern alone.
         self._caption = "No pattern loaded"
+        self._lbl_showing = QLabel()
+        self._lbl_showing.setWordWrap(True)
+        self._lbl_showing.setStyleSheet(f"color:{style.muted()};")
 
+        # The view is the pattern only; the switch is on the card under it.
         self.view = QWidget()
         vroot = QVBoxLayout(self.view)
         vroot.setContentsMargins(4, 4, 4, 4)
-        vroot.setSpacing(6)
-        # The preview is capped at what the frame needs (_update_preview), so
-        # it and Show stay together, centred, whatever the dock's height.
+        vroot.setSpacing(0)
+        # Capped at what the frame needs (_update_preview): centred.
         vroot.addStretch(1)
         vroot.addWidget(self._preview, 100)
-        # Under the preview, not in Settings: it chooses what the preview shows.
-        show = QHBoxLayout()
-        show.setSpacing(6)
-        show.addStretch(1)
-        show.addWidget(QLabel("Show:"))
-        show.addWidget(self._modes)
-        show.addStretch(1)
-        vroot.addLayout(show)
         vroot.addStretch(1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
         root.addWidget(self._lbl_warn)
+        # First in Settings: it chooses what the preview and the switch show.
+        show = QHBoxLayout()
+        show.setSpacing(6)
+        show.addWidget(QLabel("Show:"))
+        show.addWidget(self._modes)
+        show.addStretch(1)
+        root.addLayout(show)
+        root.addWidget(self._lbl_showing)
         self._image = self._build_image()
         self._roi = self._build_rois()
         root.addWidget(self._image)
         root.addWidget(self._roi)
-        root.addWidget(self._build_advanced())
+        root.addWidget(self._build_output())
         root.addStretch(1)
 
         self._on_mode_changed()
@@ -273,10 +301,9 @@ class SettingsPanel(QWidget):
             ("Offset X:", self._spn_dx, "Offset Y:", self._spn_dy)))
         return box
 
-    # ── rarely changed: folded ───────────────────────────────────────────────
-    def _build_advanced(self) -> QGroupBox:
-        adv = QGroupBox("Advanced")
-        adv.setObjectName("advanced")       # style.accent_panel: underline when folded
+    # ── how it projects: in view (Settings fill the tab, so no fold) ─────────
+    def _build_output(self) -> QGroupBox:
+        adv = QGroupBox("Output")
         v = QVBoxLayout(adv)
         v.setSpacing(4)
 
@@ -323,7 +350,6 @@ class SettingsPanel(QWidget):
         sub.addWidget(self._lbl_subsample)
         v.addLayout(sub)
         v.addLayout(button_row(QLabel("Device:"), self._lbl_dev))
-        collapsible(adv, expanded=False)
         return adv
 
     # ── ROIs mode: the drawn regions and the calibration that maps them ──────
@@ -528,6 +554,10 @@ class SettingsPanel(QWidget):
         if self.mode == MODE_PATTERN:
             self._set_alignment_enabled(not on)
 
+    def _on_preview_clicked(self) -> None:
+        if self._empty_action is not None:
+            self._empty_action[1]()
+
     def _set_alignment_enabled(self, on: bool) -> None:
         for w in (self._spn_scale, self._spn_rot, self._spn_dx, self._spn_dy):
             w.setEnabled(on)
@@ -637,20 +667,30 @@ class SettingsPanel(QWidget):
                 self._preview.setText(f"(render error: {e})")
                 return
 
+        # Nothing to show: a click on the preview takes the obvious next step.
+        # (Not Calibrate: that one leads to lighting the DMD.)
+        nothing_loaded = mode == MODE_PATTERN and (p is None or not p.exists())
+        self._empty_action = (
+            ("Click to choose a pattern", self._browse) if nothing_loaded
+            else ("Click to draw ROIs", self.rois_edit_requested.emit)
+            if mode == MODE_ROI and not self._rois else None)
+        self._preview.set_actionable(self._empty_action is not None)
+
         frame = np.ascontiguousarray(frame)
         qimg = QImage(frame.data, w, h, w, QImage.Format.Format_Grayscale8)
         on = int(np.count_nonzero(frame))
         if on:      # every mode the same: what, then how much of the chip
             self._caption += f" · {on:,} mirrors ({100 * on / frame.size:.0f}%)"
 
-        # Under the frame: what it shows (inside it when nothing is lit), then
-        # how it sits in the camera's view.
+        # In words, in Settings: what it shows, then how it sits in the
+        # camera's view. Inside the frame only when nothing is lit.
         empty = not on
         view = self.camera_view()
-        lines = ([] if empty else [self._caption]) + [self._seen_text(view)]
-        fm = self._preview.fontMetrics()
-        gap = 6
-        cap_h = gap + len(lines) * fm.height()
+        showing = " · ".join(([] if empty else [self._caption])
+                             + [self._seen_text(view)])
+        self._lbl_showing.setText(showing)
+        self._preview.setToolTip(f"{showing}\n\n{self._preview_tip}")
+        cap_h = 0
         pad = 3                         # keeps the lit border's stroke unclipped
         # Width decides height: a taller preview would only add empty bands.
         want = max(self._preview.minimumHeight(),
@@ -691,16 +731,11 @@ class SettingsPanel(QWidget):
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
         painter.setPen(QColor(style.muted()))
         if empty:
+            hint = f"\n\n{self._empty_action[0]}" if self._empty_action else ""
             painter.drawText(rect.adjusted(12, 12, -12, -12),
                              int(Qt.AlignmentFlag.AlignCenter
                                  | Qt.TextFlag.TextWordWrap),
-                             self._caption)
-        top = rect.bottom() + gap
-        for i, text in enumerate(lines):
-            painter.drawText(QRect(0, top + i * fm.height(), pw, fm.height()),
-                             int(Qt.AlignmentFlag.AlignCenter),
-                             fm.elidedText(text, Qt.TextElideMode.ElideMiddle,
-                                           pw - 8))
+                             self._caption + hint)
         painter.end()
         self._preview.setPixmap(canvas)
 

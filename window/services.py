@@ -10,7 +10,8 @@ from acqApp.window.common import MODE_NONE
 
 
 class WindowServices:
-    """MainWindow's ModuleHost side. Uses `_modules`, `_sync`, `_cam_handle`."""
+    """MainWindow's ModuleHost side. Uses `_modules`, `_sync`, `_cam_handle`,
+    `_extra_cams`, `_expected_rates`."""
 
     # ── Services the module adapters use (see ModuleHost) ─────────────────────
 
@@ -21,6 +22,23 @@ class WindowServices:
     @property
     def cam_handle(self):
         return self._cam_handle
+
+    def camera_handle(self, index: int):
+        """DCAM handle `index`: 0 is main.py's startup one; any other opens on
+        first ask (~8 s, blocking) and is kept until close. None if it failed:
+        the worker then opens its own, as camera 0 does."""
+        if index == 0:
+            return self._cam_handle
+        if index not in self._extra_cams:
+            from acqApp.devices.voltage_cam.acquisition import open_camera
+            self.status(f"Opening camera {index}…")
+            try:
+                self._extra_cams[index] = open_camera(index)
+            except Exception as e:      # noqa: BLE001 — absent, busy, no DCAM
+                print(f"[main] camera {index} unavailable "
+                      f"({type(e).__name__}: {e})")
+                self._extra_cams[index] = None
+        return self._extra_cams[index]
 
     def status(self, message: str) -> None:
         self.statusBar().showMessage(message)
@@ -46,6 +64,9 @@ class WindowServices:
     def frame_rate_hz(self) -> float | None:
         return self._first("frame_rate_hz")
 
+    def focus_offset(self):
+        return self._first("focus_offset")
+
     def active_fov_name(self) -> str:
         stage = self.stage_target()
         return stage.active_fov_name() if stage is not None else ""
@@ -54,7 +75,10 @@ class WindowServices:
         return bool(self._first("records_dcimg"))
 
     def dcimg_target(self, stream: str) -> Path | None:
-        if not self.dcimg_enabled() or self._rec_path is None:
+        # Each camera's own format; a stream that isn't a module, the first's.
+        own = self._call(stream, "records_dcimg")
+        wants = self.dcimg_enabled() if own is None else own
+        if not wants or self._rec_path is None:
             return None
         return self._rec_path / f"{self._rec_path.name}_{stream}.dcimg"
 
@@ -80,6 +104,19 @@ class WindowServices:
             self._btn_rec.setChecked(bool(on))
         return was
 
+    def ensure_mouse_id(self, then: str = "try again") -> bool:
+        """True with a mouse ID set; else Save opens, Mouse ID is lit and
+        focused, the status bar says why, and False (the caller stops)."""
+        sp = self._save_panel
+        if sp is None or not sp.missing_mouse_id():
+            return True
+        fold = self._folds.get("saving")
+        if fold is not None:
+            fold.set_open(True)
+        sp.ask_mouse_id()
+        self.status(f"Enter a mouse ID (Save), then {then}")
+        return False
+
     def is_recording(self) -> bool:
         return self._btn_rec.isChecked()
 
@@ -98,6 +135,9 @@ class WindowServices:
 
     def camera_preset(self, key: str) -> str | None:
         return self._call(key, "preset_key")
+
+    def camera_overlay_color(self, key: str) -> str | None:
+        return self._call(key, "overlay_color")
 
     def _swap(self, key: str, get: str, put: str, value):
         """`module[key].put(value)`; returns the `get()` from before."""
@@ -275,9 +315,16 @@ class WindowServices:
         `camera_preset`, which can name a switch not yet in effect."""
         return self._call(key, "last_frame_preset")
 
-    def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
+    def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0,
+                          source: str = "") -> None:
+        """Per source (each camera); the Save tab gets the sum, and the slowest
+        writer, since one writer thread drains them all."""
+        self._expected_rates[source] = (mbps, writer_mbps)
         if self._save_panel is not None:
-            self._save_panel.set_expected_rate(mbps, writer_mbps)
+            rates = self._expected_rates.values()
+            writers = [w for _m, w in rates if w > 0]
+            self._save_panel.set_expected_rate(
+                sum(m for m, _w in rates), min(writers) if writers else 0.0)
 
     def on_worker_error(self, msg: str) -> None:
         sender = self.sender()

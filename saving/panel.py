@@ -6,15 +6,19 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QSignalBlocker, pyqtSignal
+from PyQt6.QtCore import (QEvent, QSignalBlocker, QStringListModel, Qt, QTimer,
+                          pyqtSignal)
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QCompleter, QFileDialog, QFormLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
+from acqApp import style
 from acqApp.saving.config import (_DEFAULT_SUBDIR, DEFAULT_TEMPLATE, TOKENS,
                                   SaveConfig, _gb, benchmark_drive,
-                                  default_folder, free_bytes, list_drives)
+                                  default_folder, free_bytes, list_drives,
+                                  past_mouse_ids)
 from acqApp.widgets import (ROW_GAP, button_row, collapsible, compact, hrow,
                             show_item)
 
@@ -28,6 +32,7 @@ class SavePanel(QWidget):
     pick, drive scan and filename template folded under Advanced."""
 
     settings_changed = pyqtSignal()
+    camera_settings_requested = pyqtSignal()    # the capacity warning's link
 
     # Must run past the SSD's SLC cache: a short burst once hid a SATA
     # drive's real ceiling. 1 GiB does on this rig's drives.
@@ -57,6 +62,12 @@ class SavePanel(QWidget):
             "Goes in the filename as {mouse_id}. Routines save under "
             "<folder>\\<mouse ID>\\<date>.")
         self._ed_mouse_id.editingFinished.connect(self._on_edited)
+        # Past IDs, offered as you type; read from the folder on each focus.
+        self._known_ids = QStringListModel(self)
+        completer = QCompleter(self._known_ids, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._ed_mouse_id.setCompleter(completer)
+        self._ed_mouse_id.installEventFilter(self)
 
         self._ed_folder = QLineEdit(self._cfg.folder)
         self._ed_folder.editingFinished.connect(self._on_edited)
@@ -80,6 +91,9 @@ class SavePanel(QWidget):
 
         self._lbl_space = QLabel()
         self._lbl_space.setWordWrap(True)
+        # Rich: a frame-rate warning links to where it's fixed.
+        self._lbl_space.setTextFormat(Qt.TextFormat.RichText)
+        self._lbl_space.linkActivated.connect(lambda _href: self.camera_settings_requested.emit())
 
         main = QFormLayout()
         main.setSpacing(4)
@@ -242,6 +256,38 @@ class SavePanel(QWidget):
     def settings(self) -> SaveConfig:
         return self._cfg
 
+    def missing_mouse_id(self) -> bool:
+        """No mouse ID typed (or kept from last time): a recording would land
+        under a placeholder 'mouse_id' name."""
+        return not (self._ed_mouse_id.text().strip() or self._cfg.mouse_id)
+
+    _FLASH_MS = 2500
+
+    def ask_mouse_id(self) -> None:
+        """Put the cursor in Mouse ID, lit for a moment, saying why."""
+        ed = self._ed_mouse_id
+        ed.setPlaceholderText("enter a mouse ID")
+        if not ed.property("flashing"):
+            ed.setProperty("flashing", True)
+            plain = ed.styleSheet()
+            ed.setStyleSheet(f"{plain}QLineEdit{{border:2px solid {style.WARN}}}")
+
+            def unflash() -> None:
+                ed.setStyleSheet(plain)
+                ed.setProperty("flashing", False)
+
+            QTimer.singleShot(self._FLASH_MS, unflash)
+        ed.setFocus()
+
+    def refresh_known_ids(self) -> None:
+        """The completer's list: IDs already recorded under the folder."""
+        self._known_ids.setStringList(past_mouse_ids(self._cfg.resolved_folder()))
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self._ed_mouse_id and event.type() == QEvent.Type.FocusIn:
+            self.refresh_known_ids()
+        return super().eventFilter(obj, event)
+
     def as_dict(self) -> dict:
         return asdict(self._cfg)
 
@@ -322,7 +368,9 @@ class SavePanel(QWidget):
             if self._rate_mbps > cap:
                 txt += (f"; the camera offers {self._rate_mbps:.0f} MB/s, so "
                         f"~{100 * (1 - written / self._rate_mbps):.0f}% of "
-                        f"frames can't be written — see the Voltage cam tab")
+                        f"frames can't be written — "
+                        f'<a href="camera" style="color:{style.WARN}">'
+                        f"fix it in the camera's Settings</a>")
                 warn = True
             warn = warn or secs < 120
         self._lbl_space.setText(txt)

@@ -267,8 +267,10 @@ def make_window(enabled, **kw):
     """A MainWindow built the way every GUI test builds one: mocked, no real
     camera handle, an explicit module set."""
     import acqApp.main as M
-    return M.MainWindow(cam_info=None, mock=True, enabled=enabled,
-                        cam_handle=None, **kw)
+    win = M.MainWindow(cam_info=None, mock=True, enabled=enabled,
+                       cam_handle=None, **kw)
+    win.confirm_close = False   # a close mid-recording would wait on a dialog
+    return win
 
 
 def npoints(item) -> int:

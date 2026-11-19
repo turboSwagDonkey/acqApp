@@ -21,6 +21,7 @@ from .presets import (
     EXTERNAL_EDGE, TRIGGER_MODES,
     WRITER_MBPS,
 )
+from .overlay import OVERLAY_COLORS
 
 
 class SettingsPanel(QWidget):
@@ -33,6 +34,7 @@ class SettingsPanel(QWidget):
     lut_visible_changed = pyqtSignal(bool)  # show/hide the histogram bar
     auto_levels_changed = pyqtSignal(bool)  # auto-recompute vs the operator's drag
     preview_avg_changed = pyqtSignal(int)   # frames to average in the preview only
+    overlay_color_changed = pyqtSignal(str)  # this camera's colour in an overlay
     led_toggled       = pyqtSignal(bool)    # primary illumination on/off
     # A persisted MODE; the LED's own on/off is never persisted, or launch
     # would light an empty rig.
@@ -149,6 +151,20 @@ class SettingsPanel(QWidget):
                     "1 = off. The recorded file still gets every raw frame.")
         self._spn_preview_avg.valueChanged.connect(self.preview_avg_changed)
 
+        # The toggle is on the view; only the colour lives here.
+        self._overlay = self._cfg.overlay
+        self._cmb_overlay = compact(QComboBox())
+        for name in OVERLAY_COLORS:
+            self._cmb_overlay.addItem(name.capitalize(), name)
+        i = self._cmb_overlay.findData(self._cfg.overlay_color)
+        self._cmb_overlay.setCurrentIndex(max(0, i))
+        self._cmb_overlay.setToolTip(
+            "This camera's colour when the two paths' cameras are overlaid "
+            "(Overlay, beside its view). Pick complementary colours: where "
+            "both are bright they add up to white.")
+        self._cmb_overlay.currentIndexChanged.connect(
+            lambda _i: self.overlay_color_changed.emit(self.overlay_color))
+
         # Long names clip in the box rather than widen the dock; the list
         # still shows them whole. Before the grid, which sizes from these.
         cap = self.fontMetrics().horizontalAdvance("0" * 24) + 30
@@ -165,7 +181,8 @@ class SettingsPanel(QWidget):
             ("Trigger:", self._cmb_trigger),
             ("Capture rate:", self._spn_target_hz),
             ("Frames per edge:", self._spn_burst),
-            ("Preview avg:", self._spn_preview_avg)))
+            ("Preview avg:", self._spn_preview_avg),
+            ("Overlay colour:", self._cmb_overlay)))
         lay.addRow(self._lbl_rate)
         lay.addRow(self._lbl_rec)
 
@@ -268,7 +285,17 @@ class SettingsPanel(QWidget):
             auto_levels  = self._chk_auto.isChecked(),
             preview_avg  = self._spn_preview_avg.value(),
             led_follow_live = self._chk_led_follow.isChecked(),
+            overlay      = self._overlay,
+            overlay_color = self.overlay_color,
         ).fit_exposure()
+
+    @property
+    def overlay_color(self) -> str:
+        return self._cmb_overlay.currentData()
+
+    def set_overlay(self, on: bool) -> None:
+        """Kept for get_config (the view's toggle is the control)."""
+        self._overlay = bool(on)
 
     def set_led(self, on: bool) -> None:
         """Show the LED state without re-emitting `led_toggled`."""

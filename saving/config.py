@@ -155,6 +155,36 @@ class SaveConfig:
                                 self._dir_for, unique=unique)
 
 
+_SESSION_DIR = re.compile(r"(.+?)_\d{8}_\d{6}(?:_.*)?")     # <id>_<date>_<time>[_…]
+_DATE_DIR = re.compile(r"\d{8}")
+_SCAN_MAX = 2000        # entries looked at: a huge folder mustn't stall a click
+
+
+def past_mouse_ids(folder: Path) -> list[str]:
+    """Mouse IDs with recordings under `folder`: session folders named
+    <id>_<date>_<time> (the default template) and routine folders
+    <id>/<date>/. The placeholder 'mouse_id' is left out."""
+    ids: set[str] = set()
+    try:
+        entries = [p for _, p in zip(range(_SCAN_MAX), folder.iterdir())]
+    except OSError:
+        return []
+    for p in entries:
+        try:
+            if not p.is_dir():
+                continue
+            m = _SESSION_DIR.fullmatch(p.name)
+            if m:
+                ids.add(m.group(1))
+            elif any(_DATE_DIR.fullmatch(c.name) and c.is_dir()
+                     for _, c in zip(range(50), p.iterdir())):
+                ids.add(p.name)
+        except OSError:
+            continue
+    ids.discard("mouse_id")
+    return sorted(ids, key=str.lower)
+
+
 def _first_free(base: Path, stem: str,
                 build: Callable[[Path, str], Path]) -> Path:
     path = build(base, stem)

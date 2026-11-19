@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QDockWidget, QMainWindow, QWidget
+from PyQt6.QtCore import QByteArray, QTimer
+from PyQt6.QtWidgets import QDockWidget, QMainWindow, QMessageBox, QWidget
 
 from acqApp import adapters, config
 from acqApp.saving import SavePanel
@@ -41,6 +41,8 @@ class MainWindow(WindowServices, DockLayout, SessionControl,
                          else set(config.MODULES)) | config.ALWAYS_ON
         self._cam_info = cam_info
         self._cam_handle = cam_handle
+        self._extra_cams: dict[int, object] = {}    # DCAM index -> handle, see camera_handle
+        self._expected_rates: dict[str, tuple[float, float]] = {}
 
         self._clock = SessionClock()
         self._sync  = SyncController(self._clock, tick_ms=DEFAULT_TICK_MS)
@@ -60,6 +62,9 @@ class MainWindow(WindowServices, DockLayout, SessionControl,
         self._save_panel: SavePanel | None = None
         self._folds: dict[str, Fold] = {}           # each card, its panel under it
         self._docks: dict[str, QDockWidget] = {}    # the own_dock modules'
+        self._hidden_views: set[str] = set()        # see set_view_shown
+        self._before_hide: dict[str, QByteArray] = {}   # layout to go back to
+        self._riding: dict[str, tuple] = {}         # rider key -> its lending, see _lend
         self._status_widgets: dict[str, QWidget] = {}   # beside Record
 
         self._modules = adapters.build_adapters(self, self._enabled)
@@ -130,7 +135,24 @@ class MainWindow(WindowServices, DockLayout, SessionControl,
 
     # ── Cleanup ─────────────────────────────────────────────────────────────────
 
+    # Ask before a close ends a recording; tests (no one to answer) turn it off.
+    confirm_close = True
+
+    def _close_while_recording_ok(self) -> bool:
+        if not (self.confirm_close and self.is_recording()):
+            return True
+        answer = QMessageBox.question(
+            self, "Recording in progress",
+            "A recording is running. Stop it and close acqApp?\n\n"
+            "(What was recorded so far is kept.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
+
     def closeEvent(self, event) -> None:
+        if not self._close_while_recording_ok():
+            event.ignore()
+            return
         self._save_layout()
         try:
             if self._session_on:
@@ -142,4 +164,7 @@ class MainWindow(WindowServices, DockLayout, SessionControl,
         # Always: a handle left open crashes the next launch.
         close_camera(self._cam_handle)
         self._cam_handle = None
+        for handle in self._extra_cams.values():
+            close_camera(handle)
+        self._extra_cams.clear()
         event.accept()

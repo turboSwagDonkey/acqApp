@@ -61,7 +61,9 @@ flowchart TD
     adapters --> widgets
     adapters --> console
     saving --> widgets
+    saving --> style
     dialogs --> probe
+    dialogs --> style
     widgets --> style
     adapters --> sidebar
     sidebar --> style
@@ -130,7 +132,8 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
                         display tick, recording sink, metadata
   __init__.py           the registry (ADAPTERS) and the lifecycle table
   base.py               ModuleAdapter itself + the two shared widget builders
-  dmd.py
+  dmd.py                DmdModule + Dmd2Module (path 2, paired to voltage_cam_2)
+  etl.py
   mirror.py             no tab: the operator's Camera/PMT slide switch in the
                         status bar (acqApp can't read what ThorImage set)
   puffer.py
@@ -140,7 +143,7 @@ adapters/               one ModuleAdapter per subsystem — tab, plot, worker,
   routines.py           the ONLY routine code that touches a real device
   stage.py
   vis_stim.py
-  voltage_cam.py
+  voltage_cam.py        VoltageCamModule + VoltageCam2Module (path 2's Orca)
   wheel.py
 devices/                one package per instrument
   dmd/
@@ -165,6 +168,14 @@ devices/                one package per instrument
     roi_panel.py        draw and edit ROIs over a snapshot
     roi_picker.py        dialog to choose a saved ROI set: session list + Browse
     roi_store.py         save/load named ROI sets; session/archive rotation (no Qt)
+  etl/                  path 2's electrically tunable lens: path 2's focal-plane
+                        offset from path 1's
+    control.py          one NI AO line held at a setpoint (+ mock); each write
+                        is recorded as etl_volts
+    panel.py            Offset (µm) and Setpoint (V), coupled, on one `strip`;
+                        a `calibration` box (both lent to the Stage tab)
+    settings.py         setpoint, the driver's input range (hand-edited) and
+                        the linear µm/V calibration (no Qt)
   mirror/
     _probe_mirror_state.py  script: one-shot read of chip 7's GR/CAMERA
                         channels (axis 6 — chip N = axis N-1 on this rig)
@@ -228,7 +239,8 @@ devices/                one package per instrument
                         session/archive rotation (no Qt)
     map_widget.py       XY travel map (saved FOVs labelled; turned to the camera
                         once measured; dot drag emits a target, the panel
-                        moves speed-capped)
+                        moves speed-capped) + ZGauge beside it, which also
+                        draws path 2's focal plane (Z + the ETL offset)
     mcm301_driver.py    MCM301 driver (the current rig); wraps the vendor DLL
     mcm301_sdk/
       README.md         the vendored MCM301Lib_x64.dll (+ Thorlabs EULA): why
@@ -267,6 +279,8 @@ devices/                one package per instrument
                         doesn't
     led.py              primary illumination LED on Dev3/port0/line2 + mock —
                         same shape as pupil_cam/control.py's LED controller
+    overlay.py          the two paths' cameras as one RGB preview, each in its
+                        colour (no registration yet: resize only), no Qt
     panel.py
     presets.py          AcqConfig + the datasheet-derived resolution presets
   wheel/
@@ -368,8 +382,10 @@ main.py                 entry point: venv bootstrap, early camera open, the
                         module picker, then window/'s MainWindow
 config.py               settings persistence + the MODULES table
 console.py              enable_safe_console() — every entry point calls it first
-dialogs.py              module picker (startup + General); from General it also
-                        shows whether each device is detected
+dialogs.py              module picker (startup + General): a column per group
+                        in MODULE_GROUPS (Path 1 | Path 2 | Shared), each
+                        title a tick-all box; from General it also shows
+                        whether each device is detected
 run_pupil_review.py     launcher for the pupil review tool alone: makes its own venv,
                         fetches EyeLoop, runs from this checkout (stdlib only)
 requirements-pupil.txt  the pupil tool's few dependencies (no DAQ/camera/DMD)
@@ -382,7 +398,8 @@ named_store.py          session/archive rotation + safe file names shared by
                         fov_store and roi_store (no Qt)
 probe.py                presence checks; enumeration only, never opens a device
 sidebar.py              module cards: accent header + live mini view (the
-                        adapter's mini_view), its panel folded under it (Fold)
+                        adapter's mini_view), its panel folded under it (Fold;
+                        in a dock, no card: the title bar opens it)
 style.py                the dark theme and the per-module HEX colours
 widgets.py              shared panel widgets — the collapsible group box
 CLAUDE.md               how to work in here — gitignored, private repo
@@ -409,7 +426,11 @@ package in `devices/`, and an entry in the tree above.
 
 Two optional declarations on the adapter, both read by the shell and neither
 naming a module in `window/`: **`own_dock`** gives it a dock of its own (its
-settings folded under its `view_widget()`) instead of a General section, and
+`view_widget()`, its mini view on the title bar, and ⚙ Settings there swapping
+the view for its settings) instead of a General section, and
 **`config.ALWAYS_ON`** keeps it out of the module picker. `routines` sets both.
+A third, **`rides_on`**, names another module's dock to sit on while that one
+is loaded: its panel's `strip` over that view, its `calibration` in that
+Settings (the ETL on the Stage); otherwise it is a General section.
 Its dock's default place is `_SLOTS` in `window/docks.py`; unlisted, it joins the right
 column.

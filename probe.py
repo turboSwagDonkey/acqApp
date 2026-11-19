@@ -106,6 +106,9 @@ _STUBS = {
     "mirror":   "operator-asserted state — no device of its own (ThorImage "
                 "owns the real switch)",
     "routines": "drives the other modules — no device of its own",
+    # Path 2's second Orca/ALP: telling one of two apart needs the rig.
+    "voltage_cam_2": "path 2 — no probe yet (opens on first Start)",
+    "dmd_2":         "path 2 — no probe yet (opens at launch)",
 }
 
 
@@ -118,7 +121,7 @@ def probe(module: str, *, ni_device: str | None = None,
             return _voltage_cam(cam_open)
         if module == "pupil_cam":
             return _pupil_cam()
-        if module in ("wheel", "puffer"):
+        if module in ("wheel", "puffer", "etl"):
             return _ni_device(ni_device)
         if module == "stage":
             return _stage(stage_port)
@@ -134,11 +137,11 @@ def probe(module: str, *, ni_device: str | None = None,
 def probe_all(modules, *, ni_device: str | None = None,
               stage_port: str = DEFAULT_STAGE_PORT,
               cam_open: bool = False) -> dict[str, ProbeResult]:
-    # wheel and puffer share one NI device: enumerate it once.
+    # wheel, puffer and the ETL share one NI device: enumerate it once.
     ni_result: ProbeResult | None = None
     out: dict[str, ProbeResult] = {}
     for m in modules:
-        if m in ("wheel", "puffer"):
+        if m in ("wheel", "puffer", "etl"):
             if ni_result is None:
                 ni_result = _ni_device(ni_device)
             out[m] = ni_result

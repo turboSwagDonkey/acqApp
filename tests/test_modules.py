@@ -241,8 +241,9 @@ def check_sidebar_follows(r: Report, win) -> None:
 
 
 def check_sidebar_cards(r: Report, win) -> None:
-    """Each card's mini view reads its module without raising, in General and
-    in a dock alike. The DMD's card is its light switch alone."""
+    """Each mini view reads its module without raising: on its card in
+    General, on its tab's title bar in a dock (no card row there). The DMD's
+    is its light switch alone."""
     from acqApp.sidebar import MiniView
 
     win.set_modules(["voltage_cam", "pupil_cam", "wheel", "puffer", "stage",
@@ -250,15 +251,20 @@ def check_sidebar_cards(r: Report, win) -> None:
     for key, fold in win._folds.items():
         if fold.body is None:
             continue
-        for view in fold.card.findChildren(MiniView):
+        dock = win._docks.get(key)
+        home = dock.titleBarWidget() if dock is not None else fold.card
+        if dock is not None:
+            r.check(fold.card.isHidden() and fold.card.mini is None,
+                    f"{key}: no card row in its tab")
+        for view in home.findChildren(MiniView):
             view.refresh()          # unguarded: a raise fails the check
         if key == "dmd":
-            r.check(win._module("dmd")._light_btn is not None
-                    and fold.card.mini is not None,
-                    "dmd: its card holds the light switch")
+            btn = win._module("dmd")._light_btn
+            r.check(btn is not None and home.isAncestorOf(btn),
+                    "dmd: its title bar holds the light switch")
             continue
-        r.check(bool(fold.card.findChildren(MiniView)),
-                f"{key}: its card has a live view")
+        r.check(bool(home.findChildren(MiniView)),
+                f"{key}: its {'title bar' if dock else 'card'} has a live view")
 
 
 def check_recording_refused(r: Report, win) -> None:
@@ -503,6 +509,63 @@ def check_always_on(r: Report, win) -> None:
             f"({config.load_enabled_modules()})")
 
 
+def check_picker_columns(r: Report) -> None:
+    """The picker's columns: every pickable module exactly once, each
+    column's title box ticks its whole bundle."""
+    from PyQt6.QtCore import Qt
+
+    from acqApp.dialogs import ModuleSelectDialog
+
+    groups = config.module_groups()
+    flat = [k for _t, keys in groups for k in keys]
+    pickable = [k for k in config.MODULES if k not in config.ALWAYS_ON]
+    r.check(sorted(flat) == sorted(pickable) and len(flat) == len(set(flat)),
+            f"every pickable module sits in one column, once ({groups})")
+    r.check([t for t, _k in groups] == ["Path 1", "Path 2", "Shared"],
+            "columns: Path 1 | Path 2 | Shared")
+    real = config.MODULE_GROUPS
+    try:
+        config.MODULE_GROUPS = {"Path 1": ("voltage_cam", "nonsense"),
+                                "Shared": ("wheel",)}
+        got = dict(config.module_groups())
+        r.check("nonsense" not in got["Path 1"] and "dmd" in got["Shared"],
+                "an unknown key is dropped, an ungrouped module lands in the "
+                "last column")
+    finally:
+        config.MODULE_GROUPS = real
+
+    dlg = ModuleSelectDialog(["voltage_cam", "etl"])
+    heads = {h.text(): (h, keys) for h, keys in dlg._heads}
+    p1, p1_keys = heads["Path 1"]
+    p2, p2_keys = heads["Path 2"]
+    r.check(p1.checkState() == Qt.CheckState.PartiallyChecked
+            and p2.checkState() == Qt.CheckState.PartiallyChecked,
+            "a column with some ticked shows partial")
+    p2.click()
+    r.check(all(dlg._boxes[k].isChecked() for k in p2_keys)
+            and p2.checkState() == Qt.CheckState.Checked,
+            "the title box ticks the whole path")
+    p2.click()
+    r.check(not any(dlg._boxes[k].isChecked() for k in p2_keys)
+            and p2.checkState() == Qt.CheckState.Unchecked,
+            "…and, all ticked, unticks it")
+    r.check(dlg._boxes["voltage_cam"].isChecked() and "voltage_cam" in dlg.selected()
+            and not set(p2_keys) & set(dlg.selected()),
+            f"control: other columns untouched ({dlg.selected()})")
+    r.check(dlg._boxes["voltage_cam_2"].text() == "Camera"
+            and dlg._boxes["voltage_cam_2"].toolTip() == "Camera (path 2)",
+            "the column names the path, so its rows drop the '(path 2)'")
+    for k in config.MODULES:
+        if k not in config.ALWAYS_ON and k != "voltage_cam":
+            dlg._boxes[k].setChecked(False)
+    dlg._boxes["voltage_cam"].setChecked(False)
+    ok = dlg._buttons.button(dlg._buttons.StandardButton.Ok)
+    r.check(not ok.isEnabled(), "nothing ticked: OK is off")
+    p1.click()
+    r.check(ok.isEnabled(), "…and a title box's tick turns it back on")
+    dlg.deleteLater()
+
+
 def _section_keys(win) -> list[str]:
     lay = win._sections
     return [lay.itemAt(i).widget().key for i in range(lay.count())]
@@ -607,17 +670,38 @@ def check_dock_layout(r: Report, win) -> None:
         r.check(got.x() == dmd.x() and got.y() > dmd.y(),
                 f"a pupil cam loaded later lands under the DMD ({got} vs {dmd})")
 
-        fold = win._folds["voltage_cam"]
+        title = win._docks["voltage_cam"].titleBarWidget()
+        btn, fold = title.button, win._folds["voltage_cam"]
+        fold.set_open(False)
+        btn.click()
+        r.check(btn is not None and fold.is_open() and btn.isChecked(),
+                "⚙ Settings on the tab's title bar opens its settings")
+        btn.click()
+        fold.set_open(True)         # opened elsewhere: the button follows
+        r.check(btn.isChecked(), "…and shows when they are open")
         fold.set_open(False)
         app.processEvents()
-        shut = fold.height()
-        fold.set_open(True)
-        pump_until(app, lambda: fold.height() > shut + 50)
-        split = fold.parentWidget()
-        r.check(fold.height() > shut + 50 and split.sizes()[1] > 0,
-                f"the camera's settings open over its view ({shut} -> "
-                f"{fold.height()} px, view {split.sizes()[1]} px)")
-        fold.set_open(False)
+
+        for key in ("voltage_cam", "dmd"):
+            fold, dock = win._folds[key], win._docks[key]
+            view = fold.parentWidget().layout().itemAt(0).widget()  # the dock's own
+            fold.set_open(False)
+            app.processEvents()
+            shut, size = fold.height(), dock.size()
+            fold.set_open(True)
+            pump_until(app, lambda f=fold, s=shut: f.height() > s + 50)
+            r.check(fold.height() > shut + 50 and not view.isVisible()
+                    and dock.size() == size,
+                    f"{key}: open Settings take the view's place, the dock "
+                    f"keeps its size ({shut} -> {fold.height()} px, "
+                    f"{size.width()}x{size.height()} -> "
+                    f"{dock.size().width()}x{dock.size().height()})")
+            fold.set_open(False)
+            app.processEvents()
+            r.check(view.isVisible() and dock.size() == size,
+                    f"{key}: shut, the view is back at the same dock size "
+                    f"(view shown {view.isVisible()}, {dock.size().width()}x"
+                    f"{dock.size().height()})")
     finally:
         win.hide()
 
@@ -671,7 +755,7 @@ def _part_idle_ui() -> int:
             "an idle camera view says to press Live view")
 
     cam.panel._spn_target_hz.setValue(100.0)
-    r.check(cam._mini_text()[1].startswith("⚠ only"),
+    r.check(cam._mini_text()[1].startswith("⚠ ") and "writable" in cam._mini_text()[1],
             f"a rate the writer can't keep shows on the folded row "
             f"({cam._mini_text()[1]!r})")
     cam.panel._spn_target_hz.setValue(10.0)
@@ -696,6 +780,7 @@ def _part_hotload() -> int:
     try:
         check_matplotlib_stays_lazy(r, win)
         check_always_on(r, win)
+        check_picker_columns(r)
         check_folds(r, win)
         check_add_remove(r, win)
         check_empty_set(r, win)
@@ -704,6 +789,8 @@ def _part_hotload() -> int:
         check_sidebar_follows(r, win)
         check_sidebar_cards(r, win)
         check_dock_layout(r, win)
+        check_pupil_quiet_lut(r, win)
+        check_friction(r, win)
         check_recording_refused(r, win)
         check_signal_offers(r, win)
         check_devices_monitor(r, win)
@@ -718,10 +805,636 @@ def _part_hotload() -> int:
     return r.finish()
 
 
+_PATH2 = {"voltage_cam", "voltage_cam_2", "dmd", "dmd_2", "etl", "stage"}
+
+
+def check_path2_isolated(r: Report, win) -> None:
+    """Path 2 pairs with its own camera and stays out of the lookups that
+    routines, the LED menu and the probe make for path 1."""
+    mod = {m.key: m for m in win._modules}
+    r.check(mod["dmd_2"].camera_key == "voltage_cam_2"
+            and mod["dmd"].camera_key == "voltage_cam",
+            "each DMD is paired with its own path's camera")
+    r.check(win.led_target() is mod["voltage_cam"]
+            and win.pattern_target() is mod["dmd"],
+            "the window's LED and pattern targets are path 1's")
+    r.check(win.frame_rate_hz() == mod["voltage_cam"].frame_rate_hz(),
+            "the routine frame rate is path 1's camera's")
+    r.check("dmd" in win._status_widgets and "dmd_2" not in win._status_widgets,
+            "one hold-to-light switch beside Record: path 1's")
+    mod["voltage_cam_2"].panel._spn_target_hz.setValue(7.0)
+    from acqApp import config
+    r.check(config.load_settings("voltage_cam_2").get("target_hz") == 7.0
+            and config.load_settings("voltage_cam").get("target_hz") != 7.0,
+            "path 2's camera saves to its own settings section")
+
+
+def check_path2_files(r: Report, win, tmp) -> None:
+    """Each camera's own format decides its .dcimg; the disk estimate sums
+    both, and an unloaded camera's share goes."""
+    mod = {m.key: m for m in win._modules}
+
+    def fmt(key: str, value: str) -> None:
+        cmb = mod[key].panel._cmb_format
+        cmb.setCurrentIndex(cmb.findData(value))
+
+    fmt("voltage_cam", "dcimg")
+    fmt("voltage_cam_2", "tiff")
+    win._rec_path = tmp / "sess"
+    try:
+        r.check(win.dcimg_target("voltage_cam") is not None
+                and win.dcimg_target("voltage_cam_2") is None,
+                "path 1 DCIMG + path 2 TIFF: only path 1 gets a .dcimg")
+        fmt("voltage_cam", "tiff")
+        fmt("voltage_cam_2", "dcimg")
+        t = win.dcimg_target("voltage_cam_2")
+        r.check(t is not None and t.name == "sess_voltage_cam_2.dcimg"
+                and win.dcimg_target("voltage_cam") is None,
+                f"…and the other way round, named for its stream ({t})")
+    finally:
+        win._rec_path = None
+
+    rates = win._expected_rates
+    both = rates["voltage_cam"][0] + rates["voltage_cam_2"][0]
+    r.check(rates["voltage_cam_2"][0] > 0
+            and abs(win._save_panel._rate_mbps - both) < 1e-9,
+            f"the Save tab's rate is both cameras' sum ({both:.1f} MB/s)")
+    win.set_modules(_PATH2 - {"voltage_cam_2", "dmd_2"})
+    r.check(abs(win._save_panel._rate_mbps - rates["voltage_cam"][0]) < 1e-9,
+            "unloading path 2's camera takes its share off the estimate")
+    win.set_modules(_PATH2)
+
+
+def check_path2_device_ids(r: Report, win) -> None:
+    """rigs.json device_ids reach the ALP serial and the DCAM index; a
+    non-int is ignored, not passed to a driver."""
+    from acqApp import config
+    from acqApp.adapters import dmd as dmd_adapter
+
+    mod = {m.key: m for m in win._modules}
+    real_profile, real_ctrl = config.rig_profile, dmd_adapter.DmdController
+    asked: list = []
+
+    def fake_ctrl(_s, serial=None):
+        asked.append(serial)
+        raise OSError("no ALP here")    # the adapter falls back to the mock
+
+    try:
+        config.rig_profile = lambda: {"device_ids": {
+            "dmd_2": 4321, "voltage_cam_2": 3, "dmd": True, "etl": "5"}}
+        r.check(config.rig_device_id("dmd_2") == 4321
+                and config.rig_device_id("dmd") is None
+                and config.rig_device_id("etl") is None
+                and config.rig_device_id("pupil_cam") is None,
+                "rig_device_id: an int is kept; a bool, a string, unset -> None")
+        dmd_adapter.DmdController = fake_ctrl
+        mod["dmd_2"].build_controller(False)
+        mod["dmd"].build_controller(False)
+        r.check(asked == [4321, None], f"each ALP opens by its own serial ({asked})")
+        r.check(mod["voltage_cam_2"]._index() == 3 and mod["voltage_cam"]._index() == 0,
+                "the DCAM index comes from device_ids, else the class default")
+    finally:
+        config.rig_profile, dmd_adapter.DmdController = real_profile, real_ctrl
+        for key in ("dmd", "dmd_2"):
+            mod[key].close_controller()
+            mod[key].build_controller(True)
+    r.check(mod["voltage_cam_2"]._index() == 1, "path 2's camera defaults to index 1")
+
+    from acqApp.devices.voltage_cam import acquisition
+    real_open, opened = acquisition.open_camera, []
+    acquisition.open_camera = lambda i: opened.append(i) or f"handle{i}"
+    try:
+        win._extra_cams.clear()
+        first, again = win.camera_handle(1), win.camera_handle(1)
+        r.check(first == again == "handle1" and opened == [1],
+                f"camera_handle(1) opens once and is kept (opened {opened})")
+        r.check(win.camera_handle(0) is win._cam_handle,
+                "camera_handle(0) is the startup handle")
+    finally:
+        acquisition.open_camera = real_open
+        win._extra_cams.clear()     # a fake handle must not reach close_camera
+
+
+def check_etl(r: Report, win) -> None:
+    """The setpoint is clamped to the driver's range before it is written."""
+    from acqApp.devices.etl.control import MockEtlController
+    from acqApp.devices.etl.settings import EtlSettings
+
+    c = MockEtlController(settings=EtlSettings(min_volts=1.0, max_volts=2.0))
+    seen: list[float] = []
+    c.set_sink(seen.append)
+    c.apply_settings(EtlSettings(volts=9.0))
+    c.apply_settings(EtlSettings(volts=-3.0))
+    r.check(seen == [2.0, 1.0], f"out-of-range setpoints clamp to the range ({seen})")
+    r.check(EtlSettings(volts=3.0, min_volts=4.0, max_volts=2.0).clamped() == 3.0,
+            "reversed limits still bound the value")
+    etl = next(m for m in win._modules if m.key == "etl")
+    etl.set_volts(0.5)
+    r.check(etl.controller.volts == 0.5 and "0.500 V" in etl._output_text(),
+            f"the panel's setpoint reaches the controller ({etl._output_text()!r})")
+    r.check(etl.metadata()["etl_volts"] == 0.5 and etl.metadata()["etl_device"] == "mock",
+            "metadata files the held value and that it was emulated")
+
+
+def check_etl_offset(r: Report, win) -> None:
+    """Offset (µm) and Setpoint (V) are one value through the calibration;
+    without one, only volts."""
+    from acqApp.devices.etl.settings import EtlSettings
+
+    s = EtlSettings(volts=3.0, cofocal_volts=2.0, um_per_volt=40.0)
+    r.check(s.offset_um() == 40.0 and s.volts_for(-20.0) == 1.5,
+            "offset = (V − co-focal) × µm/V, and back")
+    r.check(EtlSettings(volts=3.0).offset_um() is None,
+            "control: uncalibrated has no offset")
+
+    etl = next(m for m in win._modules if m.key == "etl")
+    p = etl.panel
+    p._spn_gain.setValue(0.0)
+    r.check(not p.set_offset_um(10.0) and not p._spn_um.isEnabled()
+            and etl.focus_offset().um is None,
+            "uncalibrated: the offset box is off and set_offset_um refuses")
+    p._spn_gain.setValue(40.0)
+    p._spn_cofocal.setValue(2.0)
+    r.check(etl.set_offset_um(60.0) and abs(etl.controller.volts - 3.5) < 1e-9,
+            f"60 µm at 40 µm/V from 2 V co-focal writes 3.5 V "
+            f"(got {etl.controller.volts})")
+    p.set_volts(1.0)
+    r.check(abs(p._spn_um.value() + 40.0) < 1e-9 and etl.focus_offset().um == -40.0,
+            f"a volts edit moves the offset box (−40 µm, got {p._spn_um.value()})")
+    p.set_offset_um(9999.0)
+    lo, hi = p.settings.limits
+    r.check(abs(etl.controller.volts - hi) < 1e-9,
+            "an offset past the driver's range stops at its edge")
+    meta = etl.metadata()
+    r.check(meta["etl_um_per_volt"] == 40.0 and meta["etl_cofocal_volts"] == 2.0
+            and abs(meta["etl_offset_um"] - (hi - 2.0) * 40.0) < 1e-6,
+            "metadata files the offset and the calibration that made it")
+
+
+def check_stage_overlay(r: Report, win) -> None:
+    """The ETL's plane rides the stage's Z gauge; unloaded, it goes."""
+    from acqApp.acq.devices import FocusOffset
+    from acqApp.devices.stage.map_widget import ZGauge
+
+    g = ZGauge()
+    g.set_position(100.0)
+    r.check(g.path2_um is None, "control: no ETL, no path 2 plane")
+    g.set_offset(FocusOffset(volts=1.0, um=None))
+    r.check(g.path2_um is None, "uncalibrated: no plane to place")
+    g.set_offset(FocusOffset(volts=1.0, um=60.0))
+    r.check(g.path2_um == 160.0, "path 2's plane is Z + offset")
+    g.clear_position()
+    r.check(g.path2_um is None, "no position: no plane")
+
+    etl = win._module("etl")
+    stage = win._module("stage")
+    gauge = stage.panel.z_gauge
+    if not r.check(gauge is not None, "the stage page has its Z gauge back"):
+        return
+    etl.panel._spn_gain.setValue(40.0)
+    etl.panel._spn_cofocal.setValue(2.0)
+    etl.set_offset_um(20.0)
+    stage.update_display()
+    r.check(gauge._offset == etl.focus_offset() and gauge._offset.um == 20.0,
+            f"the stage's tick puts the ETL offset on the gauge ({gauge._offset})")
+    r.check(stage._disp_timer.isActive(),
+            "the stage's tick runs (so the overlay follows the ETL)")
+    win.set_modules(_PATH2 - {"etl"})
+    r.check(stage.panel.z_gauge._offset is None,
+            "unloading the ETL takes its plane off at once")
+    win.set_modules(_PATH2)
+
+
+def check_overlay_math(r: Report) -> None:
+    """Each camera in its colour, stretched by its own levels; the other
+    resized to fit; complementary colours add to white."""
+    import numpy as np
+
+    from acqApp.devices.voltage_cam import overlay
+
+    own = np.zeros((4, 6))
+    own[:, :3] = 100.0
+    other = np.zeros((2, 3))
+    other[:, 1:] = 5000.0           # brighter units: its own levels must cope
+    rgb = overlay.composite(own, other, "green", "magenta", (0.0, 100.0),
+                            (0.0, 5000.0))
+    r.check(rgb.shape == (4, 6, 3), f"the composite has own's shape ({rgb.shape})")
+    r.check(np.allclose(rgb[0, 0], (0, 1, 0)) and np.allclose(rgb[0, 5], (1, 0, 1))
+            and np.allclose(rgb[0, 2], (1, 1, 1)),
+            f"own alone = green, other alone = magenta, both = white "
+            f"({rgb[0, 0]}, {rgb[0, 5]}, {rgb[0, 2]})")
+    r.check(overlay.fit_to(other, (2, 3)) is other,
+            "control: a frame that fits is used as is")
+    lo, hi = overlay.levels(np.full((3, 3), 7.0))
+    r.check(hi > lo, f"a flat frame still gets a usable stretch ({lo}, {hi})")
+
+
+def check_cameras_overlay(r: Report, win) -> None:
+    """Overlay (on path 1's view) combines the two cameras into that one
+    view, each in its colour, and hides path 2's; off gives both back."""
+    app = qt_app()
+    mod = {m.key: m for m in win._modules}
+    c1, c2 = mod["voltage_cam"], mod["voltage_cam_2"]
+    dock2 = win._docks["voltage_cam_2"]
+    r.check(c1.overlay_color() == "green" and c2.overlay_color() == "magenta",
+            f"default colours: path 1 green, path 2 magenta "
+            f"({c1.overlay_color()}, {c2.overlay_color()})")
+    r.check(win.camera_overlay_color("voltage_cam_2") == "magenta",
+            "the window hands one camera the other's colour")
+    r.check(c1._chk_overlay is not None and c1._chk_overlay.isEnabled()
+            and c2._chk_overlay is None,
+            "one Overlay toggle, on path 1's view (path 2's has none)")
+
+    win.resize(1600, 900)
+    win.show()
+    c1._chk_overlay.setChecked(True)
+    win._btn_run.setChecked(True)
+    try:
+        r.check(not dock2.isVisible() and "voltage_cam_2" in win._hidden_views,
+                "Overlay on: path 2's camera view goes, the two are one")
+        got = pump_until(app, lambda: (win._display_tick(), c1._img.image is not None
+                                       and c1._img.image.ndim == 3)[1], timeout=8.0)
+        r.check(got, "…and path 1's view paints both as an RGB composite")
+        r.check(not c1._hist.isVisible() and c1._lbl_legend.isVisible()
+                and "Path 1" in c1._lbl_legend.text()
+                and "Path 2" in c1._lbl_legend.text(),
+                "…its LUT bar hidden, a legend saying which colour is which path")
+        r.check(c2.worker is not None and c2.last_frame() is not None,
+                "path 2 keeps acquiring while its view is hidden")
+        win._reset_action.trigger()
+        pump(app, 0.1)
+        r.check(not dock2.isVisible(), "Reset layout keeps the merged view merged")
+        pump_until(app, lambda: win._docks["dmd_2"].geometry().y() > 0)
+        d = {k: win._docks[k].geometry() for k in ("voltage_cam", "dmd", "dmd_2")}
+        r.check(d["dmd_2"].x() == d["dmd"].x() and d["dmd_2"].y() != d["dmd"].y()
+                and d["dmd"].x() - d["voltage_cam"].right() < 20,
+                f"merged: path 2's DMD joins path 1's column, no empty column "
+                f"between ({d})")
+        r.check(config.load_settings("voltage_cam").get("overlay") is True,
+                "the toggle is saved with path 1's settings")
+
+        c1._chk_overlay.setChecked(False)
+        win._display_tick()
+        pump(app, 0.2)
+        win._display_tick()
+        r.check(dock2.isVisible() and c1._img.image.ndim == 2 and not c1._overlaid
+                and not c1._lbl_legend.isVisible()
+                and c1._hist.isVisibleTo(c1._hist.parentWidget())
+                == c1.panel.get_config().show_lut,
+                "Overlay off: both views again, grayscale, the LUT bar as set")
+    finally:
+        win._btn_run.setChecked(False)
+
+    win.set_modules(_PATH2 - {"voltage_cam_2", "dmd_2"})
+    r.check(not c1._chk_overlay.isEnabled(),
+            "the other camera unloaded: Overlay is off-limits, its tooltip says why")
+    win.set_modules(_PATH2)
+
+    c1 = win._module("voltage_cam")
+    c1._chk_overlay.setChecked(True)
+    win.set_modules(_PATH2 - {"voltage_cam"})
+    pump(app, 0.1)
+    r.check(win._docks["voltage_cam_2"].isVisible(),
+            "path 1 unloaded mid-overlay: path 2's view comes back, not lost")
+    win.set_modules(_PATH2)
+    pump(app, 0.1)
+    r.check(not win._docks["voltage_cam_2"].isVisible(),
+            "…and path 1 back with Overlay saved on: merged again")
+    win._module("voltage_cam")._chk_overlay.setChecked(False)
+    pump(app, 0.1)
+    r.check(win._docks["voltage_cam_2"].isVisible(), "control: off shows it")
+    win.hide()
+
+
+def check_cameras_side_by_side(r: Report, win) -> None:
+    """Path 2's camera right of path 1's, top row; its DMD under it."""
+    app = qt_app()
+    win._reset_action.trigger()
+    win.resize(1800, 900)
+    win.show()
+    try:
+        pump_until(app, lambda: win._docks["dmd_2"].geometry().y() > 0)
+        d = {k: win._docks[k].geometry() for k in win._docks}
+        r.check(d["voltage_cam"].right() < d["voltage_cam_2"].x()
+                and d["voltage_cam"].y() == d["voltage_cam_2"].y(),
+                f"the cameras sit side by side ({d['voltage_cam']}, "
+                f"{d['voltage_cam_2']})")
+        r.check(d["dmd_2"].x() == d["voltage_cam_2"].x()
+                and d["dmd_2"].y() > d["voltage_cam_2"].y(),
+                "path 2's DMD under its camera")
+        r.check(d["dmd"].x() > d["voltage_cam_2"].x(),
+                "path 1's DMD moves one column right, past path 2's camera")
+    finally:
+        win.hide()
+
+
+def check_etl_rides_stage(r: Report, win) -> None:
+    """With a Stage tab, the ETL lives on it: its strip over the stage
+    controls, its calibration in the Stage's Settings; no General section.
+    Without one, General again; each way survives hot-loading."""
+    etl = win._module("etl")
+    p, sfold = etl.panel, win._folds["stage"]
+    sdock = win._docks["stage"]
+    r.check("etl" not in win._folds and sdock.isAncestorOf(p.strip)
+            and sfold.body.isAncestorOf(p.calibration),
+            "the ETL rides on the Stage tab: strip on top, calibration in "
+            "its Settings, no General section")
+    sfold.set_open(True)
+    hidden = p.strip.isHidden()
+    sfold.set_open(False)
+    r.check(hidden and not p.strip.isHidden(),
+            "…its strip steps aside while the Stage's Settings are open")
+    keep = sorted(m.key for m in win._modules)
+    win.set_modules([k for k in keep if k != "stage"])
+    r.check("etl" in win._folds and p.strip.parentWidget() is p
+            and not win._riding,
+            "Stage unloaded: the ETL is a General section again")
+    win.set_modules(keep)
+    stage_panel = win._module("stage").panel
+    r.check("etl" not in win._folds and win._docks["stage"].isAncestorOf(p.strip),
+            "Stage back: it rides on it again")
+    win.set_modules([k for k in keep if k != "etl"])
+    r.check(win._folds["stage"].body.widget() is stage_panel and not win._riding,
+            "ETL unloaded: the Stage's Settings are its own again")
+    win.set_modules(keep)
+
+    from PyQt6.QtGui import QShortcut
+    p = win._module("etl").panel
+    p._spn_gain.setValue(40.0)
+    p._spn_cofocal.setValue(2.0)
+    p.set_offset_um(10.0)
+    p.nudge(1)
+    up = p._spn_um.value()
+    p.nudge(-10)
+    keys = sorted(s.key().toString() for s in p.strip.findChildren(QShortcut))
+    r.check(abs(up - 11.0) < 1e-6 and abs(p._spn_um.value() - 1.0) < 1e-6
+            and keys == ["Alt+Down", "Alt+Shift+Down", "Alt+Shift+Up", "Alt+Up"],
+            f"Alt+↑/↓ nudges path 2's focus 1 µm, Shift 10× ({up}, "
+            f"{p._spn_um.value()}, {keys})")
+
+
+def check_overlay_keeps_layout(r: Report, win) -> None:
+    """Overlay on then off gives back the operator's own arrangement, not
+    the default."""
+    from PyQt6.QtCore import Qt
+    app = qt_app()
+    win.show()
+    try:
+        chk = win._module("voltage_cam")._chk_overlay
+        chk.setChecked(False)
+        pump_until(app, lambda: win._docks["voltage_cam_2"].isVisible())
+        cams = [win._docks["voltage_cam"], win._docks["voltage_cam_2"]]
+        win.resizeDocks(cams, [900, 300], Qt.Orientation.Horizontal)   # by hand
+        pump(app, 0.1)
+        mine = {k: d.geometry() for k, d in win._docks.items()}
+        chk.setChecked(True)
+        pump_until(app, lambda: not win._docks["voltage_cam_2"].isVisible())
+        chk.setChecked(False)
+        pump_until(app, lambda: win._docks["voltage_cam_2"].isVisible())
+        pump(app, 0.1)
+        back = {k: d.geometry() for k, d in win._docks.items()}
+        moved = {k: (mine[k], back.get(k)) for k in mine if back.get(k) != mine[k]}
+        r.check(not moved, f"Overlay off puts the hand arrangement back ({moved})")
+    finally:
+        win.hide()
+
+
+def check_friction(r: Report, win) -> None:
+    """Small conveniences: a title-bar warning opens Settings; an empty DMD
+    preview offers its next step; Record by hand wants a mouse ID; Live and
+    Record have Ctrl shortcuts."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from acqApp.sidebar import MiniText
+    app = qt_app()
+    win.set_modules(["voltage_cam", "dmd", "wheel"])
+    win.show()
+    try:
+        title = win._docks["voltage_cam"].titleBarWidget()
+        mini = title.findChild(MiniText)
+        fold = win._folds["voltage_cam"]
+        fold.set_open(False)
+        keep = mini._source
+        mini._source = lambda: ("idle", "⚠ 50% of frames writable", "x")
+        mini.refresh()
+        QTest.mouseClick(mini, Qt.MouseButton.LeftButton)
+        r.check(fold.is_open() and "Click to open Settings" in mini.toolTip(),
+                "a warning on the title bar opens that tab's Settings")
+        fold.set_open(False)
+        mini._source = lambda: ("idle", "all fine", "")
+        mini.refresh()
+        QTest.mouseClick(mini, Qt.MouseButton.LeftButton)
+        r.check(not fold.is_open(), "control: a plain status click does nothing")
+        mini._source = keep
+        mini.refresh()
+
+        # Only the stub is ever clicked: the real steps open modal dialogs.
+        panel = win._module("dmd").panel
+        hits = []
+        stub = lambda: hits.append("browse")        # noqa: E731
+        panel._browse = stub
+        panel._rb["pattern"].setChecked(True)
+        panel._update_preview()
+        action = panel._empty_action
+        if action is not None and action[1] is stub:
+            QTest.mouseClick(panel._preview, Qt.MouseButton.LeftButton)
+        r.check(hits == ["browse"] and "pattern" in action[0],
+                f"an empty Image preview's click opens Browse ({action}, {hits})")
+        panel._rb["roi"].setChecked(True)
+        panel._update_preview()
+        r.check(bool(panel._rois) or (panel._empty_action is not None
+                                      and "ROIs" in panel._empty_action[0]),
+                f"…and an empty ROIs one offers to draw them ({panel._empty_action})")
+        panel._rb["pattern"].setChecked(True)
+        del panel._browse
+
+        sp = win._save_panel
+        sp._ed_mouse_id.setText("")
+        sp._cfg.mouse_id = ""
+        win._btn_rec.setChecked(True)
+        r.check(not win._btn_rec.isChecked() and win.recording_path() is None
+                and win._folds["saving"].is_open()
+                and "mouse ID" in win.statusBar().currentMessage(),
+                f"Record without a mouse ID asks for one instead "
+                f"({win.statusBar().currentMessage()!r})")
+        win._btn_run.setChecked(False)
+        pump(app, 0.1)
+
+        r.check(bool(sp._ed_mouse_id.property("flashing")),
+                "…and lights the Mouse ID box for a moment")
+
+        # Start routine asks the same, before its own pre-flight dialog.
+        routines = win._module("routines")
+        asked = []
+        keep_confirm = routines._confirm_start
+        routines._confirm_start = lambda: asked.append(1) or False
+        routines._on_start_clicked()
+        r.check(not asked and "Start routine" in win.statusBar().currentMessage(),
+                f"Start routine without a mouse ID asks for one first "
+                f"({win.statusBar().currentMessage()!r})")
+        sp._ed_mouse_id.setText("m1")
+        routines._on_start_clicked()
+        r.check(asked == [1], "…with one, on to its pre-flight check")
+        routines._confirm_start = keep_confirm
+
+        # Past mouse IDs, from the folder's session and routine folders.
+        import tempfile
+        from pathlib import Path
+        from acqApp.saving.config import past_mouse_ids
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for sub in ("M12_20261119_142031", "M12_20261118_090000_001",
+                        "ab-7_20261001_120000", "mouse_id_20261119_000000",
+                        "R3/20261119/FOV1_T1", "notes"):
+                (root / sub).mkdir(parents=True)
+            (root / "M99_20261119_142031.txt").write_text("")
+            got = past_mouse_ids(root)
+        r.check(got == ["ab-7", "M12", "R3"],
+                f"past mouse IDs: sessions + routine folders, no placeholder ({got})")
+
+        # The capacity warning's link opens the camera's Settings.
+        cam_fold = win._folds["voltage_cam"]
+        cam_fold.set_open(False)
+        sp._lbl_space.linkActivated.emit("camera")
+        r.check(cam_fold.is_open(), "Save's capacity link opens the camera's Settings")
+        cam_fold.set_open(False)
+
+        # After a recording: where it went, one click away.
+        from pathlib import Path as _P
+        win._offer_last_recording(_P("C:/x/M12_20261119_142031"))
+        shown = win._btn_open_last.isVisibleTo(win)
+        win._offer_last_recording(None)
+        r.check(shown and not win._btn_open_last.isVisibleTo(win),
+                "an Open-recording button after a stop, gone at the next start")
+
+        # Closing mid-recording asks first.
+        import acqApp.window.main_window as MW
+        keep_q, keep_rec = MW.QMessageBox.question, win.is_recording
+        win.confirm_close, win.is_recording = True, lambda: True
+        try:
+            MW.QMessageBox.question = lambda *a, **k: MW.QMessageBox.StandardButton.No
+            no = win._close_while_recording_ok()
+            MW.QMessageBox.question = lambda *a, **k: MW.QMessageBox.StandardButton.Yes
+            yes = win._close_while_recording_ok()
+        finally:
+            MW.QMessageBox.question = keep_q
+            win.confirm_close = False
+            del win.is_recording
+        r.check(not no and yes and keep_rec() is False,
+                "closing mid-recording asks first (No keeps it running)")
+
+        clicked = []
+        win._btn_run.clicked.connect(lambda: clicked.append("live"))
+        win._shortcuts["Ctrl+L"].activated.emit()
+        win._shortcuts["Ctrl+L"].activated.emit()
+        r.check(clicked == ["live", "live"] and not win._btn_run.isChecked()
+                and set(win._shortcuts) == {"Ctrl+L", "Ctrl+R"},
+                "Ctrl+L / Ctrl+R start and stop Live view / Record")
+        pump(app, 0.1)
+    finally:
+        win.hide()
+
+
+def check_pupil_quiet_lut(r: Report, win) -> None:
+    """The pupil cam's LUT bar: the Orcas' quiet style, kept upright."""
+    hist = win._module("pupil_cam")._hist
+    p = hist.item
+    r.check(p.orientation == "vertical" and not p.axis.isVisible()
+            and not p.gradient.isVisible() and len(hist.level_labels) == 2,
+            "the pupil cam's bar is the same quiet style, upright")
+
+
+def check_quiet_lut(r: Report, win) -> None:
+    """The Orcas' LUT strip: horizontal, no axis or gradient, a smoothed
+    histogram, the two edges as numbers."""
+    import numpy as np
+    cam = win._module("voltage_cam")
+    item = cam._hist.item
+    r.check(item.orientation == "horizontal" and not item.axis.isVisible()
+            and not item.gradient.isVisible(),
+            "the camera's LUT strip is horizontal, axis and gradient hidden")
+    frame = np.random.default_rng(3).integers(1000, 3000, (256, 512), dtype=np.uint16)
+    cam._img.setImage(frame, autoLevels=False, levels=(1500, 2500))
+    item.imageChanged()
+    raw = cam._img.getHistogram()[1]
+    shown = item.plot.getData()[1]
+    rough = lambda y: float(np.abs(np.diff(y)).mean())   # noqa: E731
+    r.check(shown is not None and rough(shown) < rough(raw) / 3,
+            f"its histogram is smoothed (step {rough(shown):.1f} vs raw {rough(raw):.1f})")
+    item.setLevels(1600, 2400)
+    texts = [t.textItem.toPlainText() for t in cam._hist.level_labels]
+    r.check(texts == ["1600", "2400"],
+            f"the edges read as numbers and follow a drag ({texts})")
+
+    rng = np.random.default_rng(5)
+    def refresh(offset: int = 0, i: int = 0) -> list:
+        f = rng.integers(1500, 2500, (256, 512), dtype=np.uint16) + offset
+        if i % 3 == 1:          # content that comes and goes, as live frames do
+            f[:40, :40] = 1200
+        elif i % 3 == 2:
+            f[:40, :40] = 2800
+        cam._img.setImage(f, autoLevels=False, levels=item.getLevels())
+        item.imageChanged()
+        return item.vb.viewRange()
+    from acqApp.adapters.base import _LUT_MEMORY
+    warm = _LUT_MEMORY + 2      # the earlier frames' spans age out first
+    for i in range(warm):
+        refresh(i=i)
+    steady = refresh(i=warm)
+    seen = [refresh(i=i) for i in range(warm + 1, warm + 13)]
+    r.check(all(v == steady for v in seen),
+            f"frames whose dim/bright patches come and go leave the strip "
+            f"still ({steady} vs {seen})")
+    # A hand zoom (pyqtgraph's wheel/drag signal) is kept through refreshes.
+    from types import SimpleNamespace
+    item.vb.setXRange(1700, 1900, padding=0)
+    item.vb.sigRangeChangedManually.emit([True, False])
+    kept = [refresh(i=i)[0] for i in range(3)]
+    r.check(cam._hist.zoom_is_manual()
+            and all(abs(v[0] - 1700) < 1 and abs(v[1] - 1900) < 1 for v in kept),
+            f"a hand zoom on the strip stays put ({kept[-1]})")
+    item.vb.mouseDoubleClickEvent(SimpleNamespace(accept=lambda: None))
+    r.check(not cam._hist.zoom_is_manual() and item.vb.viewRange()[0] == steady[0],
+            f"a double-click fits it again ({item.vb.viewRange()[0]})")
+    moved = refresh(offset=4000)
+    r.check(moved[0][1] > 5000, f"a real change still refits it ({moved[0]})")
+
+    from acqApp.adapters.base import _settled_levels
+    old = (1000.0, 2000.0)
+    r.check(_settled_levels(old, (1020, 1970)) == old
+            and _settled_levels(old, (1000, 2300)) == (1000.0, 2300.0),
+            "Auto ignores percentile jitter, follows a real change")
+
+
+def _part_path2() -> int:
+    r = Report("path2")
+    tmp = isolate_user_state()
+    app = qt_app()          # held: a collected QApplication aborts
+    win = make_window(_PATH2)
+    try:
+        check_path2_isolated(r, win)
+        check_path2_files(r, win, tmp)
+        check_path2_device_ids(r, win)
+        check_etl(r, win)
+        check_etl_offset(r, win)
+        check_stage_overlay(r, win)
+        check_overlay_math(r)
+        check_cameras_overlay(r, win)
+        check_cameras_side_by_side(r, win)
+        check_overlay_keeps_layout(r, win)
+        check_etl_rides_stage(r, win)
+        check_quiet_lut(r, win)
+    finally:
+        win.close()
+        pump(app, 0.1)
+    return r.finish()
+
+
 PARTS = {
     "subsets": _part_subsets,
     "idle_ui": _part_idle_ui,
     "hotload": _part_hotload,
+    "path2": _part_path2,
 }
 
 

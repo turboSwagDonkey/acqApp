@@ -12,6 +12,9 @@ HEX = {
     "dmd":         "#d6459b",   # magenta
     "vis_stim":    "#7cab2b",   # lime (cyan sat beside stage's teal)
     "mirror":      "#8796ad",   # steel, General's family (pink sat beside dmd)
+    "voltage_cam_2": "#8fb4ff", # path 2: a paler blue/magenta of path 1's
+    "dmd_2":       "#eb8cc4",
+    "etl":         "#e8a06a",   # apricot: path 2's lens
     "routines":    "#9b5de5",   # violet (indigo sat beside voltage_cam's blue)
     "sync":        "#6c7a8e",   # slate: session-wide controls, no device's hue
     "saving":      "#c9a227",   # gold
@@ -147,6 +150,23 @@ def dock_accent(key: str) -> str:
         f"QDockWidget::title{{background:{_alpha(c, 70)};"
         f"border:1px solid {c};border-bottom:2px solid {c};"
         "border-top-left-radius:4px;border-top-right-radius:4px;padding:4px}"
+    )
+
+
+def dock_title(key: str) -> str:
+    """A dock's own title bar (`dock_accent`'s band, as a widget), its
+    Settings button filled in the accent while open."""
+    c = HEX[key]
+    return (
+        f"QFrame#dockTitle{{background:{_alpha(c, 70)};border:1px solid {c};"
+        f"border-bottom:2px solid {c};border-top-left-radius:4px;"
+        "border-top-right-radius:4px}"
+        "QLabel#dockName{font-weight:bold}"
+        f"QFrame#dockTitle QToolButton{{border:1px solid {c};border-radius:3px;"
+        "padding:1px 8px;background:transparent}"
+        f"QFrame#dockTitle QToolButton:hover{{background:{_alpha(c, 110)}}}"
+        f"QFrame#dockTitle QToolButton:checked{{background:{c};color:#111;"
+        "font-weight:bold}"
     )
 
 

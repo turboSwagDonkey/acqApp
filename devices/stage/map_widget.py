@@ -1,9 +1,10 @@
 """
-The stage's X/Y travel picture, `StageMap`: the hard travel, the soft limits
-inside it, the origin, the current position and this session's saved FOVs.
-Z is the readout's alone. Nothing here commands motion: dragging the
-position dot only emits the target, and the panel decides whether and how
-fast to move.
+Stage travel pictures: `StageMap` for X/Y (the hard travel, the soft limits
+inside it, the origin, the current position and this session's saved FOVs)
+and `ZGauge` for Z beside it (path 2's focal plane too, with the ETL). Z gets
+a gauge, not a third map axis, so it reads as depth. Nothing here commands
+motion: dragging the position dot only emits the target, and the panel
+decides whether and how fast to move.
 """
 from __future__ import annotations
 
@@ -392,3 +393,166 @@ class StageMap(_TravelWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()))
         p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r))
+
+
+class ZGauge(_TravelWidget):
+    """Z (focus) within its travel, as a vertical bar: soft limits with their
+    µm, the origin tick, the position. `set_axis()` once, `set_position()`
+    per poll. With the ETL loaded, `set_offset()` adds path 2's focal plane
+    (Z + offset) in the ETL's colour; its label is the offset, stacked off
+    the position's when the two would overlap (µm offsets on mm of travel).
+    """
+
+    _MARGIN_TOP    = 20        # room for the top soft-limit number
+    _MARGIN_BOTTOM = 20        # room for the bottom soft-limit number
+    _BAR_WIDTH     = 22
+    _SIDE_TICK     = 14        # origin tick length, past the bar edge
+    _LABEL_W       = 66        # room for "-12650 µm" / "P2 +150.0" beside the bar
+    _LABEL_H       = 14
+    _RADIUS        = 4.0
+    BAR_CENTER_X   = _SIDE_TICK + _BAR_WIDTH / 2   # for a caption under the bar
+
+    _TIP = ("Z (focus) within its travel: dashed = soft limits, green tick = "
+            "0, blue = position. Display only: clicking doesn't move the stage.")
+    _TIP_P2 = _TIP + ("\nOrange = path 2's focal plane (Z + the ETL offset), "
+                      "labelled with the offset.")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ax = None
+        self._pos: float | None = None
+        self._offset = None             # acq.devices.FocusOffset, or None
+        self.setMinimumSize(self._SIDE_TICK + self._BAR_WIDTH + self._LABEL_W + 8,
+                            160)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setToolTip(self._TIP)
+
+    # ── inputs ──────────────────────────────────────────────────────────────
+    def set_axis(self, z_axis) -> None:
+        self._ax = z_axis
+        self.update()
+
+    def set_position(self, z_um: float) -> None:
+        self._pos = z_um
+        self.update()
+
+    def set_offset(self, offset) -> None:
+        """A `FocusOffset`, or None (no ETL: no overlay)."""
+        if offset == self._offset:
+            return
+        self._offset = offset
+        self.setToolTip(self._TIP if offset is None else self._TIP_P2)
+        self.update()
+
+    @property
+    def path2_um(self) -> float | None:
+        """Where path 2 focuses on Z, or None (no ETL, no calibration, no
+        position)."""
+        off = self._offset
+        if off is None or off.um is None or self._pos is None:
+            return None
+        return self._pos + off.um
+
+    # ── geometry ────────────────────────────────────────────────────────────
+    def _bar(self) -> QRectF:
+        h = max(1.0, self.height() - self._MARGIN_TOP - self._MARGIN_BOTTOM)
+        return QRectF(self._SIDE_TICK, self._MARGIN_TOP, self._BAR_WIDTH, h)
+
+    @staticmethod
+    def _y_for(z_um: float, lim: tuple[float, float], bar: QRectF) -> float:
+        """Screen y for a value in `lim`, clamped to the bar; bigger is up."""
+        lo, hi = lim
+        f = (z_um - lo) / (hi - lo) if hi > lo else 0.5
+        return bar.bottom() - min(max(f, 0.0), 1.0) * bar.height()
+
+    def _label(self, p: QPainter, bar: QRectF, y: float, text: str) -> None:
+        p.drawText(QRectF(bar.right() + 6, y - self._LABEL_H / 2, self._LABEL_W,
+                          self._LABEL_H), _LEFT_VCENTER, text)
+
+    # ── painting ────────────────────────────────────────────────────────────
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._ax is None:
+            self._center_text(p, "No Z axis")
+            return
+        zt = self._ax.travel_limits_um()
+        if zt[1] <= zt[0]:
+            self._center_text(p, "No Z travel\nlimits")
+            return
+
+        bar = self._bar()
+        p.setPen(QPen(_TRAVEL_EDGE, 1.5))
+        p.setBrush(QBrush(QColor(style.plot_bg())))
+        p.drawRoundedRect(bar, self._RADIUS, self._RADIUS)
+
+        lo, hi = self._ax.soft_limits_um()
+        top, bot = self._y_for(hi, zt, bar), self._y_for(lo, zt, bar)
+        p.setPen(QPen(_SOFT_EDGE, 1.0, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(bar.left(), top, bar.width(), bot - top),
+                          self._RADIUS, self._RADIUS)
+
+        p.setFont(self._small())
+        p.setPen(QPen(_TEXT.lighter(220)))
+        # As wide as the tick margins allow, so "-12650" isn't clipped.
+        lw = bar.width() + 2 * self._SIDE_TICK
+        p.drawText(QRectF(bar.left() - self._SIDE_TICK, top - 17, lw, 16),
+                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom),
+                   f"{hi:.0f}")
+        p.drawText(QRectF(bar.left() - self._SIDE_TICK, bot + 1, lw, 16),
+                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+                   f"{lo:.0f}")
+
+        if self._ax.origin_set:
+            y0 = self._y_for(0.0, zt, bar)
+            p.setPen(QPen(_ORIGIN, 1.8))
+            p.drawLine(QPointF(bar.left(), y0),
+                       QPointF(bar.left() - self._SIDE_TICK + 4, y0))
+        else:
+            p.setPen(QPen(_STALE))
+            p.drawText(bar.adjusted(-8, 4, 8, 0),
+                       int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter),
+                       "0 not\nset")
+
+        y = None
+        if self._pos is not None:
+            y = self._y_for(self._pos, zt, bar)
+            p.setPen(QPen(_CURRENT.lighter(130), 0.8, Qt.PenStyle.DotLine))
+            p.drawLine(QPointF(bar.left(), y), QPointF(bar.right(), y))
+            p.setPen(QPen(_CURRENT.darker(130), 1.2))
+            p.setBrush(QBrush(_CURRENT))
+            p.drawEllipse(QPointF(bar.center().x(), y), 5, 5)
+            p.setPen(QPen(_TEXT.lighter(220)))
+            self._label(p, bar, y, f"{self._pos:.0f} µm")
+        self._draw_path2(p, bar, zt, y)
+
+    def _draw_path2(self, p: QPainter, bar: QRectF, zt, y_pos: float | None) -> None:
+        off = self._offset
+        if off is None:
+            return
+        color = QColor(style.HEX["etl"])
+        p.setPen(QPen(color))
+        if off.um is None:
+            self._label(p, bar, bar.bottom() - self._LABEL_H,
+                        "P2: calibrate")
+            return
+        text = f"P2 {off.um:+.1f}"
+        z2 = self.path2_um
+        if z2 is None:                  # no position: the offset alone
+            self._label(p, bar, bar.bottom() - self._LABEL_H, text)
+            return
+        y2 = self._y_for(z2, zt, bar)
+        p.setPen(QPen(color, 1.6))
+        p.drawLine(QPointF(bar.left() + 3, y2), QPointF(bar.right() - 3, y2))
+        d = 5.0                         # a diamond on the bar's right edge
+        p.setBrush(QBrush(color))
+        p.drawPolygon(QPolygonF([QPointF(bar.right(), y2 - d),
+                                 QPointF(bar.right() + d, y2),
+                                 QPointF(bar.right(), y2 + d),
+                                 QPointF(bar.right() - d, y2)]))
+        ly = y2
+        if y_pos is not None and abs(y2 - y_pos) < self._LABEL_H:
+            # Up for a + offset (bigger Z is up), down for −, so it reads right.
+            ly = y_pos - self._LABEL_H if off.um >= 0 else y_pos + self._LABEL_H
+        self._label(p, bar, ly, text)

@@ -323,6 +323,9 @@ class RoutinesModule(RoutineFiles, ModuleAdapter):
     def _on_start_clicked(self) -> None:
         # A slot: a raise partway through would abort the app mid-arm.
         try:
+            # Asked once here, never mid-run: its recordings name the mouse.
+            if not self.win.ensure_mouse_id("Start routine"):
+                return
             if self._confirm_start():
                 self._start()
         except Exception as e:                       # noqa: BLE001

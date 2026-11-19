@@ -193,6 +193,10 @@ class SessionControl:
         # setParent(None) before deleteLater: removal only leaves the layout,
         # and a still-parented dock would come back on restoreState().
         # The panel and the card's view go with their fold.
+        self._host_leaving(key)             # before its dock goes: riders to General
+        if key in self._riding:             # a rider: its widgets home, then gone
+            self._unlend(m)
+            m.panel.deleteLater()
         fold = self._folds.pop(key, None)
         dock = self._docks.pop(key, None)
         if dock is not None:
@@ -203,7 +207,10 @@ class SessionControl:
             self._sections.removeWidget(fold)
             fold.setParent(None)
             fold.deleteLater()
+            self._sync_sections()       # it may have been the one shown
         self._remove_status_widget(key)
+        if key in self._expected_rates:     # its frames no longer reach the disk
+            self.set_expected_rate(0.0, 0.0, key)
 
         self._modules.remove(m)
 
@@ -280,6 +287,10 @@ class SessionControl:
         sp = self._save_panel
         sc = sp.settings
         ctx = self._routine_save_ctx
+        # By hand, not mid-routine (a run asks once, at its Start).
+        if ctx is None and not self.ensure_mouse_id("press Record"):
+            self._btn_rec.setChecked(False)
+            return
         # unique=True: take the next free name rather than refuse. A routine's
         # (FOV, trial) uses its folder scheme, not mouse_date_time.
         if ctx is not None:
@@ -313,6 +324,7 @@ class SessionControl:
             write_routine_fov_sidecar(path, *ctx[2])
         self._recorder = rec
         self._rec_path = path
+        self._offer_last_recording(None)    # a new one is under way
         sp.set_recording_active(True)
         self._rec_t0 = self._sync.elapsed()
         self._rec_size_t0 = 0.0
@@ -334,6 +346,7 @@ class SessionControl:
         for m in self._modules:
             m.detach_sink()
         rec = self._recorder
+        saved = self.recording_path()       # before the recorder is dropped
         self._recorder = None
         if self._save_panel is not None:
             self._save_panel.set_recording_active(False)
@@ -358,7 +371,10 @@ class SessionControl:
             msg += ")"
             if lost:
                 msg += "  — see the file's recorder_* attributes"
+            if saved is not None:
+                msg += f" · saved to {saved.name}"
             self.status(msg)
+            self._offer_last_recording(saved)
         self._btn_rec.setText("● Record")
         self._lbl_rec.setText("")
 

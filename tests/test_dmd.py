@@ -546,21 +546,23 @@ def check_light_switch(r) -> None:
     lit = lambda: bool(dmd.controller._running)             # noqa: E731
     msg = lambda: win.statusBar().currentMessage()          # noqa: E731
 
-    card = win._folds["dmd"].card
+    card = win._docks["dmd"].titleBarWidget()
     bar = win._status_widgets.get("dmd")
     r.check(btn is not None and card.isAncestorOf(btn)
             and bar is dmd._bar_btn and bar is not None
             and win.statusBar().isAncestorOf(bar),
-            "the DMD's switch sits on its card and beside Record")
+            "the DMD's switch sits on its tab's title bar and beside Record")
     clipped = []
     keep = btn.text()
+    from PyQt6.QtWidgets import QApplication
     for text in ("DMD OFF", "● DMD ON"):
         btn.setText(text)
-        if btn.sizeHint().width() > card.minimumWidth():
-            clipped.append((text, btn.sizeHint().width()))
+        QApplication.processEvents()        # the title bar lays it out
+        if btn.isVisible() and btn.width() < btn.sizeHint().width():
+            clipped.append((text, btn.width(), btn.sizeHint().width()))
     btn.setText(keep)
     r.check(not clipped,
-            f"…and both its labels fit the card, none clipped ({clipped})")
+            f"…and both its labels fit the title bar, none clipped ({clipped})")
     r.check(btn.isEnabled() and not btn.isChecked() and btn.text() == "DMD OFF"
             and not lit(), "it starts off, with the projector dark")
 
@@ -578,12 +580,14 @@ def check_light_switch(r) -> None:
     pump(app, 0.05)
     r.check(not btn.isChecked() and btn.text() == "DMD OFF" and not lit(),
             "pressed again it turns the light off")
-    r.check(panel.view.isAncestorOf(panel._modes)
-            and not panel.isAncestorOf(panel._modes),
-            "Show (All ON / Image / ROIs) sits under the preview, not in Settings")
+    r.check(panel.isAncestorOf(panel._modes)
+            and not panel.view.isAncestorOf(panel._modes),
+            "Show (All ON / Image / ROIs) is in Settings: the view is the pattern")
     r.check(panel.camera_view() is None
-            and "not calibrated" in panel._seen_text(None),
-            "with no calibration the preview says it isn't tied to the camera")
+            and "not calibrated" in panel._lbl_showing.text()
+            and "not calibrated" in panel._preview.toolTip(),
+            "with no calibration, Settings (and the preview's tooltip) say "
+            "it isn't tied to the camera")
     bar.click()
     pump(app, 0.05)
     r.check(lit() and btn.isChecked() and btn.text() == bar.text() == "● DMD ON",
@@ -1197,6 +1201,7 @@ def check_reticle_seed(r: Report) -> None:
 
     adopted, warned = [], []
     fake = types.SimpleNamespace(
+        key="dmd",                  # names the suggested file
         panel=types.SimpleNamespace(calib_path="", set_calib_path=adopted.append),
         win=types.SimpleNamespace(status=lambda _m: None))
     tmp = Path(tempfile.mkdtemp(prefix="acqapp_calsave_"))

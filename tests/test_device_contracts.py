@@ -64,6 +64,7 @@ def main() -> int:
     from acqApp.devices.pupil_cam.video import VideoFileCameraWorker
     from acqApp.devices.puffer.control import PufferController, MockPufferController
     from acqApp.devices.dmd.control import DmdController, MockDmdController
+    from acqApp.devices.etl.control import EtlController, MockEtlController
     from acqApp.devices.stage.acquisition import StagePollWorker
 
     # ── 1. conformance ───────────────────────────────────────────────────────
@@ -86,6 +87,8 @@ def main() -> int:
         # The reticle calibration: needs the frame not reshaped, nothing wider.
         (DmdController,           RawProjector),
         (MockDmdController,       RawProjector),
+        (EtlController,           RecordingOutput),
+        (MockEtlController,       RecordingOutput),
     ]
     for cls, proto in CONFORM:
         missing = has_all(cls, proto)
@@ -138,6 +141,7 @@ def main() -> int:
         (LedController, MockLedController, object, set(), set()),
         (PufferController, MockPufferController, QObject, set(), set()),
         (DmdController, MockDmdController, QObject, set(), set()),
+        (EtlController, MockEtlController, object, set(), set()),
     ]
     for real, mock, base, ok_real, ok_mock in PAIRS:
         real_only = public(real, base) - public(mock, base) - ok_real
@@ -231,8 +235,9 @@ def main() -> int:
     class AlmostAHost:
         sync = None
         cam_handle = None
+        def camera_handle(self, index): return None
         def status(self, m): ...
-        def set_expected_rate(self, mbps): ...
+        def set_expected_rate(self, mbps, writer_mbps=0.0, source=""): ...
         def on_worker_error(self, m): ...
         def module_keys(self): return []
         def latest_frame(self, key): return None
@@ -240,7 +245,10 @@ def main() -> int:
         def set_live(self, on): return False
         def set_recording(self, on): return False
         def is_recording(self): return False
+        def ensure_mouse_id(self, then="try again"): return True
         def camera_preset(self, key): return None
+        def camera_overlay_color(self, key): return None
+        def set_view_shown(self, key, shown): ...
         def set_camera_preset(self, key, preset): return None
         def camera_binning(self, key): return None
         def set_camera_binning(self, key, n): return None
@@ -259,6 +267,7 @@ def main() -> int:
         def led_target(self): return None
         def puffer_target(self): return None
         def frame_rate_hz(self): return None
+        def focus_offset(self): return None
         def active_fov_name(self): return ""
         def roll_recording(self): return False
         def set_routine_save_context(self, fov, trial, coords=None): ...

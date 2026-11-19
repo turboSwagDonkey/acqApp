@@ -882,9 +882,11 @@ class MockCameraWorker(PullWorker):
     # engine's settle window so the fallback path works too.
     _GATE_S = 1.2
 
-    def __init__(self, config: AcqConfig | None = None):
+    def __init__(self, config: AcqConfig | None = None, seed: int = 0):
         super().__init__()
         self._config = config or AcqConfig()
+        # Per camera: two emulated paths must not paint the same frames.
+        self._seed = seed
         self._gated_until = 0.0
         self._rearm_req = False
         self._gate = (0, 0)
@@ -953,12 +955,13 @@ class MockCameraWorker(PullWorker):
 
     def _run(self) -> None:
         H, W   = self._config.frame_shape
-        cy, cx = H // 2, W // 2
-        y, x   = np.ogrid[-cy:H - cy, -cx:W - cx]
         r_blob = min(H, W) * 0.12
+        # Seed n's blob sits n blob-widths right of centre (wrapping).
+        cy, cx = H // 2, int(W // 2 + self._seed * 2.2 * r_blob) % W
+        y, x   = np.ogrid[-cy:H - cy, -cx:W - cx]
         blob   = (x * x + y * y) < r_blob ** 2
 
-        rng    = np.random.default_rng(0)
+        rng    = np.random.default_rng(self._seed)
         period = 1.0 / self._FPS
         t0     = time.perf_counter()
         index  = 0          # frames made: a gated tick is no frame, not a drop

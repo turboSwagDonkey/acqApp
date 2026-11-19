@@ -18,7 +18,7 @@ from acqApp.devices.stage import fov_store
 from acqApp.devices.stage.axes_measure import AxesMeasurement
 from acqApp.devices.stage.cam_axes import camera_jog, describe
 from acqApp.devices.stage.control import step_toward
-from acqApp.devices.stage.map_widget import StageMap
+from acqApp.devices.stage.map_widget import StageMap, ZGauge
 from acqApp.devices.stage.settings import (
     _BAD, WINDOW_DIAMETER_UM, WINDOW_RANGE_UM, StageSettings, load_settings,
 )
@@ -26,28 +26,36 @@ from acqApp.devices.stage.calibration_dialog import CalibrationDialog
 
 
 class _MapAndPad(QBoxLayout):
-    """The square map with the jog pad beside it or under it, whichever
-    leaves the map bigger, packed together in the middle of the space."""
+    """The square map (with the Z gauge, if any, at its right and its height)
+    and the jog pad beside or under them, whichever leaves the map bigger,
+    packed together in the middle of the space."""
 
-    def __init__(self, map_: QWidget, pad: QWidget) -> None:
+    def __init__(self, map_: QWidget, pad: QWidget,
+                 gauge: QWidget | None = None) -> None:
         super().__init__(QBoxLayout.Direction.TopToBottom)
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(10)
-        self._map, self._pad = map_, pad
+        self._map, self._pad, self._gauge = map_, pad, gauge
         self.addWidget(map_, 1)
+        if gauge is not None:
+            self.addWidget(gauge, 0)
         self.addWidget(pad, 0)
+
+    def _gauge_w(self) -> int:
+        """The gauge's width plus its gap, or 0 without one."""
+        return 0 if self._gauge is None else self._gauge.minimumWidth() + self.spacing()
 
     def minimumSize(self) -> QSize:
         # The pad-under arrangement's: QBoxLayout would report the current
         # direction's, and beside would pin the column at map + pad wide.
         m, pad = self._map.minimumSize(), self._pad.sizeHint()
-        return QSize(max(m.width(), pad.width()),
+        return QSize(max(m.width() + self._gauge_w(), pad.width()),
                      m.height() + self.spacing() + pad.height())
 
     def setGeometry(self, r: QRect) -> None:
-        pad, gap = self._pad.sizeHint(), self.spacing()
-        beside_side = min(r.width() - pad.width() - gap, r.height())
-        under_side = min(r.width(), r.height() - pad.height() - gap)
+        pad, gap, gw = self._pad.sizeHint(), self.spacing(), self._gauge_w()
+        beside_side = min(r.width() - gw - pad.width() - gap, r.height())
+        under_side = min(r.width() - gw, r.height() - pad.height() - gap)
         beside = beside_side > under_side
         want = (QBoxLayout.Direction.LeftToRight if beside
                 else QBoxLayout.Direction.TopToBottom)
@@ -56,18 +64,21 @@ class _MapAndPad(QBoxLayout):
         super().setGeometry(r)
         side = max(self._map.minimumWidth(), beside_side if beside else under_side)
         if beside:
-            w, h = side + gap + pad.width(), side
+            w, h = side + gw + gap + pad.width(), side
         else:
-            w, h = side, side + gap + pad.height()
+            w, h = max(side + gw, pad.width()), side + gap + pad.height()
         x = r.x() + max(0, (r.width() - w) // 2)
         y = r.y() + max(0, (r.height() - h) // 2)
         self._map.setGeometry(QRect(x, y, side, side))
+        if self._gauge is not None:
+            self._gauge.setGeometry(QRect(x + side + gap, y,
+                                          self._gauge.minimumWidth(), side))
         if beside:
-            self._pad.setGeometry(QRect(x + side + gap,
+            self._pad.setGeometry(QRect(x + side + gw + gap,
                                         y + (side - pad.height()) // 2,
                                         pad.width(), pad.height()))
         else:
-            self._pad.setGeometry(QRect(x + (side - pad.width()) // 2,
+            self._pad.setGeometry(QRect(x + (side + gw - pad.width()) // 2,
                                         y + side + gap,
                                         pad.width(), pad.height()))
 
@@ -108,6 +119,7 @@ class SettingsPanel(QWidget):
         self._last_xy = (0.0, 0.0)
         self._last_z = 0.0      # only meaningful with a Z axis
         self._last_map_xy: tuple[float, float] | None = None
+        self._last_gauge_z: float | None = None
         # The FOV last gone to, until the stage drifts off it.
         self._active_fov = None
         self._map_fovs: list[fov_store.SavedFov] = []   # index-aligned with the map's
@@ -211,15 +223,19 @@ class SettingsPanel(QWidget):
             "Forget the measured axes: back to Frame rotation.")
         self._btn_clear_axes.clicked.connect(lambda: self._set_cam_axes(None))
 
-        # ── Travel map (X/Y; Z is the readout's) ─────────────────────────────
+        # ── Travel map (X/Y) + Z gauge beside it ─────────────────────────────
         self._map = StageMap()
         self._map.set_axes(self._s.x, self._s.y, self._s.invert_y)
         self._map.drag_moved.connect(self._on_drag_moved)
         self._map.fov_menu_requested.connect(self._on_fov_menu)
+        self._z_gauge: ZGauge | None = None
+        if self._s.has_z:
+            self._z_gauge = ZGauge()
+            self._z_gauge.set_axis(self._s.z)
 
         # ── Motion (enabled only while connected) ────────────────────────────
         self._pad = self._build_pad()
-        vroot.addLayout(_MapAndPad(self._map, self._pad), 1)
+        vroot.addLayout(_MapAndPad(self._map, self._pad, self._z_gauge), 1)
 
         self._motion = QWidget()
         mv = QHBoxLayout(self._motion)
@@ -350,8 +366,10 @@ class SettingsPanel(QWidget):
         the map, so no drag starts from a stale position."""
         self._end_drag()
         self._map.clear_position()
+        if self._z_gauge is not None:
+            self._z_gauge.clear_position()
         # Else a reconnect at the same spot never redraws the cleared dot.
-        self._last_map_xy = None
+        self._last_map_xy = self._last_gauge_z = None
 
     def _set_controls_enabled(self, on: bool) -> None:
         self._motion.setEnabled(on)      # Z and the FOV buttons ride along
@@ -390,6 +408,8 @@ class SettingsPanel(QWidget):
         """Calibration was rewritten (or a frame run started/ended) — re-sync."""
         self._apply_gating()
         self._map.update()
+        if self._z_gauge is not None:
+            self._z_gauge.update()          # origin/soft-limits may have moved
         self.settings_changed.emit(self.settings)
 
     # ── frame status ────────────────────────────────────────────────────────
@@ -740,11 +760,26 @@ class SettingsPanel(QWidget):
         if z_um is not None and self._lbl_z is not None:
             self._last_z = z_um
             self._lbl_z.setText(f"{z_um:.1f}")
+            last_z = self._last_gauge_z
+            if self._z_gauge is not None and (
+                    last_z is None or abs(z_um - last_z) >= self._MAP_EPS_UM):
+                self._last_gauge_z = z_um
+                self._z_gauge.set_position(z_um)
         last = self._last_map_xy
         if (last is None or abs(x_um - last[0]) >= self._MAP_EPS_UM
                 or abs(y_um - last[1]) >= self._MAP_EPS_UM):
             self._last_map_xy = (x_um, y_um)
             self._map.set_position(x_um, y_um)
+
+    def set_focus_offset(self, offset) -> None:
+        """Path 2's plane on the Z gauge: an `acq.devices.FocusOffset`, or
+        None to take it off. No Z axis, nowhere to draw it."""
+        if self._z_gauge is not None:
+            self._z_gauge.set_offset(offset)
+
+    @property
+    def z_gauge(self) -> ZGauge | None:
+        return self._z_gauge
 
     def _emit_settings(self, *_a) -> None:
         self.settings_changed.emit(self.settings)

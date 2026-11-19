@@ -242,6 +242,9 @@ class AcqConfig:
     auto_levels:  bool = True
     preview_avg:  int  = 1                  # 1 = off
     led_follow_live: bool = True
+    # The other path's camera blended into this preview (overlay.py).
+    overlay:       bool = False
+    overlay_color: str  = "green"           # an overlay.OVERLAY_COLORS name
 
     @property
     def preset(self) -> ResolutionPreset:

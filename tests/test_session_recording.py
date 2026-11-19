@@ -18,6 +18,8 @@ EXPECTED_STREAMS = [
     "pupil_x", "pupil_y", "pupil_major", "pupil_minor", "pupil_angle",
     "wheel_voltage", "wheel_speed", "wheel_distance",
     "stage_x_um", "stage_y_um", "puffer", "dmd",
+    # Path 2: its own camera stream, DMD frames and the ETL setpoint.
+    "voltage_cam_2", "voltage_cam_2_index", "dmd_2", "etl_volts",
 ]
 PUPIL_FIT_STREAMS = ["pupil_x", "pupil_y", "pupil_major", "pupil_minor",
                      "pupil_angle"]
@@ -27,11 +29,13 @@ PUPIL_THRESHOLD = 57                    # not the default, so a stuck one shows
 CONFIG_ATTRS = ["created", "emulated", "modules", "mouse_id", "cam_exposure_us",
                 "wheel_rate_hz", "pupil_rate_hz", "stage_port", "dmd_device",
                 "puffer_channel", "puffer_duration_s",
+                "cam2_exposure_us", "dmd_2_device", "etl_volts",
                 # The threshold SETS the radius; without it no reproduction.
                 "pupil_track_threshold", "pupil_track_model"]
 
 # Written at close: what the run did, not how it was configured.
 FINAL_ATTRS = ["cam_timestamp_source", "cam_dropped_frames",
+               "cam2_timestamp_source", "cam2_dropped_frames",
                "wheel_timestamp_source", "wheel_rate_actual_hz",
                "recorder_dropped_samples", "recorder_late_samples",
                "recorder_unstamped_samples",
@@ -63,8 +67,9 @@ def _part_session() -> int:
     win._save_panel._ed_folder.setText(str(out))
     win._save_panel._ed_mouse_id.setText("smoke")
     # TIFF: frames through acqApp, each stamped; DCIMG has only file times.
-    fmt = mod["voltage_cam"].panel._cmb_format
-    fmt.setCurrentIndex(fmt.findData("tiff"))
+    for cam in ("voltage_cam", "voltage_cam_2"):
+        fmt = mod[cam].panel._cmb_format
+        fmt.setCurrentIndex(fmt.findData("tiff"))
     win._save_panel._on_edited()
     r.check(win._save_panel.writable_error() is None, "save target is writable")
 
@@ -144,6 +149,9 @@ def _part_session() -> int:
             f"test puff used the panel duration (got {fired})")
     mod["dmd"].load(None)
     mod["dmd"].display()                    # exercise the DMD frame sink
+    mod["dmd_2"].load(None)
+    mod["dmd_2"].display()
+    mod["etl"].set_volts(1.25)              # a mid-recording setpoint change
 
     pump(app, 2.0)
     for _ in range(10):
@@ -166,7 +174,12 @@ def _part_session() -> int:
 
     win._btn_rec.setChecked(False)
     r.check(win._recorder is None, "recorder cleared after stop")
+    r.check(win._last_rec == path and win._btn_open_last.isVisibleTo(win)
+            and path.name in win.statusBar().currentMessage(),
+            f"…the status names its folder, Open goes there "
+            f"({win.statusBar().currentMessage()!r})")
     mod["dmd"].stop_display()
+    mod["dmd_2"].stop_display()
     win._btn_run.setChecked(False)
     r.check(not win._sync.running, "session clock stopped")
     # The stage's poll worker lives with the connection, not the session, so
@@ -220,7 +233,7 @@ def _part_session() -> int:
     for row in rows:
         scalars.setdefault(row["stream"], []).append(float(row["timestamp"]))
 
-    images = {"voltage_cam": ".tiff", "pupil_cam": ".avi"}
+    images = {"voltage_cam": ".tiff", "voltage_cam_2": ".tiff", "pupil_cam": ".avi"}
     for name in EXPECTED_STREAMS:
         if name in images:
             f = path / f"{stem}_{name}{images[name]}"
@@ -233,6 +246,12 @@ def _part_session() -> int:
             ts = np.array(scalars[name])
         ok = len(ts) > 0 and np.all(np.isfinite(ts)) and np.all(np.diff(ts) >= 0)
         r.check(ok, f"stream '{name}': n={len(ts)}, monotonic")
+
+    # Path 2's ETL: the held setpoint opens the file, then the change made
+    # while recording.
+    etl = [float(row["value"]) for row in rows if row["stream"] == "etl_volts"]
+    r.check(len(etl) >= 2 and etl[-1] == 1.25,
+            f"etl_volts: held value at Record, then 1.25 (got {etl})")
 
     from acqApp.devices.pupil_cam.clip import open_clip
     clip = open_clip(path / f"{stem}_pupil_cam.avi")

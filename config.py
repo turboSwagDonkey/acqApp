@@ -26,12 +26,35 @@ MODULES: dict[str, str] = {
     "dmd":         "DMD",
     "vis_stim":    "Visual stim",
     "mirror":      "PMT/camera mirror",
+    # Path 2: a second Orca + DMD, and its ETL, on the same clock.
+    "voltage_cam_2": "Camera (path 2)",
+    "dmd_2":       "DMD (path 2)",
+    "etl":         "ETL (path 2)",
     "routines":    "Experiment routines",
 }
 
 # No picker checkbox; owns no device, so unticking it would only lose the
 # operator's protocol.
 ALWAYS_ON: frozenset[str] = frozenset({"routines"})
+
+# The picker's columns, left to right: each light path's own instruments,
+# then what both share. A module in none lands in the last column.
+MODULE_GROUPS: dict[str, tuple[str, ...]] = {
+    "Path 1": ("voltage_cam", "dmd"),
+    "Path 2": ("voltage_cam_2", "dmd_2", "etl"),
+    "Shared": ("pupil_cam", "wheel", "puffer", "stage", "vis_stim", "mirror"),
+}
+
+
+def module_groups() -> list[tuple[str, list[str]]]:
+    """(title, keys) per picker column: every MODULES key but ALWAYS_ON,
+    once each, unknown keys dropped and ungrouped ones in the last column."""
+    pickable = [k for k in MODULES if k not in ALWAYS_ON]
+    out = [(title, [k for k in keys if k in pickable])
+           for title, keys in MODULE_GROUPS.items()]
+    placed = {k for _t, keys in out for k in keys}
+    out[-1][1].extend(k for k in pickable if k not in placed)
+    return [(title, keys) for title, keys in out if keys]
 
 _CONFIG_PATH = Path(__file__).with_name("acqapp_local.json")
 # Tracked and hand-edited; the app writes it only from "Save as preset".
@@ -239,6 +262,13 @@ def rig_has(key: str) -> bool:
     """Unset means fitted. Only an explicit False skips the DAQ open."""
     fitted = rig_profile().get("hardware", {}).get(key)
     return fitted if isinstance(fitted, bool) else True
+
+
+def rig_device_id(key: str) -> int | None:
+    """The active rig's `device_ids[key]` (a DCAM index, an ALP serial), or
+    None to keep the module's default."""
+    got = rig_profile().get("device_ids", {}).get(key)
+    return got if isinstance(got, int) and not isinstance(got, bool) else None
 
 
 def rig_timing(key: str, default: float) -> float:

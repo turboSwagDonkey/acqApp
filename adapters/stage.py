@@ -62,6 +62,7 @@ class StageModule(ModuleAdapter):
         self._disp_timer.timeout.connect(self.update_display)
         # Kept for the sidebar card: `get_latest()` consumes.
         self._pos: tuple[float, ...] | None = None
+        self._offset_failed = False
 
     def mini_view(self) -> QWidget:
         return MiniText(self._mini_text)
@@ -131,6 +132,8 @@ class StageModule(ModuleAdapter):
 
     # ── connection ──
     def build_controller(self, emulate: bool) -> None:
+        # Connected or not: it also keeps path 2's plane on the Z gauge.
+        self._disp_timer.start()
         s = self._settings()
         ctrl = MockStageController(s) if emulate else StageController(s)
         try:
@@ -146,7 +149,6 @@ class StageModule(ModuleAdapter):
         self.worker.error.connect(self.panel.clear_position)
         self.worker.start()
         self.panel.bind_controller(ctrl)
-        self._disp_timer.start()
 
     def close_controller(self) -> None:
         # Each step independent, so a dead port can't strand a half teardown.
@@ -171,11 +173,23 @@ class StageModule(ModuleAdapter):
         pass    # the connection outlives the session
 
     def update_display(self) -> None:
+        # A timer slot: an escape would abort the app.
+        try:
+            self.panel.set_focus_offset(self.win.focus_offset())
+        except Exception as e:      # noqa: BLE001
+            if not self._offset_failed:     # once, not at 30 Hz
+                self._offset_failed = True
+                self.win.status(f"stage: path 2 focus: {type(e).__name__}: {e}")
         pos = self.worker.get_latest() if self.worker is not None else None
         if pos is not None:
             self._pos = pos
             self.panel.set_readout(pos[0], pos[1],
                                    pos[2] if len(pos) > 2 else None)
+
+    def on_modules_changed(self) -> None:
+        """The ETL came or went: its plane with it, without waiting a tick."""
+        if self.panel is not None:
+            self.panel.set_focus_offset(self.win.focus_offset())
 
     # ── saved FOVs ──
     def save_fov(self) -> None:

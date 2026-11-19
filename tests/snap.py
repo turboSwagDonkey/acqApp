@@ -6,7 +6,10 @@
 module_key is a config.MODULES key (voltage_cam, pupil_cam, wheel, ...); `main`
 is the whole window, every module loaded (try --width 1600); `save` is the
 Save section, `review` the standalone pupil review, `roi` the DMD ROI
-dialog (demo frame, live band; try --width 1000). `--settings` seeds the
+dialog (demo frame, live band; try --width 1000), `stage_etl` the stage page
+with the ETL's path-2 plane on the Z gauge (try --width 700), `modules` /
+`modules_probe` the startup / mid-session module picker (stand-in probes),
+`cameras` / `overlay` both paths live, side by side / merged (--width 1600). `--settings` seeds the
 module's stored settings first, e.g. vis_stim --settings
 "{\\"trial_type\\": \\"contrast\\"}". Mock window, isolated user state:
 nothing on the rig is touched or rewritten. Not part of run_all.
@@ -64,9 +67,40 @@ def _panel(key: str):
             node.setPos(node.pos().x() + 120, node.pos().y() - 80)
         return dlg, None
     from acqApp import config
+    if key in ("modules", "modules_probe"):     # the startup / Modules picker
+        from acqApp import probe
+        from acqApp.dialogs import ModuleSelectDialog
+        if key == "modules":
+            return ModuleSelectDialog(["voltage_cam", "dmd", "wheel", "stage"]), None
+        # Stand-in results: a snapshot must not enumerate the rig.
+        demo = {"voltage_cam": ("ok", "ORCA-Fusion BT, S/N 001234"),
+                "dmd": ("missing", "no ALP found (is the standalone app open?)"),
+                "wheel": ("ok", "Dev3 (USB-6343)"), "stage": ("error", "COM5 busy")}
+        probe.probe = lambda k, **_kw: probe.ProbeResult(
+            *demo.get(k, ("stub", "no device of its own")))
+        return ModuleSelectDialog(["voltage_cam", "dmd", "wheel", "stage", "etl"],
+                                  probe_kwargs=dict), None
     if key == "main":
         win = make_window(set(config.MODULES))
         return win, win
+    if key in ("cameras", "overlay"):   # both paths live; overlay: merged in one
+        from _harness import pump
+        win = make_window({"voltage_cam", "voltage_cam_2", "dmd", "dmd_2"})
+        win._module("voltage_cam")._chk_overlay.setChecked(key == "overlay")
+        win.show()          # first: a hidden LUT bar skips its histogram refresh
+        win._btn_run.setChecked(True)
+        for _ in range(20):
+            pump(qt_app(), 0.05)
+            win._display_tick()
+        return win, win
+    if key == "stage_etl":          # the stage page with path 2's plane on the Z gauge
+        win = make_window({"stage", "etl"})
+        etl, stage = win._module("etl"), win._module("stage")
+        etl.panel._spn_gain.setValue(40.0)      # µm/V, a stand-in calibration
+        etl.panel._spn_cofocal.setValue(2.0)
+        etl.set_offset_um(60.0)
+        stage.update_display()
+        return stage.panel.view, win
     win = make_window({key} if key in config.MODULES else set())
     if key == "save":
         return win._save_panel, win

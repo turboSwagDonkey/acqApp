@@ -41,9 +41,11 @@ def _shared_alignment() -> dict[str, float]:
 
 
 class DmdModule(ModuleAdapter):
-    key = "dmd"
+    key = "dmd"                 # also its stream, settings section, metadata prefix
     tab_label = "DMD"
     own_dock = True
+    camera_key = "voltage_cam"  # the camera it is calibrated on and draws ROIs over
+    shares_standalone = True    # re-adopts the dmdGUI_project app's alignment
 
     controller: ProjectorController | None
 
@@ -235,7 +237,7 @@ class DmdModule(ModuleAdapter):
 
         if self.controller is None:
             return
-        if "voltage_cam" not in self.win.module_keys():
+        if self.camera_key not in self.win.module_keys():
             QMessageBox.information(
                 self.panel, "No voltage camera",
                 "Calibration aligns the DMD on the voltage camera's live "
@@ -245,8 +247,8 @@ class DmdModule(ModuleAdapter):
 
         # Everything downstream speaks unbinned full-sensor px, so measure at
         # full frame 1x1: a crop shifts the origin, binning scales the pixels.
-        prev_preset = self.win.camera_preset("voltage_cam")
-        prev_binning = self.win.camera_binning("voltage_cam")
+        prev_preset = self.win.camera_preset(self.camera_key)
+        prev_binning = self.win.camera_binning(self.camera_key)
         cropped = prev_preset is not None and prev_preset != DEFAULT_PRESET
         binned = prev_binning is not None and prev_binning != 1
         needs_switch = cropped or binned
@@ -272,9 +274,9 @@ class DmdModule(ModuleAdapter):
             # Structural settings: stop live so the dialog restarts it with them.
             was_live = self.win.set_live(False)
             if cropped:
-                self.win.set_camera_preset("voltage_cam", DEFAULT_PRESET)
+                self.win.set_camera_preset(self.camera_key, DEFAULT_PRESET)
             if binned:
-                self.win.set_camera_binning("voltage_cam", 1)
+                self.win.set_camera_binning(self.camera_key, 1)
 
         try:
             calib = self._align_reticle()
@@ -287,9 +289,9 @@ class DmdModule(ModuleAdapter):
             if needs_switch:
                 self.win.set_live(False)
                 if cropped:
-                    self.win.set_camera_preset("voltage_cam", prev_preset)
+                    self.win.set_camera_preset(self.camera_key, prev_preset)
                 if binned:
-                    self.win.set_camera_binning("voltage_cam", prev_binning)
+                    self.win.set_camera_binning(self.camera_key, prev_binning)
                 self.win.set_live(was_live)
             # The card shows the held frame: rebuild it over the last reticle.
             self.controller.apply_settings(self.panel.settings)
@@ -305,7 +307,7 @@ class DmdModule(ModuleAdapter):
 
         if not self._real:
             self.win.status("DMD emulated: the reticle won't light anything")
-        source = lambda: self.win.latest_frame("voltage_cam")    # noqa: E731
+        source = lambda: self.win.latest_frame(self.camera_key)    # noqa: E731
         was_live = self.win.set_live(True)
         try:
             # A just-started camera has to build its worker first: a long wait,
@@ -329,7 +331,7 @@ class DmdModule(ModuleAdapter):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
         here = self.panel.calib_path
-        name = f"dmd_calib_{datetime.now():%Y%m%d_%H%M%S}.json"
+        name = f"{self.key}_calib_{datetime.now():%Y%m%d_%H%M%S}.json"
         start = str(Path(here).parent / name) if here else name
         # A cancel or a failed save asks again: the alignment exists only here.
         while True:
@@ -364,14 +366,14 @@ class DmdModule(ModuleAdapter):
         from acqApp.devices.voltage_cam.presets import PRESETS
 
         preset = PRESETS.get(preset_key
-                             or self.win.latest_frame_preset("voltage_cam"))
+                             or self.win.latest_frame_preset(self.camera_key))
         if preset is None:
             return (0.0, 0.0), 1.0
         return (preset.hpos, preset.vpos), preset.hsize / frame.shape[1]
 
     def _live_frame(self):
         """The camera's newest frame as a `roi_live.LiveFrame`, or None."""
-        f = self.win.latest_frame("voltage_cam")
+        f = self.win.latest_frame(self.camera_key)
         return None if f is None else (f, *self._frame_geometry(f))
 
     def _editor(self, frame, preset_key: str | None = None):
@@ -399,7 +401,7 @@ class DmdModule(ModuleAdapter):
         from acqApp.devices.dmd.pair_dialog import RoiLightDialog
         from acqApp.devices.dmd.roi import RoiSet
 
-        frame = self.win.latest_frame("voltage_cam")
+        frame = self.win.latest_frame(self.camera_key)
         if frame is None:
             QMessageBox.information(
                 self.panel, "No camera frame",
@@ -457,7 +459,7 @@ class DmdModule(ModuleAdapter):
         from acqApp.devices.dmd import roi_store
         from acqApp.devices.dmd.pair_dialog import PairRoiDialog
 
-        frame = self.win.latest_frame("voltage_cam")
+        frame = self.win.latest_frame(self.camera_key)
         if frame is None or self.panel is None:
             return None
 
@@ -516,7 +518,7 @@ class DmdModule(ModuleAdapter):
         if it re-aligned since our last save (`_shared_*` = what we saw)."""
         s = config.load_dataclass(DmdSettings, self.key)
         saved = config.load_settings(self.key)
-        for attr, val in _shared_alignment().items():
+        for attr, val in self._shared().items():
             if attr not in saved or saved.get(f"_shared_{attr}") != val:
                 setattr(s, attr, val)
         # A launch starts with no ROIs; the calibration and pattern stay.
@@ -528,18 +530,23 @@ class DmdModule(ModuleAdapter):
         d = asdict(s)
         d["pattern_path"] = str(s.pattern_path) if s.pattern_path else None
         d["rois"] = list(s.rois or ())
-        for attr, val in _shared_alignment().items():
+        for attr, val in self._shared().items():
             d[f"_shared_{attr}"] = val
         config.save_settings(self.key, d)
         if self.panel is not None and self.panel.live:
             self._live_timer.start()
+
+    def _shared(self) -> dict[str, float]:
+        return _shared_alignment() if self.shares_standalone else {}
 
     def build_controller(self, emulate: bool) -> None:
         s = self.panel.settings if self.panel is not None else DmdSettings()
         real = False
         if not emulate:
             try:
-                self.controller = DmdController(s)
+                # Two ALPs: without a serial, each path takes whichever is free.
+                self.controller = DmdController(
+                    s, serial=config.rig_device_id(self.key))
                 real = True
             except Exception as e:      # noqa: BLE001 — any ALP/driver failure
                 # Usually the standalone app still holds the ALP.
@@ -622,13 +629,13 @@ class DmdModule(ModuleAdapter):
 
     def attach_sink(self, rec) -> None:
         if self.controller is not None:
-            self.controller.set_sink(lambda idx: rec.put("dmd", float(idx)))
+            self.controller.set_sink(lambda idx: rec.put(self.key, float(idx)))
 
     def metadata(self) -> dict[str, Any]:
         s = self.panel.settings
         c = self.controller
         w, h = c.resolution if c is not None else (0, 0)
-        return {
+        meta = {
             "dmd_device":      c.device_name if c is not None else "none",
             "dmd_width":       w,
             "dmd_height":      h,
@@ -648,3 +655,20 @@ class DmdModule(ModuleAdapter):
             "dmd_rois":        json.dumps(list(s.rois or ())),
             "dmd_calibration": Path(s.calib_path).name if s.calib_path else "",
         }
+        # dmd_x -> <key>_x, so two DMDs' keys don't collide.
+        return {f"{self.key}{k[3:]}": v for k, v in meta.items()}
+
+
+class Dmd2Module(DmdModule):
+    """Path 2's DMD, paired with path 2's camera. No switch beside Record
+    (one hold-to-light switch there is path 1's); routines drive path 1."""
+    key = "dmd_2"
+    tab_label = "DMD (path 2)"
+    camera_key = "voltage_cam_2"
+    shares_standalone = False   # the standalone app aligns path 1's DMD
+
+    def status_widget(self):
+        return None
+
+    def pattern_target(self):
+        return None

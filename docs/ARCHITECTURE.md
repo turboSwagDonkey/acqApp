@@ -97,6 +97,9 @@ Per-machine settings are JSON files, not code:
   - `ni_device`: the NI-DAQ device name;
   - `channels`: the DAQ line for each signal (`"port0/line7"`, `"ai2"`);
   - `hardware`: `false` for anything not fitted;
+  - `device_ids`: which physical device a module opens: a DCAM index for
+    `voltage_cam`/`voltage_cam_2`, an ALP serial number for `dmd`/`dmd_2`
+    (with two DMDs and no serials, which path gets which is arbitrary);
   - `timing`: optional overrides, in seconds, of `move_timeout_s` (stage
     arrival), `trigger_timeout_s` (wait for a TTL edge) and
     `camera_hold_timeout_s` (camera returning after a file roll).

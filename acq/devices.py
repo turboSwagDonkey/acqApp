@@ -13,6 +13,14 @@ Sink = Callable[[Any], None]
 
 
 @dataclass(frozen=True)
+class FocusOffset:
+    """Path 2's focal plane relative to path 1's (the ETL): the volts held,
+    and their µm along stage Z, None until the ETL is calibrated."""
+    volts: float
+    um: float | None
+
+
+@dataclass(frozen=True)
 class SignalSource:
     """A live scalar one module offers another (the wheel's speed, for
     visuomotor). `read()` -> (value, acquired_at) or None while not running;
@@ -185,6 +193,10 @@ class ModuleHost(Protocol):
     def cam_handle(self) -> Any:
         """The DCAM handle opened once at startup; re-opening crashes natively."""
 
+    def camera_handle(self, index: int) -> Any:
+        """DCAM handle `index`, opened once and kept (0 = `cam_handle`), or
+        None if it can't be opened."""
+
     def dcimg_enabled(self) -> bool: ...
 
     def dcimg_target(self, stream: str) -> Any:
@@ -200,8 +212,10 @@ class ModuleHost(Protocol):
 
     def status(self, message: str) -> None: ...
 
-    def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0) -> None:
-        """Two numbers: the disk fills at the smaller one."""
+    def set_expected_rate(self, mbps: float, writer_mbps: float = 0.0,
+                          source: str = "") -> None:
+        """Two numbers: the disk fills at the smaller one. Per `source` (a
+        module key); the window sums them."""
 
     def on_worker_error(self, msg: str) -> None: ...
 
@@ -220,7 +234,20 @@ class ModuleHost(Protocol):
 
     def is_recording(self) -> bool: ...
 
+    def ensure_mouse_id(self, then: str = "try again") -> bool:
+        """True with a mouse ID set; else points the operator at it (saying
+        to `then` afterwards) and returns False: the caller does nothing."""
+        ...
+
     def camera_preset(self, key: str) -> str | None: ...
+
+    def set_view_shown(self, key: str, shown: bool) -> None:
+        """Show or hide module `key`'s dock (its view and settings), kept
+        through Reset layout and for a dock built later."""
+
+    def camera_overlay_color(self, key: str) -> str | None:
+        """The camera's colour when overlaid with another (an
+        overlay.OVERLAY_COLORS name)."""
 
     def set_camera_preset(self, key: str, preset: str) -> str | None:
         """Returns the previous preset. Applies at the next session start."""
@@ -271,6 +298,9 @@ class ModuleHost(Protocol):
 
     def frame_rate_hz(self) -> float | None:
         """For estimates only."""
+
+    def focus_offset(self) -> FocusOffset | None:
+        """Path 2's focal-plane offset, or None with no ETL loaded."""
 
     def latest_frame(self, key: str) -> Any:
         """The cached newest frame; never commands the camera."""

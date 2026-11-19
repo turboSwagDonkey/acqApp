@@ -26,14 +26,15 @@ from typing import Any, Callable
 
 from acqApp import config
 from acqApp.adapters.base import ModuleAdapter
-from acqApp.adapters.dmd import DmdModule
+from acqApp.adapters.dmd import Dmd2Module, DmdModule
+from acqApp.adapters.etl import EtlModule
 from acqApp.adapters.mirror import MirrorModule
 from acqApp.adapters.puffer import PufferModule
 from acqApp.adapters.pupil_cam import PupilCamModule
 from acqApp.adapters.routines import RoutinesModule
 from acqApp.adapters.stage import StageModule
 from acqApp.adapters.vis_stim import VisStimModule
-from acqApp.adapters.voltage_cam import VoltageCamModule
+from acqApp.adapters.voltage_cam import VoltageCam2Module, VoltageCamModule
 from acqApp.adapters.wheel import WheelModule
 
 
@@ -48,6 +49,9 @@ ADAPTERS: dict[str, Callable[[Any], ModuleAdapter]] = {
     "dmd":         DmdModule,
     "vis_stim":    VisStimModule,
     "mirror":      MirrorModule,
+    "voltage_cam_2": VoltageCam2Module,
+    "dmd_2":       Dmd2Module,
+    "etl":         EtlModule,
     "routines":    RoutinesModule,
 }
 

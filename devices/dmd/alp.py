@@ -114,9 +114,12 @@ class AlpDevice:
     held pattern holds between pictures) -> SetTiming -> Run. `halt()` is
     Halt + FreeSeq, so the next project starts clean; `blank()` is dark."""
 
-    def __init__(self, lib_dir: str | None = None, version: str = "4.2") -> None:
+    def __init__(self, lib_dir: str | None = None, version: str = "4.2",
+                 serial: int | None = None) -> None:
         self._lib_dir = lib_dir
         self._version = version
+        self._serial = serial           # None = the first free ALP
+
         self._dev = None
         self._seq = False               # a sequence is allocated
         self.width = 0
@@ -130,7 +133,7 @@ class AlpDevice:
         """-> (width, height). Raises if the ALP isn't free."""
         from ALP4 import ALP4
         dev = ALP4(version=self._version, libDir=self._lib_dir)
-        dev.Initialize()
+        dev.Initialize(self._serial)
         self._dev = dev
         self.width, self.height = int(dev.nSizeX), int(dev.nSizeY)
         self.blank()                    # mirrors may hold a last session's frame

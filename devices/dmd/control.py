@@ -175,10 +175,11 @@ class _Base:
 class DmdController(_Base):
     """The real ALP-4.2 device."""
 
-    def __init__(self, settings: DmdSettings | None = None):
+    def __init__(self, settings: DmdSettings | None = None,
+                 serial: int | None = None):
         super().__init__(settings)
         lib_dir, source = alp.resolve_lib_dir(self._s.lib_dir)
-        self._dev = alp.AlpDevice(lib_dir)
+        self._dev = alp.AlpDevice(lib_dir, serial=serial)
         self._dev.open()
         print(f"[DMD] ALP {self._dev.width}x{self._dev.height} (API from {source})")
         try:

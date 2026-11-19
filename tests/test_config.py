@@ -655,8 +655,10 @@ def _part_settings() -> int:
     folds = {k: f for k, f in win._folds.items() if f.body is not None}
     # A module with no panel at all (the mirror's switch) gets only a card.
     panelled = {m.key for m in win._modules if m.panel is not None}
-    r.check(set(folds) == panelled | {"saving"},
-            f"a settings fold per panel, plus Save's ({sorted(folds)})")
+    riding = set(win._riding)       # on another's dock (the ETL on the Stage)
+    r.check(set(folds) == (panelled - riding) | {"saving"} and "etl" in riding,
+            f"a settings fold per panel, plus Save's, bar a rider's "
+            f"({sorted(folds)}; riding {sorted(riding)})")
     r.check(all(f.window() is win for f in folds.values()),
             "…each inside the main window, none a window of its own")
     r.check("mirror" not in panelled and "mirror" in {m.key for m in win._modules},
@@ -681,11 +683,27 @@ def _part_settings() -> int:
     wheel.set_open(True)
     r.check(wheel.body.isVisibleTo(wheel) and wheel.card.property("open"),
             "opening one shows its panel and lights its card")
+    others = [f for k, f in folds.items() if k not in win._docks and k != "wheel"]
+    r.check(all(f.isHidden() for f in others) and not wheel.isHidden(),
+            "…and takes over General: the other sections step aside")
+    title = win._general_dock.titleBarWidget()
+    mini = wheel.card.mini
+    r.check(title.name.text() == wheel.label and not title.back.isHidden()
+            and wheel.card.isHidden() and mini is not None
+            and title.isAncestorOf(mini),
+            "…even its title bar: the section's name, status and ◂ back")
     puffer.set_open(True)
-    r.check(wheel.is_open() and puffer.is_open(),
-            "a second opens beside the first")
-    wheel.set_open(False)
-    puffer.set_open(False)
+    r.check(not wheel.is_open() and puffer.is_open() and wheel.isHidden()
+            and not puffer.isHidden() and title.name.text() == puffer.label
+            and wheel.card.isAncestorOf(mini),
+            "a second takes over from the first (one at a time); the "
+            "first's status goes back to its card")
+    title.back.click()
+    r.check(not puffer.is_open() and title.name.text() == "General"
+            and title.back.isHidden() and not puffer.card.isHidden(),
+            "◂ back shuts it: General's own title again")
+    r.check(not any(f.isHidden() for k, f in folds.items() if k not in win._docks),
+            "shut, every section's card is back")
 
     panels = {m.key: m.panel for m in win._modules}
 
@@ -699,7 +717,7 @@ def _part_settings() -> int:
             f"{len(plain)} group boxes across {len(folds)} panels")
     r.check(not any(b.isCheckable() for b in plain),
             "no box inside a card folds: opening the card shows all of it")
-    r.check(len(adv) >= 2 and all(b.isCheckable() and not b.isChecked()
+    r.check(len(adv) >= 1 and all(b.isCheckable() and not b.isChecked()
                                   for b in adv),
             f"…except the {len(adv)} Advanced boxes, which start folded")
 

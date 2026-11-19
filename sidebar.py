@@ -61,13 +61,19 @@ class MiniView(QWidget):
 
 class MiniText(MiniView):
     """A bold value then a muted detail, on one line; `source()` -> (value,
-    detail). Clipped text is in the tooltip."""
+    detail) or (value, detail, more): `more` only in the tooltip, as is
+    clipped text. A detail starting "⚠" is a warning: with `warn_hint` set,
+    it is clickable (`warning_clicked`); elsewhere a click falls through."""
 
-    def __init__(self, source: Callable[[], tuple[str, str]],
+    warning_clicked = pyqtSignal()
+
+    def __init__(self, source: Callable[[], tuple[str, ...]],
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._source = source
-        self._shown: tuple[str, str] | None = None
+        self._shown: tuple[str, ...] | None = None
+        self._warn = False
+        self.warn_hint = ""     # e.g. "Click to open Settings"; '' = not clickable
         self._value = QLabel()
         self._value.setStyleSheet("font-weight:bold")
         self._detail = QLabel()
@@ -84,13 +90,32 @@ class MiniText(MiniView):
         if got == self._shown:
             return                                  # each set is a relayout
         self._shown = got
-        value, detail = got
+        value, detail = got[0], got[1]
         self._value.setText(value)
         self._value.setVisible(bool(value))
         self._detail.setText(detail)
-        tone = style.WARN if detail.startswith("⚠") else style.muted()
+        self._warn = detail.startswith("⚠")
+        tone = style.WARN if self._warn else style.muted()
         self._detail.setStyleSheet(f"color:{tone}")
-        self.setToolTip(" · ".join(t for t in got if t))
+        clickable = self._clickable()
+        self.setCursor(Qt.CursorShape.PointingHandCursor if clickable
+                       else Qt.CursorShape.ArrowCursor)
+        tip = " · ".join(t for t in got if t)
+        self.setToolTip(f"{tip}\n{self.warn_hint}" if clickable else tip)
+
+    def _clickable(self) -> bool:
+        return self._warn and bool(self.warn_hint)
+
+    def mousePressEvent(self, e) -> None:
+        if self._clickable() and e.button() == Qt.MouseButton.LeftButton:
+            e.accept()
+        else:
+            e.ignore()          # falls through: a dock's title still drags
+
+    def mouseReleaseEvent(self, e) -> None:
+        if (self._clickable() and e.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(e.position().toPoint())):
+            self.warning_clicked.emit()
 
 
 class _Card(QFrame):
@@ -99,7 +124,8 @@ class _Card(QFrame):
 
     clicked = pyqtSignal()
 
-    def __init__(self, key: str, label: str, mini: QWidget | None) -> None:
+    def __init__(self, key: str, label: str, mini: QWidget | None,
+                 *, clickable: bool = True) -> None:
         super().__init__()
         self.setObjectName("moduleCard")
         self.setMinimumWidth(CARD_MIN_W)
@@ -107,9 +133,9 @@ class _Card(QFrame):
         self.setStyleSheet(
             f"QFrame#moduleCard{{border:1px solid {_rgba(c, 110)};"
             "border-radius:5px}"
-            f"QFrame#moduleCard:hover{{background:{_rgba(c, 28)}}}"
-            f'QFrame#moduleCard[open="true"]{{border:2px solid {c.name()};'
-            f"background:{_rgba(c, 45)}}}")
+            + (f"QFrame#moduleCard:hover{{background:{_rgba(c, 28)}}}"
+               f'QFrame#moduleCard[open="true"]{{border:2px solid {c.name()};'
+               f"background:{_rgba(c, 45)}}}" if clickable else ""))
 
         chip = QLabel()
         chip.setFixedSize(10, 10)
@@ -131,6 +157,11 @@ class _Card(QFrame):
             self.mini.deleteLater()     # its view polls a module
         self.mini = mini
         if mini is not None:
+            self._lay.addWidget(mini, 1)
+
+    def reclaim_mini(self, mini: QWidget) -> None:
+        """Its own mini view back from where it was lent (not rebuilt)."""
+        if mini is self.mini:
             self._lay.addWidget(mini, 1)
 
     def set_open(self, on: bool) -> None:
@@ -155,14 +186,21 @@ class Fold(QWidget):
     toggled = pyqtSignal(bool)
 
     def __init__(self, key: str, label: str, mini: QWidget | None,
-                 body: QWidget | None, *, default_open: bool = False) -> None:
+                 body: QWidget | None, *, default_open: bool = False,
+                 card_toggles: bool = True) -> None:
+        """`card_toggles` False: something else opens it (a dock's title
+        button), and the card is its status line alone, hidden if empty."""
         super().__init__()
         self.key = key
         self.body = body
         self._label = label
         self._open = False
+        self._card_toggles = card_toggles
         self._setting = f"fold/{key}"
-        self.card = _Card(key, label, mini)
+        self.card = _Card(key, label, mini, clickable=card_toggles)
+        if not card_toggles:
+            self.card.title.hide()
+            self.card.setVisible(mini is not None)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
@@ -170,14 +208,26 @@ class Fold(QWidget):
         if body is None:
             return
         lay.addWidget(body, 1)
-        self.card.setToolTip(f"Click to show or hide the {label} settings.")
-        self.card.clicked.connect(lambda: self.set_open(not self._open))
+        if card_toggles:
+            self.card.setToolTip(f"Click to open the {label} settings (they "
+                                 "take the tab); again to go back.")
+            self.card.clicked.connect(lambda: self.set_open(not self._open))
         saved = QSettings(_GEOM_ORG, _GEOM_APP).value(self._setting)
         self.set_open(default_open if saved is None
                       else saved not in (False, "false", "0", 0), remember=False)
 
     def is_open(self) -> bool:
         return self._open
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    def set_card_shown(self, on: bool) -> None:
+        """Hide the card while something else stands in for it (General's
+        title bar, for a section that took the tab over)."""
+        self.card.setVisible(on)
+        self._clamp()
 
     def set_open(self, on: bool, *, remember: bool = True) -> None:
         if self.body is None:
@@ -205,8 +255,10 @@ class Fold(QWidget):
         return hint
 
     def _clamp(self) -> None:
-        """Shut, no taller than the card: a splitter ignores size policies."""
+        """Shut, no taller than the card (none if it is hidden): a splitter
+        ignores size policies."""
         self.setMaximumHeight(QWIDGETSIZE_MAX if self._open or self.body is None
+                              else 0 if self.card.isHidden()
                               else self.card.sizeHint().height())
 
     def event(self, e) -> bool:
